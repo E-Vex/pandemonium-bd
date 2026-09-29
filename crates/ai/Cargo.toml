@@ -1,0 +1,10 @@
+[package]
+name = "pandemonium-ai"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "AI controllers: perceive a PlayerView, decide, emit commands (parity by structure)"
+
+[dependencies]
+pandemonium-fx = { path = "../fx" }
+pandemonium-sim-api = { path = "../sim_api" }
