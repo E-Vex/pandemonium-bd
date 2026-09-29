@@ -1,0 +1,14 @@
+[package]
+name = "pandemonium-tools"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Developer binaries: headless runner, soak runner, replay verifier, content validator, bench"
+
+[dependencies]
+pandemonium-fx = { path = "../fx" }
+pandemonium-sim = { path = "../sim" }
+pandemonium-sim-api = { path = "../sim_api" }
+pandemonium-content = { path = "../content" }
+pandemonium-ai = { path = "../ai" }
+pandemonium-replay = { path = "../replay" }
