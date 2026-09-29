@@ -1,0 +1,15 @@
+[package]
+name = "pandemonium-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The playable binary: wgpu renderer, winit window, screens, HUD, audio stub"
+
+[dependencies]
+pandemonium-fx = { path = "../fx" }
+pandemonium-sim = { path = "../sim" }
+pandemonium-sim-api = { path = "../sim_api" }
+pandemonium-content = { path = "../content" }
+pandemonium-ai = { path = "../ai" }
+pandemonium-replay = { path = "../replay" }
+pandemonium-engine = { path = "../engine" }
