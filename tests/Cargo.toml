@@ -1,0 +1,17 @@
+[package]
+name = "pandemonium-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Cross-crate acceptance tests (plan §4, §13)"
+
+# This package exists so the acceptance tests named by the plan (tests/determinism.rs
+# for A1, etc.) compile at the workspace root — cargo needs a package to build test
+# targets. It is the acceptance host only: exempt from the internal dependency law
+# (plan §4), still subject to the forbidden-crate list. See docs/ASSUMPTIONS.md A-002.
+
+[dependencies]
+
+[[test]]
+name = "architecture_law"
+path = "architecture_law.rs"
