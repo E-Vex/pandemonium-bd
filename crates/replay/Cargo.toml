@@ -1,0 +1,10 @@
+[package]
+name = "pandemonium-replay"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Replay record/load/verify format: seed + content hash + ordered command log"
+
+[dependencies]
+pandemonium-fx = { path = "../fx" }
+pandemonium-sim-api = { path = "../sim_api" }
