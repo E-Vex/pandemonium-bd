@@ -1,0 +1,5 @@
+# Toolchain pin (plan §3.3): one exact version everywhere — local, CI, and contributors.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

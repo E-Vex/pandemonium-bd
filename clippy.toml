@@ -1,0 +1,16 @@
+# Pandemonium lint configuration (plan §5: determinism rules).
+#
+# NOTE (docs/ASSUMPTIONS.md A-006): clippy has no per-crate configuration file, so this
+# ban applies workspace-wide — stricter than the plan's letter (which scopes it to the
+# determinism crates fx/sim/sim_api/ai). Any use outside the determinism crates that is
+# provably order-independent must carry an explicit
+# `#[allow(clippy::disallowed_types)]` with a justification comment.
+#
+# Wall-clock reads and floating-point types are additionally banned *in the
+# determinism crates* (fx, sim, sim_api, ai, content) by a line-by-line source scan in
+# tests/architecture_law.rs (plan §5), because those bans must not apply to the
+# engine/client (rendering interpolation and real-time timing legitimately live there).
+disallowed-types = [
+    "std::collections::HashMap", # unordered iteration (plan §5) — use ordered maps or dense stores
+    "std::collections::HashSet", # unordered iteration (plan §5) — use ordered sets or sorted vecs
+]
