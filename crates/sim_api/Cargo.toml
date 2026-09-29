@@ -1,0 +1,9 @@
+[package]
+name = "pandemonium-sim-api"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Public vocabulary types crossing the simulation boundary"
+
+[dependencies]
+pandemonium-fx = { path = "../fx" }
