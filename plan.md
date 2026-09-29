@@ -1,4 +1,4 @@
-# Pandemonium — RTS Foundation & Alpha Plan (v2.0, Rust + Custom Engine)
+# Pandemonium — RTS Foundation & Alpha Plan (Rust + Custom Engine)
 
 Audience: an autonomous AI coding agent (and the human reviewing its work). Status: implementation-ready. Supersedes v1.0 (Sept 2026). Stack decision (final): Rust, with our own engine (own game loop, own entity store, own renderer layer on top of low-level crates). No off-the-shelf game engine or ECS framework.
 
@@ -634,3 +634,7 @@ Rewritten on purpose over time: renderer, UI skin, audio, navigation implementat
 - Risks section filled in (v1 §24.3 was empty).
 - Small consistency fixes: "ten questions" → eleven; Table 1 expanded into full criteria list.
 - Added the agent operating contract (Section 0), assumptions log, ADR process, and debt register mechanics.
+
+
+
+### by E-Vex
