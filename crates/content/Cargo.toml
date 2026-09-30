@@ -9,3 +9,8 @@ description = "RON content schema, versioned loaders, validators, content bundle
 pandemonium-fx = { path = "../fx" }
 pandemonium-sim = { path = "../sim" }
 pandemonium-sim-api = { path = "../sim_api" }
+# Plan §3.2 allows serde + ron here and NOWHERE in the sim's tree: the loader
+# converts RON into the plain Rust structs the simulation receives (FD-4).
+ron = "0.9"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
