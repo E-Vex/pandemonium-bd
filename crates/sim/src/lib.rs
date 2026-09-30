@@ -1,13 +1,20 @@
 //! The deterministic simulation core (plan §6): world state, entity store, capability
 //! stores, the fixed tick pipeline, systems, events, and the canonical state hash.
 //!
-//! Milestone M1 provides `Sim`, `step`, the command queue, the event buffer, and
-//! `state_hash`. The crate exists from M0 so the dependency law is enforced from day
-//! zero: `sim` depends only on `fx` and `sim_api` (plan §4) — never on the engine,
-//! client, AI, replay, content, or any I/O crate (FD-6).
+//! Milestone M1 provides `Sim`, `step`, the tick counter, the entity store with
+//! monotonic never-reused ids, capability stores iterated in ascending id order, the
+//! command queue with `(issuer, seq)` ordered application, the event buffer drained
+//! each tick, `state_hash`, `snapshot`, and `player_view`. The crate keeps the
+//! dependency law enforced from day zero: `sim` depends only on `fx` and `sim_api`
+//! (plan §4) — never on the engine, client, AI, replay, content, or any I/O crate
+//! (FD-6).
 //!
-//! The only way state advances is `Sim::step` (FD-2): every intent enters as a
-//! validated `Command` applied at a tick boundary.
+//! The only way state advances is [`Sim::step`] (FD-2): every intent enters as a
+//! validated [`Command`] applied at a tick boundary. Invalid commands produce
+//! [`Event::CommandRejected`] and change no state (plan §8.2).
+//!
+//! Milestone M1 simulates a *trivial world* described in code (see [`fixture`]);
+//! the RON content pipeline that replaces it for real matches is milestone M2.
 
 #![forbid(unsafe_code)]
 #![deny(
@@ -15,9 +22,28 @@
     clippy::disallowed_types,
     clippy::disallowed_methods
 )]
+#![warn(missing_docs)]
+
+mod command;
+mod fixture;
+mod hash;
+mod sim;
+mod world;
+
+use pandemonium_sim_api::Tick;
+
+pub use fixture::{
+    CapTemplate, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
+};
+pub use sim::{Sim, StepOutput};
+pub use world::{CapabilityData, HealthDef, Lifecycle, MoveDef, Order, VisionDef, World};
 
 /// Simulation frequency in ticks per second (FD-1: fixed-tick, render-decoupled).
 pub const TICKS_PER_SECOND: u32 = 30;
+
+/// The tick interval at which the pipeline computes and reports a checkpoint hash
+/// (plan §6.3 stage 11: "compute periodic hash (every 30 ticks and on demand)").
+pub const CHECKPOINT_INTERVAL: Tick = TICKS_PER_SECOND;
 
 #[cfg(test)]
 mod tests {
