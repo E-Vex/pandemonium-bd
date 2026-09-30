@@ -203,3 +203,27 @@ confirms or rejects it.
   through. Everything CI-able is tested: the clock, interpolation, MatchHost
   command flow, camera math (projection, picking, box select), the terrain
   mesh, and the null renderer.
+- **A-035 (§3.2, §11.4).** The "own text renderer" is fontdue plus an embedded
+  font: "Pandemonium Sans", an ASCII (U+0020..U+007E) subset of DejaVu Sans
+  renamed as the Bitstream Vera license requires for modified versions (the
+  license text ships beside it, `crates/client/assets/fonts/LICENSE.txt`;
+  the rename also satisfies the no-"Bitstream"/"Vera" clause). One
+  rasterization size (18 px) fits the placeholder HUD; multiple sizes, DPI
+  scaling, and kerning wait for M8's UI-depth work. Regeneration is a
+  fontTools subsetting step (recorded in the session worklog) — the binary
+  never needs fonts from the host system.
+- **A-036 (§14 M3 exit, §13).** The client accepts a presentation-only
+  `--frames N` argument: after N presented frames it exits cleanly and prints
+  the evidence summary (frames presented, tick, state hash, commands
+  submitted, selection size). It exists so the windowed exit criterion is
+  machine-verifiable without a human and changes no simulation behavior; it
+  lives only in the client.
+- **A-037 (§14 M3 exit, DEBT-008).** The windowed verification environment
+  (no desktop, no root): Xvfb :99 + Mesa llvmpipe reached through
+  userland-extracted `libEGL`/`libEGL_mesa`/`libGLESv2` (glvnd vendor dir via
+  `__EGL_VENDOR_LIBRARY_DIRS`), `WGPU_BACKEND=gl`, and XTEST mouse injection
+  via userland `libXtst`. Verified mechanically: window creation, 900
+  presented frames, drag-box selection of the 5 start entities, two
+  right-click Move commands, and the resulting worker motion visible in
+  before/after screenshots. What this cannot verify — that the visuals *read
+  well* to a human — stays open in DEBT-008.

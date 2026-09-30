@@ -156,7 +156,10 @@ crates/engine/src/           presentation-layer crate: floats + glam are legal
                   the only mutation paths (the M3 exit criterion as a
                   compile-time property, A-033). Commands are tick-stamped for
                   the next step; FrameOutcome carries events + checkpoint
-                  hashes.
+                  hashes. Pause freezes the clock itself (no catch-up burst on
+                  resume); step_once() is the §11.6 single-step debug action;
+                  hud_state(player) gathers the HUD values through the
+                  boundary.
   camera.rs       RtsCamera — perspective orbit over the logical ground plane
                   (world.x = sim.x, world.z = sim.y); pan/zoom/rotate with
                   clamps; ground-plane ray picking (inverse view-projection ->
@@ -165,24 +168,38 @@ crates/engine/src/           presentation-layer crate: floats + glam are legal
                   vertex/index data (one quad per tile, class colors); pure,
                   GPU-free, tested.
   renderer.rs     the Renderer trait + Frame (snapshot, view-projection, eye,
-                  selection) + NullRenderer (headless sink for tests/soak).
+                  selection, hud) + HudState (§11.4 resources/population,
+                  §11.6 tick/hash/pause) + NullRenderer (headless sink for
+                  tests/soak).
 
 crates/client/src/
   main.rs         winit 0.30 window + input: WASD pan, wheel zoom, left click /
                   drag-box selection (own units), right-click Move via ground
-                  picking (fixed point at the boundary), Escape exits. Without
-                  a display: prints the finding and runs a headless smoke pass
-                  over the real content, exiting 0 (A-034, DEBT-008).
+                  picking (fixed point at the boundary), Escape exits; F3
+                  toggles the §11.6 debug overlay, P pauses, '.' single-steps;
+                  --frames N exits after N presented frames with the evidence
+                  summary (the DEBT-008 windowed verification affordance,
+                  A-036). Without a display: prints the finding and runs a
+                  headless smoke pass over the real content, exiting 0 (A-034).
+  text.rs         our own text renderer (plan §3.1/§3.2): fontdue rasterizes
+                  the embedded "Pandemonium Sans" (ASCII subset of DejaVu
+                  Sans, renamed per the Bitstream Vera license —
+                  assets/fonts/LICENSE.txt) into a coverage atlas; layout is
+                  plain client-side math (packing, order, baseline
+                  conventions, and the fallback box are unit-tested).
   render.rs       WgpuRenderer (wgpu 26): depth buffer, terrain pipeline (the
                   engine mesh), entity pipeline (36-vertex unit cube, instanced
                   position/half-extent/color, team colors, selection
-                  brightening) — implements the engine Renderer trait.
+                  brightening), and the UI overlay pipeline (screen-space
+                  pixels → NDC, glyph atlas as R8Unorm, alpha blending, drawn
+                  on top of the world) — implements the engine Renderer trait.
 ```
 
 The boundary the milestone hinges on: the client holds no `&mut Sim` and cannot
 get one; the engine's `MatchHost` is the only owner, `FD-2`'s "step inputs only"
-made structural. Windowed verification remains open (DEBT-008 — this
-environment has no display).
+made structural. The windowed path is machine-verified on Xvfb + llvmpipe
+(selection + right-click Move provably work — A-037); only the human visual
+pass remains (DEBT-008, narrowed).
 
 ## The replay format (M1)
 
