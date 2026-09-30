@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="232" viewBox="0 0 960 232" role="img" font-family="ui-monospace,'Cascadia Mono','SF Mono',Menlo,Consolas,'Liberation Mono',monospace" >
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7681"/></marker>
+<marker id="arr-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d29922"/></marker>
+<marker id="arr-danger" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f85149"/></marker>
+</defs>
+<rect x="0" y="0" width="960" height="232" fill="#0d1117"/>
+<text x="48" y="42" font-size="14" fill="#8b949e" text-anchor="start" letter-spacing="2">TIME COMES FROM THE ENGINE — NEVER FROM THE SIMULATION (FD-6)</text>
+<rect x="392" y="84" width="30" height="104" fill="#d29922" opacity="0.07"/>
+<line x1="392" y1="96" x2="392" y2="184" stroke="#9e6a03" stroke-width="1" stroke-dasharray="2 3" opacity="0.55"/>
+<line x1="422" y1="96" x2="422" y2="184" stroke="#9e6a03" stroke-width="1" stroke-dasharray="2 3" opacity="0.55"/>
+<line x1="56" y1="104" x2="904" y2="104" stroke="#6e7681" stroke-width="2"/>
+<line x1="86" y1="98" x2="86" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="116" y1="98" x2="116" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="146" y1="98" x2="146" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="176" y1="98" x2="176" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="206" y1="98" x2="206" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="236" y1="98" x2="236" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="266" y1="98" x2="266" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="296" y1="98" x2="296" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="326" y1="98" x2="326" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="356" y1="98" x2="356" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="386" y1="98" x2="386" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="416" y1="98" x2="416" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="446" y1="98" x2="446" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="476" y1="98" x2="476" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="506" y1="98" x2="506" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="536" y1="98" x2="536" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="566" y1="98" x2="566" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="596" y1="98" x2="596" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="626" y1="98" x2="626" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="656" y1="98" x2="656" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="686" y1="98" x2="686" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="716" y1="98" x2="716" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="746" y1="98" x2="746" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="776" y1="98" x2="776" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="806" y1="98" x2="806" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="836" y1="98" x2="836" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="866" y1="98" x2="866" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="896" y1="98" x2="896" y2="110" stroke="#8b949e" stroke-width="1.6"/>
+<line x1="392" y1="90" x2="422" y2="90" stroke="#9e6a03" stroke-width="1.2"/>
+<line x1="392" y1="90" x2="392" y2="95" stroke="#9e6a03" stroke-width="1.2"/>
+<line x1="422" y1="90" x2="422" y2="95" stroke="#9e6a03" stroke-width="1.2"/>
+<text x="407.0" y="82" font-size="12.5" fill="#d29922" text-anchor="middle" letter-spacing="0.5">33.33 ms — one tick</text>
+<text x="904" y="80" font-size="13.5" fill="#8b949e" text-anchor="end" letter-spacing="2">SIM — 30 TICKS/S · FIXED</text>
+<line x1="56" y1="176" x2="904" y2="176" stroke="#3d444d" stroke-width="1.5"/>
+<line x1="86" y1="172" x2="86" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="101" y1="172" x2="101" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="116" y1="172" x2="116" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="131" y1="172" x2="131" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="146" y1="172" x2="146" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="161" y1="172" x2="161" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="176" y1="172" x2="176" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="191" y1="172" x2="191" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="206" y1="172" x2="206" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="221" y1="172" x2="221" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="236" y1="172" x2="236" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="251" y1="172" x2="251" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="266" y1="172" x2="266" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="281" y1="172" x2="281" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="296" y1="172" x2="296" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="311" y1="172" x2="311" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="326" y1="172" x2="326" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="341" y1="172" x2="341" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="356" y1="172" x2="356" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="371" y1="172" x2="371" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="386" y1="172" x2="386" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="401" y1="172" x2="401" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="416" y1="172" x2="416" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="431" y1="172" x2="431" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="446" y1="172" x2="446" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="461" y1="172" x2="461" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="476" y1="172" x2="476" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="491" y1="172" x2="491" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="506" y1="172" x2="506" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="521" y1="172" x2="521" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="536" y1="172" x2="536" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="551" y1="172" x2="551" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="566" y1="172" x2="566" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="581" y1="172" x2="581" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="596" y1="172" x2="596" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="611" y1="172" x2="611" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="626" y1="172" x2="626" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="641" y1="172" x2="641" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="656" y1="172" x2="656" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="671" y1="172" x2="671" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="686" y1="172" x2="686" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="701" y1="172" x2="701" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="716" y1="172" x2="716" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="731" y1="172" x2="731" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="746" y1="172" x2="746" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="761" y1="172" x2="761" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="776" y1="172" x2="776" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="791" y1="172" x2="791" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="806" y1="172" x2="806" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="821" y1="172" x2="821" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="836" y1="172" x2="836" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="851" y1="172" x2="851" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="866" y1="172" x2="866" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="881" y1="172" x2="881" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<line x1="896" y1="172" x2="896" y2="180" stroke="#57606a" stroke-width="1.1"/>
+<text x="904" y="208" font-size="13.5" fill="#8b949e" text-anchor="end" letter-spacing="2">RENDER — DISPLAY RATE · FLOATS ALLOWED HERE</text>
+<line x1="407" y1="170" x2="428" y2="148" stroke="#9e6a03" stroke-width="1"/>
+<text x="434" y="144" font-size="12.5" fill="#d29922" text-anchor="start" letter-spacing="0.3">α = accumulator / tick_duration</text>
+<text x="434" y="160" font-size="11.5" fill="#8b949e" text-anchor="start" letter-spacing="0.3">interpolate(prev_snapshot, next_snapshot, α)</text>
+<text x="56" y="208" font-size="12" fill="#57606a" text-anchor="start" letter-spacing="0.3">catch-up capped at 5 ticks per frame (plan §11.1)</text>
+</svg>

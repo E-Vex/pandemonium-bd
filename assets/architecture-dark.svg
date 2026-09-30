@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="752" viewBox="0 0 960 752" role="img" font-family="ui-monospace,'Cascadia Mono','SF Mono',Menlo,Consolas,'Liberation Mono',monospace" >
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7681"/></marker>
+<marker id="arr-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d29922"/></marker>
+<marker id="arr-danger" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f85149"/></marker>
+</defs>
+<rect x="260" y="40" width="240" height="76" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="380.0" y="64" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">client</text>
+<text x="380.0" y="84" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">playable binary</text>
+<text x="380.0" y="102" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">commands in · snapshots out</text>
+<rect x="463.6" y="31" width="28.4" height="18" fill="#0d1117" stroke="#6e7681" stroke-width="1" rx="9"/>
+<text x="477.8" y="44" font-size="11" fill="#6e7681" text-anchor="middle" letter-spacing="0.5">M3</text>
+<rect x="270" y="156" width="220" height="64" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="380.0" y="182.0" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">engine</text>
+<text x="380.0" y="204.0" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">game loop · interpolation</text>
+<rect x="453.6" y="147" width="28.4" height="18" fill="#0d1117" stroke="#6e7681" stroke-width="1" rx="9"/>
+<text x="467.8" y="160" font-size="11" fill="#6e7681" text-anchor="middle" letter-spacing="0.5">M3</text>
+<rect x="210" y="260" width="150" height="64" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="285.0" y="286.0" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">content</text>
+<text x="285.0" y="308.0" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">RON pipeline</text>
+<rect x="323.6" y="251" width="28.4" height="18" fill="#0d1117" stroke="#6e7681" stroke-width="1" rx="9"/>
+<text x="337.8" y="264" font-size="11" fill="#6e7681" text-anchor="middle" letter-spacing="0.5">M2</text>
+<rect x="385" y="260" width="110" height="64" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="440.0" y="286.0" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">ai</text>
+<text x="440.0" y="308.0" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">controllers</text>
+<rect x="458.6" y="251" width="28.4" height="18" fill="#0d1117" stroke="#6e7681" stroke-width="1" rx="9"/>
+<text x="472.8" y="264" font-size="11" fill="#6e7681" text-anchor="middle" letter-spacing="0.5">M7</text>
+<rect x="520" y="260" width="150" height="64" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="595.0" y="286.0" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">replay</text>
+<text x="595.0" y="308.0" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">record · verify</text>
+<rect x="619.2" y="251" width="42.8" height="18" fill="#0d1117" stroke="#d29922" stroke-width="1" rx="9"/>
+<text x="640.6" y="264" font-size="11" fill="#d29922" text-anchor="middle" letter-spacing="0.5">M1 ✓</text>
+<rect x="255" y="392" width="250" height="68" fill="#161b22" stroke="#d29922" stroke-width="1.8" rx="8"/>
+<text x="380.0" y="416" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">sim</text>
+<text x="380.0" y="436" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">step(commands)</text>
+<text x="380.0" y="454" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">the only mutator of state</text>
+<rect x="454.2" y="383" width="42.8" height="18" fill="#0d1117" stroke="#d29922" stroke-width="1" rx="9"/>
+<text x="475.59999999999997" y="396" font-size="11" fill="#d29922" text-anchor="middle" letter-spacing="0.5">M1 ✓</text>
+<rect x="290" y="470" width="180" height="56" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="380.0" y="492.0" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">sim_api</text>
+<text x="380.0" y="514.0" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">boundary vocabulary</text>
+<rect x="419.2" y="461" width="42.8" height="18" fill="#0d1117" stroke="#d29922" stroke-width="1" rx="9"/>
+<text x="440.59999999999997" y="474" font-size="11" fill="#d29922" text-anchor="middle" letter-spacing="0.5">M1 ✓</text>
+<rect x="280" y="556" width="200" height="56" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="380.0" y="578.0" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">fx</text>
+<text x="380.0" y="600.0" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">Q16.16 · PCG32 · FNV-1a</text>
+<rect x="429.2" y="547" width="42.8" height="18" fill="#0d1117" stroke="#d29922" stroke-width="1" rx="9"/>
+<text x="450.59999999999997" y="560" font-size="11" fill="#d29922" text-anchor="middle" letter-spacing="0.5">M0 ✓</text>
+<rect x="660" y="392" width="250" height="64" fill="#161b22" stroke="#3d444d" stroke-width="1.2" rx="8"/>
+<text x="785.0" y="418.0" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">tools</text>
+<text x="785.0" y="440.0" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">headless · replay-verify</text>
+<rect x="859.2" y="383" width="42.8" height="18" fill="#0d1117" stroke="#d29922" stroke-width="1" rx="9"/>
+<text x="880.6" y="396" font-size="11" fill="#d29922" text-anchor="middle" letter-spacing="0.5">M1 ✓</text>
+<rect x="660" y="500" width="250" height="64" fill="#161b22" stroke="#3d444d" stroke-width="1.2" stroke-dasharray="5 4" rx="8"/>
+<text x="785.0" y="524" font-size="19" fill="#c9d1d9" text-anchor="middle" letter-spacing="2" font-weight="600">tests</text>
+<text x="785.0" y="544" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">acceptance A1–A15</text>
+<text x="785.0" y="562" font-size="12.5" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">the referee — exempt</text>
+<rect x="859.2" y="491" width="42.8" height="18" fill="#0d1117" stroke="#6e7681" stroke-width="1" rx="9"/>
+<text x="880.6" y="504" font-size="11" fill="#6e7681" text-anchor="middle" letter-spacing="0.5">live</text>
+<path d="M 380 116 L 380 152" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 320 220 L 292 256" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 420 220 L 438 256" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 270 204 L 110 204 L 110 424 L 249 424" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 285 324 L 322 388" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 380 460 L 380 466" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 380 526 L 380 552" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 670 292 L 642 292 L 642 498 L 476 498" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 660 424 L 511 424" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 785 392 L 785 292 L 676 292" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<path d="M 440 324 L 440 388" fill="none" stroke="#6e7681" stroke-width="1.4" stroke-dasharray="6 5" marker-end="url(#arr-danger)" opacity="0.9"/>
+<line x1="433" y1="349" x2="447" y2="363" stroke="#f85149" stroke-width="2.2"/>
+<line x1="433" y1="363" x2="447" y2="349" stroke="#f85149" stroke-width="2.2"/>
+<text x="456" y="353" font-size="12" fill="#f85149" text-anchor="start" letter-spacing="1">forbidden — FD-7</text>
+<text x="456" y="369" font-size="11.5" fill="#57606a" text-anchor="start" letter-spacing="0.5">parity is structural</text>
+<path d="M 44 652 L 96 652" fill="none" stroke="#6e7681" stroke-width="1.4" marker-end="url(#arr)"/>
+<text x="108" y="656" font-size="13" fill="#8b949e" text-anchor="start" letter-spacing="0.5">depends on — downward only (§4)</text>
+<line x1="44" y1="682" x2="96" y2="682" stroke="#f85149" stroke-width="1.4" stroke-dasharray="6 5"/>
+<line x1="64.5" y1="676.5" x2="75.5" y2="687.5" stroke="#f85149" stroke-width="2"/>
+<line x1="64.5" y1="687.5" x2="75.5" y2="676.5" stroke="#f85149" stroke-width="2"/>
+<text x="108" y="686" font-size="13" fill="#8b949e" text-anchor="start" letter-spacing="0.5">forbidden by law — breaking the architecture fails the build</text>
+<rect x="44" y="702" width="880" height="24" fill="none" stroke="#9e6a03" stroke-width="1.2" stroke-dasharray="3 3" rx="4"/>
+<text x="56" y="718" font-size="12" fill="#d29922" text-anchor="start" letter-spacing="0.3">DETERMINISM CORE: fx · sim · sim_api · ai · content — no floats · no wall-clock · no unordered maps · line-scanned in CI</text>
+<text x="44" y="748" font-size="12" fill="#57606a" text-anchor="start" letter-spacing="0.3">the diagram shows the spine — tests/architecture_law.rs machine-checks the full edge list on every commit</text>
+</svg>

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" font-family="ui-monospace,'Cascadia Mono','SF Mono',Menlo,Consolas,'Liberation Mono',monospace" >
+<rect x="0" y="0" width="240" height="240" fill="#0d1117"/>
+<circle cx="120" cy="120" r="100" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<circle cx="120" cy="120" r="84" fill="none" stroke="#3d444d" stroke-width="1"/>
+<line x1="120.0" y1="32.0" x2="120.0" y2="21.0" stroke="#d29922" stroke-width="2.5"/>
+<line x1="138.29622879196285" y1="33.923011135425114" x2="140.58325739095818" y2="23.16338752735325" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="155.79282459067042" y1="39.60799972745113" x2="160.26692766450424" y2="29.558999693382518" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="171.72510220173763" y1="48.80650449500462" x2="178.19073997695483" y2="39.9073175568802" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="185.39674464201067" y1="61.116506640420475" x2="193.57133772226203" y2="53.756069970473035" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="196.2102355330306" y1="76.0" x2="205.73651497465943" y2="70.5" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="203.69297343397352" y1="92.80650449500463" x2="214.15459511322018" y2="89.4073175568802" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="207.51792679240805" y1="110.8014952324465" x2="218.45766764145907" y2="109.6516821365023" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="207.51792679240805" y1="129.19850476755352" x2="218.45766764145907" y2="130.3483178634977" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="203.69297343397352" y1="147.19349550499538" x2="214.15459511322018" y2="150.5926824431198" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="196.2102355330306" y1="164.0" x2="205.73651497465943" y2="169.5" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="185.39674464201067" y1="178.88349335957952" x2="193.57133772226203" y2="186.24393002952695" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="171.72510220173763" y1="191.19349550499538" x2="178.19073997695483" y2="200.0926824431198" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="155.79282459067042" y1="200.39200027254887" x2="160.26692766450424" y2="210.44100030661747" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="138.29622879196285" y1="206.0769888645749" x2="140.58325739095818" y2="216.83661247264675" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="120.0" y1="208.0" x2="120.0" y2="219.0" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="101.70377120803718" y1="206.0769888645749" x2="99.41674260904182" y2="216.83661247264678" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="84.20717540932958" y1="200.39200027254887" x2="79.73307233549578" y2="210.44100030661747" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="68.27489779826237" y1="191.19349550499538" x2="61.80926002304517" y2="200.0926824431198" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="54.603255357989326" y1="178.88349335957952" x2="46.428662277738" y2="186.24393002952698" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="43.78976446696939" y1="164.0" x2="34.26348502534057" y2="169.5" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="36.307026566026494" y1="147.19349550499538" x2="25.845404886779804" y2="150.5926824431198" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="32.48207320759195" y1="129.19850476755352" x2="21.542332358540946" y2="130.34831786349773" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="32.48207320759195" y1="110.80149523244648" x2="21.542332358540946" y2="109.6516821365023" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="36.30702656602648" y1="92.80650449500465" x2="25.84540488677979" y2="89.40731755688022" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="43.7897644669694" y1="76.0" x2="34.263485025340586" y2="70.49999999999999" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="54.60325535798931" y1="61.116506640420475" x2="46.42866227773797" y2="53.756069970473035" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="68.27489779826234" y1="48.80650449500463" x2="61.80926002304515" y2="39.907317556880216" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="84.2071754093296" y1="39.607999727451116" x2="79.73307233549579" y2="29.558999693382503" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<line x1="101.70377120803714" y1="33.923011135425114" x2="99.41674260904178" y2="23.16338752735325" stroke="#57606a" stroke-width="1" opacity="0.85"/>
+<defs><path id="seal-top" d="M 52 120 A 68 68 0 0 1 188 120" fill="none"/><path id="seal-bot" d="M 60 120 A 60 60 0 0 0 180 120" fill="none"/></defs>
+<text font-size="14.5" letter-spacing="5.5" fill="#8b949e" font-weight="600"><textPath href="#seal-top" startOffset="50%" text-anchor="middle">PANDEMONIUM</textPath></text>
+<text font-size="10.5" letter-spacing="3" fill="#57606a"><textPath href="#seal-bot" startOffset="50%" text-anchor="middle">BUILD &amp; DESTROY</textPath></text>
+<line x1="120" y1="74" x2="120" y2="166" stroke="#57606a" stroke-width="1" stroke-dasharray="3 4" opacity="0.7"/>
+<line x1="96.17244693817432" y1="108.19500084382435" x2="93.20649795094953" y2="103.91131799122552" stroke="#333c47" stroke-width="1.6"/>
+<line x1="86.30026086649194" y1="106.40751059885812" x2="81.39982368676161" y2="100.36432018617491" stroke="#333c47" stroke-width="1.6"/>
+<line x1="109.66433631211164" y1="117.845848563507" x2="121.60561121807908" y2="117.28592472193183" stroke="#333c47" stroke-width="1.6"/>
+<line x1="87.2802660672033" y1="96.06812632079512" x2="90.61988811970326" y2="90.94047143662799" stroke="#333c47" stroke-width="1.6"/>
+<line x1="97.98664186838806" y1="143.3779092319282" x2="91.31465932666397" y2="133.63896614847778" stroke="#333c47" stroke-width="1.6"/>
+<line x1="96.05614346610082" y1="95.78733776866675" x2="97.81383668749486" y2="90.93107352713068" stroke="#333c47" stroke-width="1.6"/>
+<line x1="100.15909141595665" y1="134.72865754376434" x2="96.0351505887781" y2="126.77460462529304" stroke="#333c47" stroke-width="1.6"/>
+<line x1="99.16168456426652" y1="142.1298364275576" x2="93.38296774598682" y2="142.3319465712374" stroke="#333c47" stroke-width="1.6"/>
+<line x1="89.27582155078916" y1="138.44331569435354" x2="89.13425054074432" y2="149.58195495429453" stroke="#333c47" stroke-width="1.6"/>
+<rect x="132" y="108" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="132" y="122" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="132" y="136" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="146" y="108" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="146" y="122" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="146" y="136" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="160" y="108" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="160" y="122" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<rect x="160" y="136" width="12" height="12" fill="#161b22" stroke="#8b949e" stroke-width="1.2"/>
+<polyline points="120,94 146,120 120,146 94,120 120,94" fill="none" stroke="#d29922" stroke-width="2"/>
+<text x="120" y="196" font-size="9.5" fill="#57606a" text-anchor="middle" letter-spacing="2">EST. 2026</text>
+</svg>
