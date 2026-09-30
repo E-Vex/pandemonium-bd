@@ -184,3 +184,22 @@ confirms or rejects it.
   superseded by ADR-0001 (accepted 2026-10-01): 3D perspective presentation over
   the 2D logical ground plane; `glam` is allowed in client/engine only. The rest
   of A-001 (desktop, single-player, mouse+keyboard) stands.
+- **A-033 (§14 M3, §11.1/§11.3).** M3 engine/client shape: `MatchHost` owns the
+  `Sim` privately so "the client never touches Sim mutably except via step
+  inputs" is a compile-time property (submit re-stamps the command tick to the
+  next step's tick, so a submitted command is never rejected as stale). The
+  camera picks on the y=0 logical ground plane (`world.x = sim.x`, `world.z =
+  sim.y`); conversions cross the boundary as fixed point. Selection is
+  client-local and (placeholder rule until M6 combat) picks own units only.
+  Entity placeholder art is instanced boxes, team-colored, brightened when
+  selected, slightly smaller while moving. Terrain colors are flat per class
+  (passable green / blocked gray); height scale 0.02 tiles per heightmap unit.
+- **A-034 (§14 M3 exit, §13).** This environment has no display (no
+  X11/Wayland), so the windowed M3 exit criterion cannot be verified here. The
+  client binary detects the missing display, prints the finding, and runs a
+  headless smoke pass over the real content (load, 180 frames, state + content
+  hashes) exiting 0 — CI's "every binary starts" check stays green and the
+  windowed verification remains an explicit open item (DEBT-008), never waved
+  through. Everything CI-able is tested: the clock, interpolation, MatchHost
+  command flow, camera math (projection, picking, box select), the terrain
+  mesh, and the null renderer.

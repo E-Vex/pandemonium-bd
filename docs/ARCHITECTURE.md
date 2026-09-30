@@ -1,6 +1,6 @@
 # Pandemonium — Architecture
 
-Status: milestone M2 (content pipeline). The authoritative specification is
+Status: milestone M3 in progress (engine shell, 3D per ADR-0001). The authoritative specification is
 [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism
 rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
@@ -140,6 +140,49 @@ simulation receives (ADR-0001). Authoring data lives in `content/` (see
 designer's front door. Determinism of loading is pinned by tests: sorted
 iteration, id-sorted collections, pure-function loading, identical hashes
 across loads.
+
+## The engine and client (M3, ADR-0001)
+
+```text
+crates/engine/src/           presentation-layer crate: floats + glam are legal
+                             here, never in the sim's tree (A-007, ADR-0001)
+  clock.rs        FixedTimestep — the 30 Hz accumulator with a 5-tick catch-up
+                  cap and spiral-of-death backlog drop; alpha() for rendering.
+  interpolate.rs  Interpolator — prev/current snapshot blending (positions and
+                  facing lerp, spawns appear, deaths drop, discrete fields from
+                  current) + the Q16.16 <-> ground-plane boundary conversions
+                  (fx_to_world / world_to_fx).
+  host.rs         MatchHost — owns the Sim privately; submit() + advance() are
+                  the only mutation paths (the M3 exit criterion as a
+                  compile-time property, A-033). Commands are tick-stamped for
+                  the next step; FrameOutcome carries events + checkpoint
+                  hashes.
+  camera.rs       RtsCamera — perspective orbit over the logical ground plane
+                  (world.x = sim.x, world.z = sim.y); pan/zoom/rotate with
+                  clamps; ground-plane ray picking (inverse view-projection ->
+                  y=0); NDC projection; screen-space box selection.
+  mesh.rs         terrain_mesh — the map grid + display-only heightmap as
+                  vertex/index data (one quad per tile, class colors); pure,
+                  GPU-free, tested.
+  renderer.rs     the Renderer trait + Frame (snapshot, view-projection, eye,
+                  selection) + NullRenderer (headless sink for tests/soak).
+
+crates/client/src/
+  main.rs         winit 0.30 window + input: WASD pan, wheel zoom, left click /
+                  drag-box selection (own units), right-click Move via ground
+                  picking (fixed point at the boundary), Escape exits. Without
+                  a display: prints the finding and runs a headless smoke pass
+                  over the real content, exiting 0 (A-034, DEBT-008).
+  render.rs       WgpuRenderer (wgpu 26): depth buffer, terrain pipeline (the
+                  engine mesh), entity pipeline (36-vertex unit cube, instanced
+                  position/half-extent/color, team colors, selection
+                  brightening) — implements the engine Renderer trait.
+```
+
+The boundary the milestone hinges on: the client holds no `&mut Sim` and cannot
+get one; the engine's `MatchHost` is the only owner, `FD-2`'s "step inputs only"
+made structural. Windowed verification remains open (DEBT-008 — this
+environment has no display).
 
 ## The replay format (M1)
 
