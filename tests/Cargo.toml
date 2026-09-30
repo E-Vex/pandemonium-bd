@@ -15,6 +15,7 @@ pandemonium-fx = { path = "../crates/fx" }
 pandemonium-sim = { path = "../crates/sim" }
 pandemonium-sim-api = { path = "../crates/sim_api" }
 pandemonium-replay = { path = "../crates/replay" }
+pandemonium-content = { path = "../crates/content" }
 
 [[test]]
 name = "architecture_law"
@@ -23,3 +24,6 @@ path = "architecture_law.rs"
 [[test]]
 name = "determinism"
 path = "determinism.rs"
+[[test]]
+name = "content_pipeline"
+path = "content_pipeline.rs"
