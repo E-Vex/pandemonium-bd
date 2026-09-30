@@ -8,3 +8,5 @@ description = "Replay record/load/verify format: seed + content hash + ordered c
 [dependencies]
 pandemonium-fx = { path = "../fx" }
 pandemonium-sim-api = { path = "../sim_api" }
+# Plan §3.2 allows thiserror in the library crates for typed errors.
+thiserror = "2"
