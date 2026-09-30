@@ -11,7 +11,15 @@ description = "Cross-crate acceptance tests (plan §4, §13)"
 # (plan §4), still subject to the forbidden-crate list. See docs/ASSUMPTIONS.md A-002.
 
 [dependencies]
+pandemonium-fx = { path = "../crates/fx" }
+pandemonium-sim = { path = "../crates/sim" }
+pandemonium-sim-api = { path = "../crates/sim_api" }
+pandemonium-replay = { path = "../crates/replay" }
 
 [[test]]
 name = "architecture_law"
 path = "architecture_law.rs"
+
+[[test]]
+name = "determinism"
+path = "determinism.rs"

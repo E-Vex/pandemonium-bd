@@ -302,6 +302,12 @@ dependencies = [
 [[package]]
 name = "pandemonium-tests"
 version = "0.1.0"
+dependencies = [
+ "pandemonium-fx",
+ "pandemonium-replay",
+ "pandemonium-sim",
+ "pandemonium-sim-api",
+]
 
 [[package]]
 name = "pandemonium-tools"
