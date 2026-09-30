@@ -1,0 +1,549 @@
+//! The wgpu renderer (plan §11.2 as amended by ADR-0001): a depth-tested 3D
+//! pass drawing the terrain mesh (from the map grid + display-only heightmap)
+//! and instanced placeholder boxes for entities, through the engine's
+//! [`Renderer`] trait so the sim-facing code stays GPU-independent.
+//!
+//! Placeholder art only (plan §0): flat per-tile colors, unit boxes, team
+//! colors. The renderer receives interpolated [`RenderSnapshot`]s and camera
+//! matrices — never the simulation itself (FD-6, FD-9).
+
+use anyhow::Context;
+use bytemuck::{Pod, Zeroable};
+use pandemonium_engine::mesh::{TerrainMesh, TerrainVertex};
+use pandemonium_engine::renderer::Frame;
+use pandemonium_engine::Renderer;
+use pandemonium_sim_api::{MoveState, PlayerId};
+use wgpu::util::DeviceExt;
+
+/// The camera uniform: the combined view-projection matrix.
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct CameraUniform {
+    view_projection: [[f32; 4]; 4],
+}
+
+/// One entity instance: where the placeholder box sits and its color.
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct EntityInstance {
+    /// Instance center (the box's bottom sits on the ground).
+    position: [f32; 3],
+    /// Box half-extent in tiles.
+    half_extent: f32,
+    /// Placeholder color (team color, brighter when selected).
+    color: [f32; 3],
+    /// Padding to 16-byte multiples (keep buffers aligned).
+    _pad: [f32; 3],
+}
+
+const TERRAIN_SHADER: &str = r#"
+struct CameraUniform { view_projection: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> camera: CameraUniform;
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32> };
+
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) color: vec3<f32>) -> VsOut {
+    var out: VsOut;
+    out.clip = camera.view_projection * vec4<f32>(position, 1.0);
+    out.color = color;
+    return out;
+}
+
+@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 1.0);
+}
+"#;
+
+const ENTITY_SHADER_SRC: &str = r#"
+struct CameraUniform { view_projection: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> camera: CameraUniform;
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32> };
+
+@vertex fn vs_main(
+    @location(0) corner: vec3<f32>,
+    @location(1) instance_position: vec3<f32>,
+    @location(2) instance_half_extent: f32,
+    @location(3) instance_color: vec3<f32>,
+) -> VsOut {
+    var out: VsOut;
+    let world = corner * instance_half_extent + instance_position;
+    out.clip = camera.view_projection * vec4<f32>(world, 1.0);
+    out.color = instance_color;
+    return out;
+}
+
+@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 1.0);
+}
+"#;
+
+/// The GPU-side copy of a terrain vertex (engine vertices are plain data;
+/// the Pod representation is the renderer's concern, and bytemuck is a
+/// client-only dependency — plan §3.2).
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct GpuTerrainVertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+impl From<TerrainVertex> for GpuTerrainVertex {
+    fn from(vertex: TerrainVertex) -> Self {
+        Self {
+            position: vertex.position,
+            color: vertex.color,
+        }
+    }
+}
+
+/// The unit cube's 36 corner vertices (12 triangles), centered at the origin,
+/// half-extent 0.5 on each axis.
+fn cube_corners() -> Vec<[f32; 3]> {
+    const FACES: [[usize; 4]; 6] = [
+        [0, 1, 2, 3], // -Z
+        [5, 4, 7, 6], // +Z
+        [4, 0, 3, 7], // -X
+        [1, 5, 6, 2], // +X
+        [4, 5, 1, 0], // -Y
+        [3, 2, 6, 7], // +Y
+    ];
+    let corners = [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+    ];
+    let mut vertices = Vec::with_capacity(36);
+    for face in FACES {
+        let quad = [
+            corners[face[0]],
+            corners[face[1]],
+            corners[face[2]],
+            corners[face[3]],
+        ];
+        for corner in [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]] {
+            vertices.push(corner);
+        }
+    }
+    vertices
+}
+
+/// Team colors for the placeholder boxes (player slots 0 and 1, neutral).
+fn team_color(owner: PlayerId, selected: bool) -> [f32; 3] {
+    let base = match owner {
+        PlayerId(0) => [0.22, 0.45, 0.92],
+        PlayerId(1) => [0.90, 0.30, 0.24],
+        _ => [0.78, 0.66, 0.28], // Neutral (ore nodes).
+    };
+    if selected {
+        [base[0] + 0.35, base[1] + 0.35, base[2] + 0.35]
+    } else {
+        base
+    }
+}
+
+/// The wgpu-backed renderer: owns the GPU device, the terrain pipeline and
+/// buffers, and the entity instance stream. Implements the engine's
+/// [`Renderer`] trait.
+pub struct WgpuRenderer {
+    _window: std::sync::Arc<winit::window::Window>,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    depth_view: wgpu::TextureView,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    terrain_pipeline: wgpu::RenderPipeline,
+    terrain_vertex_buf: wgpu::Buffer,
+    terrain_index_buf: wgpu::Buffer,
+    terrain_index_count: u32,
+    entity_pipeline: wgpu::RenderPipeline,
+    entity_vertex_buf: wgpu::Buffer,
+    entity_instance_buf: wgpu::Buffer,
+    entity_instance_capacity: u64,
+}
+
+impl WgpuRenderer {
+    /// Creates the renderer for a window: device, queues, pipelines, and the
+    /// static terrain buffers.
+    pub fn new(
+        window: std::sync::Arc<winit::window::Window>,
+        terrain: &TerrainMesh,
+    ) -> anyhow::Result<Self> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let surface = instance
+            .create_surface(window.clone())
+            .context("creating the window surface")?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
+        .context("requesting a GPU adapter (software rasterizers count)")?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .context("requesting the GPU device")?;
+
+        let caps = surface.get_capabilities(&adapter);
+        let format = caps
+            .formats
+            .iter()
+            .find(|format| format.is_srgb())
+            .copied()
+            .unwrap_or(caps.formats[0]);
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: Vec::new(),
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &config);
+
+        let depth_view = Self::make_depth_view(&device, config.width, config.height);
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera"),
+            contents: bytemuck::bytes_of(&CameraUniform {
+                view_projection: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            }),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("camera layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera bind group"),
+            layout: &camera_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("main layout"),
+            bind_group_layouts: &[&camera_layout],
+            push_constant_ranges: &[],
+        });
+
+        let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("terrain shader"),
+            source: wgpu::ShaderSource::Wgsl(TERRAIN_SHADER.into()),
+        });
+        let terrain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("terrain pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &terrain_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None, // the placeholder terrain's winding is not load-bearing
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &terrain_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
+        let terrain_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terrain vertices"),
+            contents: bytemuck::cast_slice(
+                &terrain
+                    .vertices
+                    .iter()
+                    .copied()
+                    .map(GpuTerrainVertex::from)
+                    .collect::<Vec<_>>(),
+            ),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let terrain_index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terrain indices"),
+            contents: bytemuck::cast_slice(&terrain.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let entity_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("entity shader"),
+            source: wgpu::ShaderSource::Wgsl(ENTITY_SHADER_SRC.into()),
+        });
+        let entity_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("entity pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &entity_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: 12,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        }],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<EntityInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32,
+                                offset: 12,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 16,
+                                shader_location: 3,
+                            },
+                        ],
+                    },
+                ],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &entity_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
+        let corners = cube_corners();
+        let entity_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("entity cube"),
+            contents: bytemuck::cast_slice(&corners),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let entity_instance_capacity = 512u64;
+        let entity_instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("entity instances"),
+            size: entity_instance_capacity * std::mem::size_of::<EntityInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Ok(Self {
+            _window: window,
+            surface,
+            device,
+            queue,
+            config,
+            depth_view,
+            camera_buffer,
+            camera_bind_group,
+            terrain_pipeline,
+            terrain_vertex_buf,
+            terrain_index_buf,
+            terrain_index_count: terrain.indices.len() as u32,
+            entity_pipeline,
+            entity_vertex_buf,
+            entity_instance_buf,
+            entity_instance_capacity,
+        })
+    }
+
+    fn make_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("depth"),
+                size: wgpu::Extent3d {
+                    width: width.max(1),
+                    height: height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&Default::default())
+    }
+
+    /// Reconfigures the surface and depth target on window resize.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.device, &self.config);
+        self.depth_view = Self::make_depth_view(&self.device, width, height);
+    }
+}
+
+impl Renderer for WgpuRenderer {
+    fn render(&mut self, frame: Frame<'_>) {
+        // Camera uniform.
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::bytes_of(&CameraUniform {
+                view_projection: frame.view_projection.to_cols_array_2d(),
+            }),
+        );
+
+        // Entity instances from the interpolated snapshot (ascending id).
+        let selection: &[pandemonium_sim_api::EntityId] = frame.selection;
+        let instances: Vec<EntityInstance> = frame
+            .snapshot
+            .entities
+            .iter()
+            .map(|entity| {
+                let selected = selection.contains(&entity.id);
+                let moving = entity.move_state == MoveState::Moving;
+                let half_extent = if moving { 0.28 } else { 0.34 };
+                EntityInstance {
+                    position: [entity.pos.x, entity.pos.y + half_extent, entity.pos.z],
+                    half_extent,
+                    color: team_color(entity.owner, selected),
+                    _pad: [0.0; 3],
+                }
+            })
+            .collect();
+        let needed = instances.len() as u64;
+        if needed > 0 {
+            let bytes = bytemuck::cast_slice(&instances);
+            let capacity_bytes =
+                self.entity_instance_capacity as usize * std::mem::size_of::<EntityInstance>();
+            let capped = &bytes[..bytes.len().min(capacity_bytes)];
+            self.queue
+                .write_buffer(&self.entity_instance_buf, 0, capped);
+        }
+
+        let Ok(frame_texture) = self.surface.get_current_texture() else {
+            return; // Window occluded/minimized — nothing to present.
+        };
+        let view = frame_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("main encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("main pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.04,
+                            g: 0.06,
+                            b: 0.09,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_pipeline(&self.terrain_pipeline);
+            pass.set_vertex_buffer(0, self.terrain_vertex_buf.slice(..));
+            pass.set_index_buffer(self.terrain_index_buf.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.terrain_index_count, 0, 0..1);
+            pass.set_pipeline(&self.entity_pipeline);
+            pass.set_vertex_buffer(0, self.entity_vertex_buf.slice(..));
+            pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));
+            pass.draw(0..36, 0..needed.min(self.entity_instance_capacity) as u32);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        frame_texture.present();
+    }
+}

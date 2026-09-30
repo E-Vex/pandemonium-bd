@@ -13,3 +13,9 @@ pandemonium-content = { path = "../content" }
 pandemonium-ai = { path = "../ai" }
 pandemonium-replay = { path = "../replay" }
 pandemonium-engine = { path = "../engine" }
+anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+wgpu = "26"
+winit = "0.30"
+glam = "0.30"

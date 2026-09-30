@@ -22,6 +22,7 @@ pub mod camera;
 pub mod clock;
 pub mod host;
 pub mod interpolate;
+pub mod mesh;
 pub mod renderer;
 
 pub use camera::RtsCamera;
@@ -30,6 +31,7 @@ pub use host::{FrameOutcome, MatchHost};
 pub use interpolate::{
     fx_to_world, logical_to_world, world_to_fx, Interpolator, RenderEntity, RenderSnapshot,
 };
+pub use mesh::{terrain_mesh, TerrainMesh, TerrainVertex};
 pub use renderer::{Frame, NullRenderer, Renderer};
 
 #[cfg(test)]

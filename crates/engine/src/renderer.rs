@@ -7,8 +7,10 @@ use glam::{Mat4, Vec3};
 
 use crate::interpolate::RenderSnapshot;
 
-/// Everything one draw call needs: the interpolated entities and the camera's
-/// view-projection. Presentation-only data — never simulation state.
+/// Everything one draw call needs: the interpolated entities, the camera's
+/// view-projection, and the client's current selection (for highlights —
+/// selection state lives in the client, plan §11.3). Presentation-only
+/// data — never simulation state.
 #[derive(Clone, Copy, Debug)]
 pub struct Frame<'a> {
     /// The blended snapshot to draw.
@@ -17,6 +19,8 @@ pub struct Frame<'a> {
     pub view_projection: Mat4,
     /// The camera's world position (for view-dependent effects).
     pub eye: Vec3,
+    /// The selected entity ids (client-local state, echoed for rendering).
+    pub selection: &'a [pandemonium_sim_api::EntityId],
 }
 
 /// A rendering backend. Implementations draw [`Frame`]s; they never touch the
@@ -67,6 +71,7 @@ mod tests {
                 snapshot: &snapshot,
                 view_projection: Mat4::IDENTITY,
                 eye: Vec3::ZERO,
+                selection: &[],
             });
         }
         assert_eq!(renderer.frames_rendered(), 3);
