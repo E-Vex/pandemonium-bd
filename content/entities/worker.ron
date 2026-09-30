@@ -1,0 +1,17 @@
+// Worker (plan §10.4, §7.4): health + move + gather + build + vision.
+(
+    schema_version: 1,
+    id: "worker",
+    display_name: "Worker",
+    capabilities: [
+        Health(( max: 40 )),
+        Move(( speed_milli_tiles_per_s: 2600, radius_milli_tiles: 300 )),
+        Gather(( carry_amount: 10, gather_time_ms: 2000 )),
+        Build(()),
+        Vision(( radius_milli_tiles: 7000 )),
+    ],
+    cost: ( ore: 50 ),
+    build_time_ms: 12000,
+    population: 1,
+    requires: [ "command_center" ],
+)

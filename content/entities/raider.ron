@@ -1,0 +1,16 @@
+// Raider (plan §10.4): fast, short range.
+(
+    schema_version: 1,
+    id: "raider",
+    display_name: "Raider",
+    capabilities: [
+        Health(( max: 45 )),
+        Move(( speed_milli_tiles_per_s: 4000, radius_milli_tiles: 300 )),
+        Attack(( damage: 6, range_milli_tiles: 1500, cooldown_ms: 600, acquire_range_milli_tiles: 5000 )),
+        Vision(( radius_milli_tiles: 8000 )),
+    ],
+    cost: ( ore: 60 ),
+    build_time_ms: 8000,
+    population: 1,
+    requires: [ "barracks" ],
+)

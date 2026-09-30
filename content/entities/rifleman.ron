@@ -1,0 +1,16 @@
+// Rifleman (plan §10.3's example record, verbatim stats; §10.4 table row).
+(
+    schema_version: 1,
+    id: "rifleman",
+    display_name: "Rifleman",
+    capabilities: [
+        Health(( max: 60 )),
+        Move(( speed_milli_tiles_per_s: 2400, radius_milli_tiles: 350 )),
+        Attack(( damage: 8, range_milli_tiles: 5000, cooldown_ms: 1000, acquire_range_milli_tiles: 7000 )),
+        Vision(( radius_milli_tiles: 8000 )),
+    ],
+    cost: ( ore: 75 ),
+    build_time_ms: 10000,
+    population: 1,
+    requires: [ "barracks" ],
+)

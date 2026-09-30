@@ -1,0 +1,29 @@
+// The Legion — the Alpha's one faction (plan §10.4): a bundle of entity
+// references, its production lists, and the forces it starts with relative to
+// each map start anchor (plan §9.7: 1 Command Center + 4 Workers per player).
+(
+    schema_version: 1,
+    id: "legion",
+    display_name: "The Legion",
+    roster: [
+        "worker",
+        "rifleman",
+        "raider",
+        "guardian",
+        "command_center",
+        "barracks",
+        "supply_depot",
+        "turret",
+    ],
+    production: {
+        "command_center": [ "worker" ],
+        "barracks": [ "rifleman", "raider", "guardian" ],
+    },
+    starting_forces: [
+        ( entity: "command_center", offset: ( x: 0, y: 0 ) ),
+        ( entity: "worker", offset: ( x: -2, y: 4 ) ),
+        ( entity: "worker", offset: ( x: 0, y: 4 ) ),
+        ( entity: "worker", offset: ( x: 2, y: 4 ) ),
+        ( entity: "worker", offset: ( x: 4, y: 4 ) ),
+    ],
+)

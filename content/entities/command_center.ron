@@ -1,0 +1,19 @@
+// Command Center (plan §10.4, §7.4): 4x4; produces workers, stores Ore,
+// provides +10 population cap.
+(
+    schema_version: 1,
+    id: "command_center",
+    display_name: "Command Center",
+    capabilities: [
+        Health(( max: 1000 )),
+        Vision(( radius_milli_tiles: 10000 )),
+        Footprint(( w: 4, h: 4 )),
+        Produce(()),
+        Storage(( resources: [ "ore" ] )),
+        ProvidesPopulation(( amount: 10 )),
+    ],
+    cost: ( ore: 400 ),
+    build_time_ms: 40000,
+    population: 0,
+    requires: [],
+)
