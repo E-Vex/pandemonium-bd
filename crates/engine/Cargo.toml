@@ -11,3 +11,6 @@ pandemonium-sim = { path = "../sim" }
 pandemonium-sim-api = { path = "../sim_api" }
 pandemonium-content = { path = "../content" }
 pandemonium-ai = { path = "../ai" }
+# ADR-0001: presentation-only float math (camera, transforms, picking).
+# Never in the sim's tree.
+glam = "0.30"
