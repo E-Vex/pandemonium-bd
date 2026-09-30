@@ -1,9 +1,10 @@
 //! Pandemonium developer tools (plan §12): headless runner, soak runner, replay
 //! verifier, content validator, and benchmarks. M1 ships `headless` (a scripted
 //! trivial-world match that prints its final hash) and `replay-verify`
-//! (re-simulation with checkpoint comparison — acceptance A2). The remaining
-//! subcommands arrive with their milestones (content-validate in M2, the AI
-//! runners in M7, soak in nightly CI, bench in M10).
+//! (re-simulation with checkpoint comparison — acceptance A2). M2 adds
+//! `content-validate` (strict validation of a content directory, plan §14).
+//! The remaining subcommands arrive with their milestones (the AI runners in
+//! M7, soak in nightly CI, bench in M10).
 
 use std::path::PathBuf;
 
@@ -11,9 +12,11 @@ use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
 
 mod demo;
+mod validate_content;
 mod verify;
 
 use demo::record_replay;
+use validate_content::validate_content;
 use verify::{verify_replay, Verification};
 
 #[derive(Parser)]
@@ -45,6 +48,12 @@ enum Command {
     ReplayVerify {
         /// The replay file to verify.
         file: PathBuf,
+    },
+    /// Validate a content directory (strict mode) and print its identity (M2).
+    ContentValidate {
+        /// The content directory (defaults to ./content — run from the repo root).
+        #[arg(default_value = "content")]
+        path: PathBuf,
     },
 }
 
@@ -104,6 +113,9 @@ fn main() -> anyhow::Result<()> {
                     bail!("replay diverged from the re-simulation: {detail}");
                 }
             }
+        }
+        Command::ContentValidate { path } => {
+            validate_content(&path)?;
         }
     }
     Ok(())
