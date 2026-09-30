@@ -1,6 +1,6 @@
 # Pandemonium — Architecture
 
-Status: milestone M0 (skeleton + guardrails). The authoritative specification is
+Status: milestone M1 (simulation core). The authoritative specification is
 [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism rules.
 This file is the working map of how the code is actually laid out; update it when the
 shape of the system changes, not for every feature. For current build status and what
@@ -66,3 +66,56 @@ simulation knows nothing above it. Everything the outside world learns arrives a
 snapshots, events, and fog-filtered `PlayerView`s (FD-8/FD-9). Every later milestone
 preserves this shape; if a task seems to require breaking it, write an ADR first
 (plan §0, `docs/adr/`).
+
+## The simulation core (M1)
+
+```text
+crates/sim/src/
+  fixture.rs   TrivialWorld — the in-code M1 world template (kinds as capability
+               compositions, resource registry, initial + scheduled spawns,
+               spawn jitter) and its canonical content hash. Replaced for real
+               matches by the M2 ContentBundle; remains the spine-test fixture.
+  world.rs     World — entity store + one store per capability type (Health,
+               Move, Vision) + player states. Every store is a Vec kept sorted
+               ascending by EntityId (an invariant): ids allocate monotonically,
+               appends preserve order, removals shift without reordering, lookups
+               binary-search. No ordered-map bookkeeping anywhere.
+  command.rs   The shared validation gate (plan §8.2) and application: stable
+               (issuer, seq) sort, tick check, issuer check, duplicate-sequence
+               check, per-kind existence/ownership/capability/target checks;
+               invalid commands emit CommandRejected and change no state.
+               visible_to() is the on-demand fog filter shared by the gate and
+               player_view().
+  hash.rs      The canonical state hash (plan §6.4): little-endian, fixed field
+               order, entity-major with a capability presence bitmask, through
+               fx::Fnv1a64; carries STATE_ENCODING_VERSION = 1.
+  sim.rs       Sim — new/step/state_hash/snapshot/player_view/next_entity_id.
+               step() runs plan §6.3's eleven stages verbatim; stages whose
+               systems arrive in later milestones are documented no-ops with
+               milestone pointers. M1 stage contents: command application (1),
+               scheduled spawns (3), the placeholder straight-line mover (6, see
+               DEBT-003), health advance + death & cleanup (8), finalize with
+               the periodic hash every 30 ticks (11).
+```
+
+Events are outputs, never state: the buffer is drained by each `step` and is not
+part of the hash. Snapshots and player views project entities ascending by id.
+
+## The replay format (M1)
+
+`crates/replay` encodes/decodes the plan §6.5 field list through its own canonical
+little-endian codec (`bytes.rs`) with a trailing FNV-1a checksum — no serde, per the
+dependency law and the canonical-encoding rule. The command log records exactly the
+stream fed to `Sim::step` (rejections included), so re-simulation reproduces the same
+hashes. The re-simulation driver lives in `tools` and in `tests/determinism.rs`
+(the crate itself must not depend on `sim`).
+
+## Tools and acceptance tests (M1)
+
+`pandemonium-tools` (clap CLI) ships `headless` — the scripted demo match printing
+per-checkpoint and final hashes, with `--record` to write a replay — and
+`replay-verify` — re-simulation with checkpoint comparison (A2). `tests/determinism.rs`
+carries the A1/A2 suite with pinned golden hashes; `tests/architecture_law.rs` still
+pins the dependency graph and the source-level determinism bans. CI
+(`.github/workflows/ci.yml`) runs the whole gate on Linux/Windows/macOS in dev and
+release, plus the replay round-trip.

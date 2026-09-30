@@ -54,3 +54,68 @@ confirms or rejects it.
 - **A-012 (§4).** `fx` ships no lookup tables yet (the plan mentions them). Nothing
   needs them at M0 — `isqrt` is exact; facing is a direction vector, not an angle
   (§5). Revisit if a hot fixed-point conversion demands one.
+- **A-013 (§14 M1, handoff §8).** M1's world is `sim::fixture::TrivialWorld` — the
+  in-code bundle the handoff asked for (no RON before M2). Its `content_hash()`
+  canonicalizes every fixture field, standing in for the M2 `ContentBundle`'s hash.
+  When M2 lands, loaded content becomes the real path for matches; the fixture
+  stays as the minimal spine-test world.
+- **A-014 (§8.2).** The M1 validation gate implements the structural checks —
+  tick match, issuer existence, duplicate `(issuer, seq)` within a tick
+  (second command refused, first wins — deterministic), referenced-entity
+  existence, ownership, capability presence, target existence and visibility.
+  The economy checks (affordability, population, placement, requirements) become
+  reachable when economy data exists (M5). Commands whose required capability
+  variant does not exist yet (Attack, Gather, Build, Produce) run the structural
+  checks and then fail capability presence — semantically correct for a world
+  where no entity carries them; the checks become store lookups as the variants
+  land (M5/M6). Empty unit lists are valid no-ops.
+- **A-015 (§6.3 stage 8, §14 M1 exit).** `HealthDef.regen_per_tick` (a data
+  parameter, possibly negative) is the M1 death path — the only way to exercise
+  death & cleanup and the id-never-reused exit test without combat (M6). Health
+  advance runs within stage 8, immediately before death removal; combat damage
+  becomes the primary health mover in M6. Regeneration clamps to `0..=max_hp`.
+- **A-016 (§6.3 stage 3, §14 M1 exit).** The fixture's `scheduled_spawns` stand in
+  for production spawning, exercising the same entity-store append + `Spawned`
+  events the real production path will use; they stay useful for spine tests after
+  M5 makes production the real source. Processed in `(tick, fixture order)` with
+  the RNG advanced once per jittered spawn (x draw then y draw; zero jitter
+  consumes no draws).
+- **A-017 (§6.4).** The canonical state hash encoding is version 1 and
+  entity-major: identity/position/facing/order-queue plus a capability presence
+  bitmask over the fixed order (Health, Move, Vision) followed by the present
+  blocks. Per-tile visibility bitsets join when fog state exists (M6). Events are
+  outputs and are not hashed. Ids allocate from 1, so `EntityId(0)` remains a null
+  value (`EntityId::NONE`).
+- **A-018 (§9.5, §9.6).** M1 `player_view` visibility is the circular-radius
+  filter, recomputed on demand (full scan, ascending id) — own entities always
+  visible, others within any friendly Vision radius (squared-distance compare).
+  The incremental three-state fog model is M6; a slot outside the match yields an
+  empty view rather than an error.
+- **A-019 (§6.5).** The replay command log records the exact stream fed to
+  `Sim::step` at each command's declared tick (chronological order preserved);
+  rejections are recorded too, so re-simulation reproduces them. Stale-tick
+  rejections are a live-client phenomenon — a replay cannot produce them, so they
+  are pinned by sim unit tests and the determinism suite instead. The recorder
+  omits script entries targeting ticks past the run length (never fed ⇒ not
+  recorded), and forces a final checkpoint at the end tick so
+  `final_hash == last checkpoint hash` holds by construction.
+- **A-020 (§3.2, §12).** `.github/workflows/ci.yml` was absent from the inherited
+  repository even though A-010 and the handoff described it as committed; it is
+  authored as part of M1 (the A2 exit needs replay-verify in CI). It runs
+  fmt + clippy, the test matrix (Linux/Windows/macOS × dev/release), the replay
+  round-trip, and the runnability of every binary. As with A-010, the 3-OS claim
+  stands only once the repo actually runs on GitHub.
+- **A-021 (§4).** The replay re-simulation driver is duplicated between
+  `pandemonium-tools` and `tests/determinism.rs` (~40 lines each) because the
+  `replay` crate must not depend on `sim`. Consolidation would need a new crate
+  both may depend on; revisit if the driver grows (see DEBT-005).
+- **A-022 (§8.1).** M1 treats `AttackMove` like `Move` for validation and movement
+  (it additionally requires the Attack capability when combat lands, M6); the
+  engage-en-route semantics are M6. `Stop` is valid for any owned entity (a
+  no-op for entities without orders or a mover).
+- **A-023 (§3.2).** `thiserror` v2 is used where the plan's table allows
+  `thiserror` (replay's decode/validate errors). `clap` 4 (derive) and `anyhow`
+  are used in `tools`, as the plan's table allows; `sim_api` needs no error types
+  and stays dependency-minimal apart from `fx` (A-005). `sim_api` re-exports
+  `Vec2Fx` since commands, events, and views carry positions in their public
+  shape.

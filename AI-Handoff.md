@@ -30,7 +30,7 @@
 | Stack | Rust, fully custom engine (own loop, entity store, renderer on top of winit/wgpu — no game engine, no ECS framework) |
 | Repo | `/home/z/my-project/pandemonium` (git, branch `main`, 3 commits at handoff) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
-| Status | **M0 (Skeleton & guardrails) COMPLETE.** Next: **M1 (Simulation core)** |
+| Status | **M1 (Simulation core) COMPLETE.** Next: **M2 (Content pipeline)** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -56,28 +56,31 @@ cargo fmt --all -- --check                 # formatting
 cargo clippy --workspace --all-targets -- -D warnings   # lints, zero tolerance
 cargo test --workspace                      # all tests (debug)
 cargo test --workspace --release            # determinism must hold in release too
-cargo run -p pandemonium-tools              # prints a placeholder banner
-cargo run -p pandemonium-client             # prints a placeholder banner
+cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
+cargo run -p pandemonium-client             # placeholder banner until M3
 ```
 
-Expected at this handoff: all five commands succeed; 57 tests pass (39 fx unit
-tests, 15 fx property tests, 1 sim constant test, 2 architecture-law tests).
+Expected at this handoff: all five commands succeed; 113 tests pass (39 fx unit
+tests, 15 fx property tests, 30 sim unit tests, 4 sim_api unit tests, 8 replay
+codec tests, 6 tools tests, 9 determinism acceptance tests, 2 architecture-law
+tests, 1 sim constant test — dev and release identical).
 CI additionally runs fmt + clippy + tests on Linux/Windows/macOS in dev and
-release when pushed to GitHub (`.github/workflows/ci.yml`) — see A-010 below.
+release, plus the replay round-trip, when pushed to GitHub
+(`.github/workflows/ci.yml`) — see A-010/A-020 below.
 
 ## 5. Workspace map (as built; see `docs/ARCHITECTURE.md` for detail)
 
 ```text
 crates/fx        DONE    Q16.16 fixed-point math, isqrt, PCG32 Rng, FNV-1a hasher
-crates/sim_api   STUB    identity vocabulary (EntityId, PlayerId, Tick, KindId, ResourceId)
-crates/sim       STUB    TICKS_PER_SECOND = 30 only; everything else arrives in M1
+crates/sim_api   DONE    vocabulary: ids, Command/CommandKind, Event, Reject, Snapshot, PlayerView, MatchSetup
+crates/sim       DONE    Sim spine: step pipeline, entity + capability stores, command gate, state hash, trivial-world fixture
 crates/content   STUB    empty lib, role documented (lands in M2)
 crates/ai        STUB    empty lib, role documented (lands in M7)
-crates/replay    STUB    empty lib, role documented (lands in M1)
+crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in tools/tests)
 crates/engine    STUB    empty lib, role documented (lands in M3)
 crates/client    STUB    placeholder binary banner (window arrives in M3)
-crates/tools     STUB    placeholder binary banner (subcommands from M1)
-tests/           ACTIVE  pandemonium-tests package: architecture_law.rs (A13 scaffold)
+crates/tools     DONE    headless (scripted match + --record) and replay-verify subcommands (clap CLI)
+tests/           ACTIVE  pandemonium-tests package: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs)
 content/         EMPTY   factions/ entities/ maps/ rules/ — RON data lands in M2
 docs/            ACTIVE  ARCHITECTURE, DEBT, ASSUMPTIONS, CONTENT_GUIDE, adr/
 ```
@@ -94,8 +97,8 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | Stage | Title (plan §14) | Status | Exit criteria |
 |-------|------------------|--------|---------------|
 | M0 | Skeleton & guardrails | ✅ **complete** | fx property tests green ✓; architecture-law test green ✓; CI authored, 3-OS green pending a real GitHub run (A-010) |
-| M1 | Simulation core | ⏭ **next** | A1/A2 on a trivial world (identical hashes on 3 OSes); ID-never-reused test; iteration-order test |
-| M2 | Content pipeline | ⬜ pending | all Alpha content + map load; precise errors; A3-style data-only spawn scaffold |
+| M1 | Simulation core | ✅ **complete** | A1/A2 green on the trivial world (two in-process runs + pinned golden hashes; tools replay-verify round-trip PASS; CI matrix makes the 3-OS claim real once it runs, A-020); ID-never-reused test ✓; iteration-order test ✓ |
+| M2 | Content pipeline | ⏭ **next** | all Alpha content + map load; precise errors; A3-style data-only spawn scaffold |
 | M3 | Engine shell | ⬜ pending | windowed build shows map + entities; Move commands work; client mutates sim only via step inputs |
 | M4 | Movement (P1) | ⬜ pending | 50 units respond ≤ 2 ticks under spam-click; no permanent stuck units; hashes still green |
 | M5 | Economy/production/construction (P3) | ⬜ pending | divergent scripted openings; A12 invariants green under economy soak |
@@ -105,10 +108,10 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M9 | Alpha content & feel pass | ⬜ pending | minimum viable loop playable end-to-end vs the AI |
 | M10 | Stabilization & declaration | ⬜ pending | every A1–A15 criterion verified; soak green; docs/ALPHA_DECLARATION.md with evidence |
 
-**The plan was broken into parts along these milestones.** Part 1 (M0) is what is
-implemented in this repo today; parts 2–11 (M1–M10) remain, in strict order.
+**The plan was broken into parts along these milestones.** Parts 1–2 (M0, M1) are
+implemented in this repo today; parts 3–11 (M2–M10) remain, in strict order.
 
-## 7. M0 inventory — what exists today, concretely
+## 7. M0 + M1 inventory — what exists today, concretely
 
 **Workspace & guardrails**
 
@@ -156,34 +159,81 @@ implemented in this repo today; parts 2–11 (M1–M10) remain, in strict order.
 - 2 architecture-law tests (§5 above).
 - 1 sim constant test pinning `TICKS_PER_SECOND = 30`.
 
-## 8. What is NOT built yet — and exactly what M1 asks for
+**M1 — the simulation core (plan §14, citing §6, §7, §8)**
 
-Nothing of the simulation, content, engine, client, AI, replay, or tools exists
-beyond the stubs and vocabulary types listed above. **M1 — Simulation core
-(plan §14, citing §6, §7, §8):**
+- `crates/sim_api` — the full boundary vocabulary: `Command`/`CommandKind` (§8.1,
+  all ten variants including the v2 queue commands), `Event` (§9.8, the planned
+  variant set — M1 emits Spawned/Died/CommandRejected), `Reject`/`RejectReason`
+  (§8.2), `MatchSetup`/`PlayerSetup`/`ControllerKind` (§6.5), `Snapshot`/`EntityView`/
+  `MoveState` (§6.4), `PlayerView`/`ViewResource` (§9.6), `TilePos`, `EntityId::NONE`.
+  Re-exports `Vec2Fx` (A-023).
+- `crates/sim` — `Sim::new(world, setup)`, `step(&[Command])` as the only mutator
+  (FD-2), running plan §6.3's eleven stages verbatim (unimplemented stages are
+  documented no-ops with milestone pointers); monotonic id allocation from 1
+  (`next_entity_id()` exposes the watermark); entity + capability stores (Health,
+  Move, Vision) as Vecs kept ascending by id — deterministic iteration by
+  construction, removal preserves survivor order, binary-search lookups; the
+  shared command gate (stable (issuer, seq) sort, tick/issuer/duplicate-sequence/
+  existence/ownership/capability/target checks, rejection events, zero state
+  change on refusal); per-entity order queues with queue/replace semantics and a
+  placeholder straight-line mover (DEBT-003); health advance + death & cleanup
+  (regen is the M1 death path, A-015); scheduled spawns as the production
+  stand-in (A-016); `state_hash()` — canonical LE, entity-major, capability
+  presence bitmask, RNG state, allocator, players, `STATE_ENCODING_VERSION = 1`;
+  periodic hash every 30 ticks in `StepOutput`; `snapshot()` and `player_view(p)`
+  (circular-radius fog filter, A-018); `TrivialWorld` fixture with `content_hash()`
+  (A-013) and §10.2 authoring-unit conversion at load.
+- `crates/replay` — `ReplayFile`/`Checkpoint` matching plan §6.5's field list;
+  own canonical LE codec (`bytes.rs`) with a trailing FNV-1a checksum (no serde —
+  dependency law); `encode`/`decode`/`validate` with typed `ReplayError`s; the log
+  records exactly the fed command stream, rejections included (A-019).
+- `crates/tools` (clap CLI) — `headless [--seed N --ticks T --record FILE]`: runs
+  the scripted demo match, prints every checkpoint + the final hash, optionally
+  writes a replay; `replay-verify FILE`: decodes, validates, checks the content
+  hash, re-simulates, compares every checkpoint (A2).
+- `tests/determinism.rs` — 9 acceptance tests: A1 (two runs, full equality of
+  checkpoints/final/events/snapshots/allocator; different seed diverges), pinned
+  golden hashes, A2 (codec round-trip, checksum corruption detection, full
+  re-simulation equality, content-hash check), id-never-reused (monotonic
+  allocation, dead id never returns, post-death ids higher), iteration order
+  (snapshots and player views strictly ascending every tick), invalid-commands-
+  change-no-state (bit-identical hashes vs a quiet run), motion within one tick
+  (A8's sim side), queue replace/append semantics.
+- 30 sim unit tests, 4 sim_api unit tests, 8 replay codec tests, 6 tools tests.
+- `.github/workflows/ci.yml` — authored during M1 because the file was missing
+  from the inherited repo despite A-010 (see A-020): fmt + clippy, the
+  3-OS × dev/release test matrix, the replay round-trip, and binary runnability.
 
-1. `crates/sim`: `Sim::new(content, setup)`, `Sim::step(&[Command])` as the *only*
-   mutator (FD-2), tick counter, entity store with monotonic never-reused IDs,
-   capability stores iterated in ascending ID order, command queue with
-   (issuer, seq) ordering, event buffer drained per tick, `state_hash()` over a
-   canonical little-endian byte encoding through `fx::Fnv1a64`, `snapshot()`.
-2. `crates/sim_api`: the full `Command`/`CommandKind` (§8.1), `Event` (§9.8),
-   `Reject`, `PlayerView` types.
-3. `crates/replay`: record/load/verify format `{format_version, content_hash,
-   map_id, seed, player_setup, commands, checkpoints, final_hash}`.
-4. `tests/determinism.rs` (+ its `[[test]]` entry): A1 — same seed + command log →
-   identical checkpoint hashes across two runs; ID-never-reused; iteration-order
-   test. Golden hashes get committed once green (then CI's 3-OS matrix makes the
-   cross-OS claim real).
-5. `tools` headless scaffold: run a trivial scripted match, print final hash.
+## 8. What is NOT built yet — and exactly what M2 asks for
 
-M1 entry points: `crates/sim/src/lib.rs` (mostly empty, contract documented in its
-module docs), `crates/sim_api/src/lib.rs` (identity vocabulary exists), and the fx
-API in section 7 — that is the entire vocabulary M1 builds on. `ContentBundle` does
-not exist yet (M2); M1's trivial world should hardcode a minimal in-code bundle or
-take fixture structs, NOT jump ahead into RON loading.
+Nothing of the content pipeline, engine, client, AI, or match rules exists beyond
+the stubs listed in §5, and the M1 systems that exist are scoped to the spine (see
+DEBT-003/004/005 for the placeholder mover, on-demand vision, and the duplicated
+replay driver). **M2 — Content pipeline (plan §14, citing §10):**
 
-## 9. Sharp edges and gotchas discovered during M0
+1. `crates/content`: RON schemas with `schema_version` fields, versioned loaders
+   that migrate old content forward, and validators with precise errors (strict
+   mode: unknown fields are errors). serde + ron are allowed here (plan §3.2) and
+   nowhere in the sim's tree — `content` produces plain Rust structs the sim
+   receives (A-004).
+2. The `ContentBundle` + content hash: the real counterpart of M1's
+   `TrivialWorld::content_hash()`; `Sim::new` gains the loaded-bundle path while
+   the fixture remains for spine tests.
+3. Map loader with validation: dimensions, spawn legality, ore reachability, the
+   optional symmetry check (plan §10.5); passability data becomes real input for
+   M4's navigator.
+4. The Alpha manifest (plan §10.4) as data: one faction, the 64×64 map, Ore, four
+   buildings, four units, the stat table exactly as §10.4 lists it.
+5. `tools content-validate` (plan §12) and the A3-style add-a-unit scaffold:
+   spawning a new kind defined purely by a new data file, with a test that no file
+   under `crates/sim/` changed.
+
+M2 entry points: `crates/content/src/lib.rs` (empty, role documented),
+`docs/CONTENT_GUIDE.md`, the empty `content/` tree, and `Sim::new`'s fixture path.
+Everything the sim consumes already flows through plain structs with §10.2
+authoring-unit conversion — extend that seam, don't bypass it.
+
+## 9. Sharp edges and gotchas discovered during M0 and M1
 
 - **proptest macro quirk**: `prop_assert!(x as T < (y + 1) * (y + 1))` fails to
   parse inside `proptest!` (cast-then-`<` breaks the expr fragment). Bind locals
@@ -205,6 +255,26 @@ take fixture structs, NOT jump ahead into RON loading.
   reads", "floating-point types" instead.
 - Rust 1.98.1 was installed via rustup in this environment; the exact-pin in
   `rust-toolchain.toml` auto-installs on first use (network needed once).
+- **Clippy 1.98 new-style lints bite old idioms** (all `-D warnings` failures):
+  `x % n == 0` → `x.is_multiple_of(n)`; `map_or(true, …)` → `is_none_or(…)`;
+  `[b'P', b'D', …]` → `*b"PD…"`. Write the new forms directly.
+- **A command log must stay chronological** (weakly ascending tick order): a
+  replay feeds every command at its *declared* tick, so a genuinely stale-tick
+  command cannot exist in a recorded log — stale arrivals are a live-client
+  phenomenon only. Keep testing TickMismatch by feeding `step()` directly.
+- **Feed order within a tick matters for duplicate (issuer, seq)**: the gate's
+  stable (issuer, seq) sort preserves feed order for exact ties, and the first
+  command wins. Replay drivers must sort by tick *only* (stable) and never
+  re-sort the whole log, or duplicate resolution diverges.
+- **Borrow checker vs. per-system iteration**: iterating `&mut world.entities`
+  while reading `world.movement` is fine (disjoint field paths) but NOT through
+  `&World` methods. The mover collects `(id, speed)` pairs first, then mutates —
+  keep that shape when adding systems.
+- **Fx::from_milli rounds toward zero**, so per-tick speeds converted from
+  milli-tiles/s are floor-ish and exact-arrival logic compares `dist <= speed`
+  (snap to target) rather than assuming divisibility.
+- **Events emitted during `Sim::new`** (the initial `Spawned` batch) sit in the
+  buffer until the first `step` drains them — expected, tested, do not "fix".
 
 ## 10. Maintenance protocol — every future agent, every milestone
 
@@ -230,13 +300,13 @@ take fixture structs, NOT jump ahead into RON loading.
 | §3.2 dependency policy | `tests/architecture_law.rs` allow-lists (enforced) |
 | §4 layout & law | `docs/ARCHITECTURE.md` + `tests/architecture_law.rs` |
 | §5 determinism rules | fx API docs, `clippy.toml`, `tests/architecture_law.rs` scan |
-| §6 simulation core | `crates/sim/src/lib.rs` module docs (contract) — code is M1 |
-| §7 entity model | `crates/sim_api/src/lib.rs` (ids exist); rest is M1 |
-| §8 commands | `crates/sim_api` (M1) |
-| §9 systems | per-milestone; see status board §6 |
-| §10 content | `docs/CONTENT_GUIDE.md`, `content/` (empty until M2) |
+| §6 simulation core | `crates/sim/src/` — `sim.rs` (pipeline), `world.rs` (stores), `hash.rs` (state hash), `fixture.rs` (trivial world) |
+| §7 entity model | `crates/sim/src/world.rs` + capability stores; `crates/sim_api` ids |
+| §8 commands | `crates/sim_api/src/lib.rs` (types) + `crates/sim/src/command.rs` (gate + application) |
+| §9 systems | per-milestone; see status board §6 (M1: movement placeholder, health/death, on-demand vision) |
+| §10 content | `docs/CONTENT_GUIDE.md`, `content/` (empty until M2), `crates/sim/src/fixture.rs` (M1 stand-in) |
 | §11 engine/client | `crates/engine`, `crates/client` stubs (M3) |
-| §12 tools | `crates/tools` stub (M1 for replay-verify scaffold) |
-| §13 acceptance | `tests/` (A13 scaffold live; A1 arrives with M1) |
+| §12 tools | `crates/tools` — headless + replay-verify live (M1); content-validate M2 |
+| §13 acceptance | `tests/` — A13 live, A1/A2 + spine proofs live (M1); A3 arrives with M2 |
 | §14 milestones | this file §6 status board |
 | §15–§19 budgets/risks/debt | `plan.md`; debt live in `docs/DEBT.md` |
