@@ -147,8 +147,10 @@ impl TextAtlas {
                 bearing_y: -(metrics.ymin + glyph_h as i32),
             });
         }
+        // Final height includes the trailing padding row; `resize` (not
+        // `truncate`) so the coverage buffer covers exactly height × width.
         let height = row_y + row_height + PADDING;
-        coverage.truncate(height as usize * ATLAS_WIDTH as usize);
+        coverage.resize(height as usize * ATLAS_WIDTH as usize, 0);
         Self {
             width: ATLAS_WIDTH,
             height,

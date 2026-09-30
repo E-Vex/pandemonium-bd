@@ -60,10 +60,29 @@ fn main() -> anyhow::Result<()> {
         }
     };
     let mut app = App::new(bundle)?;
+    app.frames_budget = frames_budget_arg();
     event_loop
         .run_app(&mut app)
         .map_err(|error| anyhow::anyhow!(error))?;
     Ok(())
+}
+
+/// Parses the verification affordance `--frames N`: exit cleanly after N
+/// presented frames and print the windowed smoke summary (tick, state hash,
+/// commands submitted, selection size). Presentation-layer tooling for the
+/// DEBT-008 windowed verification — it changes no simulation behavior.
+fn frames_budget_arg() -> Option<u64> {
+    let mut args = std::env::args();
+    while let Some(arg) = args.next() {
+        if arg == "--frames" {
+            let value = args
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(180);
+            return Some(value.max(1));
+        }
+    }
+    None
 }
 
 /// The repository's content directory, resolved from the crate manifest so the
@@ -89,6 +108,13 @@ struct App {
     resource_names: Vec<String>,
     /// Whether the §11.6 debug overlay is visible (F3).
     debug_overlay: bool,
+    /// Verification affordance: exit after this many presented frames.
+    frames_budget: Option<u64>,
+    /// How many frames have been presented (the `--frames` counter).
+    frames_presented: u64,
+    /// How many commands the client has submitted this run (the windowed
+    /// smoke summary's evidence that input reached the simulation).
+    commands_submitted: u32,
 }
 
 impl App {
@@ -127,6 +153,9 @@ impl App {
             command_seq: 0,
             resource_names,
             debug_overlay: false,
+            frames_budget: None,
+            frames_presented: 0,
+            commands_submitted: 0,
         })
     }
 
@@ -181,6 +210,7 @@ impl App {
         };
         let target = MatchHost::world_to_logical(point.x, point.z);
         self.command_seq += 1;
+        self.commands_submitted += 1;
         self.host.submit(Command::new(
             HUMAN,
             0,
@@ -238,7 +268,18 @@ impl ApplicationHandler for App {
                         .set_aspect(size.width as f32 / size.height.max(1) as f32);
                 }
             }
-            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::RedrawRequested => {
+                self.draw();
+                // The windowed smoke budget (DEBT-008 verification): exit after
+                // N presented frames, with the evidence summary.
+                if let Some(budget) = self.frames_budget {
+                    self.frames_presented += 1;
+                    if self.frames_presented >= budget {
+                        self.windowed_summary();
+                        event_loop.exit();
+                    }
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.drag_current = Some((position.x, position.y));
             }
@@ -326,6 +367,20 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// The windowed smoke summary: what the `--frames` run proved (frames
+    /// presented, sim progress, commands submitted through input, selection).
+    fn windowed_summary(&self) {
+        println!(
+            "pandemonium client — windowed smoke: {} frames presented, tick {}, state hash {:#018x}, \
+             {} commands submitted, selection {}",
+            self.frames_presented,
+            self.host.tick(),
+            self.host.state_hash(),
+            self.commands_submitted,
+            self.selection.len()
+        );
+    }
+
     fn draw(&mut self) {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
