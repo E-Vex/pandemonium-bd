@@ -1,0 +1,78 @@
+name: ci
+
+# The green gate (plan §0/AI-Handoff §4) on every push and pull request:
+#   1. fmt --check (formatting)
+#   2. clippy -D warnings (zero tolerance)
+#   3. tests in dev AND release on Linux, Windows, and macOS — determinism must
+#      hold in release and across platforms (plan §5.6, A1)
+#   4. replay round-trip: record a scripted headless match, verify it — A2
+# The toolchain is pinned by rust-toolchain.toml (1.98.1); rustup installs it
+# automatically on first use.
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          rustup default 1.98.1
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy (zero tolerance)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: tests (${{ matrix.os }}, ${{ matrix.profile }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        profile: [dev, release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component clippy
+          rustup default 1.98.1
+      - name: Run the test suite
+        run: cargo test --workspace ${{ matrix.profile == 'release' && '--release' || '' }}
+
+  replay:
+    # A2: a recorded match replays to an identical final hash (plan §13).
+    name: replay round-trip (A2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component clippy
+          rustup default 1.98.1
+      - name: Record and verify a scripted match
+        run: |
+          cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300 --record ci-replay.pdrp
+          cargo run -p pandemonium-tools -- replay-verify ci-replay.pdrp
+
+  binaries:
+    name: workspace builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component clippy
+          rustup default 1.98.1
+      - name: Every binary starts (plan §0: the game must build and run)
+        run: |
+          cargo run -p pandemonium-tools -- headless --seed 1 --ticks 30
+          cargo run -p pandemonium-client
