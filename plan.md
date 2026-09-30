@@ -86,6 +86,7 @@ Allowed (with purpose):
 |-------|---------|---------|
 | winit | client only | Window and input events |
 | wgpu (+ pollster, bytemuck) | client only | GPU rendering |
+| glam | client, engine | Presentation-only float math (camera, transforms, picking). Never in the sim's tree (ADR-0001). |
 | fontdue or equivalent | client only | Glyph rasterization for our own text renderer |
 | image (png only) | client, tools | Loading placeholder sprites |
 | cpal (+ own mixer) | client, post-alpha | Audio output (stub in Alpha) |
@@ -101,7 +102,7 @@ Rule for sim and sim_api crates: dependencies limited to core/alloc/std collecti
 
 ### 3.3 Platform assumptions (log in docs/ASSUMPTIONS.md, adjust if the human says otherwise)
 
-Desktop PC (Windows, Linux, macOS), 2D top-down presentation, single-player Alpha, mouse + keyboard. Rust stable, edition 2021 or newer, pinned by rust-toolchain.toml.
+Desktop PC (Windows, Linux, macOS), **3D perspective presentation over the 2D logical ground plane** (ADR-0001: the simulation stays 2D fixed-point; 3D is a presentation-layer concern only), single-player Alpha, mouse + keyboard. Rust stable, edition 2021 or newer, pinned by rust-toolchain.toml.
 
 ## 4. Workspace Layout & Dependency Law
 
@@ -437,13 +438,13 @@ An automated test copies a unit RON file, changes stats and id, adds it to a fac
 
 Classic fixed-timestep accumulator: real-time delta accumulates; the sim steps at 30 Hz (cap catch-up at e.g. 5 ticks per frame to avoid spiral of death); rendering runs at display rate (vsync), interpolating between the previous and current snapshots by alpha = accumulator / tick_duration. Time comes from the client/engine, never from sim.
 
-### 11.2 Renderer
+### 11.2 Renderer (3D presentation — ADR-0001)
 
-wgpu 2D instanced-quad renderer: tile layer (batched), entity layer (colored quads/sprites, team color), overlay layer (selection circles, health bars, tracers, fog mask, build placement ghost), UI layer. Render from Snapshot, never from Sim. A Renderer trait boundary keeps the sim-facing engine code independent of wgpu so a headless "null renderer" exists for tests and soak runs.
+wgpu renderer with a **depth buffer**, presenting the 2D logical world in 3D: a **terrain mesh** built from the map grid (one quad per tile, vertically displaced by the optional display-only heightmap — ADR-0001; the heightmap never affects gameplay), an entity layer of **primitive placeholder models** (team-colored boxes/capsules, instanced), an overlay layer (selection circles, health bars, tracers, fog visualization, build placement ghost — ground-projected or camera-facing geometry), and a UI layer. Render from Snapshot, never from Sim. A Renderer trait boundary keeps the sim-facing engine code independent of wgpu so a headless "null renderer" exists for tests and soak runs. Float math (glam) lives in client/engine only; the simulation stays on its 2D fixed-point plane.
 
-### 11.3 Input & selection
+### 11.3 Input & selection (3D — ADR-0001)
 
-Drag-box selection, click-select, control groups, shift-queue, right-click context command (move/attack/gather resolved from what's under the cursor), attack-move hotkey, stop hotkey, build placement mode with legality preview, camera pan (edge + keys) and zoom. Input produces only Commands and client-local state (selection, camera, hotkeys). Selection state lives in the client, not the sim.
+**Perspective RTS camera** (pan by edge + keys, zoom toward the cursor, optional rotation), **ground-plane ray picking** (cursor ray intersected with the 2D logical ground plane; converted to fixed-point at the boundary so the sim never sees a float), and **screen-space box selection** (project entity positions to screen space and rectangle-test). Drag-box selection, click-select, control groups, shift-queue, right-click context command (move/attack/gather resolved from what's under the cursor), attack-move hotkey, stop hotkey, build placement mode with legality preview. Input produces only Commands and client-local state (selection, camera, hotkeys). Selection state lives in the client, not the sim.
 
 ### 11.4 UI shell (own toolkit)
 
@@ -515,7 +516,7 @@ Exit: all Alpha content and the map load; malformed files produce precise errors
 
 **M3 — Engine shell**
 
-Tasks: window, wgpu 2D renderer, camera, snapshot interpolation, fixed-timestep loop, null renderer, input → commands, selection, minimal HUD, debug overlays.
+Tasks: window, wgpu 3D renderer (depth buffer, terrain mesh from map data + display-only heightmap, primitive placeholder models — ADR-0001), perspective RTS camera with ground-plane ray picking and screen-space box selection, snapshot interpolation, fixed-timestep loop, null renderer, input → commands, selection, minimal HUD, debug overlays.
 
 Exit: a windowed build shows the map and entities from a live sim; selecting and issuing Move commands works; client never touches Sim mutably except via step inputs.
 

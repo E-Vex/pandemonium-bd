@@ -28,8 +28,9 @@
 |---|---|
 | What | Pandemonium — an RTS **foundation** that grows into a game (architecture first, content is data) |
 | Stack | Rust, fully custom engine (own loop, entity store, renderer on top of winit/wgpu — no game engine, no ECS framework) |
-| Repo | `/home/z/my-project/pandemonium` (git, branch `main`, 3 commits at handoff) |
+| Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/pandemonium-bd`) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
+| Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
 | Status | **M1 (Simulation core) COMPLETE.** Next: **M2 (Content pipeline)** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
@@ -49,7 +50,7 @@
 
 ## 4. How to verify the current state
 
-Run from the repo root (`/home/z/my-project/pandemonium`):
+Run from the repo root (`/home/z/my-project/pandemonium-bd`):
 
 ```bash
 cargo fmt --all -- --check                 # formatting
@@ -99,7 +100,7 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M0 | Skeleton & guardrails | ✅ **complete** | fx property tests green ✓; architecture-law test green ✓; CI authored, 3-OS green pending a real GitHub run (A-010) |
 | M1 | Simulation core | ✅ **complete** | A1/A2 green on the trivial world (two in-process runs + pinned golden hashes; tools replay-verify round-trip PASS; CI matrix makes the 3-OS claim real once it runs, A-020); ID-never-reused test ✓; iteration-order test ✓ |
 | M2 | Content pipeline | ⏭ **next** | all Alpha content + map load; precise errors; A3-style data-only spawn scaffold |
-| M3 | Engine shell | ⬜ pending | windowed build shows map + entities; Move commands work; client mutates sim only via step inputs |
+| M3 | Engine shell | ⬜ pending | windowed build shows map + entities; Move commands work; client mutates sim only via step inputs. **Now 3D per [ADR-0001](docs/adr/0001-3d-presentation.md): wgpu depth buffer, terrain mesh + display-only heightmap, perspective RTS camera, ground-plane ray picking, screen-space box selection; `glam` allowed in client/engine only** |
 | M4 | Movement (P1) | ⬜ pending | 50 units respond ≤ 2 ticks under spam-click; no permanent stuck units; hashes still green |
 | M5 | Economy/production/construction (P3) | ⬜ pending | divergent scripted openings; A12 invariants green under economy soak |
 | M6 | Combat & vision (P2) | ⬜ pending | composition/position matter; legibility checklist; A10 fog integrity green |

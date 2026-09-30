@@ -127,6 +127,9 @@ fn allowed_external() -> BTreeMap<&'static str, &'static [&'static str]> {
     ] {
         m.insert(c, &["thiserror"][..]);
     }
+    // glam joined the plan §3.2 table with ADR-0001 (3D presentation): float
+    // math for the presentation layer only, never in the sim's tree.
+    m.insert("pandemonium-engine", &["glam", "thiserror"][..]);
     m.insert("pandemonium-content", &["serde", "ron", "thiserror"][..]);
     m.insert(
         "pandemonium-client",
@@ -136,6 +139,7 @@ fn allowed_external() -> BTreeMap<&'static str, &'static [&'static str]> {
             "cpal",
             "egui",
             "fontdue",
+            "glam",
             "image",
             "pollster",
             "thiserror",
