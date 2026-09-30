@@ -12,3 +12,6 @@ pandemonium-sim-api = { path = "../sim_api" }
 pandemonium-content = { path = "../content" }
 pandemonium-ai = { path = "../ai" }
 pandemonium-replay = { path = "../replay" }
+# Plan §3.2 allows clap for the tools CLI and anyhow for binary error handling.
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
