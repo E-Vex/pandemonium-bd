@@ -15,6 +15,7 @@ pandemonium-replay = { path = "../replay" }
 pandemonium-engine = { path = "../engine" }
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
+fontdue = "0.9"
 pollster = "0.4"
 wgpu = "26"
 winit = "0.30"

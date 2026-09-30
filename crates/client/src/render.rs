@@ -15,6 +15,8 @@ use pandemonium_engine::Renderer;
 use pandemonium_sim_api::{MoveState, PlayerId};
 use wgpu::util::DeviceExt;
 
+use crate::text::{TextAtlas, UiQuad};
+
 /// The camera uniform: the combined view-projection matrix.
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -75,6 +77,38 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>
 
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color, 1.0);
+}
+"#;
+
+/// The UI overlay pass: screen-space pixels (y down) → NDC, glyph coverage
+/// → alpha. Draws after the world, on top of it, with alpha blending.
+const UI_SHADER_SRC: &str = r#"
+struct ScreenUniform { size: vec2<f32> };
+@group(0) @binding(0) var<uniform> screen: ScreenUniform;
+@group(1) @binding(0) var atlas_sampler: sampler;
+@group(1) @binding(1) var atlas: texture_2d<f32>;
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) color: vec4<f32> };
+
+@vertex fn vs_main(
+    @location(0) pixels: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+) -> VsOut {
+    var out: VsOut;
+    let ndc = vec2<f32>(
+        pixels.x / screen.size.x * 2.0 - 1.0,
+        1.0 - pixels.y / screen.size.y * 2.0,
+    );
+    out.clip = vec4<f32>(ndc, 0.0, 1.0);
+    out.uv = uv;
+    out.color = color;
+    return out;
+}
+
+@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let coverage = textureSample(atlas, atlas_sampler, in.uv).r;
+    return vec4<f32>(in.color.rgb, in.color.a * coverage);
 }
 "#;
 
@@ -147,9 +181,51 @@ fn team_color(owner: PlayerId, selected: bool) -> [f32; 3] {
     }
 }
 
+/// One UI vertex: screen-space pixels, atlas UV, color (32 bytes).
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct UiVertex {
+    pixels: [f32; 2],
+    uv: [f32; 2],
+    color: [f32; 4],
+}
+
+impl UiVertex {
+    /// Six vertices per quad (two triangles, no index buffer — HUD scale).
+    fn from_quad(quad: &UiQuad) -> [Self; 6] {
+        let x0 = quad.x;
+        let y0 = quad.y;
+        let x1 = quad.x + quad.w;
+        let y1 = quad.y + quad.h;
+        let color = quad.color;
+        let tl = Self {
+            pixels: [x0, y0],
+            uv: [quad.u0, quad.v0],
+            color,
+        };
+        let tr = Self {
+            pixels: [x1, y0],
+            uv: [quad.u1, quad.v0],
+            color,
+        };
+        let bl = Self {
+            pixels: [x0, y1],
+            uv: [quad.u0, quad.v1],
+            color,
+        };
+        let br = Self {
+            pixels: [x1, y1],
+            uv: [quad.u1, quad.v1],
+            color,
+        };
+        [tl, tr, bl, tr, br, bl]
+    }
+}
+
 /// The wgpu-backed renderer: owns the GPU device, the terrain pipeline and
 /// buffers, and the entity instance stream. Implements the engine's
-/// [`Renderer`] trait.
+/// [`Renderer`] trait. The UI overlay pass (HUD text + debug overlays) draws
+/// the [`TextAtlas`] through [`WgpuRenderer::queue_ui`] before every frame.
 pub struct WgpuRenderer {
     _window: std::sync::Arc<winit::window::Window>,
     surface: wgpu::Surface<'static>,
@@ -167,6 +243,14 @@ pub struct WgpuRenderer {
     entity_vertex_buf: wgpu::Buffer,
     entity_instance_buf: wgpu::Buffer,
     entity_instance_capacity: u64,
+    atlas: TextAtlas,
+    screen_buffer: wgpu::Buffer,
+    screen_bind_group: wgpu::BindGroup,
+    ui_pipeline: wgpu::RenderPipeline,
+    ui_bind_group: wgpu::BindGroup,
+    ui_vertex_buf: wgpu::Buffer,
+    ui_vertex_capacity: u64,
+    pending_ui: Vec<UiQuad>,
 }
 
 impl WgpuRenderer {
@@ -404,6 +488,188 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
+        // The UI overlay pass (plan §11.4 HUD + §11.6 debug overlays): the
+        // glyph atlas as an R8Unorm texture, a screen-size uniform, an
+        // alpha-blended pipeline, and a dynamic vertex stream.
+        let atlas = TextAtlas::new();
+        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas"),
+            size: wgpu::Extent3d {
+                width: atlas.width,
+                height: atlas.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &atlas.coverage,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(atlas.width),
+                rows_per_image: Some(atlas.height),
+            },
+            wgpu::Extent3d {
+                width: atlas.width,
+                height: atlas.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("atlas sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("screen size"),
+            contents: bytemuck::bytes_of(&[config.width as f32, config.height as f32]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let screen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("screen layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("atlas layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let ui_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("atlas bind group"),
+            layout: &atlas_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+            ],
+        });
+        let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("screen bind group"),
+            layout: &screen_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: screen_buffer.as_entire_binding(),
+            }],
+        });
+        let ui_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ui layout"),
+            bind_group_layouts: &[&screen_layout, &atlas_layout],
+            push_constant_ranges: &[],
+        });
+        let ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ui shader"),
+            source: wgpu::ShaderSource::Wgsl(UI_SHADER_SRC.into()),
+        });
+        let ui_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ui pipeline"),
+            layout: Some(&ui_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &ui_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<UiVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 2,
+                        },
+                    ],
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            // The overlay always passes depth and never writes it: it is on top.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &ui_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let ui_vertex_capacity = 8192u64;
+        let ui_vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ui vertices"),
+            size: ui_vertex_capacity * std::mem::size_of::<UiVertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
             _window: window,
             surface,
@@ -421,6 +687,14 @@ impl WgpuRenderer {
             entity_vertex_buf,
             entity_instance_buf,
             entity_instance_capacity,
+            atlas,
+            screen_buffer,
+            screen_bind_group,
+            ui_pipeline,
+            ui_bind_group,
+            ui_vertex_buf,
+            ui_vertex_capacity,
+            pending_ui: Vec::new(),
         })
     }
 
@@ -452,6 +726,33 @@ impl WgpuRenderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = Self::make_depth_view(&self.device, width, height);
+    }
+
+    /// The glyph atlas (layout math for the caller; the texture stays here).
+    pub fn atlas(&self) -> &TextAtlas {
+        &self.atlas
+    }
+
+    /// Queues UI quads for the *next* [`Renderer::render`] — they are drawn
+    /// after the world, on top of it, and the queue drains with the frame.
+    /// Layout coordinates are pixels of the current surface size (`atlas()`
+    /// provides the measuring).
+    pub fn queue_ui(&mut self, quads: &[UiQuad]) {
+        self.pending_ui.extend_from_slice(quads);
+    }
+
+    /// Builds the UI vertex stream for the pending quads, capped at the
+    /// buffer's capacity, and drains the queue.
+    fn drain_ui_vertices(&mut self) -> (u32, Vec<UiVertex>) {
+        let capacity = self.ui_vertex_capacity as usize;
+        let mut vertices: Vec<UiVertex> = Vec::with_capacity(self.pending_ui.len() * 6);
+        for quad in self.pending_ui.drain(..) {
+            if vertices.len() + 6 > capacity {
+                break; // an over-full HUD frame clips its tail, never panics
+            }
+            vertices.extend_from_slice(&UiVertex::from_quad(&quad));
+        }
+        (vertices.len() as u32, vertices)
     }
 }
 
@@ -505,6 +806,17 @@ impl Renderer for WgpuRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("main encoder"),
             });
+        // The overlay's screen-size uniform (kept in sync with the surface).
+        self.queue.write_buffer(
+            &self.screen_buffer,
+            0,
+            bytemuck::bytes_of(&[self.config.width as f32, self.config.height as f32]),
+        );
+        let (ui_vertex_count, ui_vertices) = self.drain_ui_vertices();
+        if ui_vertex_count > 0 {
+            self.queue
+                .write_buffer(&self.ui_vertex_buf, 0, bytemuck::cast_slice(&ui_vertices));
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main pass"),
@@ -542,6 +854,16 @@ impl Renderer for WgpuRenderer {
             pass.set_vertex_buffer(0, self.entity_vertex_buf.slice(..));
             pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));
             pass.draw(0..36, 0..needed.min(self.entity_instance_capacity) as u32);
+            // The HUD/debug overlay goes on top of everything.
+            if ui_vertex_count > 0 {
+                pass.set_pipeline(&self.ui_pipeline);
+                // group(0) rebinds from the camera uniform to the screen
+                // uniform (a different layout, legal within the pass).
+                pass.set_bind_group(0, &self.screen_bind_group, &[]);
+                pass.set_bind_group(1, &self.ui_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.ui_vertex_buf.slice(..));
+                pass.draw(0..ui_vertex_count, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         frame_texture.present();

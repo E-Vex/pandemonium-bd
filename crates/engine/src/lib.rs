@@ -32,7 +32,7 @@ pub use interpolate::{
     fx_to_world, logical_to_world, world_to_fx, Interpolator, RenderEntity, RenderSnapshot,
 };
 pub use mesh::{terrain_mesh, TerrainMesh, TerrainVertex};
-pub use renderer::{Frame, NullRenderer, Renderer};
+pub use renderer::{Frame, HudState, NullRenderer, Renderer};
 
 #[cfg(test)]
 mod camera_tests {

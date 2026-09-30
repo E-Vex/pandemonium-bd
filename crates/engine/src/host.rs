@@ -26,6 +26,7 @@ use pandemonium_sim_api::{
 
 use crate::clock::FixedTimestep;
 use crate::interpolate::{Interpolator, RenderSnapshot};
+use crate::renderer::HudState;
 
 /// What one `advance` produced: the steps run, the events they emitted, and
 /// the periodic checkpoint hashes due during them (plan §6.3 stage 11).
@@ -49,6 +50,7 @@ pub struct MatchHost {
     clock: FixedTimestep,
     interpolator: Interpolator,
     pending: Vec<Command>,
+    paused: bool,
 }
 
 impl MatchHost {
@@ -64,6 +66,7 @@ impl MatchHost {
             clock: FixedTimestep::new(pandemonium_sim::TICKS_PER_SECOND),
             interpolator,
             pending: Vec::new(),
+            paused: false,
         }
     }
 
@@ -82,20 +85,71 @@ impl MatchHost {
     /// Advances real time: runs the due simulation steps (the pending commands
     /// feed the first of them), pushes each step's snapshot into the
     /// interpolator, and returns everything the frame produced.
+    ///
+    /// While paused (plan §11.6) the clock itself freezes: elapsed time is
+    /// discarded rather than accumulated, so unpausing owes no catch-up burst.
     pub fn advance(&mut self, real_dt: Duration) -> FrameOutcome {
+        if self.paused {
+            return FrameOutcome::default();
+        }
         let mut outcome = FrameOutcome::default();
         let steps = self.clock.update(real_dt);
         for _ in 0..steps {
-            let feed = std::mem::take(&mut self.pending);
-            let step = self.sim.step(&feed);
-            outcome.steps += 1;
-            outcome.events.extend(step.events);
-            if let Some(hash) = step.hash {
-                outcome.hashes.push((self.sim.tick(), hash));
-            }
-            self.interpolator.push(self.sim.snapshot());
+            self.run_one_step(&mut outcome);
         }
         outcome
+    }
+
+    /// Runs exactly one simulation step regardless of the clock and the pause
+    /// state (plan §11.6 single-step debugging). The clock's accumulator is
+    /// untouched: stepping is a debug action, not simulated time passing.
+    pub fn step_once(&mut self) -> FrameOutcome {
+        let mut outcome = FrameOutcome::default();
+        self.run_one_step(&mut outcome);
+        outcome
+    }
+
+    /// One simulation step: feeds the pending commands, records events and
+    /// checkpoint hashes, pushes the new snapshot.
+    fn run_one_step(&mut self, outcome: &mut FrameOutcome) {
+        let feed = std::mem::take(&mut self.pending);
+        let step = self.sim.step(&feed);
+        outcome.steps += 1;
+        outcome.events.extend(step.events);
+        if let Some(hash) = step.hash {
+            outcome.hashes.push((self.sim.tick(), hash));
+        }
+        self.interpolator.push(self.sim.snapshot());
+    }
+
+    /// Pauses or resumes (plan §11.6).
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Whether the host is paused.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Gathers the HUD and debug overlay data for one player (plan §11.4
+    /// resource/population display, §11.6 tick counter + state hash + pause
+    /// state). Presentation-only plain values read through the boundary —
+    /// never simulation internals.
+    pub fn hud_state(&self, player: PlayerId) -> HudState {
+        let view = self.sim.player_view(player);
+        HudState {
+            tick: self.sim.tick(),
+            state_hash: self.sim.state_hash(),
+            paused: self.paused,
+            resources: view
+                .resources
+                .iter()
+                .map(|resource| (resource.resource, resource.amount))
+                .collect(),
+            population: view.population,
+            population_cap: view.population_cap,
+        }
     }
 
     /// The interpolated presentation snapshot for this display frame
@@ -284,5 +338,66 @@ mod tests {
     fn world_to_logical_round_trips_whole_tiles() {
         let logical = MatchHost::world_to_logical(12.0, 8.0);
         assert_eq!(logical, Vec2Fx::from_ints(12, 8));
+    }
+
+    #[test]
+    fn pause_freezes_the_clock_without_a_catch_up_burst() {
+        let mut host = MatchHost::new(&world(), setup());
+        host.set_paused(true);
+        assert!(host.is_paused());
+        // A full paused second steps nothing and discards the time.
+        for _ in 0..60 {
+            assert_eq!(host.advance(Duration::from_millis(16)).steps, 0);
+        }
+        assert_eq!(host.tick(), 0);
+        // Unpausing owes no backlog: the next frames step normally (62 × 16 ms
+        // ≈ one second of frames, matching the sibling test's shape).
+        host.set_paused(false);
+        let mut steps = 0;
+        for _ in 0..62 {
+            steps += host.advance(Duration::from_millis(16)).steps;
+        }
+        assert!((28..=31).contains(&steps), "no catch-up burst: {steps}");
+        assert_eq!(host.tick(), steps);
+    }
+
+    #[test]
+    fn step_once_advances_exactly_one_tick_and_surfaces_events() {
+        let mut host = MatchHost::new(&world(), setup());
+        let outcome = host.step_once();
+        assert_eq!(outcome.steps, 1);
+        assert_eq!(host.tick(), 1);
+        // The initial Spawned batch surfaces through the single step.
+        assert!(outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Spawned { .. })));
+        // The clock is untouched: a tiny frame still owes nothing.
+        assert_eq!(host.advance(Duration::from_millis(1)).steps, 0);
+        // Step-once works while paused too (that is its purpose).
+        host.set_paused(true);
+        assert_eq!(host.step_once().steps, 1);
+        assert_eq!(host.tick(), 2);
+        assert_eq!(host.advance(Duration::from_secs(1)).steps, 0);
+    }
+
+    #[test]
+    fn hud_state_gathers_the_boundary_values() {
+        let mut host = MatchHost::new(&world(), setup());
+        host.set_paused(true);
+        host.step_once();
+        let hud = host.hud_state(PlayerId(0));
+        assert_eq!(hud.tick, 1);
+        assert!(hud.paused);
+        assert_eq!(
+            hud.resources,
+            vec![(pandemonium_sim_api::ResourceId(0), 200)]
+        );
+        assert_eq!(hud.population, 0); // economy systems arrive in M5
+        assert_eq!(hud.population_cap, 0);
+        assert_eq!(hud.state_hash, host.state_hash());
+        // A slot outside the match gets the empty ledger, not a panic.
+        let empty = host.hud_state(PlayerId(9));
+        assert!(empty.resources.is_empty());
     }
 }

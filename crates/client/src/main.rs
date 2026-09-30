@@ -11,6 +11,7 @@
 //! of M3 needs a display and is recorded as such (plan §13 honest declaration).
 
 mod render;
+mod text;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -20,12 +21,13 @@ use std::time::Instant;
 use anyhow::Context;
 use pandemonium_content::ContentBundle;
 use pandemonium_engine::mesh::terrain_mesh;
-use pandemonium_engine::renderer::Frame;
+use pandemonium_engine::renderer::{Frame, HudState};
 use pandemonium_engine::{MatchHost, NullRenderer, Renderer, RtsCamera};
 use pandemonium_sim_api::{
     Command, CommandKind, ControllerKind, EntityId, MatchSetup, PlayerId, PlayerSetup,
 };
 use render::WgpuRenderer;
+use text::{TextAtlas, UiQuad};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -82,6 +84,11 @@ struct App {
     keys: BTreeSet<Key<&'static str>>,
     last_frame: Instant,
     command_seq: u32,
+    /// Display names of the loaded resources, indexed by ResourceId (the
+    /// HUD's labels — data, not hardcoded).
+    resource_names: Vec<String>,
+    /// Whether the §11.6 debug overlay is visible (F3).
+    debug_overlay: bool,
 }
 
 impl App {
@@ -101,6 +108,12 @@ impl App {
         };
         let host = MatchHost::new(&bundle.world(), setup);
         let camera = RtsCamera::new(bundle.map.width, bundle.map.height, 16.0 / 9.0);
+        let resource_names: Vec<String> = bundle
+            .rules
+            .resources
+            .iter()
+            .map(|resource| resource.display_name.clone())
+            .collect();
         Ok(Self {
             host,
             camera,
@@ -112,6 +125,8 @@ impl App {
             keys: BTreeSet::new(),
             last_frame: Instant::now(),
             command_seq: 0,
+            resource_names,
+            debug_overlay: false,
         })
     }
 
@@ -265,6 +280,16 @@ impl ApplicationHandler for App {
                         winit::keyboard::KeyCode::KeyA => set_key(&mut self.keys, "a", pressed),
                         winit::keyboard::KeyCode::KeyS => set_key(&mut self.keys, "s", pressed),
                         winit::keyboard::KeyCode::KeyD => set_key(&mut self.keys, "d", pressed),
+                        // §11.6 debug tooling: overlay toggle, pause, single-step.
+                        winit::keyboard::KeyCode::F3 if pressed => {
+                            self.debug_overlay = !self.debug_overlay;
+                        }
+                        winit::keyboard::KeyCode::KeyP if pressed => {
+                            self.host.set_paused(!self.host.is_paused());
+                        }
+                        winit::keyboard::KeyCode::Period if pressed => {
+                            let _ = self.host.step_once();
+                        }
                         winit::keyboard::KeyCode::Escape if pressed => event_loop.exit(),
                         _ => {}
                     }
@@ -311,13 +336,120 @@ impl App {
         let snapshot = self.host.render_snapshot();
         let view_projection = self.camera.view_projection();
         let eye = self.camera.eye();
+        let hud = self.host.hud_state(HUMAN);
+        // The HUD and debug overlay quads (plan §11.4 / §11.6) queue before the
+        // frame; the renderer drains them on top of the world.
+        let quads = overlay_quads(
+            renderer.atlas(),
+            &hud,
+            &self.resource_names,
+            self.debug_overlay,
+            self.selection.len(),
+            snapshot.entities.len(),
+        );
+        renderer.queue_ui(&quads);
         renderer.render(Frame {
             snapshot: &snapshot,
             view_projection,
             eye,
             selection: &self.selection,
+            hud: &hud,
         });
     }
+}
+
+/// Builds the overlay quads for one frame: the resource/population HUD
+/// (plan §11.4's minimal slice) and, when toggled, the §11.6 debug overlay
+/// (tick counter, state hash, entity/selection counts, pause state).
+fn overlay_quads(
+    atlas: &TextAtlas,
+    hud: &HudState,
+    resource_names: &[String],
+    debug: bool,
+    selected: usize,
+    entities: usize,
+) -> Vec<UiQuad> {
+    /// Screen margin between panels and the window edge.
+    const MARGIN: f32 = 8.0;
+    /// Padding inside a panel.
+    const PAD: f32 = 6.0;
+    let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+    let mut quads = Vec::new();
+
+    // The resource line: every ledger entry by its data-defined display name.
+    let mut line = String::new();
+    for (index, (resource, amount)) in hud.resources.iter().enumerate() {
+        if index > 0 {
+            line.push_str("   ");
+        }
+        let name = resource_names
+            .get(resource.0 as usize)
+            .map(String::as_str)
+            .unwrap_or("RES");
+        line.push_str(&format!("{name} {amount}"));
+    }
+    line.push_str(&format!("   POP {}/{}", hud.population, hud.population_cap));
+    let text_width = atlas.measure(&line);
+    let baseline = MARGIN + PAD + atlas.ascent;
+    quads.push(atlas.solid_rect(
+        MARGIN,
+        MARGIN,
+        text_width + 2.0 * PAD,
+        line_height + 2.0 * PAD,
+        [0.0, 0.0, 0.0, 0.55],
+    ));
+    quads.extend(atlas.layout(&line, MARGIN + PAD, baseline, [1.0, 1.0, 1.0, 0.95]));
+
+    // The debug overlay (§11.6), below the HUD panel.
+    if debug {
+        let lines = [
+            format!("tick {}", hud.tick),
+            format!("hash {:#018x}", hud.state_hash),
+            format!("entities {entities}  selected {selected}"),
+            if hud.paused {
+                "PAUSED  [.] step".to_string()
+            } else {
+                "[F3] overlay  [P] pause".to_string()
+            },
+        ];
+        let widest = lines
+            .iter()
+            .map(|line| atlas.measure(line))
+            .fold(0.0f32, f32::max);
+        let top = MARGIN + line_height + 2.0 * PAD + MARGIN;
+        let panel_height = lines.len() as f32 * line_height + 2.0 * PAD;
+        quads.push(atlas.solid_rect(
+            MARGIN,
+            top,
+            widest + 2.0 * PAD,
+            panel_height,
+            [0.0, 0.0, 0.0, 0.45],
+        ));
+        for (index, line) in lines.iter().enumerate() {
+            let line_baseline = top + PAD + atlas.ascent + index as f32 * line_height;
+            let color = if line.starts_with("PAUSED") {
+                [1.0, 0.85, 0.3, 0.95]
+            } else {
+                [0.85, 0.92, 1.0, 0.95]
+            };
+            quads.extend(atlas.layout(line, MARGIN + PAD, line_baseline, color));
+        }
+    } else if hud.paused {
+        // A visible PAUSED tag even with the overlay hidden: the same row as
+        // the resource panel, just to its right.
+        let tag = "PAUSED";
+        let width = atlas.measure(tag);
+        let tag_x = MARGIN + text_width + 2.0 * PAD + MARGIN;
+        quads.push(atlas.solid_rect(
+            tag_x,
+            MARGIN,
+            width + 2.0 * PAD,
+            line_height + 2.0 * PAD,
+            [0.2, 0.15, 0.0, 0.45],
+        ));
+        quads.extend(atlas.layout(tag, tag_x + PAD, baseline, [1.0, 0.85, 0.3, 0.95]));
+    }
+    quads
 }
 
 /// Builds the terrain mesh from the content the client loaded: the map grid
@@ -329,8 +461,8 @@ fn terrain_mesh_of() -> pandemonium_engine::mesh::TerrainMesh {
 }
 
 /// The headless smoke pass: prove the whole pipeline minus the GPU — content
-/// loads, the match advances, the renderer interface is driven, and the state
-/// hash is stable.
+/// loads, the match advances, the renderer interface is driven (HUD data
+/// included), and the state hash is stable.
 fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
     let setup = MatchSetup {
         seed: 7,
@@ -354,17 +486,26 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
         let _ = outcome;
         let snapshot = host.render_snapshot();
         entities = snapshot.entities.len();
+        // The HUD plumbing rides along (gathered through the boundary, drawn by
+        // nothing — the null renderer accepts and discards).
+        let hud = host.hud_state(HUMAN);
         null_renderer.render(Frame {
             snapshot: &snapshot,
             view_projection: glam::Mat4::IDENTITY,
             eye: glam::Vec3::ZERO,
             selection: &[],
+            hud: &hud,
         });
     }
+    let hud = host.hud_state(HUMAN);
     println!(
         "  headless smoke: 180 frames, {entities} entities, tick {}, state hash {:#018x}",
         host.tick(),
         host.state_hash()
+    );
+    println!(
+        "  hud at exit:    tick {}, paused {}, pop {}/{}",
+        hud.tick, hud.paused, hud.population, hud.population_cap
     );
     println!("  content hash:    {:#018x}", bundle.content_hash());
     println!("pandemonium client — smoke PASS (windowed M3 verification requires a display)");
