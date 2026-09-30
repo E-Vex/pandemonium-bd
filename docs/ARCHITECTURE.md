@@ -1,7 +1,8 @@
 # Pandemonium — Architecture
 
-Status: milestone M1 (simulation core). The authoritative specification is
-[`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism rules.
+Status: milestone M2 (content pipeline). The authoritative specification is
+[`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism
+rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
 shape of the system changes, not for every feature. For current build status and what
 exists versus what is pending, see [`AI-Handoff.md`](../AI-Handoff.md).
@@ -13,7 +14,7 @@ exists versus what is pending, see [`AI-Handoff.md`](../AI-Handoff.md).
 | `crates/fx` | Fixed-point math (`Fx`, `Vec2Fx`), integer sqrt, PCG32 RNG, FNV-1a hasher | nothing |
 | `crates/sim_api` | Public vocabulary crossing the sim boundary: ids, commands, events, views | fx |
 | `crates/sim` | World state, entity store, capabilities, tick pipeline, systems, state hash | fx, sim_api |
-| `crates/content` | RON schema, versioned loaders, validators, content bundle + hash | fx, sim, sim_api |
+| `crates/content` | RON schema, versioned loaders, validators, content bundle + hash | fx, sim, sim_api + serde, ron, thiserror |
 | `crates/ai` | Controllers: perceive a `PlayerView`, decide, emit commands | fx, sim_api |
 | `crates/replay` | Replay record/load/verify format | fx, sim_api |
 | `crates/engine` | Game loop, timing, interpolation, input mapping, camera, UI toolkit | fx, sim, sim_api, content, ai |
@@ -101,6 +102,45 @@ crates/sim/src/
 Events are outputs, never state: the buffer is drained by each `step` and is not
 part of the hash. Snapshots and player views project entities ascending by id.
 
+## The content pipeline (M2)
+
+```text
+crates/content/src/
+  schema.rs    The RON-facing raw types, one per file kind plus the map's two
+               historical versions (v2 = ADR-0001's optional display-only
+               heightmap). Strict: every struct denies unknown fields.
+  version.rs   schema_version gates + forward migration (map v1 -> v2 is one
+               explicit typed function; newer-than-loader is a precise error).
+  loader.rs    SourceMap (named sources; the in-memory input for tests) and the
+               directory reader (files sorted by name — OS order is not
+               deterministic), then per-file parse -> version gate -> strict
+               parse -> id/stem check -> canonical conversion (ms -> ticks via
+               plan §10.2's ceiling division).
+  defs.rs      The canonical validated types (EntityDef, FactionDef, MapDef,
+               RulesDef, CapabilityDef) — known-good, what everything
+               downstream consumes.
+  validate.rs  File-level checks (stats, duplicates, references, grid shape,
+               bounds, heightmap shape) and placement-level checks per
+               (map x faction): spawn legality (footprints on buildable,
+               unoccupied ground), ore reachability (8-connected BFS from each
+               start over free terrain), and the declared 180-degree symmetry
+               check (grid + ore tile multiset + mirrored anchors).
+  bundle.rs    ContentTree (everything in a directory) and ContentBundle (one
+               match's content): the canonical content hash and map id (FNV-1a
+               over an explicit little-endian encoding, plan §5.10) and world()
+               — the plain TrivialWorld the simulation receives.
+```
+
+The seam (A-004/A-024): `content` depends on `sim`, so `Sim::new` gains its
+loaded-bundle path as `Sim::new(&bundle.world(), setup)` with **zero sim-side
+changes** — serde/ron stay below the sim's dependency line. The heightmap is
+display-only by construction: it is not part of the world definition the
+simulation receives (ADR-0001). Authoring data lives in `content/` (see
+[`CONTENT_GUIDE.md`](CONTENT_GUIDE.md)); `tools content-validate` is the
+designer's front door. Determinism of loading is pinned by tests: sorted
+iteration, id-sorted collections, pure-function loading, identical hashes
+across loads.
+
 ## The replay format (M1)
 
 `crates/replay` encodes/decodes the plan §6.5 field list through its own canonical
@@ -110,12 +150,15 @@ stream fed to `Sim::step` (rejections included), so re-simulation reproduces the
 hashes. The re-simulation driver lives in `tools` and in `tests/determinism.rs`
 (the crate itself must not depend on `sim`).
 
-## Tools and acceptance tests (M1)
+## Tools and acceptance tests (M1 + M2)
 
 `pandemonium-tools` (clap CLI) ships `headless` — the scripted demo match printing
 per-checkpoint and final hashes, with `--record` to write a replay — and
-`replay-verify` — re-simulation with checkpoint comparison (A2). `tests/determinism.rs`
-carries the A1/A2 suite with pinned golden hashes; `tests/architecture_law.rs` still
-pins the dependency graph and the source-level determinism bans. CI
-(`.github/workflows/ci.yml`) runs the whole gate on Linux/Windows/macOS in dev and
-release, plus the replay round-trip.
+`replay-verify` — re-simulation with checkpoint comparison (A2). M2 adds
+`content-validate` — strict validation of a content directory plus its content
+identity. `tests/determinism.rs` carries the A1/A2 suite with pinned golden
+hashes; `tests/content_pipeline.rs` carries the M2 suite (§10.4 stat pin,
+loaded-bundle determinism, the A3 add-a-unit scaffold);
+`tests/architecture_law.rs` still pins the dependency graph and the source-level
+determinism bans. CI (`.github/workflows/ci.yml`) runs the whole gate on
+Linux/Windows/macOS in dev and release, plus the replay round-trip.

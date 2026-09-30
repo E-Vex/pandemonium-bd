@@ -31,7 +31,7 @@
 | Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/pandemonium-bd`) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
 | Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
-| Status | **M1 (Simulation core) COMPLETE.** Next: **M2 (Content pipeline)** |
+| Status | **M2 (Content pipeline) COMPLETE.** Next: **M3 (Engine shell — 3D per ADR-0001)** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -61,10 +61,12 @@ cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
 cargo run -p pandemonium-client             # placeholder banner until M3
 ```
 
-Expected at this handoff: all five commands succeed; 113 tests pass (39 fx unit
+Expected at this handoff: all five commands succeed; 150 tests pass (39 fx unit
 tests, 15 fx property tests, 30 sim unit tests, 4 sim_api unit tests, 8 replay
-codec tests, 6 tools tests, 9 determinism acceptance tests, 2 architecture-law
-tests, 1 sim constant test — dev and release identical).
+codec tests, 8 tools tests, 9 determinism acceptance tests, 31 content unit
+tests, 4 content-pipeline acceptance tests, 2 architecture-law tests, 1 sim
+constant test — dev and release identical). `tools content-validate content`
+prints the bundle identity and PASS.
 CI additionally runs fmt + clippy + tests on Linux/Windows/macOS in dev and
 release, plus the replay round-trip, when pushed to GitHub
 (`.github/workflows/ci.yml`) — see A-010/A-020 below.
@@ -75,15 +77,15 @@ release, plus the replay round-trip, when pushed to GitHub
 crates/fx        DONE    Q16.16 fixed-point math, isqrt, PCG32 Rng, FNV-1a hasher
 crates/sim_api   DONE    vocabulary: ids, Command/CommandKind, Event, Reject, Snapshot, PlayerView, MatchSetup
 crates/sim       DONE    Sim spine: step pipeline, entity + capability stores, command gate, state hash, trivial-world fixture
-crates/content   STUB    empty lib, role documented (lands in M2)
+crates/content   DONE    RON schema (strict), versioned loaders + map v1->v2 migration, precise validators, ContentBundle + content hash, world() seam
 crates/ai        STUB    empty lib, role documented (lands in M7)
 crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in tools/tests)
-crates/engine    STUB    empty lib, role documented (lands in M3)
+crates/engine    STUB    empty lib, role documented (lands in M3 — 3D per ADR-0001, glam allowed)
 crates/client    STUB    placeholder binary banner (window arrives in M3)
-crates/tools     DONE    headless (scripted match + --record) and replay-verify subcommands (clap CLI)
-tests/           ACTIVE  pandemonium-tests package: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs)
-content/         EMPTY   factions/ entities/ maps/ rules/ — RON data lands in M2
-docs/            ACTIVE  ARCHITECTURE, DEBT, ASSUMPTIONS, CONTENT_GUIDE, adr/
+crates/tools     DONE    headless, replay-verify, content-validate subcommands (clap CLI)
+tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3)
+content/         DONE    rules/, entities/ (9 kinds), factions/ (Legion), maps/ (Crossroads 64x64, symmetric, heightmap)
+docs/            ACTIVE  ARCHITECTURE, DEBT, ASSUMPTIONS, CONTENT_GUIDE, adr/ (ADR-0001 accepted)
 ```
 
 The dependency law is **enforced by tests, not by convention**: `tests/architecture_law.rs`
@@ -99,7 +101,7 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 |-------|------------------|--------|---------------|
 | M0 | Skeleton & guardrails | ✅ **complete** | fx property tests green ✓; architecture-law test green ✓; CI authored, 3-OS green pending a real GitHub run (A-010) |
 | M1 | Simulation core | ✅ **complete** | A1/A2 green on the trivial world (two in-process runs + pinned golden hashes; tools replay-verify round-trip PASS; CI matrix makes the 3-OS claim real once it runs, A-020); ID-never-reused test ✓; iteration-order test ✓ |
-| M2 | Content pipeline | ⏭ **next** | all Alpha content + map load; precise errors; A3-style data-only spawn scaffold |
+| M2 | Content pipeline | ✅ **complete** | all Alpha content + the map load (`tools content-validate` PASS; the repo tree is test-pinned); malformed files produce precise errors (every validator has a test); A3 scaffold in place (data-only add-a-unit: load + spawn + Move, sim sources scanned clean; the §10.6 built-and-fights extension is DEBT-007 for M5/M6); map schema v2 with display-only heightmap per ADR-0001, v1 migrates forward; content hash + map id canonical (FNV-1a, plan §5.10) |
 | M3 | Engine shell | ⬜ pending | windowed build shows map + entities; Move commands work; client mutates sim only via step inputs. **Now 3D per [ADR-0001](docs/adr/0001-3d-presentation.md): wgpu depth buffer, terrain mesh + display-only heightmap, perspective RTS camera, ground-plane ray picking, screen-space box selection; `glam` allowed in client/engine only** |
 | M4 | Movement (P1) | ⬜ pending | 50 units respond ≤ 2 ticks under spam-click; no permanent stuck units; hashes still green |
 | M5 | Economy/production/construction (P3) | ⬜ pending | divergent scripted openings; A12 invariants green under economy soak |
@@ -109,10 +111,11 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M9 | Alpha content & feel pass | ⬜ pending | minimum viable loop playable end-to-end vs the AI |
 | M10 | Stabilization & declaration | ⬜ pending | every A1–A15 criterion verified; soak green; docs/ALPHA_DECLARATION.md with evidence |
 
-**The plan was broken into parts along these milestones.** Parts 1–2 (M0, M1) are
-implemented in this repo today; parts 3–11 (M2–M10) remain, in strict order.
+**The plan was broken into parts along these milestones.** Parts 1–3 (M0, M1,
+M2) are implemented in this repo today; parts 4–11 (M3–M10) remain, in strict
+order.
 
-## 7. M0 + M1 inventory — what exists today, concretely
+## 7. M0 + M1 + M2 inventory — what exists today, concretely
 
 **Workspace & guardrails**
 
@@ -205,36 +208,85 @@ implemented in this repo today; parts 3–11 (M2–M10) remain, in strict order.
   from the inherited repo despite A-010 (see A-020): fmt + clippy, the
   3-OS × dev/release test matrix, the replay round-trip, and binary runnability.
 
-## 8. What is NOT built yet — and exactly what M2 asks for
+**M2 — the content pipeline (plan §14, citing §10; see `docs/ARCHITECTURE.md` "The content pipeline" and `docs/CONTENT_GUIDE.md`)**
 
-Nothing of the content pipeline, engine, client, AI, or match rules exists beyond
-the stubs listed in §5, and the M1 systems that exist are scoped to the spine (see
-DEBT-003/004/005 for the placeholder mover, on-demand vision, and the duplicated
-replay driver). **M2 — Content pipeline (plan §14, citing §10):**
+- `crates/content` — the RON schema (strict: every struct denies unknown fields;
+  unknown fields are errors, plan §10.2) for rules/entities/factions/maps;
+  schema-version gates with forward migration (map v1 — the pre-ADR-0001 shape —
+  migrates to v2 as a flat map; newer-than-loader versions are precise errors,
+  FD-10); precise typed errors (`ContentError`: file + entity/map + coordinates
+  + the violated rule); validators at file level (stat ranges, duplicate
+  capabilities, cross-references, grid shape, bounds, heightmap shape) and
+  placement level per (map × faction): spawn legality, ore reachability
+  (8-connected BFS per start), and the declared 180-degree symmetry check
+  (grid + ore tile multiset + mirrored anchors). serde + ron live here and only
+  here (plan §3.2, enforced by the architecture law).
+- `ContentTree` / `ContentBundle` — the bundle carries the canonical content
+  hash and map id (FNV-1a over an explicit little-endian encoding, plan §5.10;
+  the display-only heightmap participates — content identity covers the whole
+  bundle) and `world()` produces the plain `TrivialWorld` the simulation
+  receives: `Sim::new(&bundle.world(), setup)` is the loaded-bundle path with
+  **zero changes under crates/{sim,sim_api,fx,ai}** (A-024). Initial spawn
+  order (therefore entity ids): map starts in authored order → each start's
+  forces in faction order → ore nodes in map order; positions are footprint
+  centers; jitter 0 for loaded content (A-028).
+- `content/` — the Alpha manifest as data (plan §10.4 exact, test-pinned cell
+  by cell): rules (Ore, 200 start, elimination + resignation), nine entities
+  (worker/rifleman/raider/guardian, CC 4×4, barracks 3×3, supply depot, turret,
+  ore node 2×2/1500), the Legion (roster, CC+barracks production lists, 1 CC +
+  4 workers starting forces), and Crossroads (64×64, symmetric + verified,
+  central crossroads choke, 4 ore per start + 4 contested center nodes,
+  display-only heightmap — ADR-0001).
+- `tools content-validate [PATH]` — strict validation + the bundle identity
+  report; the repo's own tree is validated by a tools unit test.
+- `tests/content_pipeline.rs` — the M2 acceptance suite: §10.4 stat pin,
+  loaded-content starting state (22 entities, 200 Ore per player),
+  loading/match determinism, and the A3 add-a-unit scaffold (a new kind defined
+  purely by data files loads, spawns, and obeys a Move order; nothing under
+  `crates/sim/` mentions it — source-scanned in the test).
+- 31 content unit tests, 2 tools tests, 4 acceptance tests (150 total, dev and
+  release identical).
 
-1. `crates/content`: RON schemas with `schema_version` fields, versioned loaders
-   that migrate old content forward, and validators with precise errors (strict
-   mode: unknown fields are errors). serde + ron are allowed here (plan §3.2) and
-   nowhere in the sim's tree — `content` produces plain Rust structs the sim
-   receives (A-004).
-2. The `ContentBundle` + content hash: the real counterpart of M1's
-   `TrivialWorld::content_hash()`; `Sim::new` gains the loaded-bundle path while
-   the fixture remains for spine tests.
-3. Map loader with validation: dimensions, spawn legality, ore reachability, the
-   optional symmetry check (plan §10.5); passability data becomes real input for
-   M4's navigator.
-4. The Alpha manifest (plan §10.4) as data: one faction, the 64×64 map, Ore, four
-   buildings, four units, the stat table exactly as §10.4 lists it.
-5. `tools content-validate` (plan §12) and the A3-style add-a-unit scaffold:
-   spawning a new kind defined purely by a new data file, with a test that no file
-   under `crates/sim/` changed.
+## 8. What is NOT built yet — and exactly what M3 asks for
 
-M2 entry points: `crates/content/src/lib.rs` (empty, role documented),
-`docs/CONTENT_GUIDE.md`, the empty `content/` tree, and `Sim::new`'s fixture path.
-Everything the sim consumes already flows through plain structs with §10.2
-authoring-unit conversion — extend that seam, don't bypass it.
+Nothing of the engine, client, AI, or match rules exists beyond the stubs
+listed in §5; the M1/M2 systems that exist are scoped to the spine and the
+data pipeline (see DEBT-003..007 for the placeholder mover, on-demand vision,
+the duplicated replay driver, the not-yet-consumed capability params, and the
+A3 scaffold's train/fight extension). **M3 — Engine shell (plan §14, citing
+§11 — now 3D per [ADR-0001](docs/adr/0001-3d-presentation.md)):**
 
-## 9. Sharp edges and gotchas discovered during M0 and M1
+1. `crates/engine`: the fixed-timestep accumulator loop (30 Hz sim, capped
+   catch-up), snapshot interpolation between the previous and current
+   snapshots, the `Renderer` trait boundary with a headless null renderer, the
+   perspective RTS camera (pan, zoom toward cursor, optional rotation),
+   ground-plane ray picking (cursor ray → 2D logical plane, converted to
+   fixed point at the boundary), and screen-space box selection. `glam` is
+   allowed here (ADR-0001; floats are legal in client/engine, never in the
+   sim's tree).
+2. `crates/client`: the winit window + wgpu renderer with a depth buffer —
+   terrain mesh from the map grid displaced by the display-only heightmap
+   (ADR-0001; `ContentBundle.map.heightmap`), primitive placeholder models
+   (team-colored boxes/capsules, instanced), overlay geometry (selection,
+   health bars, tracers, fog, build ghost), minimal HUD. Render from
+   `Snapshot`, never from `Sim`; input produces only `Command`s.
+3. Loading a match from content: `ContentBundle::load_dir("content")` →
+   `Sim::new(&bundle.world(), setup)` — the seam M2 built is M3's front door.
+4. Debug overlays (§11.6) and the exit test: a windowed build shows the map
+   and entities from a live sim; selecting and issuing Move commands works;
+   the client never touches `Sim` mutably except via step inputs.
+
+M3 entry points: `crates/engine/src/lib.rs` and `crates/client/src/main.rs`
+(both stubs, roles documented), the plan §11 spec (as amended by ADR-0001),
+and the architecture-law allow-lists (wgpu/winit/bytemuck/pollster/fontdue in
+client; glam in engine+client — all pre-allowed, no law change needed).
+
+Note for headless environments: the windowed exit criterion needs a display;
+build/test everything CI-able (engine math, interpolation, picking, null
+renderer) and record the visual verification as a finding if no display
+exists (honest declaration, plan §13).
+
+## 9. Sharp edges and gotchas discovered during M0, M1, and M2
 
 - **proptest macro quirk**: `prop_assert!(x as T < (y + 1) * (y + 1))` fails to
   parse inside `proptest!` (cast-then-`<` breaks the expr fragment). Bind locals
@@ -276,6 +328,29 @@ authoring-unit conversion — extend that seam, don't bypass it.
   (snap to target) rather than assuming divisibility.
 - **Events emitted during `Sim::new`** (the initial `Spawned` batch) sit in the
   buffer until the first `step` drains them — expected, tested, do not "fix".
+- **The banned-token scan is a substring scan**: "**Instant**-hit" (plan §9.2's
+  own wording!) trips the wall-clock `Instant` ban in the determinism crates.
+  Write "immediate-hit"; check `crates/content` docs with the scan in mind
+  (M2 hit this once).
+- **RON strict-mode error wording** is "Unexpected field named `x` in `Struct`,
+  expected one of …" — assert on "Unexpected field" + the field name, not on
+  serde's classic "unknown field" phrasing.
+- **Serde maps in content must deserialize into ordered maps** (`BTreeMap`) —
+  unordered map types are banned workspace-wide (clippy.toml) and would also
+  break load determinism.
+- **Directory iteration order is OS-dependent** — the content loader sorts each
+  category by file name before parsing; keep that invariant if you touch
+  `loader.rs` (plan §5: iteration order is determinism).
+- **Raw strings containing `"#"`** (terrain codes!) need `r##"…"##` delimiters —
+  `r#"…"#` terminates at the first `"#`. Bit the map test factory once.
+- **`CARGO_MANIFEST_DIR` depth differs per crate**: tests-package paths need one
+  `.parent()` to reach the root, tools-package paths need `ancestors().nth(2)`.
+  Wrong depth silently points at `crates/content` instead of `content/`.
+- **anyhow's default Display shows only the outer context** — in tests, format
+  with `{err:#}` to see the underlying `ContentError` chain.
+- **`Fx::raw()` vs authored milli-tiles**: Q16.16 raw values are ×65536; assert
+  positions via `Fx::from_milli(milli)` equality, never raw integers, unless you
+  enjoy arithmetic slips.
 
 ## 10. Maintenance protocol — every future agent, every milestone
 
@@ -305,9 +380,9 @@ authoring-unit conversion — extend that seam, don't bypass it.
 | §7 entity model | `crates/sim/src/world.rs` + capability stores; `crates/sim_api` ids |
 | §8 commands | `crates/sim_api/src/lib.rs` (types) + `crates/sim/src/command.rs` (gate + application) |
 | §9 systems | per-milestone; see status board §6 (M1: movement placeholder, health/death, on-demand vision) |
-| §10 content | `docs/CONTENT_GUIDE.md`, `content/` (empty until M2), `crates/sim/src/fixture.rs` (M1 stand-in) |
-| §11 engine/client | `crates/engine`, `crates/client` stubs (M3) |
-| §12 tools | `crates/tools` — headless + replay-verify live (M1); content-validate M2 |
-| §13 acceptance | `tests/` — A13 live, A1/A2 + spine proofs live (M1); A3 arrives with M2 |
+| §10 content | `docs/CONTENT_GUIDE.md`, `content/` (live), `crates/content/src/` (schema/version/loader/defs/validate/bundle) |
+| §11 engine/client | `crates/engine`, `crates/client` stubs (M3) — **3D per ADR-0001**; `content/maps/*.ron` heightmap is the renderer's terrain input |
+| §12 tools | `crates/tools` — headless, replay-verify, content-validate live |
+| §13 acceptance | `tests/` — A13 live; A1/A2 + spine proofs (M1); A3 scaffold + §10.4 pin (M2, `content_pipeline.rs`) |
 | §14 milestones | this file §6 status board |
 | §15–§19 budgets/risks/debt | `plan.md`; debt live in `docs/DEBT.md` |

@@ -119,3 +119,68 @@ confirms or rejects it.
   and stays dependency-minimal apart from `fx` (A-005). `sim_api` re-exports
   `Vec2Fx` since commands, events, and views carry positions in their public
   shape.
+- **A-024 (§14 M2, §4).** The loaded-bundle path into the simulation is
+  `Sim::new(&bundle.world(), setup)`: `ContentBundle::world()` produces the
+  simulation's own plain `TrivialWorld` (kinds, resources, initial spawns) and
+  `Sim::new` is unchanged. The dependency law (content depends on sim, never the
+  reverse) makes any sim-side "bundle" parameter impossible, so this IS the
+  loaded-bundle path the handoff §8 describes; the fixture stays for spine tests.
+  M2 therefore landed with zero diffs under `crates/{sim,sim_api,fx,ai}`.
+- **A-025 (§10.3/§10.4, §7.4).** The content schema carries the full Alpha
+  capability vocabulary (Attack, Gather, Build, Produce, Storage,
+  ProvidesPopulation, Resource, Footprint) even though the simulation only
+  consumes Health/Move/Vision until M4-M6 — data arrives first, systems catch up
+  (see DEBT-006). Gathering parameters live on the worker's Gather capability
+  (§10.4's "workers carry 10 Ore per trip, 2000 ms per gather" reads as
+  per-worker data), not in the rules file.
+- **A-026 (§10.2, FD-10, ADR-0001).** Map schema versioning: v2 is the
+  ADR-0001 shape (optional display-only `heightmap`); v1 is the pre-pivot shape
+  and migrates forward as a flat v2 map (the migration is one explicit typed
+  function per step, `migrate_map_v1_to_v2`, tested). Entities, factions, and
+  rules are at v1. A version newer than the loader is a precise error, never a
+  guess; version 0 is invalid. Strict mode (unknown fields are errors) is the
+  only mode — a lenient mode is unimplemented until a need appears.
+- **A-027 (§10.5).** The optional symmetry validator runs exactly when a map
+  declares `symmetric: true` and checks 180-degree rotational symmetry of: the
+  terrain grid, the ore-node footprint tile multiset, and the start anchors
+  (mirrored through the anchor structure's footprint). Faction starting-force
+  *positions* are not symmetry-checked (they are faction data with shared
+  offsets, not map data); ore reachability is validated per start against every
+  node (stricter than "some ore" — catches authoring pockets); map dimensions
+  are capped at 4096 as a sanity bound.
+- **A-028 (§9.7, §10.4).** Starting forces (1 Command Center + 4 Workers) are
+  faction data placed at tile offsets from each map start anchor; ore nodes are
+  map data referencing node entity kinds (the amount lives in the entity's
+  Resource capability). Initial spawn order — and therefore entity id allocation
+  — is: map starts in authored order, each start's forces in faction order, then
+  ore nodes in map order; positions are footprint centers in fixed-point tile
+  units. `spawn_jitter_milli` is 0 for loaded content (exact placement; the
+  fixture keeps jitter to exercise the RNG).
+- **A-029 (§10.6, A3).** The M2 A3 scaffold proves: a new kind defined purely by
+  a new data file + faction edits loads, spawns, and obeys a Move order, and
+  nothing under `crates/sim/` mentions it (source scan inside the test). The full
+  §10.6 test — trained from a production list and fighting — extends the
+  scaffold when production (M5) and combat (M6) land (DEBT-007). The git-diff
+  half of A3 ("no file in crates/sim/ changed in the fixture commit") is the
+  commit review protocol, not a runtime check.
+- **A-030 (§5, §10.2).** Determinism of loading: the directory reader sorts each
+  category's files by name (OS order is not deterministic), canonical
+  collections are sorted by id, `KindId`s index the entities sorted by id (so
+  adding an entity can shift later kind ids — bundles are self-consistent and
+  content-hash-pinned, and nothing persists kind ids across bundles in the
+  Alpha), and serde maps deserialize into ordered maps. Loading is a pure
+  function of the directory (tested both in-crate and in the acceptance suite).
+- **A-031 (ADR-0001, §6.5).** The display-only heightmap participates in the
+  content hash and the map id: content identity covers the whole bundle, so any
+  content edit (visual or mechanical) is a different match for replay matching —
+  stricter than simulation-equality requires, chosen so a replay always implies
+  an exact content tree. Extra §10.4 stat values the table leaves open were
+  authored as: collision radii worker 300 / rifleman 350 / raider 300 /
+  guardian 500 milli-tiles (rifleman's 350 is plan §10.3's example), acquire
+  ranges rifleman 7000 (§10.3) / raider 5000 / guardian 9000 / turret 8000, and
+  requirements worker←command_center, combat units←barracks,
+  barracks/depot/turret←command_center (CC requires nothing).
+- **A-032 (§3.3, ADR-0001).** A-001's "2D top-down presentation" clause is
+  superseded by ADR-0001 (accepted 2026-10-01): 3D perspective presentation over
+  the 2D logical ground plane; `glam` is allowed in client/engine only. The rest
+  of A-001 (desktop, single-player, mouse+keyboard) stands.
