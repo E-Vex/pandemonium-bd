@@ -227,3 +227,31 @@ confirms or rejects it.
   right-click Move commands, and the resulting worker motion visible in
   before/after screenshots. What this cannot verify — that the visuals *read
   well* to a human — stays open in DEBT-008.
+- **A-038 (§6.4, §5.10, M4).** M4 deliberately changes both canonical
+  encodings: `STATE_ENCODING_VERSION` 1→2 (the Move capability block gains
+  radius, remaining path waypoints, and the stuck/repath counters) and
+  `FIXTURE_ENCODING_VERSION` 1→2 (the world gains the passability grid; the
+  Move template gains the radius). The determinism golden hashes were
+  regenerated and the tools headless demo's final hash moved to
+  `0x3904fff0c74ee4c4` (seed 7, 300 ticks) — review-visible value changes,
+  not silent ones.
+- **A-039 (§9.1, §14 M4).** Movement semantics choices: a goal whose tile is
+  blocked or unreachable resolves as the *nearest reachable tile* (units walk
+  as close as the terrain allows; only a fully sealed start or a zero-speed
+  mover with a distant goal fails immediately with `MoveFailed`); stuck
+  escalation (30 blocked ticks, 4 repaths) ends in `MoveFailed` or — when the
+  mover is within one tile *plus its own radius* of the order target — a
+  crowded arrival that completes the order; replacing Move orders reset the
+  runtime path (a new destination invalidates the old lanes); steering
+  refuses any landing on blocked terrain, so collision displacement can never
+  shove a unit into rock. The straight beeline is validated by an integer
+  supercover of the *exact* start→goal segment (lattice-corner crossings
+  checked like A* diagonals); every other route walks tile centers prefixed
+  by the start tile's center (a convex-safe first leg).
+- **A-040 (§9.1, §17).** Formation-less movement has a known jam shape: a
+  line of units ordered *across its own axis* into a single point funnels
+  into shared lanes and the trailing units can end in `MoveFailed` (resolved,
+  never stuck). Groups in compact-block shapes and spread destinations — the
+  shapes the M4 exit tests and real play use — resolve cleanly. Formations
+  and side-stepping avoidance remain post-Alpha hooks (plan §17); the crowd
+  radius and head-on pass-through keep ordinary clicks working.

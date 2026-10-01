@@ -1,6 +1,6 @@
 # Pandemonium — Architecture
 
-Status: milestone M3 in progress (engine shell, 3D per ADR-0001). The authoritative specification is
+Status: milestone M4 complete (movement); M5 (economy) is next. The authoritative specification is
 [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism
 rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
@@ -72,31 +72,53 @@ preserves this shape; if a task seems to require breaking it, write an ADR first
 
 ```text
 crates/sim/src/
-  fixture.rs   TrivialWorld — the in-code M1 world template (kinds as capability
+  fixture.rs   TrivialWorld — the in-code world template (kinds as capability
                compositions, resource registry, initial + scheduled spawns,
-               spawn jitter) and its canonical content hash. Replaced for real
-               matches by the M2 ContentBundle; remains the spine-test fixture.
+               spawn jitter, the terrain passability grid) and its canonical
+               content hash (encoding v2). Real matches build it from the M2
+               ContentBundle; it remains the spine-test fixture.
   world.rs     World — entity store + one store per capability type (Health,
                Move, Vision) + player states. Every store is a Vec kept sorted
                ascending by EntityId (an invariant): ids allocate monotonically,
                appends preserve order, removals shift without reordering, lookups
-               binary-search. No ordered-map bookkeeping anywhere.
+               binary-search. No ordered-map bookkeeping anywhere. MoveDef
+               carries its runtime movement state (path, stuck/repath
+               counters) beside its parameters — the hp-on-HealthDef pattern.
+  nav.rs       The navigation layer (plan §9.1.1, M4): NavGrid over the
+               world's passability; 8-connected A* with no corner cutting,
+               integer milli-tile costs, the octile heuristic, and the
+               total-order (f, h, tile) heap key — deterministic pops, so
+               paths are a pure function of grid + endpoints. The straight
+               beeline is validated by an integer supercover of the exact
+               start→goal segment (lattice-corner crossings checked like A*
+               diagonals); other routes walk tile centers, prefixed with the
+               start tile's center, suffixed with the exact goal.
+               Blocked/unreachable goals resolve to the nearest reachable
+               tile; sealed starts return None.
+  movement.rs  Stage 6 as the three layers (plan §9.1, M4): path requests
+               (unreachable and zero-speed distant orders fail immediately
+               with MoveFailed), waypoint steering with a terrain guard,
+               spatial-hash push-apart (one-tile cells, id-ordered pairs,
+               symmetric terrain-guarded halves), and stuck detection with
+               repath escalation and a body-aware crowded arrival.
   command.rs   The shared validation gate (plan §8.2) and application: stable
                (issuer, seq) sort, tick check, issuer check, duplicate-sequence
                check, per-kind existence/ownership/capability/target checks;
                invalid commands emit CommandRejected and change no state.
+               Replacing Move orders reset the mover's runtime path.
                visible_to() is the on-demand fog filter shared by the gate and
                player_view().
   hash.rs      The canonical state hash (plan §6.4): little-endian, fixed field
                order, entity-major with a capability presence bitmask, through
-               fx::Fnv1a64; carries STATE_ENCODING_VERSION = 1.
+               fx::Fnv1a64; carries STATE_ENCODING_VERSION = 2 (the Move block
+               gains radius + path + stuck counters).
   sim.rs       Sim — new/step/state_hash/snapshot/player_view/next_entity_id.
                step() runs plan §6.3's eleven stages verbatim; stages whose
                systems arrive in later milestones are documented no-ops with
-               milestone pointers. M1 stage contents: command application (1),
-               scheduled spawns (3), the placeholder straight-line mover (6, see
-               DEBT-003), health advance + death & cleanup (8), finalize with
-               the periodic hash every 30 ticks (11).
+               milestone pointers. Stage contents today: command application
+               (1), scheduled spawns (3), the three-layer mover (6), health
+               advance + death & cleanup (8), finalize with the periodic hash
+               every 30 ticks (11).
 ```
 
 Events are outputs, never state: the buffer is drained by each `step` and is not
@@ -132,10 +154,13 @@ crates/content/src/
 ```
 
 The seam (A-004/A-024): `content` depends on `sim`, so `Sim::new` gains its
-loaded-bundle path as `Sim::new(&bundle.world(), setup)` with **zero sim-side
-changes** — serde/ron stay below the sim's dependency line. The heightmap is
-display-only by construction: it is not part of the world definition the
-simulation receives (ADR-0001). Authoring data lives in `content/` (see
+loaded-bundle path as `Sim::new(&bundle.world(), setup)` — serde/ron stay
+below the sim's dependency line. Since M4 the world definition also carries
+the terrain passability grid (`map_passability` maps the map's terrain classes
+into one byte per tile) and the Move collision radius — both pure data the
+simulation converts at spawn. The heightmap remains display-only by
+construction: it is not part of the world definition the simulation receives
+(ADR-0001). Authoring data lives in `content/` (see
 [`CONTENT_GUIDE.md`](CONTENT_GUIDE.md)); `tools content-validate` is the
 designer's front door. Determinism of loading is pinned by tests: sorted
 iteration, id-sorted collections, pure-function loading, identical hashes
@@ -217,8 +242,10 @@ per-checkpoint and final hashes, with `--record` to write a replay — and
 `replay-verify` — re-simulation with checkpoint comparison (A2). M2 adds
 `content-validate` — strict validation of a content directory plus its content
 identity. `tests/determinism.rs` carries the A1/A2 suite with pinned golden
-hashes; `tests/content_pipeline.rs` carries the M2 suite (§10.4 stat pin,
-loaded-bundle determinism, the A3 add-a-unit scaffold);
+hashes (encoding v2 — A-038); `tests/content_pipeline.rs` carries the M2 suite
+(§10.4 stat pin, loaded-bundle determinism, the A3 add-a-unit scaffold);
+`tests/movement.rs` carries the M4 exit suite (50-unit spam-click
+responsiveness, order resolution, determinism, the real-map detour);
 `tests/architecture_law.rs` still pins the dependency graph and the source-level
 determinism bans. CI (`.github/workflows/ci.yml`) runs the whole gate on
 Linux/Windows/macOS in dev and release, plus the replay round-trip.
