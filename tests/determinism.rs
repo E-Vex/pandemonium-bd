@@ -46,6 +46,7 @@ mod kinds {
 /// so the seeded RNG is exercised inside the hashed state.
 fn acceptance_world() -> TrivialWorld {
     TrivialWorld {
+        passability: TrivialWorld::open_passability(64, 64),
         map_id: 0x00AC_E900_0000_0001,
         width_tiles: 64,
         height_tiles: 64,
@@ -58,6 +59,7 @@ fn acceptance_world() -> TrivialWorld {
                     },
                     CapTemplate::Move {
                         speed_milli_tiles_per_s: 2600,
+                        radius_milli_tiles: 350,
                     },
                     CapTemplate::Vision {
                         radius_milli_tiles: 7000,
@@ -77,6 +79,7 @@ fn acceptance_world() -> TrivialWorld {
                     },
                     CapTemplate::Move {
                         speed_milli_tiles_per_s: 1600,
+                        radius_milli_tiles: 350,
                     },
                     CapTemplate::Vision {
                         radius_milli_tiles: 5000,
@@ -483,10 +486,13 @@ fn a1_golden_hashes_are_pinned() {
     let script = acceptance_script();
     let run = run_match(&world, &setup, &script, TICKS);
 
+    // Regenerated for M4 (state encoding v2: movement radius + path +
+    // counters; fixture encoding v2: passability + radius) — see
+    // docs/ASSUMPTIONS.md A-038.
     let golden: &[(u32, u64)] = &[
-        (0, 0x75ecc1a67e14086f),
-        (30, 0x2cac74e58e6ec73b),
-        (60, 0xcb47c10b9cccd94b),
+        (0, 0x98d7224c004e0c16),
+        (30, 0x79a0085367dbc1bd),
+        (60, 0x612f4864836bf1de),
     ];
     assert_eq!(run.checkpoints.len(), 4, "tick 0 + 30 + 60 + final 65");
     for (want_tick, want_hash) in golden {
@@ -497,7 +503,7 @@ fn a1_golden_hashes_are_pinned() {
             .unwrap_or_else(|| panic!("missing checkpoint at tick {want_tick}"));
         assert_eq!(found.hash, *want_hash, "golden hash at tick {want_tick}");
     }
-    assert_eq!(run.final_hash, 0x07c9aeda0664a58c);
+    assert_eq!(run.final_hash, 0xc569b0bc22198de0);
     assert_eq!(run.next_entity_id, 9);
 }
 

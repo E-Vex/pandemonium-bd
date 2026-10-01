@@ -203,6 +203,7 @@ mod tests {
             map_id: 0x0054_4553_5400_0001,
             width_tiles: 16,
             height_tiles: 16,
+            passability: TrivialWorld::open_passability(16, 16),
             kinds: vec![KindTemplate {
                 caps: vec![
                     CapTemplate::Health {
@@ -211,6 +212,7 @@ mod tests {
                     },
                     CapTemplate::Move {
                         speed_milli_tiles_per_s: 2600,
+                        radius_milli_tiles: 350,
                     },
                     CapTemplate::Vision {
                         radius_milli_tiles: 7000,

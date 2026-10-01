@@ -20,7 +20,9 @@ use crate::world::{CapabilityData, Lifecycle, Order, World};
 
 /// Version of the canonical state encoding. Bump (and regenerate the golden
 /// hashes) whenever the encoded field set or order changes deliberately.
-pub(crate) const STATE_ENCODING_VERSION: u32 = 1;
+/// v2 adds the M4 movement fields: the Move collision radius, the remaining
+/// path waypoints, and the stuck-detection counters.
+pub(crate) const STATE_ENCODING_VERSION: u32 = 2;
 
 /// Encodes the whole state into the hasher, in canonical order.
 pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u64) -> u64 {
@@ -58,6 +60,14 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
         }
         if let Some(CapabilityData::Move(def)) = capability_of(world, entity.id, mask, 1) {
             h.write_i32(def.speed_per_tick.raw());
+            h.write_i32(def.radius.raw());
+            h.write_u32(def.path.len() as u32);
+            for waypoint in &def.path {
+                h.write_i32(waypoint.x.raw());
+                h.write_i32(waypoint.y.raw());
+            }
+            h.write_u32(def.stuck_ticks);
+            h.write_u32(def.repaths);
         }
         if let Some(CapabilityData::Vision(def)) = capability_of(world, entity.id, mask, 2) {
             h.write_i32(def.radius.raw());
@@ -136,7 +146,9 @@ fn capability_of(
     }
     match index {
         0 => world.health_of(id).map(|def| CapabilityData::Health(*def)),
-        1 => world.move_of(id).map(|def| CapabilityData::Move(*def)),
+        1 => world
+            .move_of(id)
+            .map(|def| CapabilityData::Move(def.clone())),
         _ => world.vision_of(id).map(|def| CapabilityData::Vision(*def)),
     }
 }
@@ -171,9 +183,7 @@ mod tests {
                     hp: 10,
                     regen_per_tick: 0,
                 }),
-                CapabilityData::Move(MoveDef {
-                    speed_per_tick: Fx::from_milli(50),
-                }),
+                CapabilityData::Move(MoveDef::new(Fx::from_milli(50), Fx::from_milli(350))),
                 CapabilityData::Vision(VisionDef {
                     radius: Fx::from_milli(7000),
                 }),

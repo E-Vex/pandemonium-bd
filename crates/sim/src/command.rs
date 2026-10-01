@@ -152,7 +152,12 @@ fn apply_valid(world: &mut World, cmd: &Command) {
                     if cmd.queue {
                         entity.orders.push(Order::MoveTo { target: *target });
                     } else {
+                        // A replacing order restarts movement from scratch:
+                        // the old path no longer serves the new destination.
                         entity.orders = vec![Order::MoveTo { target: *target }];
+                        if let Some(def) = world.move_of_mut(id) {
+                            def.reset_runtime();
+                        }
                     }
                 }
             }
@@ -161,6 +166,9 @@ fn apply_valid(world: &mut World, cmd: &Command) {
             for id in sorted_unique(units) {
                 if let Some(entity) = world.entity_mut(id) {
                     entity.orders.clear();
+                }
+                if let Some(def) = world.move_of_mut(id) {
+                    def.reset_runtime();
                 }
             }
         }
@@ -319,9 +327,7 @@ mod tests {
                     hp: 10,
                     regen_per_tick: 0,
                 }),
-                CapabilityData::Move(MoveDef {
-                    speed_per_tick: Fx::from_milli(100),
-                }),
+                CapabilityData::Move(MoveDef::new(Fx::from_milli(100), Fx::from_milli(350))),
                 CapabilityData::Vision(VisionDef {
                     radius: Fx::from_milli(7000),
                 }),
@@ -342,9 +348,7 @@ mod tests {
             KindId(0),
             Vec2Fx::from_ints(5, 0),
             vec![
-                CapabilityData::Move(MoveDef {
-                    speed_per_tick: Fx::from_milli(100),
-                }),
+                CapabilityData::Move(MoveDef::new(Fx::from_milli(100), Fx::from_milli(350))),
                 CapabilityData::Vision(VisionDef {
                     radius: Fx::from_milli(7000),
                 }),
@@ -668,9 +672,10 @@ mod tests {
             PlayerId(0),
             KindId(0),
             Vec2Fx::from_ints(9, 9),
-            vec![CapabilityData::Move(MoveDef {
-                speed_per_tick: Fx::from_milli(100),
-            })],
+            vec![CapabilityData::Move(MoveDef::new(
+                Fx::from_milli(100),
+                Fx::from_milli(350),
+            ))],
         );
         apply(
             &mut world,

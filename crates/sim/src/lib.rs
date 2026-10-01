@@ -27,6 +27,8 @@
 mod command;
 mod fixture;
 mod hash;
+mod movement;
+mod nav;
 mod sim;
 mod world;
 

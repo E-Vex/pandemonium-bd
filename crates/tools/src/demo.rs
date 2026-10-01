@@ -31,6 +31,9 @@ pub mod kinds {
 /// Builds the demo world (deterministic, seed-independent).
 pub fn demo_world() -> TrivialWorld {
     TrivialWorld {
+        // The demo map is open ground: no terrain obstacles, so every demo
+        // order exercises the straight-line fast path of the M4 mover.
+        passability: TrivialWorld::open_passability(64, 64),
         map_id: DEMO_MAP_ID,
         width_tiles: 64,
         height_tiles: 64,
@@ -43,6 +46,7 @@ pub fn demo_world() -> TrivialWorld {
                     },
                     CapTemplate::Move {
                         speed_milli_tiles_per_s: 2600,
+                        radius_milli_tiles: 350,
                     },
                     CapTemplate::Vision {
                         radius_milli_tiles: 7000,
@@ -62,6 +66,7 @@ pub fn demo_world() -> TrivialWorld {
                     },
                     CapTemplate::Move {
                         speed_milli_tiles_per_s: 1600,
+                        radius_milli_tiles: 350,
                     },
                     CapTemplate::Vision {
                         radius_milli_tiles: 5000,

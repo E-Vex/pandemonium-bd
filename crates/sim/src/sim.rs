@@ -15,7 +15,9 @@ use pandemonium_sim_api::{
 use crate::command::apply_commands;
 use crate::fixture::{ScheduledSpawnDef, SpawnDef, TrivialWorld};
 use crate::hash::hash_state;
-use crate::world::{HealthDef, Lifecycle, Order, PlayerState, World};
+use crate::movement::advance_movement;
+use crate::nav::NavGrid;
+use crate::world::{HealthDef, Lifecycle, PlayerState, World};
 
 /// What one call to [`Sim::step`] produced: the events of that tick (drained from
 /// the buffer — plan §6.3 stage 11 "flush events") and, when the resulting tick
@@ -38,6 +40,7 @@ pub struct Sim {
     rng: Rng,
     world: World,
     fixture: TrivialWorld,
+    nav: NavGrid,
     next_entity_id: u64,
     events: Vec<Event>,
     /// Scheduled spawns, sorted by `(tick, fixture order)`, with a cursor.
@@ -69,6 +72,7 @@ impl Sim {
             rng: Rng::seeded(setup.seed),
             world: World::new(),
             fixture: world.clone(),
+            nav: NavGrid::new(world.width_tiles, world.height_tiles, &world.passability),
             next_entity_id: 1,
             events: Vec::new(),
             spawn_queue: world.scheduled_spawns.clone(),
@@ -106,6 +110,15 @@ impl Sim {
     /// that ids are never reused.
     pub fn next_entity_id(&self) -> u64 {
         self.next_entity_id
+    }
+
+    /// Test-only window into one mover's runtime movement state (the
+    /// movement-layer tests inspect paths and counters through this).
+    #[cfg(test)]
+    pub(crate) fn debug_move_state(&self, id: EntityId) -> Option<(Vec<Vec2Fx>, u32, u32)> {
+        self.world
+            .move_of(id)
+            .map(|def| (def.path.clone(), def.stuck_ticks, def.repaths))
     }
 
     /// The on-demand canonical state hash (plan §6.4).
@@ -206,10 +219,11 @@ impl Sim {
         //           effects (M5).
         // Stage 5 — Target acquisition (M6).
         // Stage 6 — Movement: path requests → path following → steering →
-        //           collision push-apart, entities in id order. M1 runs the
-        //           placeholder straight-line mover (see docs/DEBT.md); the
-        //           three-layer contract arrives in M4.
-        self.advance_movement();
+        //           collision push-apart, entities in id order (plan §6.3.6,
+        //           §9.1). M4's three-layer mover: A* over the nav grid with
+        //           deterministic tie-breaks, waypoint steering, spatial-hash
+        //           push-apart, and stuck detection ending in MoveFailed.
+        advance_movement(&mut self.world, &self.nav, &mut self.events);
 
         // Stage 7 — Combat: resolve attacks, apply damage, mark deaths (M6).
         // Stage 8 — Death & cleanup: advance health, fire lifecycle events,
@@ -288,47 +302,6 @@ impl Sim {
         }
     }
 
-    /// Stage 6 placeholder: advance every ordered mover toward its current order
-    /// target, entities in ascending id order (plan §6.3.6). Arriving at the
-    /// target completes the order; the next order (if queued) starts on the
-    /// following tick.
-    fn advance_movement(&mut self) {
-        // Movers first (immutable snapshot of id + speed), then mutate — keeps the
-        // borrow rules honest and the visit order explicitly ascending.
-        let movers: Vec<(EntityId, Fx)> = self
-            .world
-            .entities
-            .iter()
-            .filter(|e| !e.orders.is_empty())
-            .filter_map(|e| {
-                self.world
-                    .move_of(e.id)
-                    .map(|def| (e.id, def.speed_per_tick))
-            })
-            .collect();
-        for (id, speed) in movers {
-            let Some(entity) = self.world.entity_mut(id) else {
-                continue;
-            };
-            let Order::MoveTo { target } = entity.orders[0];
-            let delta = target - entity.pos;
-            if delta.is_zero() {
-                entity.orders.remove(0);
-                continue;
-            }
-            let dist = delta.len();
-            if dist <= speed {
-                entity.pos = target;
-                entity.facing = delta.normalized();
-                entity.orders.remove(0);
-            } else {
-                let dir = delta.normalized();
-                entity.facing = dir;
-                entity.pos = entity.pos + dir.scale(speed);
-            }
-        }
-    }
-
     /// Stage 8: advance health regeneration (saturating, clamped to the pool),
     /// then remove everyone whose health reached zero — firing `Died` — in
     /// ascending id order. `Vec::remove` keeps the survivors' order stable, and
@@ -370,6 +343,7 @@ mod tests {
             map_id: 0x11,
             width_tiles: 64,
             height_tiles: 64,
+            passability: TrivialWorld::open_passability(64, 64),
             kinds: vec![
                 KindTemplate {
                     caps: vec![
@@ -379,6 +353,7 @@ mod tests {
                         },
                         CapTemplate::Move {
                             speed_milli_tiles_per_s: 2600,
+                            radius_milli_tiles: 350,
                         },
                         CapTemplate::Vision {
                             radius_milli_tiles: 7000,
@@ -398,6 +373,7 @@ mod tests {
                         },
                         CapTemplate::Move {
                             speed_milli_tiles_per_s: 1600,
+                            radius_milli_tiles: 350,
                         },
                         CapTemplate::Vision {
                             radius_milli_tiles: 5000,

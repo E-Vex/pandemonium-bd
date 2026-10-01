@@ -20,7 +20,7 @@ use pandemonium_sim_api::{
 /// type; extend by adding a variant plus a system). The M1 vocabulary is exactly
 /// what the trivial world and its systems consume: `Health`, `Move`, `Vision`.
 /// Economy and combat capabilities arrive with their milestones (M5/M6).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CapabilityData {
     /// Hit points and regeneration.
     Health(HealthDef),
@@ -44,12 +44,47 @@ pub struct HealthDef {
     pub regen_per_tick: i32,
 }
 
-/// Move capability in runtime units.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Move capability in runtime units: the parameters plus this capability's
+/// runtime state (the same pattern as `hp` living on `HealthDef`). The path
+/// is the *remaining* waypoints of the current order — `path[0]` is the next
+/// steering target; it empties as waypoints are reached and is rebuilt when
+/// orders change or a repath escalates (M4, plan §9.1).
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MoveDef {
     /// Top speed per tick in fixed-point tile units (already converted from
     /// authoring milli-tiles per second, plan §10.2).
     pub speed_per_tick: Fx,
+    /// Collision radius in fixed-point tile units (plan §9.1.3: units have
+    /// integer radii from data).
+    pub radius: Fx,
+    /// Remaining waypoints of the current order, next-first. Empty while no
+    /// path is active (a fresh order builds one in stage 6).
+    pub path: Vec<Vec2Fx>,
+    /// Consecutive ticks the mover was blocked (stuck detection, plan §9.1).
+    pub stuck_ticks: u32,
+    /// Repath attempts spent on the current order (the escalation counter
+    /// that ends in `MoveFailed`).
+    pub repaths: u32,
+}
+
+impl MoveDef {
+    /// A mover with its parameters and a clean runtime state.
+    pub fn new(speed_per_tick: Fx, radius: Fx) -> Self {
+        Self {
+            speed_per_tick,
+            radius,
+            path: Vec::new(),
+            stuck_ticks: 0,
+            repaths: 0,
+        }
+    }
+
+    /// Clears the runtime movement state — a new order starts from scratch.
+    pub fn reset_runtime(&mut self) {
+        self.path.clear();
+        self.stuck_ticks = 0;
+        self.repaths = 0;
+    }
 }
 
 /// Vision capability in runtime units.
@@ -228,6 +263,14 @@ impl World {
             .map(|i| &self.movement[i].1)
     }
 
+    /// Mutable move data for an entity.
+    pub fn move_of_mut(&mut self, id: EntityId) -> Option<&mut MoveDef> {
+        match self.movement.binary_search_by_key(&id, |(eid, _)| *eid) {
+            Ok(i) => Some(&mut self.movement[i].1),
+            Err(_) => None,
+        }
+    }
+
     /// Vision data for an entity.
     pub fn vision_of(&self, id: EntityId) -> Option<&VisionDef> {
         self.vision
@@ -335,9 +378,7 @@ mod tests {
                         hp: 10,
                         regen_per_tick: 0,
                     }),
-                    CapabilityData::Move(MoveDef {
-                        speed_per_tick: Fx::from_milli(50),
-                    }),
+                    CapabilityData::Move(MoveDef::new(Fx::from_milli(50), Fx::from_milli(350))),
                 ],
             );
         }
@@ -356,9 +397,10 @@ mod tests {
             spawn_helper(
                 &mut world,
                 id,
-                vec![CapabilityData::Move(MoveDef {
-                    speed_per_tick: Fx::from_milli(50),
-                })],
+                vec![CapabilityData::Move(MoveDef::new(
+                    Fx::from_milli(50),
+                    Fx::from_milli(350),
+                ))],
             );
         }
         let before: Vec<EntityId> = world.movement.iter().map(|(id, _)| *id).collect();

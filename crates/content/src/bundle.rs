@@ -316,15 +316,17 @@ impl ContentBundle {
     ///
     /// Everything here is the simulation's own vocabulary: kinds as capability
     /// compositions in authoring units (the sim's §10.2 conversion applies once,
-    /// at spawn), the resource registry, and the initial spawns in a fixed,
+    /// at spawn), the resource registry, the terrain passability grid (M4's
+    /// navigation input — plan §9.1.1), and the initial spawns in a fixed,
     /// documented order — players in map-start order, each start's forces in
     /// faction order, then the map's ore nodes in authored order. Entity ids
     /// follow that order, so it is part of the match's determinism contract.
     ///
-    /// Capability mapping today: `Health`, `Move` (speed only), and `Vision`
-    /// flow into the world; the remaining capabilities are validated and carried
-    /// by the bundle for their systems' milestones (Attack/Produce → M5/M6,
-    /// radius → M4's collision layer — see docs/DEBT.md).
+    /// Capability mapping today: `Health`, `Move` (speed + collision radius,
+    /// M4), and `Vision` flow into the world; the remaining capabilities are
+    /// validated and carried by the bundle for their systems' milestones
+    /// (Gather/Produce/Storage/ProvidesPopulation → M5, Attack → M6 — see
+    /// docs/DEBT.md).
     pub fn world(&self) -> TrivialWorld {
         let kind_index: BTreeMap<&str, u32> = self
             .entities
@@ -345,6 +347,10 @@ impl ContentBundle {
                     .collect(),
             })
             .collect();
+
+        // The terrain passability grid: one byte per tile from the map's
+        // terrain classes (plan §9.1.1's nav-grid input, real data since M2).
+        let passability: Vec<u8> = map_passability(&self.map);
 
         let resources: Vec<SimResourceDef> = self
             .rules
@@ -398,6 +404,7 @@ impl ContentBundle {
             map_id: self.map_hash,
             width_tiles: self.map.width,
             height_tiles: self.map.height,
+            passability,
             kinds,
             resources,
             initial_spawns,
@@ -438,15 +445,38 @@ fn capability_template(cap: &defs::CapabilityDef) -> Option<CapTemplate> {
         }),
         defs::CapabilityDef::Move {
             speed_milli_tiles_per_s,
-            ..
+            radius_milli_tiles,
         } => Some(CapTemplate::Move {
             speed_milli_tiles_per_s: *speed_milli_tiles_per_s,
+            radius_milli_tiles: *radius_milli_tiles,
         }),
         defs::CapabilityDef::Vision { radius_milli_tiles } => Some(CapTemplate::Vision {
             radius_milli_tiles: *radius_milli_tiles,
         }),
         _ => None,
     }
+}
+
+/// The map's terrain as the simulation's passability grid: one byte per tile,
+/// row-major, 1 passable and 0 blocked (plan §9.1.1). The grid's shape is
+/// already validated against the terrain classes (loader guarantees).
+fn map_passability(map: &defs::MapDef) -> Vec<u8> {
+    let class_of: BTreeMap<char, &defs::TerrainClass> = map
+        .terrain
+        .iter()
+        .map(|class| (class.code, class))
+        .collect();
+    let mut passability = Vec::with_capacity((map.width as u64 * map.height as u64) as usize);
+    for row in &map.grid {
+        for code in row.chars() {
+            let passable = class_of
+                .get(&code)
+                .map(|class| class.passable)
+                .unwrap_or(false); // unknown codes never validate; fail closed
+            passability.push(u8::from(passable));
+        }
+    }
+    passability
 }
 
 // ---------------------------------------------------------------------------

@@ -27,3 +27,7 @@ path = "determinism.rs"
 [[test]]
 name = "content_pipeline"
 path = "content_pipeline.rs"
+
+[[test]]
+name = "movement"
+path = "movement.rs"

@@ -14,12 +14,12 @@
 use pandemonium_fx::{Fnv1a64, Fx};
 use pandemonium_sim_api::{KindId, PlayerId, ResourceId, Tick, Vec2Fx};
 
-use crate::world::{HealthDef, MoveDef, VisionDef};
+use crate::world::{HealthDef, VisionDef};
 
 /// The encoding version of the fixture hash, so an intentional change to the
 /// canonical encoding shows up as a golden-hash change in review rather than a
 /// silent collision.
-const FIXTURE_ENCODING_VERSION: u32 = 1;
+const FIXTURE_ENCODING_VERSION: u32 = 2;
 
 /// A world template: kinds as capability compositions, a resource registry with
 /// starting balances, and the spawns that bring it to life (plan §7.4's spirit
@@ -28,10 +28,14 @@ const FIXTURE_ENCODING_VERSION: u32 = 1;
 pub struct TrivialWorld {
     /// Opaque map identity, echoed into replays alongside the content hash.
     pub map_id: u64,
-    /// Map width in tiles (advisory for M1: no collision layer exists yet).
+    /// Map width in tiles.
     pub width_tiles: u32,
-    /// Map height in tiles (advisory for M1).
+    /// Map height in tiles.
     pub height_tiles: u32,
+    /// Terrain passability, row-major, one byte per tile (`width * height`
+    /// entries; 1 passable, 0 blocked) — the M4 navigation layer's input
+    /// (plan §9.1.1, from the map's terrain classes since M2).
+    pub passability: Vec<u8>,
     /// Kind templates in [`KindId`] order — a kind's id is its index here.
     pub kinds: Vec<KindTemplate>,
     /// The resource registry; each player's ledger starts with these balances.
@@ -48,6 +52,12 @@ pub struct TrivialWorld {
 }
 
 impl TrivialWorld {
+    /// A fully-passable `width` x `height` grid — the spine-test default for
+    /// worlds that do not care about terrain.
+    pub fn open_passability(width_tiles: u32, height_tiles: u32) -> Vec<u8> {
+        vec![1; (width_tiles as u64 * height_tiles as u64) as usize]
+    }
+
     /// The canonical content identity of this world: a hash over every field in a
     /// fixed little-endian order. Replays record it so a replay can be checked
     /// against the world it was recorded on (plan §6.5 `content_hash`).
@@ -57,6 +67,10 @@ impl TrivialWorld {
         h.write_u64(self.map_id);
         h.write_u32(self.width_tiles);
         h.write_u32(self.height_tiles);
+        h.write_u32(self.passability.len() as u32);
+        for tile in &self.passability {
+            h.write_u8(*tile);
+        }
         h.write_u32(self.kinds.len() as u32);
         for kind in &self.kinds {
             h.write_u32(kind.caps.len() as u32);
@@ -106,6 +120,9 @@ pub enum CapTemplate {
     Move {
         /// Top speed in milli-tiles per second (plan §10.2).
         speed_milli_tiles_per_s: i32,
+        /// Collision radius in milli-tiles (plan §9.1.3: integer radii from
+        /// data; the M4 collision layer consumes it).
+        radius_milli_tiles: i32,
     },
     /// Perception radius for the fog-filtered [`crate::Sim::player_view`] and
     /// targeting visibility (plan §9.5).
@@ -129,9 +146,11 @@ impl CapTemplate {
             }
             CapTemplate::Move {
                 speed_milli_tiles_per_s,
+                radius_milli_tiles,
             } => {
                 h.write_u8(2);
                 h.write_i32(speed_milli_tiles_per_s);
+                h.write_i32(radius_milli_tiles);
             }
             CapTemplate::Vision { radius_milli_tiles } => {
                 h.write_u8(3);
@@ -155,15 +174,17 @@ impl CapTemplate {
             }),
             CapTemplate::Move {
                 speed_milli_tiles_per_s,
+                radius_milli_tiles,
             } => {
                 let speed_milli = speed_milli_tiles_per_s.max(0);
                 let per_second = Fx::from_milli(speed_milli);
                 // Whole-tick conversion: per-second fixed point divided by the tick
                 // rate, rounding toward zero (the documented Fx division contract).
                 let per_tick = per_second.div(Fx::from_int(ticks_per_second as i32));
-                crate::CapabilityData::Move(MoveDef {
-                    speed_per_tick: per_tick,
-                })
+                crate::CapabilityData::Move(crate::world::MoveDef::new(
+                    per_tick,
+                    Fx::from_milli(radius_milli_tiles.max(0)),
+                ))
             }
             CapTemplate::Vision { radius_milli_tiles } => {
                 crate::CapabilityData::Vision(VisionDef {
@@ -223,6 +244,7 @@ mod tests {
             map_id: 7,
             width_tiles: 64,
             height_tiles: 64,
+            passability: TrivialWorld::open_passability(64, 64),
             kinds: vec![
                 KindTemplate {
                     caps: vec![
@@ -232,6 +254,7 @@ mod tests {
                         },
                         CapTemplate::Move {
                             speed_milli_tiles_per_s: 2600,
+                            radius_milli_tiles: 350,
                         },
                         CapTemplate::Vision {
                             radius_milli_tiles: 7000,
@@ -278,6 +301,7 @@ mod tests {
         // 2600 milli-tiles/s -> Fx(2600/1000) then divided by 30 ticks/s.
         let crate::CapabilityData::Move(m) = CapTemplate::Move {
             speed_milli_tiles_per_s: 2600,
+            radius_milli_tiles: 350,
         }
         .to_runtime(30) else {
             panic!("expected move capability");
@@ -297,6 +321,7 @@ mod tests {
         assert_eq!(v.radius, Fx::ZERO);
         let crate::CapabilityData::Move(m) = CapTemplate::Move {
             speed_milli_tiles_per_s: -5,
+            radius_milli_tiles: -5,
         }
         .to_runtime(30) else {
             panic!("expected move capability");
