@@ -318,17 +318,18 @@ impl ContentBundle {
     ///
     /// Everything here is the simulation's own vocabulary: kinds as capability
     /// compositions in authoring units (the sim's §10.2 conversion applies once,
-    /// at spawn), the resource registry, the terrain passability grid (M4's
-    /// navigation input — plan §9.1.1), and the initial spawns in a fixed,
-    /// documented order — players in map-start order, each start's forces in
-    /// faction order, then the map's ore nodes in authored order. Entity ids
-    /// follow that order, so it is part of the match's determinism contract.
+    /// at spawn), the resource registry, the terrain passability and buildability
+    /// grids (M4 navigation and M5 placement inputs), the production lists, the
+    /// base population cap, and the initial spawns in a fixed, documented order
+    /// — players in map-start order, each start's forces in faction order, then
+    /// the map's ore nodes in authored order. Entity ids follow that order, so it
+    /// is part of the match's determinism contract.
     ///
-    /// Capability mapping today: `Health`, `Move` (speed + collision radius,
-    /// M4), and `Vision` flow into the world; the remaining capabilities are
-    /// validated and carried by the bundle for their systems' milestones
-    /// (Gather/Produce/Storage/ProvidesPopulation → M5, Attack → M6 — see
-    /// docs/DEBT.md).
+    /// Capability mapping: `Health`, `Move` (speed + collision radius), `Vision`,
+    /// and — since M5 — the economy set flow into the world: `Gather`, `Build`,
+    /// `Produce`, `Storage`, `ProvidesPopulation`, `Resource`, and `Footprint`.
+    /// `Attack` remains validated-and-carried for combat's milestone (M6 — see
+    /// docs/DEBT.md DEBT-006).
     pub fn world(&self) -> TrivialWorld {
         let kind_index: BTreeMap<&str, u32> = self
             .entities
@@ -338,19 +339,48 @@ impl ContentBundle {
             .collect();
         let kind_of = |id: &str| kind_index.get(id).copied();
 
+        // The resource registry defines ResourceIds (rules are sorted by id;
+        // the ledger order is that order).
+        let resource_index: BTreeMap<&str, u32> = self
+            .rules
+            .resources
+            .iter()
+            .enumerate()
+            .map(|(index, resource)| (resource.id.as_str(), index as u32))
+            .collect();
+        let resource_of = |id: &str| resource_index.get(id).copied();
+
         let kinds: Vec<KindTemplate> = self
             .entities
             .iter()
-            .map(|entity| KindTemplate {
-                caps: entity
-                    .capabilities
-                    .iter()
-                    .filter_map(capability_template)
-                    .collect(),
-                // The economy stats (cost, build time, population, requires)
-                // and the production lists join the world seam with M5's
-                // economy mapping — see docs/DEBT.md DEBT-006.
-                economy: KindEconomy::default(),
+            .map(|entity| {
+                let economy = KindEconomy {
+                    // The Alpha schema prices everything in Ore; a second
+                    // resource extends the cost struct and this mapping
+                    // (data-only — plan §9.3). A zero cost needs no resource.
+                    cost: match (entity.cost_ore > 0, resource_of("ore")) {
+                        (true, Some(resource)) => vec![(ResourceId(resource), entity.cost_ore)],
+                        _ => Vec::new(),
+                    },
+                    build_time_ticks: entity.build_time_ticks,
+                    population: entity.population,
+                    // Validators resolve every requirement; unreachable skips
+                    // degrade to an empty list, never a wrong id.
+                    requires: entity
+                        .requires
+                        .iter()
+                        .filter_map(|id| kind_of(id))
+                        .map(pandemonium_sim_api::KindId)
+                        .collect(),
+                };
+                KindTemplate {
+                    caps: entity
+                        .capabilities
+                        .iter()
+                        .filter_map(|cap| capability_template(cap, &resource_index))
+                        .collect(),
+                    economy,
+                }
             })
             .collect();
 
@@ -369,7 +399,27 @@ impl ContentBundle {
             })
             .collect();
 
+        // The faction's production lists, in faction (authored) order — which
+        // kinds each producer trains is faction data flowing through the world
+        // seam (plan §10.4; A-041).
         let faction = self.faction();
+        let production: Vec<(
+            pandemonium_sim_api::KindId,
+            Vec<pandemonium_sim_api::KindId>,
+        )> = faction
+            .production
+            .iter()
+            .filter_map(|(producer, producibles)| {
+                let producer_kind = kind_of(producer)?;
+                let list = producibles
+                    .iter()
+                    .filter_map(|producible| kind_of(producible))
+                    .map(pandemonium_sim_api::KindId)
+                    .collect();
+                Some((pandemonium_sim_api::KindId(producer_kind), list))
+            })
+            .collect();
+
         let mut initial_spawns: Vec<SpawnDef> = Vec::new();
         for start in &self.map.starts {
             for force in &faction.starting_forces {
@@ -414,9 +464,7 @@ impl ContentBundle {
             buildability: map_buildability(&self.map),
             kinds,
             resources,
-            // Faction production lists join the seam with M5's economy mapping
-            // (docs/DEBT.md DEBT-006).
-            production: Vec::new(),
+            production,
             base_population_cap: self.rules.base_population_cap,
             initial_spawns,
             scheduled_spawns: Vec::new(),
@@ -443,9 +491,13 @@ fn tile_center(x: i32, y: i32, w: u32, h: u32) -> Vec2Fx {
 }
 
 /// Maps a validated capability into the simulation's capability template, when
-/// the simulation has a system for it. See [`ContentBundle::world`] for the
-/// milestone mapping of the rest.
-fn capability_template(cap: &defs::CapabilityDef) -> Option<CapTemplate> {
+/// the simulation has a system for it (the M5 economy mapping — see
+/// [`ContentBundle::world`]; Attack remains for M6). `resources` resolves
+/// resource-id strings into the registry's [`ResourceId`] order.
+fn capability_template(
+    cap: &defs::CapabilityDef,
+    resources: &BTreeMap<&str, u32>,
+) -> Option<CapTemplate> {
     match cap {
         defs::CapabilityDef::Health {
             max_hp,
@@ -464,7 +516,33 @@ fn capability_template(cap: &defs::CapabilityDef) -> Option<CapTemplate> {
         defs::CapabilityDef::Vision { radius_milli_tiles } => Some(CapTemplate::Vision {
             radius_milli_tiles: *radius_milli_tiles,
         }),
-        _ => None,
+        defs::CapabilityDef::Gather {
+            carry_amount,
+            gather_time_ms,
+            ..
+        } => Some(CapTemplate::Gather {
+            carry_amount: *carry_amount,
+            gather_time_ms: *gather_time_ms,
+        }),
+        defs::CapabilityDef::Build => Some(CapTemplate::Build {}),
+        defs::CapabilityDef::Produce => Some(CapTemplate::Produce {}),
+        defs::CapabilityDef::Storage { resources: list } => Some(CapTemplate::Storage {
+            resources: list
+                .iter()
+                .filter_map(|id| resources.get(id.as_str()).copied())
+                .map(ResourceId)
+                .collect(),
+        }),
+        defs::CapabilityDef::ProvidesPopulation { amount } => {
+            Some(CapTemplate::ProvidesPopulation { amount: *amount })
+        }
+        defs::CapabilityDef::Resource { resource, amount } => Some(CapTemplate::Resource {
+            resource: ResourceId(resources.get(resource.as_str()).copied()?),
+            amount: *amount,
+        }),
+        defs::CapabilityDef::Footprint { w, h } => Some(CapTemplate::Footprint { w: *w, h: *h }),
+        // Attack arrives with combat (M6) — validated, carried, unmapped.
+        defs::CapabilityDef::Attack { .. } => None,
     }
 }
 

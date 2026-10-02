@@ -237,6 +237,21 @@ pub(crate) fn validate_entity(
     if entity.cost_ore < 0 {
         return Err(stat("cost.ore", entity.cost_ore, "must not be negative"));
     }
+    // A nonzero Ore price needs the registry to carry Ore — the world seam
+    // maps `cost.ore` onto the registered resource (M5).
+    if entity.cost_ore > 0 && !rules.resources.iter().any(|res| res.id == "ore") {
+        return Err(ContentError::UnknownResourceRef {
+            file: file.to_string(),
+            what: format!("entity '{id}' cost.ore"),
+            reference: "ore".to_string(),
+            registered: rules
+                .resources
+                .iter()
+                .map(|res| res.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
     if entity.population < 0 {
         return Err(stat(
             "population",

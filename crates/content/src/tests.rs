@@ -654,12 +654,17 @@ fn world_maps_content_into_the_simulation_vocabulary() {
         ]
     );
 
-    // Capability mapping: worker keeps Health + Move + Vision (Gather rides in
-    // the bundle for M5); base keeps Health + Vision (Footprint/Produce wait for
-    // their systems); ore_node has no mapped capabilities.
-    assert_eq!(world.kinds[2].caps.len(), 3);
-    assert_eq!(world.kinds[0].caps.len(), 2);
-    assert!(world.kinds[1].caps.is_empty());
+    // Capability mapping (the M5 economy set rides along): worker carries
+    // Health + Move + Gather + Vision (this factory's worker has no Build);
+    // base carries Health + Vision + Footprint + Produce; ore_node carries
+    // Resource + Footprint.
+    assert_eq!(world.kinds[2].caps.len(), 4);
+    assert_eq!(world.kinds[0].caps.len(), 4);
+    assert_eq!(world.kinds[1].caps.len(), 2);
+    assert!(world.kinds[1]
+        .caps
+        .iter()
+        .any(|cap| matches!(cap, pandemonium_sim::CapTemplate::Resource { .. })));
 
     // And the seam runs: the simulation accepts the loaded world as-is.
     use pandemonium_sim::Sim;
@@ -757,4 +762,67 @@ fn write_tree(root: &std::path::Path, files: &[(&str, &str)]) {
         std::fs::create_dir_all(path.parent().expect("nested path")).unwrap();
         std::fs::write(path, text).unwrap();
     }
+}
+
+#[test]
+fn economy_stats_and_production_flow_through_the_seam() {
+    let bundle = ContentTree::load(&factory())
+        .unwrap()
+        .single_map_bundle()
+        .unwrap();
+    let world = bundle.world();
+    use pandemonium_sim::CapTemplate;
+    use pandemonium_sim_api::{KindId, ResourceId};
+
+    // Worker (kind 2): 50 Ore, 12000 ms -> 360 ticks, pop 1, requires base.
+    let worker = &world.kinds[2];
+    assert_eq!(
+        worker.economy.cost,
+        vec![(ResourceId(0), 50)],
+        "cost.ore maps onto the registry's Ore id"
+    );
+    assert_eq!(worker.economy.build_time_ticks, 360);
+    assert_eq!(worker.economy.population, 1);
+    assert_eq!(worker.economy.requires, vec![KindId(0)]);
+
+    // Base (kind 0): 100 Ore, 10000 ms -> 300 ticks, no population, no needs.
+    let base = &world.kinds[0];
+    assert_eq!(base.economy.cost, vec![(ResourceId(0), 100)]);
+    assert_eq!(base.economy.build_time_ticks, 300);
+    assert_eq!(base.economy.population, 0);
+    assert!(base.economy.requires.is_empty());
+
+    // Ore node (kind 1): free, instant, requirement-free.
+    let node = &world.kinds[1];
+    assert!(node.economy.cost.is_empty());
+    assert_eq!(node.economy.build_time_ticks, 0);
+
+    // The Gather parameters ride on the worker's capability (A-025).
+    assert!(worker.caps.iter().any(|cap| matches!(
+        cap,
+        CapTemplate::Gather {
+            carry_amount: 10,
+            gather_time_ms: 2000,
+        }
+    )));
+
+    // Production lists: the base trains workers (faction data -> the seam).
+    assert_eq!(world.production, vec![(KindId(0), vec![KindId(2)])]);
+
+    // The base population cap comes from the rules.
+    assert_eq!(world.base_population_cap, 0);
+}
+
+#[test]
+fn cost_requires_the_priced_resource_in_the_registry() {
+    // A ruleset without Ore cannot price anything in Ore.
+    let no_ore = RULES.replace(
+        r#"resources: [ ( id: "ore", display_name: "Ore", starting: 200 ) ]"#,
+        r#"resources: [ ( id: "gold", display_name: "Gold", starting: 200 ) ]"#,
+    );
+    let err = ContentTree::load(&factory().rules("alpha.ron", &no_ore)).unwrap_err();
+    assert!(
+        matches!(err, ContentError::UnknownResourceRef { ref what, .. } if what.contains("cost.ore")),
+        "expected a cost.ore resource rejection, got: {err}"
+    );
 }
