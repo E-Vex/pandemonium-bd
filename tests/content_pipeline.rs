@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use pandemonium_content::{CapabilityDef, ContentBundle};
 use pandemonium_sim::Sim;
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, EntityId, MatchSetup, MoveState, PlayerId, PlayerSetup,
-    Vec2Fx,
+    Command, CommandKind, ControllerKind, EntityId, Event, MatchSetup, MoveState, PlayerId,
+    PlayerSetup, TilePos, Vec2Fx,
 };
 
 /// The repository's content directory.
@@ -676,6 +676,152 @@ fn add_a_unit_is_data_only() {
         .unwrap();
     assert_eq!(arrived.pos, Vec2Fx::from_ints(20, 18));
     assert_eq!(arrived.kind, pandemonium_sim_api::KindId(6));
+
+    // 4b. DEBT-007's M5 half: the data-defined kind TRAINS from the barracks
+    //     (plan §10.6 "gets built [from a production list]"). Gather with the
+    //     four workers, raise a barracks from data, and enqueue a skirmisher
+    //     — the whole loop with zero changes under crates/sim.
+    let barracks_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "barracks")
+        .expect("the barracks kind exists") as u32;
+    let worker_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "worker")
+        .expect("the worker kind exists") as u32;
+    let node_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "ore_node")
+        .expect("the ore node kind exists") as u32;
+    // The workers (ids 2..=5 in the documented spawn order: CC, four workers,
+    // then the skirmisher starting force, then nodes) gather; the first also
+    // raises the barracks.
+    let workers: Vec<EntityId> = sim
+        .snapshot()
+        .entities
+        .iter()
+        .filter(|entity| entity.owner == PlayerId(0) && entity.kind.0 == worker_kind)
+        .map(|entity| entity.id)
+        .collect();
+    assert_eq!(workers.len(), 4);
+    let nodes: Vec<EntityId> = sim
+        .snapshot()
+        .entities
+        .iter()
+        .filter(|entity| entity.kind.0 == node_kind)
+        .map(|entity| entity.id)
+        .collect();
+    let mut seq = 100u32;
+    let mut barracks_done_tick: Option<u32> = None;
+    let mut ticks = sim.tick();
+    while ticks < 2400 {
+        let mut commands = Vec::new();
+        // Idle workers gather (round-robin over the nodes).
+        for (index, worker) in workers.iter().enumerate() {
+            let idle = sim
+                .snapshot()
+                .entities
+                .iter()
+                .any(|entity| entity.id == *worker && entity.move_state == MoveState::Idle);
+            if idle {
+                commands.push(Command::new(
+                    PlayerId(0),
+                    sim.tick(),
+                    {
+                        seq += 1;
+                        seq
+                    },
+                    CommandKind::Gather {
+                        units: vec![*worker],
+                        node: nodes[index % nodes.len()],
+                    },
+                ));
+            }
+        }
+        // Raise the barracks once Ore allows (retries ride out transient
+        // placement blocks from traveling workers).
+        let barracks_exists = sim
+            .snapshot()
+            .entities
+            .iter()
+            .any(|entity| entity.owner == PlayerId(0) && entity.kind.0 == barracks_kind);
+        let ore = sim.player_view(PlayerId(0)).resources[0].amount;
+        if !barracks_exists && ore >= 150 && ticks.is_multiple_of(5) {
+            commands.push(Command::new(
+                PlayerId(0),
+                sim.tick(),
+                {
+                    seq += 1;
+                    seq
+                },
+                CommandKind::Build {
+                    worker: workers[0],
+                    structure: pandemonium_sim_api::KindId(barracks_kind),
+                    at: TilePos { x: 17, y: 11 },
+                },
+            ));
+        }
+        // Train the skirmisher once the barracks is up and Ore allows. While
+        // the site is still under construction the Train is refused
+        // (MissingCapability) — retried on a 30-tick cadence until it lands.
+        if barracks_exists && ore >= 65 && ticks.is_multiple_of(30) {
+            let barracks = sim
+                .snapshot()
+                .entities
+                .iter()
+                .find(|entity| entity.owner == PlayerId(0) && entity.kind.0 == barracks_kind)
+                .unwrap()
+                .id;
+            commands.push(Command::new(
+                PlayerId(0),
+                sim.tick(),
+                {
+                    seq += 1;
+                    seq
+                },
+                CommandKind::Train {
+                    producer: barracks,
+                    unit: pandemonium_sim_api::KindId(6),
+                },
+            ));
+        }
+        let out = sim.step(&commands);
+        ticks = sim.tick();
+        if barracks_done_tick.is_none()
+            && out
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ConstructionCompleted { .. }))
+        {
+            barracks_done_tick = Some(ticks);
+        }
+        if out
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ProductionCompleted { .. }))
+        {
+            // The trained skirmisher exists with the data-defined kind.
+            assert!(
+                sim.snapshot()
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == pandemonium_sim_api::KindId(6) && entity.id != id),
+                "the trained skirmisher spawned"
+            );
+            break;
+        }
+    }
+    assert!(
+        barracks_done_tick.is_some(),
+        "the barracks never completed in {ticks} ticks"
+    );
+    assert!(
+        ticks < 2400,
+        "the skirmisher never trained in {ticks} ticks"
+    );
 
     // 5. The simulation sources contain zero knowledge of the new kind —
     //    nothing under crates/sim/ mentions it (no special-casing, FD-4).
