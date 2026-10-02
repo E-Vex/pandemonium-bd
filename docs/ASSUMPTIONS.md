@@ -255,3 +255,94 @@ confirms or rejects it.
   shapes the M4 exit tests and real play use — resolve cleanly. Formations
   and side-stepping avoidance remain post-Alpha hooks (plan §17); the crowd
   radius and head-on pass-through keep ordinary clicks working.
+- **A-041 (§9.4, §10.4).** Which kinds a producer trains is *faction* data; it
+  flows into the simulation through `TrivialWorld::production` (producer kind →
+  trainable kinds, authored order) rather than parameters on the Produce
+  capability, which stays parameterless. The command gate refuses Train of a
+  kind outside the producer's list as `MissingCapability` (the producer "lacks
+  the capability to produce that"). A second faction is still data-only: its
+  lists ride the same seam.
+- **A-042 (§9.4).** "Population headroom is checked at enqueue and at spawn" is
+  read as: the enqueue check compares *live* usage + the kind's population
+  against the cap (queued items reserve nothing), and the spawn re-checks
+  against fresh usage — a completed item whose headroom vanished waits at the
+  front of the queue until the cap grows (classic supply-block, resolved
+  deterministically; pinned by the production tests).
+- **A-043 (§9.3).** A worker is "at" a node / storage / site when the distance
+  from its body to the nearest point of the footprint *rectangle* is at most
+  1500 milli-tiles plus its collision radius. The generosity is deliberate:
+  economy travel then needs none of the mover's crowded-arrival machinery, and
+  arrivals under jostle still count. Extraction, deposits, and hammering all
+  use the one shared test.
+- **A-044 (§9.3).** Auto-seek on depletion (and for any dead gather target)
+  rewrites the order to the nearest node — center distance, ties to the lower
+  id — carrying the same resource as any partial cargo (any node when the
+  hold is empty); with no node left the order is dropped and the worker idles
+  (partial cargo rides along until a future order resolves it). Re-targeting
+  happens on the tick the node is removed.
+- **A-045 (§9.4).** A construction site whose builder dies stalls — the
+  command vocabulary has no reassignment or construction-cancel, so the
+  site (and its spent cost) waits indefinitely; site hp is full from spawn;
+  costs are only refundable through production-queue cancellation. Revisit if
+  combat (M6) makes dead builders common.
+- **A-046 (§9.4).** Under-construction producers refuse Train with
+  `MissingCapability` (a site is not open for business); `SetRally` and
+  `CancelQueueItem` work on any producer carrying the capability regardless of
+  lifecycle (setting an early rally is harmless and classic).
+- **A-047 (§9.4).** The two surfaces stay disjoint by kind shape: Train of a
+  footprint-carrying kind is refused `InvalidTarget` (structures are built,
+  not trained) and Build of a kind without a Footprint is refused
+  `InvalidTarget` (units are trained, not built).
+- **A-048 (§9.5, §8.2).** Gather targeting does not fog-filter: nodes are
+  static map features and the three-state fog model is M6's work, so the gate
+  checks node existence and Resource-carriage only. The vision milestone
+  revisits target legality for economy commands.
+- **A-049 (§13 A12).** `population <= cap` is asserted strictly. It holds
+  through M5 (caps only grow; deaths only lower usage). M6 combat can destroy
+  population-providing structures and legitimately open an over-cap window —
+  the allowance (or its absence) is an explicit decision then; see DEBT-010.
+- **A-050 (§6.4, §5.10, §14 M5).** M5 bumps both canonical encodings:
+  `STATE_ENCODING_VERSION` 2→3 (the Gather/Build/Produce/Storage/
+  ProvidesPopulation/Resource/Footprint/Construction capability blocks, the
+  `GatherAt`/`BuildAt` orders, the `UnderConstruction` lifecycle) and
+  `FIXTURE_ENCODING_VERSION` 2→3 (buildability grid, production lists, base
+  population cap, kind economy). The determinism goldens regenerated; the
+  tools headless demo's final hash moved to 0xbc86a622e357252d (seed 7,
+  300 ticks) — review-visible value changes, not silent ones.
+- **A-051 (§9.3).** The nearest storage is chosen by center distance (ties to
+  the lower id) among the player's *completed* storages that accept the
+  carried resource; with no storage the full worker stands and waits (the
+  order is kept). Center distance rather than rect distance keeps the choice
+  simple and deterministic; the approach test is what actually governs the
+  deposit.
+- **A-052 (§10.5, §9.4).** Build placement legality is: every footprint tile
+  in bounds, on buildable terrain (the new buildability grid), unclaimed by
+  any static body, and free of movers standing on it. With footprints now
+  blocking tiles, Crossroads' four contested plaza nodes on the gap's
+  doorsteps sealed the only north-south crossing (independently verified by
+  BFS: 907 reachable tiles, goal cut off) — they moved one tile outward
+  ((28,29), (34,29), (28,33), (34,33); 180-degree symmetry kept), the content
+  hash moved to 0x249b69f0ee343a10 and the map id to 0xbc0970c3cf14e9cf, and
+  the M4 real-map exit test recalibrated its arrival bound to the
+  blocked-destination packing envelope (2800 milli) while gaining a
+  zero-MoveFailed assertion and a no-mover-on-footprint-tile check.
+- **A-053 (§9.4).** Produced units spawn on the first free tile of an
+  expanding row-major ring around the producer (≤ 3 tiles out, exact tile
+  centers, producer position as the degenerate fallback) and carry a
+  `MoveTo` rally order when one is set. Construction sites spawn at their
+  authored placement with *no* jitter (a shifted site would misalign its
+  footprint) and claim their tiles immediately.
+- **A-054 (§6.3).** Stage 3's internal order is fixed as: the fixture's
+  scheduled spawns, then production queues (producers ascending), then
+  construction sites (ascending); population usage/cap recompute at match
+  start, end of stage 3, and after stage 8's removals. Stage 4 runs the
+  gather loop (workers ascending) and node removals with same-tick
+  re-targeting.
+- **A-055 (§8.2).** Rejection-reason mapping for the economy commands: a kind
+  outside the producer's faction list → `MissingCapability`; an
+  under-construction producer → `MissingCapability`; Train of a structure
+  kind / Build of a unit kind → `InvalidTarget`; a cancel index outside the
+  queue → `QueueIndexInvalid`; requirements unmet → `RequirementsUnmet`;
+  insufficient funds → `CannotAfford`; no population headroom →
+  `PopulationFull`; blocked placement → `PlacementBlocked` (terrain, claim,
+  mover, or bounds).

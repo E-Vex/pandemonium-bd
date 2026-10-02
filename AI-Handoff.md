@@ -31,7 +31,7 @@
 | Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/pandemonium-bd`) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
 | Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
-| Status | **M4 (Movement, P1) COMPLETE** — nav grid + A* (deterministic tie-breaks) + steering + spatial-hash push-apart + stuck detection; 50-unit spam-click, no-permanent-stuck, and real-map detour exit tests green (208/208). **Next: M5 (Economy/production/construction)** |
+| Status | **M5 (Economy/production/construction, P3) COMPLETE** — resource ledger, worker gather loop with depletion + auto-seek, production queues (Train/Cancel/SetRally) with paid-on-enqueue costs, construction lifecycle (Build + committed builder), population cap, shared requirements checker, footprints blocking tiles, A12 invariant checker; divergent-opening and economy-soak exit tests green (244/244 dev, 239 release — 5 should-panic checker tests are debug-only). **Next: M6 (Combat & vision)** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -62,20 +62,25 @@ cargo run -p pandemonium-client             # windowed 3D client; headless smoke
 cargo run -p pandemonium-client -- --frames 900   # windowed smoke: auto-exit + evidence summary
 ```
 
-Expected at this handoff: all commands succeed; 208 tests pass (39 fx unit
-tests, 15 fx property tests, 52 sim unit tests [21 of them nav/movement], 4
-sim_api unit tests, 8 replay codec tests, 8 tools tests, 9 determinism
-acceptance tests, 31 content unit tests, 4 content-pipeline acceptance tests,
-3 movement acceptance tests, 28 engine unit tests + 2 mesh tests, 5 client
-text-atlas tests, 2 architecture-law tests, 1 sim constant test — dev and
-release identical); the headless demo's final hash is 0x3904fff0c74ee4c4
-(seed 7, 300 ticks — moved by M4's encoding v2, see A-038). `tools content-validate content` prints the
-bundle identity and PASS; `cargo run -p pandemonium-client` prints the
-no-display finding and runs the headless smoke pass (on a desktop it opens the
-window); with `--frames N` the windowed run exits after N frames and prints
-the evidence summary. On a headless machine the windowed path is verified on
-Xvfb + llvmpipe per DEBT-008/A-037 (selection + Move commands provably work;
-the human visual pass remains).
+Expected at this handoff: all commands succeed; 244 tests pass in dev and
+239 in release (the 5 should-panic invariant-checker tests are debug-only by
+nature — `debug_assert` compiles out in release): 39 fx unit tests, 15 fx
+property tests, 82 sim unit tests (economy/production/construction/invariants
+among them), 4 sim_api unit tests, 8 replay codec tests, 12 tools tests,
+33 content unit tests, 9 determinism acceptance tests, 4 content-pipeline
+acceptance tests (the A3 scaffold now trains the data-defined kind),
+3 movement acceptance tests, 4 economy acceptance tests (the M5 exit suite),
+28 engine unit tests + 2 mesh tests, 5 client text-atlas tests,
+2 architecture-law tests, 1 sim constant test; the headless demo's final hash
+is 0xbc86a622e357252d (seed 7, 300 ticks — moved by M5's encoding v3, see
+A-050). `tools content-validate content` prints the bundle identity and PASS
+(content hash 0x249b69f0ee343a10, map id 0xbc0970c3cf14e9cf — moved by the
+contested-node relocation, A-052); `cargo run -p pandemonium-client` prints
+the no-display finding and runs the headless smoke pass (on a desktop it
+opens the window); with `--frames N` the windowed run exits after N frames
+and prints the evidence summary. On a headless machine the windowed path is
+verified on Xvfb + llvmpipe per DEBT-008/A-037 (selection + Move commands
+provably work; the human visual pass remains).
 CI additionally runs fmt + clippy + tests on Linux/Windows/macOS in dev and
 release, plus the replay round-trip, when pushed to GitHub
 (`.github/workflows/ci.yml`) — see A-010/A-020 below.
@@ -85,7 +90,7 @@ release, plus the replay round-trip, when pushed to GitHub
 ```text
 crates/fx        DONE    Q16.16 fixed-point math, isqrt, PCG32 Rng, FNV-1a hasher
 crates/sim_api   DONE    vocabulary: ids, Command/CommandKind, Event, Reject, Snapshot, PlayerView, MatchSetup
-crates/sim       DONE    Sim spine + M4 movement: step pipeline, entity + capability stores, command gate, state hash (v2), trivial-world fixture w/ passability, nav grid + A*, steering + push-apart + stuck detection
+crates/sim       DONE    Sim spine + M4 movement + M5 economy: step pipeline, entity + capability stores (11 capability types), command gate w/ economy checks, state hash (v3), trivial-world fixture w/ terrain grids + production lists, nav grid + A* + footprint occupancy, mover, gather loop, production queues, construction, A12 invariant checker
 crates/content   DONE    RON schema (strict), versioned loaders + map v1->v2 migration, precise validators, ContentBundle + content hash, world() seam
 crates/ai        STUB    empty lib, role documented (lands in M7)
 crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in tools/tests)
@@ -93,7 +98,7 @@ crates/engine    DONE*   FixedTimestep, Interpolator, MatchHost (structural FD-2
                    (*engine core)
 crates/client    DONE*   winit window + wgpu 26 3D renderer (depth buffer, terrain mesh + heightmap, instanced placeholder boxes), selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, --frames windowed smoke, headless smoke fallback (*DEBT-008 keeps the human visual pass)
 crates/tools     DONE    headless, replay-verify, content-validate subcommands (clap CLI)
-tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3) + movement.rs (M4/P1)
+tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3 + the M5 train extension) + movement.rs (M4/P1) + economy.rs (M5/P3)
 content/         DONE    rules/, entities/ (9 kinds), factions/ (Legion), maps/ (Crossroads 64x64, symmetric, heightmap)
 docs/            ACTIVE  ARCHITECTURE, DEBT, ASSUMPTIONS, CONTENT_GUIDE, adr/ (ADR-0001 accepted)
 ```
@@ -114,17 +119,17 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M2 | Content pipeline | ✅ **complete** | all Alpha content + the map load (`tools content-validate` PASS; the repo tree is test-pinned); malformed files produce precise errors (every validator has a test); A3 scaffold in place (data-only add-a-unit: load + spawn + Move, sim sources scanned clean; the §10.6 built-and-fights extension is DEBT-007 for M5/M6); map schema v2 with display-only heightmap per ADR-0001, v1 migrates forward; content hash + map id canonical (FNV-1a, plan §5.10) |
 | M3 | Engine shell | ✅ **complete** | engine + client implemented and green (183 tests): FixedTimestep loop w/ catch-up cap, interpolation, MatchHost (the step-only mutation guarantee is structural) + pause/single-step, RtsCamera + ground picking + box select, terrain mesh + null renderer, wgpu 26 windowed client w/ depth buffer, terrain + heightmap, instanced placeholder boxes, selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, `--frames` windowed smoke. **Windowed path machine-verified on Xvfb + llvmpipe** (DEBT-008/A-037: 900 frames presented, XTEST drag-box selection of the 5 start entities, 2 Move commands, visible motion); the *human* visual pass remains open in DEBT-008. HUD/overlay slice landed (DEBT-009 repaid) |
 | M4 | Movement (P1) | ✅ **complete** | 50 units respond within 2 ticks under spam-clicked orders (per-unit motion check, tests/movement.rs); no permanent stuck units (every order resolves — arrival, crowded arrival, or MoveFailed; unreachable/zero-speed fail immediately); hashes green (A1 + regenerated goldens, encoding v2); real-map detour: 4 workers cross Crossroads around the rock walls, never on blocked terrain; push-apart separates stacks and never pushes into terrain (DEBT-003 repaid) |
-| M5 | Economy/production/construction (P3) | ⬜ pending | divergent scripted openings; A12 invariants green under economy soak |
+| M5 | Economy/production/construction (P3) | ✅ **complete** | divergent scripted openings produce measurably different timelines (worker-heavy vs early-Raider: worker counts, barracks, Raiders fielded, income, balances, hashes branch ≤ tick 60); scripted matches bit-identical run-to-run; A12 invariant checker fires every tick in debug and 3 openings × 2 seeds × 900 ticks of both-player economy soak hold every invariant; the soak caught and fixed a real spawn-position bug |
 | M6 | Combat & vision (P2) | ⬜ pending | composition/position matter; legibility checklist; A10 fog integrity green |
 | M7 | AI through commands (P4) | ⬜ pending | A5 + A11 green; AI-vs-AI headless matches complete |
 | M8 | Match rules & full loop (P5) | ⬜ pending | 10–15 min match vs AI completes and restarts cleanly (A15) |
 | M9 | Alpha content & feel pass | ⬜ pending | minimum viable loop playable end-to-end vs the AI |
 | M10 | Stabilization & declaration | ⬜ pending | every A1–A15 criterion verified; soak green; docs/ALPHA_DECLARATION.md with evidence |
 
-**The plan was broken into parts along these milestones.** Parts 1–4 (M0–M3,
-plus M4 movement) are complete (M3's windowed path machine-verified; the human
-visual pass stays open as DEBT-008's narrowed scope); parts 6–11 (M5–M10)
-remain, in strict order.
+**The plan was broken into parts along these milestones.** Parts 1–5 (M0–M3,
+M4 movement, and M5 economy/production/construction) are complete (M3's
+windowed path machine-verified; the human visual pass stays open as
+DEBT-008's narrowed scope); parts 6–11 (M6–M10) remain, in strict order.
 
 ## 7. M0–M3 inventory — what exists today, concretely
 
@@ -258,6 +263,49 @@ remain, in strict order.
 - 31 content unit tests, 2 tools tests, 4 acceptance tests (150 total at the M2
   exit; dev and release identical).
 
+**M5 — economy, production, construction (plan §14, citing §9.3, §9.4; see
+`crates/sim/src/economy.rs`, `production.rs`, `invariants.rs`,
+`tests/economy.rs`, and A-041..A-055 for the semantics)**
+
+- `economy.rs` — stage 4: the worker gather loop as a phase machine (travel to
+  the node through stage 6's shared travel targets, gather timer, extraction
+  capped by capacity *and* node remaining, carry, deposit at the nearest
+  completed storage with `ResourceDelivered`, repeat). Depleted nodes are
+  removed (`NodeDepleted`) with their tiles released and affected workers
+  auto-seeking the nearest same-resource node the same tick; no nodes left
+  drops the order. Ghost `BuildAt` orders are hygiene-cleaned. The approach
+  test (nearest footprint-rect point within 1500 milli + body radius) is
+  deliberately generous so economy travel needs no crowd machinery (A-043).
+- `production.rs` — stage 3: producers' ordered queues (cost paid on enqueue,
+  refunded verbatim on cancel, only the head progresses, completed items hold
+  at the front when population headroom is missing), spawns on the first free
+  ring tile with a rally `MoveTo`, construction progress with a committed
+  builder completing into `Lifecycle::Active` (builders' orders popped), the
+  population usage/cap recompute (match start, end of stage 3, after deaths),
+  and the one requirements checker (completed entities of the required kind,
+  owned) shared by both surfaces.
+- `command.rs` — the economy gate: Train/Cancel/SetRally/Build validation
+  reading the fixture through the seam (capability, kind, faction production
+  list, requirements → afford → population; placement = in-bounds + buildable
+  + unclaimed + no mover standing), with Build spawning the site inline
+  (occupying its tiles immediately, exact placement — no jitter). Rejection
+  mappings per A-055.
+- `invariants.rs` — the A12 checker: every invariant asserted at the end of
+  every step in debug builds; five should-panic tests prove it fires; the
+  strict `pop <= cap` reading is flagged for M6 (A-049, DEBT-010).
+- The state encoding moved to **v3** and the fixture encoding to **v3** (the
+  economy capability blocks, `GatherAt`/`BuildAt` orders, `UnderConstruction`
+  lifecycle, kind economy, production lists, buildability, base cap) — the
+  determinism goldens regenerated (A-050); the tools headless final hash
+  moved to 0xbc86a622e357252d (seed 7, 300 ticks).
+- Crossroads' four contested plaza nodes moved one tile outward (A-052): with
+  footprints blocking tiles, the old doorstep positions sealed the only
+  north-south crossing (independently verified by BFS); the content hash and
+  map id moved accordingly.
+- `tests/economy.rs` — the exit suite (divergent openings, determinism, the
+  A12 soak, soak determinism); `tests/content_pipeline.rs` grew the A3/DEBT-007
+  train-from-barracks half.
+
 **M3 — the engine shell (plan §14, citing §11 as amended by ADR-0001; slices 1–2,
 see DEBT-008/009 for what remains)**
 
@@ -318,30 +366,33 @@ see DEBT-008/009 for what remains)**
 
 ## 8. What is NOT built yet
 
-M3 and M4 are complete: the engine shell with its machine-verified windowed
-client, the HUD/debug overlay slice (DEBT-009 repaid), and the three-layer
-movement system (DEBT-003 repaid). What remains, in order:
+M3, M4, and M5 are complete: the engine shell with its machine-verified
+windowed client, the HUD/debug overlay slice (DEBT-009 repaid), the
+three-layer movement system (DEBT-003 repaid), and the economy stack —
+ledger, gather loop, production queues, construction lifecycle, population,
+requirements, footprints blocking tiles, and the A12 checker (DEBT-006
+narrowed to Attack-only, DEBT-007 narrowed to the fight half). What remains,
+in order:
 
 1. **The human visual pass of DEBT-008 (small)**: on a desktop display, eyeball
    `cargo run -p pandemonium-client` — the map + entities render from a live
    sim, selection and right-click Move work (both already machine-proven);
    confirm the visuals read well (colors, legibility) and close the row.
-2. **M5 — Economy, production, construction (P3)**: resource ledger with
-   can_afford/spend/refund, the worker gather loop (go to node → gather →
-   carry → deposit → auto-seek), node depletion, the Produce queue model
-   (Train/Cancel/SetRally), Build + the construction lifecycle (which brings
-   the Footprint capability and structures blocking tiles — see DEBT-006),
-   population cap, the requirements checker. The bundle already carries every
-   parameter; the systems and capability variants are the work. Exit:
-   divergent scripted openings produce measurably different timelines; A12
-   invariants green under an economy-only soak.
-3. Known movement limitations to carry forward honestly: the formation-less
-   jam shape (A-040), path-smoothing-free staircases on detours, and no
-   structure footprints blocking tiles yet (ore nodes and buildings are
-   pass-through until the Footprint capability lands).
+2. **M6 — Combat & vision (P2)**: the attack pipeline (acquire → validate →
+   hit → mitigate → damage → death → credit), Attack/AttackMove/Stop
+   semantics, the Turret, the three-state fog model, targeting filters, and
+   the last carried-but-unmapped capability (Attack — DEBT-006's remainder).
+   The A12 `pop <= cap` strictness needs its combat decision then (A-049,
+   DEBT-010), and DEBT-007's fight half extends the A3 test.
+3. Known limitations to carry forward honestly: the formation-less jam shape
+   (A-040), path-smoothing-free staircases on detours, stalled construction
+   sites when the builder dies (no reassignment command — A-045), gather
+   targeting without fog filtering (A-048), and economy scripts that do not
+   queue-cancel under pressure.
 
 Nothing of the AI (M7) or match rules (M8) exists beyond stubs, and the
-remaining M1 scopes are the deferred capabilities (DEBT-004..007).
+remaining M1 scopes are the deferred capabilities (DEBT-004, and the M6
+halves of DEBT-006/007).
 
 ## 9. Sharp edges and gotchas discovered during M0–M3
 
@@ -435,6 +486,35 @@ remaining M1 scopes are the deferred capabilities (DEBT-004..007).
 - **`Fx::raw()` vs authored milli-tiles**: Q16.16 raw values are ×65536; assert
   positions via `Fx::from_milli(milli)` equality, never raw integers, unless you
   enjoy arithmetic slips.
+- **Tile centers are `x * 1000 + 500` milli-tiles** — the soak caught a
+  spawn-position helper that doubled the conversion (`x * 2000 + 1000`) and
+  placed player 1's first trained worker at (95, 95) on a 64-tile map. The
+  A12 checker is what flagged it; write tile math once and reuse it.
+- **Economy orders are long-lived**: movement pops only `MoveTo` on path
+  completion, and stuck detection skips empty-path (in-place work) movers.
+  A new economy phase must clear the runtime path itself or the worker stands
+  on a stale lane. Never compare a path's *terminus* to a blocked goal's
+  center — paths legitimately end on the nearest reachable tile, and the
+  mismatch loop (clear + rebuild every tick) freezes the worker on the
+  start-waypoint no-op leg.
+- **Debug-only `#[should_panic]` tests must be `#[cfg(debug_assertions)]`** —
+  `debug_assert` compiles out in release, so un-gated should-panic tests fail
+  there (the M5 checker tests carry the gate).
+- **Same-script soak runs need player-relative build spots** — both players
+  running one script with a hardcoded placement tile fight over the same
+  ground; mirror the spot for player 1.
+- **Footprint blocking reshapes old scenarios**: the M4 real-map exit test
+  recalibrated its arrival bound (1100 → 2800 milli, the blocked-destination
+  packing envelope) and gained a no-footprint-tile assertion; the map's
+  contested nodes moved a tile because the old spots sealed the crossing.
+  Content geometry + blocking semantics must be re-validated together.
+- **Entity ids in tests follow the documented spawn order** — off-by-one kind
+  or entity ids are the recurring test-authoring bug this milestone (kind
+  lists reorder when a new kind inserts mid-vector; check `bundle.entities`
+  positions, never hand-count).
+- **The `is_none_or` / `is_multiple_of` new-style lints** now also bite test
+  code (cooldown sentinels as `u32::MAX / 2` fight `saturating_add`; use
+  `Option<u32>` + `is_none_or`).
 
 ## 10. Maintenance protocol — every future agent, every milestone
 
@@ -463,7 +543,7 @@ remaining M1 scopes are the deferred capabilities (DEBT-004..007).
 | §6 simulation core | `crates/sim/src/` — `sim.rs` (pipeline), `world.rs` (stores), `hash.rs` (state hash), `fixture.rs` (trivial world) |
 | §7 entity model | `crates/sim/src/world.rs` + capability stores; `crates/sim_api` ids |
 | §8 commands | `crates/sim_api/src/lib.rs` (types) + `crates/sim/src/command.rs` (gate + application) |
-| §9 systems | per-milestone; see status board §6 (M1: movement placeholder, health/death, on-demand vision) |
+| §9 systems | per-milestone; see status board §6 (M1 spine; M4 movement; M5: economy.rs + production.rs + invariants.rs) |
 | §10 content | `docs/CONTENT_GUIDE.md`, `content/` (live), `crates/content/src/` (schema/version/loader/defs/validate/bundle) |
 | §11 engine/client | `crates/engine` (clock, interpolate, host + pause/single-step, camera, mesh, renderer + HudState) + `crates/client` (wgpu renderer, UI overlay pass, input, text.rs) — 3D per ADR-0001; DEBT-008 keeps only the human visual pass |
 | §12 tools | `crates/tools` — headless, replay-verify, content-validate live |

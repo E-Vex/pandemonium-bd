@@ -61,7 +61,7 @@ See `content/entities/rifleman.ron` for a fully commented example. Fields:
 | `requires` | list of ids | entity ids that must exist first (one shared checker, plan §9.4) |
 
 Capability blocks (the Alpha vocabulary — plan §7.4; the simulation consumes
-Health/Move/Vision today, the economy and combat milestones consume the rest):
+all of them except Attack, which waits for combat in M6):
 
 ```ron
 Health(( max: 60 ))                                   // optional regen_per_tick: 0
@@ -136,9 +136,11 @@ loading). **v2** adds the optional heightmap.
 
 That is the whole procedure — no engine, sim, or tool file changes. The
 acceptance test `tests/content_pipeline.rs::add_a_unit_is_data_only` does
-exactly this in a temp copy and additionally proves nothing under `crates/sim/`
-mentions the new kind; the git-diff half of A3 (zero changes under `crates/sim/`
-in the fixture commit) is part of the commit review.
+exactly this in a temp copy and additionally proves the full loop — the kind
+loads, spawns, obeys a Move order, and is **trained from the barracks**
+(gather, Build, Train) — while nothing under `crates/sim/` mentions the new
+kind; the git-diff half of A3 (zero changes under `crates/sim/` in the fixture
+commit) is part of the commit review.
 
 ## How to add a map (data-only — acceptance A4)
 
