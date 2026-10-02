@@ -7,22 +7,22 @@
 //!
 //! Validation checks, in order: tick match → issuer exists → sequence not reused
 //! this tick → per-kind checks (referenced entities exist, are owned by the
-//! issuer, carry the required capabilities; targets exist and are visible to the
-//! issuer). The economy checks of plan §8.2 (affordability, population,
-//! placement, requirements) become reachable when the economy data and systems
-//! arrive in M5 — see docs/ASSUMPTIONS.md.
+//! issuer, carry the required capabilities; targets exist and are legal) → the
+//! economy checks of plan §8.2 (requirements, affordability, population,
+//! placement) for the M5 commands (A-014).
 //!
-//! Commands whose required capabilities do not exist in the M1 vocabulary yet
-//! (Attack, Gather, Build, Train, …) fail the capability-presence check after the
-//! existence and ownership checks run — exactly what a unit without the
-//! capability deserves (plan §8.2's own example). When M5/M6 add those
-//! capability variants, the checks become store lookups and the commands start
-//! working; the gate's structure does not change (plan §8.3).
+//! The economy checks read the world *and* the loaded content (kind costs,
+//! production lists, requirements) through the fixture handed in by
+//! [`crate::Sim::step`]. The placement command (Build) arrives with the
+//! construction system (the M5 construction commit); `Attack` remains refused
+//! as missing capability until combat lands (M6).
 
 use pandemonium_sim_api::{
     Command, CommandKind, EntityId, Event, KindId, PlayerId, Reject, RejectReason,
 };
 
+use crate::fixture::TrivialWorld;
+use crate::production::{self, kind_economy, producible_by, requirements_met};
 use crate::world::{Order, World};
 
 /// Applies one tick's commands to the world (plan §6.3 stage 1).
@@ -30,9 +30,11 @@ use crate::world::{Order, World};
 /// Commands are sorted by `(issuer, seq)` — a *stable* sort, so commands that
 /// share the key keep their feed order; the first one wins and later duplicates
 /// are rejected as [`RejectReason::DuplicateSeq`] (deterministic no matter how the
-/// caller ordered them).
+/// caller ordered them). `content` is the loaded fixture — the economy checks
+/// read kind costs, production lists, and requirements from it.
 pub(crate) fn apply_commands(
     world: &mut World,
+    content: &TrivialWorld,
     tick: u32,
     commands: &[Command],
     events: &mut Vec<Event>,
@@ -61,9 +63,9 @@ pub(crate) fn apply_commands(
         }
         used_seq.push((cmd.issuer, cmd.seq));
 
-        match validate(world, cmd) {
+        match validate(world, content, cmd) {
             Err(reason) => rejected(events, cmd, reason),
-            Ok(()) => apply_valid(world, cmd),
+            Ok(()) => apply_valid(world, content, cmd),
         }
     }
 }
@@ -78,8 +80,9 @@ fn rejected(events: &mut Vec<Event>, cmd: &Command, reason: RejectReason) {
 }
 
 /// Per-kind validation: every referenced entity exists, is owned by the issuer,
-/// and carries the required capability; targets exist and are visible.
-fn validate(world: &World, cmd: &Command) -> Result<(), RejectReason> {
+/// and carries the required capability; targets exist and are legal; the economy
+/// checks (requirements, affordability, population) gate the M5 commands.
+fn validate(world: &World, content: &TrivialWorld, cmd: &Command) -> Result<(), RejectReason> {
     match &cmd.kind {
         CommandKind::Move { units, .. } | CommandKind::AttackMove { units, .. } => {
             // AttackMove will additionally require Attack when combat lands (M6);
@@ -133,13 +136,38 @@ fn validate(world: &World, cmd: &Command) -> Result<(), RejectReason> {
         }
         CommandKind::Train { producer, unit } => {
             check_single_entity(world, cmd.issuer, *producer)?;
-            check_capability_present()?;
-            check_kind(world, *unit)
+            check_producer(world, *producer)?;
+            check_kind(world, *unit)?;
+            // Structures are built, not trained (A-047).
+            if world
+                .entity(*producer)
+                .is_some_and(|_| has_footprint_kind(content, *unit))
+            {
+                return Err(RejectReason::InvalidTarget);
+            }
+            // The faction's production list decides what this producer trains.
+            let producer_kind = world.entity(*producer).expect("checked").kind;
+            if !producible_by(content, producer_kind, *unit) {
+                return Err(RejectReason::MissingCapability);
+            }
+            check_economy(world, content, cmd.issuer, *unit)
         }
-        CommandKind::CancelQueueItem { producer, .. } | CommandKind::SetRally { producer, .. } => {
+        CommandKind::CancelQueueItem { producer, index } => {
             check_single_entity(world, cmd.issuer, *producer)?;
-            check_capability_present()?;
-            Ok(())
+            check_producer(world, *producer)?;
+            // The index must land inside the producer's queue.
+            let in_range = world
+                .produce_of(*producer)
+                .is_some_and(|def| (*index as usize) < def.queue.len());
+            if in_range {
+                Ok(())
+            } else {
+                Err(RejectReason::QueueIndexInvalid)
+            }
+        }
+        CommandKind::SetRally { producer, .. } => {
+            check_single_entity(world, cmd.issuer, *producer)?;
+            check_producer(world, *producer)
         }
         CommandKind::Resign {} => {
             // Issuer existence was checked at the gate; resigning twice is a
@@ -152,8 +180,9 @@ fn validate(world: &World, cmd: &Command) -> Result<(), RejectReason> {
 /// Applies a validated command (plan §8.2: apply valid ones). Units within one
 /// command are processed in ascending id order — deduplicated, sorted — so
 /// application order never depends on the list order the issuer happened to send
-/// (plan §5.3).
-fn apply_valid(world: &mut World, cmd: &Command) {
+/// (plan §5.3). The economy applications (Train/Cancel/SetRally) read the
+/// content through the production system's helpers.
+fn apply_valid(world: &mut World, content: &TrivialWorld, cmd: &Command) {
     match &cmd.kind {
         CommandKind::Move { units, target } | CommandKind::AttackMove { units, target } => {
             for id in sorted_unique(units) {
@@ -197,6 +226,20 @@ fn apply_valid(world: &mut World, cmd: &Command) {
                 }
             }
         }
+        CommandKind::Train { producer, unit } => {
+            let cost = kind_economy(content, *unit)
+                .map(|economy| economy.cost.clone())
+                .unwrap_or_default();
+            production::enqueue(world, *producer, *unit, cost);
+        }
+        CommandKind::CancelQueueItem { producer, index } => {
+            production::cancel(world, *producer, *index);
+        }
+        CommandKind::SetRally { producer, target } => {
+            if let Some(def) = world.produce_of_mut(*producer) {
+                def.rally = Some(*target);
+            }
+        }
         CommandKind::Resign {} => {
             if let Some(player) = world.player_mut(cmd.issuer) {
                 player.resigned = true;
@@ -206,11 +249,7 @@ fn apply_valid(world: &mut World, cmd: &Command) {
         // does not exist yet — a logic error in the gate, not a state to paper
         // over. The exhaustive match makes the compiler demand an arm when a
         // future capability variant is added (plan §8.3).
-        CommandKind::Attack { .. }
-        | CommandKind::Build { .. }
-        | CommandKind::Train { .. }
-        | CommandKind::CancelQueueItem { .. }
-        | CommandKind::SetRally { .. } => {
+        CommandKind::Attack { .. } | CommandKind::Build { .. } => {
             unreachable!("validated command {cmd:?} reached apply without a handler")
         }
     }
@@ -259,11 +298,76 @@ fn check_single_entity(world: &World, issuer: PlayerId, id: EntityId) -> Result<
     }
 }
 
-/// Placeholder capability check for capabilities that do not exist in the M1
+/// Placeholder capability check for capabilities that do not exist yet in the
 /// vocabulary: no entity can carry them, so the command is refused as missing
-/// capability. Replaced by a store lookup when the variant lands (M5/M6).
+/// capability. Replaced by a store lookup when the variant lands (M6).
 fn check_capability_present() -> Result<(), RejectReason> {
     Err(RejectReason::MissingCapability)
+}
+
+/// A producer must carry the Produce capability and be a completed structure
+/// (sites are not open for business — A-046).
+fn check_producer(world: &World, producer: EntityId) -> Result<(), RejectReason> {
+    let Some(entity) = world.entity(producer) else {
+        return Err(RejectReason::UnknownEntity);
+    };
+    if world.produce_of(producer).is_none() {
+        return Err(RejectReason::MissingCapability);
+    }
+    if !matches!(entity.lifecycle, crate::world::Lifecycle::Active) {
+        return Err(RejectReason::MissingCapability);
+    }
+    Ok(())
+}
+
+/// Whether a kind carries a Footprint (a structure) in the loaded content.
+fn has_footprint_kind(content: &TrivialWorld, kind: KindId) -> bool {
+    content.kinds.get(kind.0 as usize).is_some_and(|template| {
+        template
+            .caps
+            .iter()
+            .any(|cap| matches!(cap, crate::CapTemplate::Footprint { .. }))
+    })
+}
+
+/// The shared economy checks for producing a kind (plan §8.2's affordability
+/// and population, plus §9.4's requirement list): requirements met, cost
+/// payable, population headroom at enqueue.
+fn check_economy(
+    world: &World,
+    content: &TrivialWorld,
+    issuer: PlayerId,
+    kind: KindId,
+) -> Result<(), RejectReason> {
+    let Some(economy) = kind_economy(content, kind) else {
+        return Err(RejectReason::UnknownKind);
+    };
+    // Requirements: one shared checker (plan §9.4).
+    if !requirements_met(
+        world,
+        issuer,
+        &economy.requires.iter().map(|r| r.0).collect::<Vec<_>>(),
+    ) {
+        return Err(RejectReason::RequirementsUnmet);
+    }
+    // Affordability.
+    let Some(player) = world.player(issuer) else {
+        return Err(RejectReason::PlayerMissing);
+    };
+    if !player.can_afford(&economy.cost) {
+        return Err(RejectReason::CannotAfford);
+    }
+    // Population headroom at enqueue (A-042: current live usage; the spawn
+    // re-checks and holds when the world changed in between).
+    let pop = economy.population.max(0) as u32;
+    if pop > 0 {
+        let usage = production::population_usage(world, &content.kinds, issuer);
+        let cap = production::population_cap(world, issuer, content.base_population_cap);
+        if usage.saturating_add(pop) > cap {
+            return Err(RejectReason::PopulationFull);
+        }
+    }
+    Ok(())
 }
 
 /// Target legality (plan §8.2): exists and is visible to the issuer (plan §9.5).
@@ -320,6 +424,7 @@ pub(crate) fn visible_to(world: &World, viewer: PlayerId, target: EntityId) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::{CapTemplate, KindEconomy, KindTemplate};
     use crate::world::{CapabilityData, HealthDef, MoveDef, PlayerState, VisionDef};
     use pandemonium_fx::Fx;
     use pandemonium_sim_api::{ControllerKind, PlayerSetup, ResourceId, Vec2Fx};
@@ -378,8 +483,89 @@ mod tests {
                 }),
             ],
         );
-        world.kind_count = 2;
+        world.kind_count = 5;
         world
+    }
+
+    /// A fixture matching the demo world's kinds (0 mover, 1 watcher) plus an
+    /// economy surface: kind 2 produces from kind 0's list, kind 2 costs 150,
+    /// kind 3 costs 50 and pop 1, kind 4 costs 200 and requires kind 2.
+    fn demo_fixture() -> TrivialWorld {
+        TrivialWorld {
+            map_id: 0x0000_C0DE,
+            width_tiles: 16,
+            height_tiles: 16,
+            passability: TrivialWorld::open_passability(16, 16),
+            buildability: TrivialWorld::open_buildability(16, 16),
+            kinds: vec![
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Health {
+                        max_hp: 10,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Move {
+                        speed_milli_tiles_per_s: 100,
+                        radius_milli_tiles: 350,
+                    },
+                ]),
+                KindTemplate::from_caps(vec![CapTemplate::Vision {
+                    radius_milli_tiles: 9000,
+                }]),
+                // Kind 2: a producer structure.
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 300,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                        CapTemplate::Produce {},
+                    ],
+                    economy: KindEconomy {
+                        cost: vec![(ResourceId(0), 150)],
+                        build_time_ticks: 30,
+                        population: 0,
+                        requires: vec![],
+                    },
+                },
+                // Kind 3: a producible unit costing 50, pop 1, requires kind 2.
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 40,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Move {
+                            speed_milli_tiles_per_s: 100,
+                            radius_milli_tiles: 300,
+                        },
+                    ],
+                    economy: KindEconomy {
+                        cost: vec![(ResourceId(0), 50)],
+                        build_time_ticks: 10,
+                        population: 1,
+                        requires: vec![KindId(2)],
+                    },
+                },
+                // Kind 4: unproducible here (cost 200 — beyond the 200 balance
+                // after any spend), pop 0.
+                KindTemplate {
+                    economy: KindEconomy {
+                        cost: vec![(ResourceId(0), 200)],
+                        build_time_ticks: 10,
+                        population: 0,
+                        requires: vec![],
+                    },
+                    ..KindTemplate::from_caps(vec![])
+                },
+            ],
+            resources: vec![],
+            production: vec![(KindId(2), vec![KindId(3), KindId(4)])],
+            base_population_cap: 10,
+            initial_spawns: vec![],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+        }
     }
 
     fn cmd(issuer: u8, tick: u32, seq: u32, kind: CommandKind) -> Command {
@@ -387,8 +573,9 @@ mod tests {
     }
 
     fn apply(world: &mut World, tick: u32, commands: &[Command]) -> Vec<Event> {
+        let fixture = demo_fixture();
         let mut events = Vec::new();
-        apply_commands(world, tick, commands, &mut events);
+        apply_commands(world, &fixture, tick, commands, &mut events);
         events
     }
 

@@ -104,6 +104,13 @@ impl Sim {
         for spawn in sim.fixture.initial_spawns.clone() {
             sim.spawn(spawn);
         }
+        // Population usage and cap reflect the starting forces (1 command
+        // center + 4 workers = 4/10 in the Alpha content).
+        crate::production::recompute_population(
+            &mut sim.world,
+            &sim.fixture.kinds,
+            sim.fixture.base_population_cap,
+        );
         sim
     }
 
@@ -142,6 +149,21 @@ impl Sim {
         self.world
             .entity(id)
             .and_then(|e| e.orders.first().copied())
+    }
+
+    /// Test-only window into a producer's queue (the production tests inspect
+    /// enqueue/cancel behavior through this).
+    #[cfg(test)]
+    pub(crate) fn queue_probe(&self, id: EntityId) -> Vec<(u32, u32)> {
+        self.world
+            .produce_of(id)
+            .map(|def| {
+                def.queue
+                    .iter()
+                    .map(|item| (item.producible.0, item.progress_ticks))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The on-demand canonical state hash (plan §6.4).
@@ -225,18 +247,33 @@ impl Sim {
     pub fn step(&mut self, commands: &[Command]) -> StepOutput {
         // Stage 1 — Apply commands: sorted by (issuer, seq), validated, applied;
         //           invalid ones emit CommandRejected (plan §6.3.1).
-        apply_commands(&mut self.world, self.tick, commands, &mut self.events);
+        apply_commands(
+            &mut self.world,
+            &self.fixture,
+            self.tick,
+            commands,
+            &mut self.events,
+        );
 
         // Stage 2 — Orders: resolve each entity's current order into system
-        //           intents. M1's order vocabulary is movement-only, and the
-        //           placeholder mover consumes orders directly in stage 6; order
-        //           resolution into richer intents begins with combat (M6) and
-        //           the economy (M5).
-        // Stage 3 — Production & construction: advance queues and progress;
-        //           spawn/complete. M1's stand-in: the fixture's scheduled spawns
-        //           (exercising the same entity-store append + Spawned events the
-        //           real production spawning will use).
+        //           intents. M5's slice: the economy travel targets (stage 6
+        //           consumes them through `movement_target`) and the gather
+        //           phase machine (stage 4). Richer resolution arrives with
+        //           combat (M6).
+        // Stage 3 — Production & construction: advance queues and construction
+        //           progress; spawn/complete (plan §9.4, M5). The fixture's
+        //           scheduled spawns (the M1 stand-in) run first, then the
+        //           production queues, then the construction sites; the
+        //           population usage and cap settle at the stage's end.
         self.run_scheduled_spawns();
+        crate::production::advance_production(
+            &mut self.world,
+            &self.fixture,
+            &self.nav,
+            &mut self.next_entity_id,
+            &mut self.rng,
+            &mut self.events,
+        );
 
         // Stage 4 — Economy: gathering timers, deliveries, storage, spending
         //           effects (M5, plan §9.3): the worker gather loop — travel
@@ -363,7 +400,8 @@ impl Sim {
     /// then remove everyone whose health reached zero — firing `Died` — in
     /// ascending id order. `Vec::remove` keeps the survivors' order stable, and
     /// the allocator never looks back, so ids are never reused. Structures
-    /// release their footprint tiles on the way out, so the ground reopens.
+    /// release their footprint tiles on the way out, so the ground reopens,
+    /// and the population usage and cap settle again after the removals.
     fn advance_health_and_cleanup(&mut self) {
         for (_, def) in &mut self.world.health {
             let max = def.max_hp.max(0);
@@ -384,6 +422,11 @@ impl Sim {
             self.world.remove(id);
             self.events.push(Event::Died { entity: id });
         }
+        crate::production::recompute_population(
+            &mut self.world,
+            &self.fixture.kinds,
+            self.fixture.base_population_cap,
+        );
     }
 }
 

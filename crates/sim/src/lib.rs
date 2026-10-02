@@ -30,6 +30,7 @@ mod fixture;
 mod hash;
 mod movement;
 mod nav;
+mod production;
 mod sim;
 mod world;
 

@@ -300,8 +300,9 @@ fn build_travel_target(world: &World, id: EntityId, site: EntityId) -> Option<Ve
 
 /// Whether a mover stands close enough to a footprint entity to work on it:
 /// distance from the mover to the nearest point of the footprint rectangle,
-/// at most [`APPROACH_MILLI`] plus the mover's collision radius.
-fn near_footprint(world: &World, mover: EntityId, target: EntityId) -> bool {
+/// at most [`APPROACH_MILLI`] plus the mover's collision radius. Shared with
+/// the construction system (the builder's hammering range).
+pub(crate) fn near_footprint(world: &World, mover: EntityId, target: EntityId) -> bool {
     let Some(mover_entity) = world.entity(mover) else {
         return false;
     };
@@ -755,5 +756,112 @@ mod tests {
             b.step(&[]);
         }
         assert_eq!(a.state_hash(), b.state_hash());
+    }
+}
+
+/// Shared test fixtures for the economy and production systems' tests.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use crate::fixture::{CapTemplate, KindEconomy, KindTemplate, ResourceDef, SpawnDef};
+    use pandemonium_sim_api::{PlayerId, ResourceId, Vec2Fx};
+
+    /// One player (200 Ore, base cap 1), a worker, a producer structure at
+    /// (6,6), and an ore node. Kinds: 0 worker (gather), 1 grunt (producible:
+    /// 50 Ore, 10 ticks, pop 1), 2 producer (Produce + Footprint), 3 ore node.
+    /// The producer trains grunts.
+    pub(crate) fn economy_world_with_production() -> crate::fixture::TrivialWorld {
+        crate::fixture::TrivialWorld {
+            map_id: 0x0000_0D11,
+            width_tiles: 16,
+            height_tiles: 16,
+            passability: crate::fixture::TrivialWorld::open_passability(16, 16),
+            buildability: crate::fixture::TrivialWorld::open_buildability(16, 16),
+            kinds: vec![
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Health {
+                        max_hp: 40,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Move {
+                        speed_milli_tiles_per_s: 2600,
+                        radius_milli_tiles: 300,
+                    },
+                    CapTemplate::Gather {
+                        carry_amount: 10,
+                        gather_time_ms: 2000,
+                    },
+                    CapTemplate::Vision {
+                        radius_milli_tiles: 7000,
+                    },
+                ]),
+                // Kind 1: the grunt — producible, costs 50 Ore / 10 ticks / pop 1.
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 40,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Move {
+                            speed_milli_tiles_per_s: 2600,
+                            radius_milli_tiles: 300,
+                        },
+                    ],
+                    economy: KindEconomy {
+                        cost: vec![(ResourceId(0), 50)],
+                        build_time_ticks: 10,
+                        population: 1,
+                        requires: vec![],
+                    },
+                },
+                // Kind 2: the producer structure.
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 300,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                        CapTemplate::Produce {},
+                    ],
+                    economy: KindEconomy::default(),
+                },
+                // Kind 3: the ore node.
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Resource {
+                        resource: ResourceId(0),
+                        amount: 500,
+                    },
+                    CapTemplate::Footprint { w: 2, h: 2 },
+                ]),
+            ],
+            resources: vec![ResourceDef {
+                resource: ResourceId(0),
+                starting: 200,
+            }],
+            production: vec![(
+                pandemonium_sim_api::KindId(2),
+                vec![pandemonium_sim_api::KindId(1)],
+            )],
+            base_population_cap: 1,
+            initial_spawns: vec![
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: pandemonium_sim_api::KindId(0),
+                    pos: Vec2Fx::from_ints(3, 3),
+                },
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: pandemonium_sim_api::KindId(2),
+                    pos: Vec2Fx::from_ints(6, 6),
+                },
+                SpawnDef {
+                    owner: PlayerId::NEUTRAL,
+                    kind: pandemonium_sim_api::KindId(3),
+                    pos: Vec2Fx::from_ints(12, 12),
+                },
+            ],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+        }
     }
 }
