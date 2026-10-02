@@ -144,6 +144,12 @@ impl NavGrid {
         }
     }
 
+    /// Whether a static body claims the tile (placement checks ask this
+    /// directly — buildable-but-occupied ground must refuse a site).
+    pub(crate) fn is_occupied(&self, x: i32, y: i32) -> bool {
+        self.index(x, y).is_some_and(|i| self.occupied[i] > 0)
+    }
+
     /// The row-major index of an in-bounds tile.
     fn index(&self, x: i32, y: i32) -> Option<usize> {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {

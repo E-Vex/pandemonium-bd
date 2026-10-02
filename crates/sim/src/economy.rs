@@ -865,3 +865,89 @@ pub(crate) mod tests_support {
         }
     }
 }
+
+/// A construction-scene fixture: a builder worker, a buildable depot kind
+/// (2x2, +10 pop, 30 ticks), and a rock tile at (8,8) for placement tests.
+#[cfg(test)]
+pub(crate) mod construction_support {
+    use crate::fixture::{CapTemplate, KindEconomy, KindTemplate, ResourceDef, SpawnDef};
+    use pandemonium_sim_api::{PlayerId, ResourceId, Vec2Fx};
+
+    /// Kinds: 0 builder worker (Build), 1 depot (Footprint 2x2 +
+    /// ProvidesPopulation 10), 2 node. Entities: 1 worker, 2 node.
+    pub(crate) fn construction_world() -> crate::fixture::TrivialWorld {
+        let mut passability = crate::fixture::TrivialWorld::open_passability(16, 16);
+        let mut buildability = crate::fixture::TrivialWorld::open_buildability(16, 16);
+        // A rock tile at (8, 8).
+        passability[8 * 16 + 8] = 0;
+        buildability[8 * 16 + 8] = 0;
+        crate::fixture::TrivialWorld {
+            map_id: 0x0000_C0DE,
+            width_tiles: 16,
+            height_tiles: 16,
+            passability,
+            buildability,
+            kinds: vec![
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Health {
+                        max_hp: 40,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Move {
+                        speed_milli_tiles_per_s: 2600,
+                        radius_milli_tiles: 300,
+                    },
+                    CapTemplate::Build {},
+                    CapTemplate::Vision {
+                        radius_milli_tiles: 7000,
+                    },
+                ]),
+                // Kind 1: the depot — 100 Ore, 30 ticks, +10 population.
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 300,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                        CapTemplate::ProvidesPopulation { amount: 10 },
+                    ],
+                    economy: KindEconomy {
+                        cost: vec![(ResourceId(0), 100)],
+                        build_time_ticks: 30,
+                        population: 0,
+                        requires: vec![],
+                    },
+                },
+                // Kind 2: the ore node (an occupied-tile placement target).
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Resource {
+                        resource: ResourceId(0),
+                        amount: 500,
+                    },
+                    CapTemplate::Footprint { w: 2, h: 2 },
+                ]),
+            ],
+            resources: vec![ResourceDef {
+                resource: ResourceId(0),
+                starting: 200,
+            }],
+            production: vec![],
+            base_population_cap: 5,
+            initial_spawns: vec![
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: pandemonium_sim_api::KindId(0),
+                    pos: Vec2Fx::from_ints(4, 4),
+                },
+                SpawnDef {
+                    owner: PlayerId::NEUTRAL,
+                    kind: pandemonium_sim_api::KindId(2),
+                    pos: Vec2Fx::from_ints(12, 12),
+                },
+            ],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+        }
+    }
+}

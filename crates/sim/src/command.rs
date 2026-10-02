@@ -18,7 +18,7 @@
 //! as missing capability until combat lands (M6).
 
 use pandemonium_sim_api::{
-    Command, CommandKind, EntityId, Event, KindId, PlayerId, Reject, RejectReason,
+    Command, CommandKind, EntityId, Event, KindId, PlayerId, Reject, RejectReason, TilePos, Vec2Fx,
 };
 
 use crate::fixture::TrivialWorld;
@@ -35,6 +35,8 @@ use crate::world::{Order, World};
 pub(crate) fn apply_commands(
     world: &mut World,
     content: &TrivialWorld,
+    nav: &mut crate::nav::NavGrid,
+    next_entity_id: &mut u64,
     tick: u32,
     commands: &[Command],
     events: &mut Vec<Event>,
@@ -63,9 +65,9 @@ pub(crate) fn apply_commands(
         }
         used_seq.push((cmd.issuer, cmd.seq));
 
-        match validate(world, content, cmd) {
+        match validate(world, content, nav, cmd) {
             Err(reason) => rejected(events, cmd, reason),
-            Ok(()) => apply_valid(world, content, cmd),
+            Ok(()) => apply_valid(world, content, nav, next_entity_id, cmd, events),
         }
     }
 }
@@ -82,7 +84,12 @@ fn rejected(events: &mut Vec<Event>, cmd: &Command, reason: RejectReason) {
 /// Per-kind validation: every referenced entity exists, is owned by the issuer,
 /// and carries the required capability; targets exist and are legal; the economy
 /// checks (requirements, affordability, population) gate the M5 commands.
-fn validate(world: &World, content: &TrivialWorld, cmd: &Command) -> Result<(), RejectReason> {
+fn validate(
+    world: &World,
+    content: &TrivialWorld,
+    nav: &crate::nav::NavGrid,
+    cmd: &Command,
+) -> Result<(), RejectReason> {
     match &cmd.kind {
         CommandKind::Move { units, .. } | CommandKind::AttackMove { units, .. } => {
             // AttackMove will additionally require Attack when combat lands (M6);
@@ -128,11 +135,22 @@ fn validate(world: &World, content: &TrivialWorld, cmd: &Command) -> Result<(), 
             }
         }
         CommandKind::Build {
-            worker, structure, ..
+            worker,
+            structure,
+            at,
         } => {
             check_single_entity(world, cmd.issuer, *worker)?;
-            check_capability_present()?;
-            check_kind(world, *structure)
+            // Only builders build (plan §7.4).
+            if world.build_of(*worker).is_none() {
+                return Err(RejectReason::MissingCapability);
+            }
+            check_kind(world, *structure)?;
+            // Only structures are built (the Train mirror — A-047).
+            if !has_footprint_kind(content, *structure) {
+                return Err(RejectReason::InvalidTarget);
+            }
+            check_economy(world, content, cmd.issuer, *structure)?;
+            check_placement(world, content, nav, *structure, *at)
         }
         CommandKind::Train { producer, unit } => {
             check_single_entity(world, cmd.issuer, *producer)?;
@@ -182,7 +200,14 @@ fn validate(world: &World, content: &TrivialWorld, cmd: &Command) -> Result<(), 
 /// application order never depends on the list order the issuer happened to send
 /// (plan §5.3). The economy applications (Train/Cancel/SetRally) read the
 /// content through the production system's helpers.
-fn apply_valid(world: &mut World, content: &TrivialWorld, cmd: &Command) {
+fn apply_valid(
+    world: &mut World,
+    content: &TrivialWorld,
+    nav: &mut crate::nav::NavGrid,
+    next_entity_id: &mut u64,
+    cmd: &Command,
+    events: &mut Vec<Event>,
+) {
     match &cmd.kind {
         CommandKind::Move { units, target } | CommandKind::AttackMove { units, target } => {
             for id in sorted_unique(units) {
@@ -226,6 +251,23 @@ fn apply_valid(world: &mut World, content: &TrivialWorld, cmd: &Command) {
                 }
             }
         }
+        CommandKind::Build {
+            worker,
+            structure,
+            at,
+        } => {
+            build_site(
+                world,
+                content,
+                nav,
+                next_entity_id,
+                cmd,
+                *worker,
+                *structure,
+                *at,
+                events,
+            );
+        }
         CommandKind::Train { producer, unit } => {
             let cost = kind_economy(content, *unit)
                 .map(|economy| economy.cost.clone())
@@ -249,7 +291,7 @@ fn apply_valid(world: &mut World, content: &TrivialWorld, cmd: &Command) {
         // does not exist yet — a logic error in the gate, not a state to paper
         // over. The exhaustive match makes the compiler demand an arm when a
         // future capability variant is added (plan §8.3).
-        CommandKind::Attack { .. } | CommandKind::Build { .. } => {
+        CommandKind::Attack { .. } => {
             unreachable!("validated command {cmd:?} reached apply without a handler")
         }
     }
@@ -368,6 +410,149 @@ fn check_economy(
         }
     }
     Ok(())
+}
+
+/// Placement legality (plan §8.2): every footprint tile must be inside the
+/// map, on buildable terrain, unclaimed by another static body, and free of
+/// movers standing on it — classic "cannot place a building on units".
+fn check_placement(
+    world: &World,
+    content: &TrivialWorld,
+    nav: &crate::nav::NavGrid,
+    structure: KindId,
+    at: TilePos,
+) -> Result<(), RejectReason> {
+    let Some(footprint) = content.kinds.get(structure.0 as usize).and_then(|kind| {
+        kind.caps.iter().find_map(|cap| match cap {
+            crate::CapTemplate::Footprint { w, h } => Some((*w, *h)),
+            _ => None,
+        })
+    }) else {
+        return Err(RejectReason::InvalidTarget);
+    };
+    for dy in 0..footprint.1 as i32 {
+        for dx in 0..footprint.0 as i32 {
+            let x = at.x + dx;
+            let y = at.y + dy;
+            // Bounds and buildability come from the fixture's grid.
+            let in_bounds = x >= 0
+                && y >= 0
+                && (x as u64) < content.width_tiles as u64
+                && (y as u64) < content.height_tiles as u64;
+            if !in_bounds {
+                return Err(RejectReason::PlacementBlocked);
+            }
+            let index = y as usize * content.width_tiles as usize + x as usize;
+            if content.buildability.get(index).copied().unwrap_or(0) == 0 {
+                return Err(RejectReason::PlacementBlocked);
+            }
+            // Static bodies (nodes, structures, other sites) claim tiles.
+            if nav.is_occupied(x, y) {
+                return Err(RejectReason::PlacementBlocked);
+            }
+            // No mover may stand where the site lands.
+            let mover_on_tile = world.entities.iter().any(|entity| {
+                world.move_of(entity.id).is_some()
+                    && entity.pos.x.floor_int() == x
+                    && entity.pos.y.floor_int() == y
+            });
+            if mover_on_tile {
+                return Err(RejectReason::PlacementBlocked);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Spawns a construction site (the Build command's application): pays the
+/// cost, allocates the id, spawns the structure-to-be in
+/// `UnderConstruction` with its full capability set plus the `Construction`
+/// runtime block, claims the footprint tiles, orders the builder, and emits
+/// `ConstructionStarted`. Sites take exact placement — no spawn jitter (a
+/// shifted site would misalign its footprint).
+#[allow(clippy::too_many_arguments)]
+fn build_site(
+    world: &mut World,
+    content: &TrivialWorld,
+    nav: &mut crate::nav::NavGrid,
+    next_entity_id: &mut u64,
+    cmd: &Command,
+    worker: EntityId,
+    structure: KindId,
+    at: TilePos,
+    events: &mut Vec<Event>,
+) {
+    let economy = kind_economy(content, structure).map(|economy| economy.cost.clone());
+    // Pay first (the gate validated affordability).
+    if let Some(player) = world.player_mut(cmd.issuer) {
+        player.spend(&economy.unwrap_or_default());
+    }
+    let total_ticks = kind_economy(content, structure)
+        .map(|economy| economy.build_time_ticks)
+        .unwrap_or(0);
+    let (w, h) = content
+        .kinds
+        .get(structure.0 as usize)
+        .and_then(|kind| {
+            kind.caps.iter().find_map(|cap| match cap {
+                crate::CapTemplate::Footprint { w, h } => Some((*w, *h)),
+                _ => None,
+            })
+        })
+        .unwrap_or((1, 1));
+    let id = EntityId(*next_entity_id);
+    *next_entity_id += 1;
+    let pos = Vec2Fx::new(
+        pandemonium_fx::Fx::from_milli((at.x * 2 + w as i32) * 500),
+        pandemonium_fx::Fx::from_milli((at.y * 2 + h as i32) * 500),
+    );
+    let caps: Vec<_> = content
+        .kinds
+        .get(structure.0 as usize)
+        .map(|template| {
+            template
+                .caps
+                .iter()
+                .map(|cap| cap.to_runtime(crate::TICKS_PER_SECOND))
+                .collect()
+        })
+        .unwrap_or_default();
+    let caps_with_site = {
+        let mut caps = caps;
+        caps.push(crate::world::CapabilityData::Construction(
+            crate::world::ConstructionDef {
+                builder: worker,
+                progress_ticks: 0,
+                total_ticks,
+            },
+        ));
+        caps
+    };
+    world.spawn(id, cmd.issuer, structure, pos, caps_with_site);
+    if let Some(entity) = world.entity_mut(id) {
+        entity.lifecycle = crate::world::Lifecycle::UnderConstruction;
+    }
+    // Claim the ground immediately (sites block tiles from their first tick).
+    if let Some(footprint) = world.footprint_of(id) {
+        for (x, y) in footprint.tiles(pos) {
+            nav.occupy(x, y);
+        }
+    }
+    // Order the builder.
+    if let Some(entity) = world.entity_mut(worker) {
+        if cmd.queue {
+            entity.orders.push(Order::BuildAt { site: id });
+        } else {
+            entity.orders = vec![Order::BuildAt { site: id }];
+            if let Some(def) = world.move_of_mut(worker) {
+                def.reset_runtime();
+            }
+        }
+    }
+    events.push(Event::ConstructionStarted {
+        builder: worker,
+        site: id,
+    });
 }
 
 /// Target legality (plan §8.2): exists and is visible to the issuer (plan §9.5).
@@ -574,8 +759,22 @@ mod tests {
 
     fn apply(world: &mut World, tick: u32, commands: &[Command]) -> Vec<Event> {
         let fixture = demo_fixture();
+        let mut nav = crate::nav::NavGrid::new(
+            fixture.width_tiles,
+            fixture.height_tiles,
+            &fixture.passability,
+        );
+        let mut next_id = 100u64;
         let mut events = Vec::new();
-        apply_commands(world, &fixture, tick, commands, &mut events);
+        apply_commands(
+            world,
+            &fixture,
+            &mut nav,
+            &mut next_id,
+            tick,
+            commands,
+            &mut events,
+        );
         events
     }
 

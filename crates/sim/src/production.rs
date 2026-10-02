@@ -725,3 +725,173 @@ mod tests {
         assert_eq!(a.state_hash(), b.state_hash());
     }
 }
+
+#[cfg(test)]
+mod construction_tests {
+    use super::*;
+    use crate::economy::construction_support::construction_world;
+    use crate::sim::Sim;
+    use crate::world::Lifecycle;
+    use pandemonium_sim_api::{
+        Command, CommandKind, ControllerKind, Event, MatchSetup, PlayerSetup, RejectReason,
+        TilePos, Vec2Fx,
+    };
+    use pandemonium_sim_api::{EntityId, PlayerId};
+
+    fn setup() -> MatchSetup {
+        MatchSetup {
+            seed: 13,
+            players: vec![PlayerSetup {
+                player: PlayerId(0),
+                controller: ControllerKind::Human,
+            }],
+        }
+    }
+
+    fn build(at: (i32, i32), tick: u32, seq: u32) -> Command {
+        Command::new(
+            PlayerId(0),
+            tick,
+            seq,
+            CommandKind::Build {
+                worker: EntityId(1),
+                structure: pandemonium_sim_api::KindId(1),
+                at: TilePos { x: at.0, y: at.1 },
+            },
+        )
+    }
+
+    #[test]
+    fn sites_spawn_block_and_complete() {
+        let world = construction_world();
+        let mut sim = Sim::new(&world, setup());
+        // Build at (6,6): pays 100, spawns the site, orders the builder.
+        sim.step(&[build((6, 6), 0, 1)]);
+        assert_eq!(sim.player_view(PlayerId(0)).resources[0].amount, 100);
+        assert_eq!(sim.next_entity_id(), 4, "the site took the next id");
+        assert_eq!(
+            sim.order_probe(EntityId(1)),
+            Some(Order::BuildAt { site: EntityId(3) })
+        );
+        // The site is under construction and provides no population yet.
+        assert_eq!(
+            sim.lifecycle_probe(EntityId(3)),
+            Some(Lifecycle::UnderConstruction)
+        );
+        assert_eq!(sim.player_view(PlayerId(0)).population_cap, 5);
+        // The builder (4,4) reaches the site and hammers; 30 build ticks plus
+        // travel land well inside 200 ticks.
+        let mut completed = false;
+        let mut tick = 1;
+        while tick < 200 {
+            let out = sim.step(&[]);
+            completed |= out
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ConstructionCompleted { site } if *site == EntityId(3)));
+            tick += 1;
+        }
+        assert!(completed, "the site never completed");
+        assert_eq!(sim.lifecycle_probe(EntityId(3)), Some(Lifecycle::Active));
+        // The completed depot provides population.
+        assert_eq!(sim.player_view(PlayerId(0)).population_cap, 15);
+        // The builder's order popped.
+        assert_eq!(sim.order_probe(EntityId(1)), None);
+    }
+
+    #[test]
+    fn placement_is_validated_against_terrain_bodies_and_movers() {
+        let world = construction_world();
+        let mut sim = Sim::new(&world, setup());
+        // Rock at (8,8): a 2x2 site at (8,8) overlaps it.
+        let out = sim.step(&[build((8, 8), 0, 1)]);
+        assert!(out.events.iter().any(|event| {
+            matches!(event, Event::CommandRejected { reject, .. }
+                if reject.reason == RejectReason::PlacementBlocked)
+        }));
+        // The node at (12,12) (2x2): its tiles are occupied.
+        let out = sim.step(&[build((12, 12), sim.tick(), 2)]);
+        assert!(out.events.iter().any(|event| {
+            matches!(event, Event::CommandRejected { reject, .. }
+                if reject.reason == RejectReason::PlacementBlocked)
+        }));
+        // Out-of-bounds placements are blocked.
+        let out = sim.step(&[build((-1, 0), sim.tick(), 3)]);
+        assert!(out.events.iter().any(|event| {
+            matches!(event, Event::CommandRejected { reject, .. }
+                if reject.reason == RejectReason::PlacementBlocked)
+        }));
+        // A mover standing on a placement tile blocks it: order the worker to
+        // (6,6), wait for arrival, then try to build under it.
+        sim.step(&[Command::new(
+            PlayerId(0),
+            sim.tick(),
+            4,
+            CommandKind::Move {
+                units: vec![EntityId(1)],
+                target: Vec2Fx::from_ints(6, 6),
+            },
+        )]);
+        let mut moving = true;
+        while moving {
+            sim.step(&[]);
+            moving = sim.snapshot().entities.iter().any(|e| {
+                e.id == EntityId(1) && e.move_state == pandemonium_sim_api::MoveState::Moving
+            });
+        }
+        let out = sim.step(&[build((5, 5), sim.tick(), 5)]);
+        assert!(
+            out.events.iter().any(|event| {
+                matches!(event, Event::CommandRejected { reject, .. }
+                if reject.reason == RejectReason::PlacementBlocked)
+            }),
+            "a mover on the placement tile must block it"
+        );
+    }
+
+    #[test]
+    fn unaffordable_and_non_structure_builds_are_refused() {
+        let world = construction_world();
+        let mut sim = Sim::new(&world, setup());
+        // Spend down to 50: one build at (6,6) costs 100 -> 100 left; a second
+        // build attempt at 100 left succeeds, so instead refuse via cost:
+        // build twice at different tiles with only 200 -> the third is broke.
+        sim.step(&[build((6, 6), 0, 1)]);
+        sim.step(&[build((9, 6), sim.tick(), 2)]);
+        assert_eq!(sim.player_view(PlayerId(0)).resources[0].amount, 0);
+        let out = sim.step(&[build((6, 9), sim.tick(), 3)]);
+        assert!(out.events.iter().any(|event| {
+            matches!(event, Event::CommandRejected { reject, .. }
+                if reject.reason == RejectReason::CannotAfford)
+        }));
+        // A unit kind (no Footprint) cannot be built.
+        let out = sim.step(&[Command::new(
+            PlayerId(0),
+            sim.tick(),
+            4,
+            CommandKind::Build {
+                worker: EntityId(1),
+                structure: pandemonium_sim_api::KindId(0),
+                at: TilePos { x: 3, y: 3 },
+            },
+        )]);
+        assert!(out.events.iter().any(|event| {
+            matches!(event, Event::CommandRejected { reject, .. }
+                if reject.reason == RejectReason::InvalidTarget)
+        }));
+    }
+
+    #[test]
+    fn construction_is_deterministic() {
+        let world = construction_world();
+        let mut a = Sim::new(&world, setup());
+        let mut b = Sim::new(&world, setup());
+        a.step(&[build((6, 6), 0, 1)]);
+        b.step(&[build((6, 6), 0, 1)]);
+        for _ in 0..100 {
+            a.step(&[]);
+            b.step(&[]);
+        }
+        assert_eq!(a.state_hash(), b.state_hash());
+    }
+}

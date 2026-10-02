@@ -151,6 +151,13 @@ impl Sim {
             .and_then(|e| e.orders.first().copied())
     }
 
+    /// Test-only window into an entity's lifecycle (the construction tests
+    /// assert UnderConstruction -> Active through this).
+    #[cfg(test)]
+    pub(crate) fn lifecycle_probe(&self, id: EntityId) -> Option<crate::world::Lifecycle> {
+        self.world.entity(id).map(|entity| entity.lifecycle)
+    }
+
     /// Test-only window into a producer's queue (the production tests inspect
     /// enqueue/cancel behavior through this).
     #[cfg(test)]
@@ -250,6 +257,8 @@ impl Sim {
         apply_commands(
             &mut self.world,
             &self.fixture,
+            &mut self.nav,
+            &mut self.next_entity_id,
             self.tick,
             commands,
             &mut self.events,
