@@ -37,13 +37,20 @@ const STRAIGHT_COST: i64 = 1000;
 /// true diagonal cost, which keeps the octile heuristic admissible.
 const DIAGONAL_COST: i64 = 1414;
 
-/// The navigation grid: the world's passability in row-major tile order.
-/// Tile `(x, y)` lives at index `y * width + x`.
+/// The navigation grid: the world's passability in row-major tile order,
+/// overlaid with a static-occupancy count (structures and resource nodes
+/// block their footprint tiles — plan §9.1.3, M5). Tile `(x, y)` lives at
+/// index `y * width + x`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct NavGrid {
     width: u32,
     height: u32,
     passable: Vec<u8>,
+    /// Footprint occupancy per tile: how many static bodies claim it. Zero is
+    /// free; a tile is traversable only when terrain allows AND no body
+    /// claims it. Counts (not booleans) keep spawn/remove pairing honest in
+    /// debug builds.
+    occupied: Vec<u32>,
 }
 
 /// One open-set entry: the total-order key `(f, h, tile)` (plan §9.1.1
@@ -91,6 +98,7 @@ impl NavGrid {
             width,
             height,
             passable,
+            occupied: vec![0; expected],
         }
     }
 
@@ -104,12 +112,44 @@ impl NavGrid {
         self.height
     }
 
-    /// Whether `(x, y)` is inside the grid and passable.
+    /// Whether `(x, y)` is inside the grid and walkable: terrain passable and
+    /// no static body claiming the tile.
     pub(crate) fn passable(&self, x: i32, y: i32) -> bool {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return false;
         }
-        self.passable[y as usize * self.width as usize + x as usize] != 0
+        let index = y as usize * self.width as usize + x as usize;
+        self.passable[index] != 0 && self.occupied[index] == 0
+    }
+
+    /// Claims a tile for a static body (structures at site spawn, resource
+    /// nodes at match start). Out-of-bounds tiles are ignored — placement
+    /// validation keeps footprints on the map, so this is defensive only.
+    pub(crate) fn occupy(&mut self, x: i32, y: i32) {
+        if let Some(index) = self.index(x, y) {
+            self.occupied[index] = self.occupied[index].saturating_add(1);
+        }
+    }
+
+    /// Releases a tile a static body claimed (depletion, death). A release
+    /// below zero is a programmer error (unbalanced bookkeeping) — caught in
+    /// debug builds, saturating in release.
+    pub(crate) fn vacate(&mut self, x: i32, y: i32) {
+        if let Some(index) = self.index(x, y) {
+            debug_assert!(
+                self.occupied[index] > 0,
+                "vacating a tile nobody occupies — unbalanced footprint bookkeeping"
+            );
+            self.occupied[index] = self.occupied[index].saturating_sub(1);
+        }
+    }
+
+    /// The row-major index of an in-bounds tile.
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return None;
+        }
+        Some(y as usize * self.width as usize + x as usize)
     }
 
     /// The tile a position falls into (floor of the coordinates).
@@ -581,6 +621,51 @@ mod tests {
         // And it is adjacent to the goal tile.
         let (gx, gy) = grid.tile_of(goal);
         assert!((lx - gx).abs() <= 1 && (ly - gy).abs() <= 1);
+    }
+
+    #[test]
+    fn occupancy_blocks_tiles_and_release_reopens_them() {
+        let mut grid = grid_from(&["....", "....", "....", "...."]);
+        assert!(grid.passable(1, 1));
+        grid.occupy(1, 1);
+        grid.occupy(1, 1); // two bodies may claim the same tile transiently
+        assert!(!grid.passable(1, 1), "a claimed tile is not walkable");
+        grid.vacate(1, 1);
+        assert!(!grid.passable(1, 1), "one claim remains");
+        grid.vacate(1, 1);
+        assert!(grid.passable(1, 1), "fully released ground reopens");
+        // Out-of-bounds claims are defensive no-ops.
+        grid.occupy(-1, 0);
+        grid.occupy(4, 0);
+        grid.vacate(99, 99);
+    }
+
+    #[test]
+    fn occupied_goals_resolve_to_adjacent_tiles() {
+        // A structure sits on the goal tile: the path ends on the center of a
+        // free tile next to it, never inside the footprint — the exact shape
+        // the gather loop's travel targets rely on.
+        let mut grid = grid_from(&["....", "....", "....", "...."]);
+        for y in 1..3 {
+            for x in 1..3 {
+                grid.occupy(x, y);
+            }
+        }
+        let goal = at(1, 1); // inside the 2x2 structure
+        let path = grid.find_path(at(0, 0), goal).expect("a near path exists");
+        let last = *path.last().unwrap();
+        let (lx, ly) = grid.tile_of(last);
+        assert!(grid.passable(lx, ly));
+        let (gx, gy) = grid.tile_of(goal);
+        assert!((lx - gx).abs() <= 1 && (ly - gy).abs() <= 1);
+        // No waypoint ever sits on a claimed tile.
+        for waypoint in &path {
+            let (wx, wy) = grid.tile_of(*waypoint);
+            assert!(
+                grid.passable(wx, wy),
+                "waypoint on claimed tile ({wx},{wy})"
+            );
+        }
     }
 
     #[test]

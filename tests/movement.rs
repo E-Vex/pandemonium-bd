@@ -316,8 +316,39 @@ fn workers_cross_the_real_map_around_its_walls() {
         world.passability[y as usize * 64 + x as usize] != 0
     };
 
+    // The static footprint tiles (ore nodes + command centers), derived from
+    // the world definition with the same centering the simulation uses. Since
+    // M5, footprints block tiles — no mover may ever stand on one.
+    let footprint_of_kind = |kind: u32| -> Option<(u32, u32)> {
+        world.kinds[kind as usize]
+            .caps
+            .iter()
+            .find_map(|cap| match cap {
+                pandemonium_sim::CapTemplate::Footprint { w, h } => Some((*w, *h)),
+                _ => None,
+            })
+    };
+    let mut blocked_tiles: Vec<(i32, i32)> = Vec::new();
+    for spawn in &world.initial_spawns {
+        if let Some((w, h)) = footprint_of_kind(spawn.kind.0) {
+            let x0 = (spawn.pos.x - Fx::from_milli(w as i32 * 500)).floor_int();
+            let y0 = (spawn.pos.y - Fx::from_milli(h as i32 * 500)).floor_int();
+            for dy in 0..h as i32 {
+                for dx in 0..w as i32 {
+                    blocked_tiles.push((x0 + dx, y0 + dy));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        blocked_tiles.len(),
+        12 * 4 + 2 * 16,
+        "12 nodes + 2 command centers"
+    );
+
     let mut ticks = 0;
     let mut arrived = 0;
+    let mut move_failures = 0;
     while ticks < 3000 {
         let out = sim.step(&[]);
         assert!(
@@ -326,8 +357,13 @@ fn workers_cross_the_real_map_around_its_walls() {
                 .any(|event| matches!(event, Event::CommandRejected { .. })),
             "the worker order is valid"
         );
+        move_failures += out
+            .events
+            .iter()
+            .filter(|event| matches!(event, Event::MoveFailed { .. }))
+            .count();
         ticks += 1;
-        // Nobody ever stands on rock.
+        // Nobody ever stands on rock — or on a static footprint tile.
         for entity in sim.snapshot().entities {
             let (x, y) = (entity.pos.x.floor_int(), entity.pos.y.floor_int());
             assert!(
@@ -335,6 +371,13 @@ fn workers_cross_the_real_map_around_its_walls() {
                 "entity {} stood on blocked terrain at ({x},{y})",
                 entity.id.0
             );
+            if footprint_of_kind(entity.kind.0).is_none() {
+                assert!(
+                    !blocked_tiles.contains(&(x, y)),
+                    "mover {} stood on a footprint tile at ({x},{y})",
+                    entity.id.0
+                );
+            }
         }
         let movers = sim
             .snapshot()
@@ -345,7 +388,15 @@ fn workers_cross_the_real_map_around_its_walls() {
             break;
         }
     }
-    // All four workers completed the crossing.
+    // All four workers completed the crossing. The arrival bound is the
+    // footprint-blocked destination's packing envelope: the goal sits inside
+    // player 1's command center, so the nearest a first body parks is the
+    // closest reachable tile center (1000 milli), and each further body of the
+    // group stacks one radius-sum (600) behind it — 1000 + 3*600 = 2800 milli
+    // for four workers. The push-apart cascade along the arrival strip is the
+    // mechanism, not a failure: every order resolved (no MoveFailed), nobody
+    // left the destination area, and the never-on-blocked-tile assertions held
+    // every tick. (M4 calibrated 1100 for an open, unblocked destination.)
     for worker in &workers {
         let position = sim
             .snapshot()
@@ -355,7 +406,7 @@ fn workers_cross_the_real_map_around_its_walls() {
             .expect("workers survive the crossing")
             .pos;
         assert!(
-            Vec2Fx::dist(position, target) <= Fx::from_milli(1100),
+            Vec2Fx::dist(position, target) <= Fx::from_milli(2800),
             "worker {} finished at {:?}",
             worker.0,
             position
@@ -363,6 +414,10 @@ fn workers_cross_the_real_map_around_its_walls() {
         arrived += 1;
     }
     assert_eq!(arrived, 4);
+    assert_eq!(
+        move_failures, 0,
+        "every crossing order resolved as an arrival"
+    );
     assert!(ticks < 3000, "the crossing never resolved: {ticks} ticks");
 
     // Determinism of the real-map run: same setup, same hash.

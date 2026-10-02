@@ -96,10 +96,13 @@
         ( kind: "ore_node", tile: ( x: 45, y: 55 ) ),
         ( kind: "ore_node", tile: ( x: 55, y: 45 ) ),
         ( kind: "ore_node", tile: ( x: 45, y: 45 ) ),
-        ( kind: "ore_node", tile: ( x: 29, y: 29 ) ),
-        ( kind: "ore_node", tile: ( x: 33, y: 29 ) ),
-        ( kind: "ore_node", tile: ( x: 29, y: 33 ) ),
-        ( kind: "ore_node", tile: ( x: 33, y: 33 ) ),
+        // The contested plaza nodes sit one tile outside the gap's doorsteps:
+        // directly on the doorstep they sealed the only north-south crossing
+        // once footprints began blocking tiles (M5) — see docs/ASSUMPTIONS.md.
+        ( kind: "ore_node", tile: ( x: 28, y: 29 ) ),
+        ( kind: "ore_node", tile: ( x: 34, y: 29 ) ),
+        ( kind: "ore_node", tile: ( x: 28, y: 33 ) ),
+        ( kind: "ore_node", tile: ( x: 34, y: 33 ) ),
     ],
     symmetric: true,
     heightmap: Some((

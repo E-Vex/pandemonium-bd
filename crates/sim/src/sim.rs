@@ -257,6 +257,8 @@ impl Sim {
     /// Spawns one fixture entity: converts its kind's capability templates,
     /// applies the deterministic spawn jitter (consuming the RNG in fixed spawn
     /// order — plan §5.4), allocates the monotonic id, and emits `Spawned`.
+    /// Entities with a Footprint claim their tiles on the nav grid immediately
+    /// (structures and nodes block tiles from their first tick — plan §9.1.3).
     fn spawn(&mut self, spawn: SpawnDef) {
         let id = EntityId(self.next_entity_id);
         self.next_entity_id += 1;
@@ -275,12 +277,40 @@ impl Sim {
             .unwrap_or_default();
         let pos = spawn.pos + jitter;
         self.world.spawn(id, spawn.owner, spawn.kind, pos, caps);
+        self.claim_footprint(id);
         self.events.push(Event::Spawned {
             entity: id,
             owner: spawn.owner,
             kind: spawn.kind,
             pos,
         });
+    }
+
+    /// Claims (or, with `release`, releases) the nav tiles of an entity's
+    /// footprint — the occupancy half of "structures block tiles".
+    fn claim_footprint(&mut self, id: EntityId) {
+        let Some(entity) = self.world.entity(id) else {
+            return;
+        };
+        let Some(footprint) = self.world.footprint_of(id) else {
+            return;
+        };
+        for (x, y) in footprint.tiles(entity.pos) {
+            self.nav.occupy(x, y);
+        }
+    }
+
+    /// Releases the nav tiles of an entity's footprint (death, depletion).
+    fn release_footprint(&mut self, id: EntityId) {
+        let Some(entity) = self.world.entity(id) else {
+            return;
+        };
+        let Some(footprint) = self.world.footprint_of(id) else {
+            return;
+        };
+        for (x, y) in footprint.tiles(entity.pos) {
+            self.nav.vacate(x, y);
+        }
     }
 
     /// The spawn jitter for one spawn: two draws (x then y) from the shared RNG,
@@ -312,7 +342,8 @@ impl Sim {
     /// Stage 8: advance health regeneration (saturating, clamped to the pool),
     /// then remove everyone whose health reached zero — firing `Died` — in
     /// ascending id order. `Vec::remove` keeps the survivors' order stable, and
-    /// the allocator never looks back, so ids are never reused.
+    /// the allocator never looks back, so ids are never reused. Structures
+    /// release their footprint tiles on the way out, so the ground reopens.
     fn advance_health_and_cleanup(&mut self) {
         for (_, def) in &mut self.world.health {
             let max = def.max_hp.max(0);
@@ -329,6 +360,7 @@ impl Sim {
             if let Some(entity) = self.world.entity_mut(id) {
                 entity.lifecycle = Lifecycle::Dead;
             }
+            self.release_footprint(id);
             self.world.remove(id);
             self.events.push(Event::Died { entity: id });
         }
@@ -640,6 +672,131 @@ mod tests {
             }
             assert_eq!(quiet.state_hash(), noisy.state_hash());
         }
+    }
+
+    #[test]
+    fn footprint_spawns_block_tiles_for_movers() {
+        // Kind 3 "wall": a 2x2 footprint at center (10,12) -> tiles (9..10,
+        // 11..12). The grunt must route around it and never stand inside.
+        let mut world = trivial_world();
+        world.kinds.push(KindTemplate::from_caps(vec![
+            CapTemplate::Health {
+                max_hp: 100,
+                regen_per_tick: 0,
+            },
+            CapTemplate::Vision {
+                radius_milli_tiles: 1000,
+            },
+            CapTemplate::Footprint { w: 2, h: 2 },
+        ]));
+        world.initial_spawns.push(SpawnDef {
+            owner: PlayerId(0),
+            kind: KindId(3),
+            pos: Vec2Fx::from_ints(10, 12),
+        });
+        let mut sim = Sim::new(&world, setup());
+        // March straight at the wall's center: the blocked goal resolves to
+        // the nearest reachable tile, which is adjacent to the footprint.
+        sim.step(&[Command::new(
+            PlayerId(0),
+            0,
+            1,
+            CommandKind::Move {
+                units: vec![EntityId(1)],
+                target: Vec2Fx::from_ints(10, 12),
+            },
+        )]);
+        let mut tick = 1;
+        while sim
+            .snapshot()
+            .entities
+            .iter()
+            .any(|entity| entity.id == EntityId(1) && entity.move_state == MoveState::Moving)
+        {
+            sim.step(&[]);
+            tick += 1;
+            assert!(tick < 200, "the mover never resolved its order");
+            let pos = sim
+                .snapshot()
+                .entities
+                .iter()
+                .find(|entity| entity.id == EntityId(1))
+                .unwrap()
+                .pos;
+            let (x, y) = (pos.x.floor_int(), pos.y.floor_int());
+            assert!(
+                !(x == 9 || x == 10) || !(y == 11 || y == 12),
+                "mover stood inside the footprint at ({x},{y})"
+            );
+        }
+        // It arrived next to the wall, close to the order target.
+        let pos = sim
+            .snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.id == EntityId(1))
+            .unwrap()
+            .pos;
+        assert!(Vec2Fx::dist(pos, Vec2Fx::from_ints(10, 12)) <= Fx::from_milli(1600));
+    }
+
+    #[test]
+    fn dying_structures_release_their_tiles() {
+        // A decaying 2x2 wall: when its health runs out, the ground reopens —
+        // the next mover may stand where it stood.
+        let mut world = trivial_world();
+        world.kinds.push(KindTemplate::from_caps(vec![
+            CapTemplate::Health {
+                max_hp: 2,
+                regen_per_tick: -1,
+            },
+            CapTemplate::Footprint { w: 2, h: 2 },
+        ]));
+        world.initial_spawns.push(SpawnDef {
+            owner: PlayerId(0),
+            kind: KindId(3),
+            pos: Vec2Fx::from_ints(10, 12),
+        });
+        let mut sim = Sim::new(&world, setup());
+        // Wait for the wall to die (hp 2, regen -1 -> gone after two steps).
+        for _ in 0..4 {
+            sim.step(&[]);
+        }
+        assert!(sim
+            .snapshot()
+            .entities
+            .iter()
+            .all(|entity| entity.kind != KindId(3)));
+        // Now order the grunt onto the freed ground; it must be able to stand
+        // there (the tile is passable again).
+        sim.step(&[Command::new(
+            PlayerId(0),
+            4,
+            1,
+            CommandKind::Move {
+                units: vec![EntityId(1)],
+                target: Vec2Fx::from_ints(10, 12),
+            },
+        )]);
+        let mut tick = 5;
+        while sim
+            .snapshot()
+            .entities
+            .iter()
+            .any(|entity| entity.id == EntityId(1) && entity.move_state == MoveState::Moving)
+        {
+            sim.step(&[]);
+            tick += 1;
+            assert!(tick < 200, "the mover never arrived on the freed ground");
+        }
+        let pos = sim
+            .snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.id == EntityId(1))
+            .unwrap()
+            .pos;
+        assert_eq!(pos, Vec2Fx::from_ints(10, 12));
     }
 
     #[test]
