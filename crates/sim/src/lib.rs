@@ -25,6 +25,7 @@
 #![warn(missing_docs)]
 
 mod command;
+mod economy;
 mod fixture;
 mod hash;
 mod movement;

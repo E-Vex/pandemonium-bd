@@ -409,6 +409,20 @@ impl PlayerState {
             }
         }
     }
+
+    /// Adds income to the ledger (plan §9.3 deliveries — a worker depositing
+    /// cargo). Saturating addition, same arithmetic as [`Self::refund`]; the
+    /// separate name keeps deposits and cancellations readable at call sites.
+    pub fn credit(&mut self, gains: &[(ResourceId, i64)]) {
+        for (resource, amount) in gains {
+            if *amount <= 0 {
+                continue;
+            }
+            if let Some(entry) = self.resources.iter_mut().find(|(id, _)| id == resource) {
+                entry.1 = entry.1.saturating_add(*amount);
+            }
+        }
+    }
 }
 
 /// The whole mutable world: entity store, one store per capability type, players.

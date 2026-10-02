@@ -108,12 +108,21 @@ fn validate(world: &World, cmd: &Command) -> Result<(), RejectReason> {
             Ok(())
         }
         CommandKind::Gather { units, node } => {
-            check_units_exist_and_owned(world, cmd.issuer, units)?;
-            check_capability_present()?;
-            if world.entity(*node).is_none() {
-                return Err(RejectReason::InvalidTarget);
+            check_units(world, cmd.issuer, units, |id| {
+                if world.gather_of(id).is_some() {
+                    Ok(())
+                } else {
+                    Err(RejectReason::MissingCapability)
+                }
+            })?;
+            // The target must be a live resource node (an entity carrying a
+            // Resource body — plan §9.3). Fog filtering of gather targets
+            // arrives with the vision work (M6; A-048).
+            match world.entity(*node) {
+                None => Err(RejectReason::InvalidTarget),
+                Some(_) if world.resource_of(*node).is_none() => Err(RejectReason::InvalidTarget),
+                Some(_) => Ok(()),
             }
-            Ok(())
         }
         CommandKind::Build {
             worker, structure, ..
@@ -172,6 +181,22 @@ fn apply_valid(world: &mut World, cmd: &Command) {
                 }
             }
         }
+        CommandKind::Gather { units, node } => {
+            for id in sorted_unique(units) {
+                if let Some(entity) = world.entity_mut(id) {
+                    if cmd.queue {
+                        entity.orders.push(Order::GatherAt { node: *node });
+                    } else {
+                        // A replacing order restarts travel from scratch —
+                        // the old lanes served the old intent.
+                        entity.orders = vec![Order::GatherAt { node: *node }];
+                        if let Some(def) = world.move_of_mut(id) {
+                            def.reset_runtime();
+                        }
+                    }
+                }
+            }
+        }
         CommandKind::Resign {} => {
             if let Some(player) = world.player_mut(cmd.issuer) {
                 player.resigned = true;
@@ -182,7 +207,6 @@ fn apply_valid(world: &mut World, cmd: &Command) {
         // over. The exhaustive match makes the compiler demand an arm when a
         // future capability variant is added (plan §8.3).
         CommandKind::Attack { .. }
-        | CommandKind::Gather { .. }
         | CommandKind::Build { .. }
         | CommandKind::Train { .. }
         | CommandKind::CancelQueueItem { .. }

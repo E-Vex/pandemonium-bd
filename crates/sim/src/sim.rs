@@ -128,6 +128,22 @@ impl Sim {
             .map(|def| (def.path.clone(), def.stuck_ticks, def.repaths))
     }
 
+    /// Test-only window into a node's remaining resource amount (the economy
+    /// tests assert extraction and depletion through this).
+    #[cfg(test)]
+    pub(crate) fn resource_probe(&self, id: EntityId) -> Option<crate::world::ResourceBodyDef> {
+        self.world.resource_of(id).copied()
+    }
+
+    /// Test-only window into an entity's head order (the economy tests assert
+    /// phase transitions and auto-seek rewrites through this).
+    #[cfg(test)]
+    pub(crate) fn order_probe(&self, id: EntityId) -> Option<crate::world::Order> {
+        self.world
+            .entity(id)
+            .and_then(|e| e.orders.first().copied())
+    }
+
     /// The on-demand canonical state hash (plan §6.4).
     pub fn state_hash(&self) -> u64 {
         hash_state(&self.world, self.tick, &self.rng, self.next_entity_id)
@@ -223,7 +239,11 @@ impl Sim {
         self.run_scheduled_spawns();
 
         // Stage 4 — Economy: gathering timers, deliveries, storage, spending
-        //           effects (M5).
+        //           effects (M5, plan §9.3): the worker gather loop — travel
+        //           (through stage 6's shared travel targets), gather timers,
+        //           cargo, deposits, depletion with auto-seek.
+        crate::economy::advance_economy(&mut self.world, &mut self.nav, &mut self.events);
+
         // Stage 5 — Target acquisition (M6).
         // Stage 6 — Movement: path requests → path following → steering →
         //           collision push-apart, entities in id order (plan §6.3.6,

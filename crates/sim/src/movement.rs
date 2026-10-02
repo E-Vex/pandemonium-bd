@@ -55,18 +55,19 @@ pub(crate) fn advance_movement(world: &mut World, nav: &NavGrid, events: &mut Ve
     detect_stuck(world, &positions_before, events);
 }
 
-/// The destination of an order. `MoveTo` carries its target inline; economy
-/// orders (`GatherAt`, `BuildAt`) compute theirs from world state in stage 4
-/// — until their systems land (M5), they resolve to no movement target.
-fn order_target(order: &Order) -> Option<Vec2Fx> {
-    match order {
+/// The movement destination of an entity's head order (plan §6.3 stage 2's
+/// resolution into intents): `MoveTo` carries its target inline; economy
+/// orders resolve theirs from world state through the economy system's
+/// travel-target helpers (stage 4 keeps the phases current).
+fn movement_target(world: &World, id: EntityId) -> Option<Vec2Fx> {
+    match world.entity(id)?.orders.first()? {
         Order::MoveTo { target } => Some(*target),
-        Order::GatherAt { .. } | Order::BuildAt { .. } => None,
+        Order::GatherAt { .. } | Order::BuildAt { .. } => crate::economy::travel_target(world, id),
     }
 }
 
 /// Layer 1 — path requests: ordered movers with an empty path compute one
-/// from their current position to the current order's target.
+/// from their current position to the head order's resolved target.
 fn request_paths(world: &mut World, nav: &NavGrid, events: &mut Vec<Event>) {
     let needing: Vec<(EntityId, Option<Vec2Fx>)> = world
         .entities
@@ -77,7 +78,7 @@ fn request_paths(world: &mut World, nav: &NavGrid, events: &mut Vec<Event>) {
                 .move_of(entity.id)
                 .is_some_and(|def| def.path.is_empty())
         })
-        .map(|entity| (entity.id, order_target(&entity.orders[0])))
+        .map(|entity| (entity.id, movement_target(world, entity.id)))
         .collect();
     for (id, target) in needing {
         let Some(target) = target else {
@@ -163,7 +164,9 @@ fn steer(world: &mut World, nav: &NavGrid) -> Vec<(EntityId, Vec2Fx)> {
     positions
 }
 
-/// Consumes the reached waypoint; an emptied path completes the order.
+/// Consumes the reached waypoint. An emptied path completes a `MoveTo`
+/// order; economy orders (`GatherAt`, `BuildAt`) are long-lived — their own
+/// systems pop them when the work is done — so their lanes simply rest.
 fn consume_waypoint(world: &mut World, id: EntityId) {
     let completed = {
         let Some(def) = world.move_of_mut(id) else {
@@ -175,8 +178,11 @@ fn consume_waypoint(world: &mut World, id: EntityId) {
         def.path.is_empty()
     };
     if completed {
-        if let Some(entity) = world.entity_mut(id) {
-            if !entity.orders.is_empty() {
+        let is_move_to = world
+            .entity(id)
+            .is_some_and(|entity| matches!(entity.orders.first(), Some(Order::MoveTo { .. })));
+        if is_move_to {
+            if let Some(entity) = world.entity_mut(id) {
                 entity.orders.remove(0);
             }
         }
@@ -285,8 +291,10 @@ fn resolve_pair(world: &mut World, nav: &NavGrid, a: EntityId, b: EntityId) {
 
 /// Layer 4 — stuck detection: movers whose net progress this tick is under a
 /// quarter of their speed accumulate stuck ticks; past the threshold the
-/// order resolves as a crowded arrival (within `CROWD_ARRIVE_MILLI` of the
-/// target), a repath, or a `MoveFailed` give-up.
+/// order resolves as a crowded arrival (MoveTo only, within
+/// `CROWD_ARRIVE_MILLI` of the target), a repath, or a `MoveFailed` give-up.
+/// Workers standing at their economy work (gathering, hammering) have no
+/// active path and are skipped by construction.
 fn detect_stuck(
     world: &mut World,
     positions_before: &[(EntityId, Vec2Fx)],
@@ -299,12 +307,12 @@ fn detect_stuck(
         if entity.orders.is_empty() {
             continue; // completed this tick — nothing to detect
         }
-        let Some(target) = order_target(&entity.orders[0]) else {
-            continue; // no movement target: not a traveling order this tick
-        };
         let Some(def) = world.move_of(*id) else {
             continue;
         };
+        if def.path.is_empty() {
+            continue; // in-place economy work (or between paths) — not stuck
+        }
         let moved = Vec2Fx::dist(*before, entity.pos);
         let quarter = def
             .speed_per_tick
@@ -317,9 +325,13 @@ fn detect_stuck(
                 }
                 continue;
             }
-            // Escalation: crowded arrival, repath, or give up.
+            // Escalation: crowded arrival (MoveTo), repath, or give up.
             let crowd_radius = def.radius + Fx::from_milli(CROWD_ARRIVE_MILLI);
-            if Vec2Fx::dist(entity.pos, target) <= crowd_radius {
+            let crowd_target = match entity.orders[0] {
+                Order::MoveTo { target } => Some(target),
+                Order::GatherAt { .. } | Order::BuildAt { .. } => None,
+            };
+            if crowd_target.is_some_and(|target| Vec2Fx::dist(entity.pos, target) <= crowd_radius) {
                 if let Some(entity) = world.entity_mut(*id) {
                     entity.orders.remove(0);
                 }
