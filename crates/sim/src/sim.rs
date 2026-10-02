@@ -303,6 +303,11 @@ impl Sim {
         //           remove the dead. Ids are never reused (plan §6.3.8).
         self.advance_health_and_cleanup();
 
+        // A12 (plan §13): every invariant, every tick, debug builds only —
+        // the soak and every dev-profile test enforce them continuously.
+        #[cfg(debug_assertions)]
+        crate::invariants::check(&self.world, &self.fixture, &self.nav, self.next_entity_id);
+
         // Stage 9 — Vision: incremental per-player visibility update (M6; the
         //           view recomputes on demand until then).
         // Stage 10 — Match rules: defeat/victory evaluation (M8).

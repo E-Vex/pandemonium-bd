@@ -28,6 +28,7 @@ mod command;
 mod economy;
 mod fixture;
 mod hash;
+mod invariants;
 mod movement;
 mod nav;
 mod production;

@@ -228,6 +228,16 @@ fn remove_depleted_nodes(world: &mut World, nav: &mut NavGrid, events: &mut Vec<
         .map(|(id, _)| *id)
         .collect();
     for node in dead {
+        // Workers whose order still points here re-target now (same tick) —
+        // the end-of-tick invariant checker requires no stale references.
+        let affected: Vec<EntityId> = world
+            .entities
+            .iter()
+            .filter(|entity| {
+                matches!(entity.orders.first(), Some(Order::GatherAt { node: n }) if *n == node)
+            })
+            .map(|entity| entity.id)
+            .collect();
         let tiles = world
             .entity(node)
             .and_then(|entity| world.footprint_of(node).map(|fp| fp.tiles(entity.pos)));
@@ -238,6 +248,9 @@ fn remove_depleted_nodes(world: &mut World, nav: &mut NavGrid, events: &mut Vec<
             }
         }
         events.push(Event::NodeDepleted { node });
+        for worker in affected {
+            auto_seek(world, worker);
+        }
     }
 }
 
