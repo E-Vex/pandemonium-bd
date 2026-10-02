@@ -16,13 +16,15 @@
 use pandemonium_fx::{Fnv1a64, Rng};
 use pandemonium_sim_api::Tick;
 
-use crate::world::{CapabilityData, Lifecycle, Order, World};
+use crate::world::{CapabilityData, Order, World};
 
 /// Version of the canonical state encoding. Bump (and regenerate the golden
 /// hashes) whenever the encoded field set or order changes deliberately.
-/// v2 adds the M4 movement fields: the Move collision radius, the remaining
-/// path waypoints, and the stuck-detection counters.
-pub(crate) const STATE_ENCODING_VERSION: u32 = 2;
+/// v2 added the M4 movement fields (Move radius, remaining waypoints, stuck
+/// counters). v3 adds the M5 economy state: the Gather/Build/Produce/Storage/
+/// ProvidesPopulation/Resource/Footprint/Construction capability blocks, the
+/// `GatherAt`/`BuildAt` orders, and the `UnderConstruction` lifecycle.
+pub(crate) const STATE_ENCODING_VERSION: u32 = 3;
 
 /// Encodes the whole state into the hasher, in canonical order.
 pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u64) -> u64 {
@@ -49,10 +51,11 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
         for order in &entity.orders {
             encode_order(&mut h, order);
         }
-        // Capability presence bitmask over the fixed order (Health, Move, Vision),
-        // then the present blocks in that same fixed order.
+        // Capability presence bitmask over the fixed order (Health, Move,
+        // Vision, Gather, Build, Produce, Storage, ProvidesPopulation, Resource,
+        // Footprint, Construction), then the present blocks in that same order.
         let mask = capability_mask(world, entity.id);
-        h.write_u8(mask);
+        h.write_u16(mask);
         if let Some(CapabilityData::Health(def)) = capability_of(world, entity.id, mask, 0) {
             h.write_i32(def.hp);
             h.write_i32(def.max_hp);
@@ -71,6 +74,64 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
         }
         if let Some(CapabilityData::Vision(def)) = capability_of(world, entity.id, mask, 2) {
             h.write_i32(def.radius.raw());
+        }
+        if let Some(CapabilityData::Gather(def)) = capability_of(world, entity.id, mask, 3) {
+            h.write_i64(def.carry_amount);
+            h.write_u32(def.gather_time_ticks);
+            h.write_u32(def.timer);
+            match def.cargo {
+                None => h.write_u8(0),
+                Some((resource, amount)) => {
+                    h.write_u8(1);
+                    h.write_u32(resource.0);
+                    h.write_i64(amount);
+                }
+            }
+        }
+        // Build (slot 4) carries no fields — presence is the whole block.
+        if let Some(CapabilityData::Produce(def)) = capability_of(world, entity.id, mask, 5) {
+            h.write_u32(def.queue.len() as u32);
+            for item in &def.queue {
+                h.write_u32(item.producible.0);
+                h.write_u32(item.cost_paid.len() as u32);
+                for (resource, amount) in &item.cost_paid {
+                    h.write_u32(resource.0);
+                    h.write_i64(*amount);
+                }
+                h.write_u32(item.progress_ticks);
+            }
+            match def.rally {
+                None => h.write_u8(0),
+                Some(rally) => {
+                    h.write_u8(1);
+                    h.write_i32(rally.x.raw());
+                    h.write_i32(rally.y.raw());
+                }
+            }
+        }
+        if let Some(CapabilityData::Storage(def)) = capability_of(world, entity.id, mask, 6) {
+            h.write_u32(def.resources.len() as u32);
+            for resource in &def.resources {
+                h.write_u32(resource.0);
+            }
+        }
+        if let Some(CapabilityData::ProvidesPopulation(def)) =
+            capability_of(world, entity.id, mask, 7)
+        {
+            h.write_i32(def.amount);
+        }
+        if let Some(CapabilityData::Resource(def)) = capability_of(world, entity.id, mask, 8) {
+            h.write_u32(def.resource.0);
+            h.write_i64(def.amount);
+        }
+        if let Some(CapabilityData::Footprint(def)) = capability_of(world, entity.id, mask, 9) {
+            h.write_u32(def.w);
+            h.write_u32(def.h);
+        }
+        if let Some(CapabilityData::Construction(def)) = capability_of(world, entity.id, mask, 10) {
+            h.write_u64(def.builder.0);
+            h.write_u32(def.progress_ticks);
+            h.write_u32(def.total_ticks);
         }
     }
 
@@ -99,13 +160,22 @@ fn encode_order(h: &mut Fnv1a64, order: &Order) {
             h.write_i32(target.x.raw());
             h.write_i32(target.y.raw());
         }
+        Order::GatherAt { node } => {
+            h.write_u8(2);
+            h.write_u64(node.0);
+        }
+        Order::BuildAt { site } => {
+            h.write_u8(3);
+            h.write_u64(site.0);
+        }
     }
 }
 
-fn lifecycle_tag(lifecycle: Lifecycle) -> u8 {
+fn lifecycle_tag(lifecycle: crate::world::Lifecycle) -> u8 {
     match lifecycle {
-        Lifecycle::Active => 1,
-        Lifecycle::Dead => 2,
+        crate::world::Lifecycle::UnderConstruction => 3,
+        crate::world::Lifecycle::Active => 1,
+        crate::world::Lifecycle::Dead => 2,
     }
 }
 
@@ -117,9 +187,11 @@ fn controller_tag(player: &crate::world::PlayerState) -> u8 {
 }
 
 /// Presence bitmask over the fixed capability order: bit 0 Health, bit 1 Move,
-/// bit 2 Vision.
-fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u8 {
-    let mut mask = 0u8;
+/// bit 2 Vision, bit 3 Gather, bit 4 Build, bit 5 Produce, bit 6 Storage,
+/// bit 7 ProvidesPopulation, bit 8 Resource, bit 9 Footprint, bit 10
+/// Construction.
+fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u16 {
+    let mut mask = 0u16;
     if world.health_of(id).is_some() {
         mask |= 1 << 0;
     }
@@ -129,16 +201,40 @@ fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u8 {
     if world.vision_of(id).is_some() {
         mask |= 1 << 2;
     }
+    if world.gather_of(id).is_some() {
+        mask |= 1 << 3;
+    }
+    if world.build_of(id).is_some() {
+        mask |= 1 << 4;
+    }
+    if world.produce_of(id).is_some() {
+        mask |= 1 << 5;
+    }
+    if world.storage_of(id).is_some() {
+        mask |= 1 << 6;
+    }
+    if world.population_of(id).is_some() {
+        mask |= 1 << 7;
+    }
+    if world.resource_of(id).is_some() {
+        mask |= 1 << 8;
+    }
+    if world.footprint_of(id).is_some() {
+        mask |= 1 << 9;
+    }
+    if world.construction_of(id).is_some() {
+        mask |= 1 << 10;
+    }
     mask
 }
 
-/// Fetches the capability block for slot `index` (0 Health, 1 Move, 2 Vision) when
-/// the mask says it is present — the mask and the lookups can only agree, because
-/// both read the same stores.
+/// Fetches the capability block for slot `index` (see [`capability_mask`] for
+/// the fixed order) when the mask says it is present — the mask and the
+/// lookups can only agree, because both read the same stores.
 fn capability_of(
     world: &World,
     id: pandemonium_sim_api::EntityId,
-    mask: u8,
+    mask: u16,
     index: u8,
 ) -> Option<CapabilityData> {
     if mask & (1 << index) == 0 {
@@ -149,7 +245,27 @@ fn capability_of(
         1 => world
             .move_of(id)
             .map(|def| CapabilityData::Move(def.clone())),
-        _ => world.vision_of(id).map(|def| CapabilityData::Vision(*def)),
+        2 => world.vision_of(id).map(|def| CapabilityData::Vision(*def)),
+        3 => world.gather_of(id).map(|def| CapabilityData::Gather(*def)),
+        4 => world.build_of(id).map(|def| CapabilityData::Build(*def)),
+        5 => world
+            .produce_of(id)
+            .map(|def| CapabilityData::Produce(def.clone())),
+        6 => world
+            .storage_of(id)
+            .map(|def| CapabilityData::Storage(def.clone())),
+        7 => world
+            .population_of(id)
+            .map(|def| CapabilityData::ProvidesPopulation(*def)),
+        8 => world
+            .resource_of(id)
+            .map(|def| CapabilityData::Resource(*def)),
+        9 => world
+            .footprint_of(id)
+            .map(|def| CapabilityData::Footprint(*def)),
+        _ => world
+            .construction_of(id)
+            .map(|def| CapabilityData::Construction(*def)),
     }
 }
 

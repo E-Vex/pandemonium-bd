@@ -16,7 +16,8 @@
 
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
 use pandemonium_sim::{
-    CapTemplate, KindTemplate, ResourceDef, ScheduledSpawnDef, Sim, SpawnDef, TrivialWorld,
+    CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, Sim, SpawnDef,
+    TrivialWorld,
 };
 use pandemonium_sim_api::{
     Command, CommandKind, ControllerKind, EntityId, Event, MatchSetup, MoveState, PlayerId,
@@ -47,6 +48,7 @@ mod kinds {
 fn acceptance_world() -> TrivialWorld {
     TrivialWorld {
         passability: TrivialWorld::open_passability(64, 64),
+        buildability: TrivialWorld::open_buildability(64, 64),
         map_id: 0x00AC_E900_0000_0001,
         width_tiles: 64,
         height_tiles: 64,
@@ -65,11 +67,13 @@ fn acceptance_world() -> TrivialWorld {
                         radius_milli_tiles: 7000,
                     },
                 ],
+                economy: KindEconomy::default(),
             },
             KindTemplate {
                 caps: vec![CapTemplate::Vision {
                     radius_milli_tiles: 9000,
                 }],
+                economy: KindEconomy::default(),
             },
             KindTemplate {
                 caps: vec![
@@ -85,12 +89,15 @@ fn acceptance_world() -> TrivialWorld {
                         radius_milli_tiles: 5000,
                     },
                 ],
+                economy: KindEconomy::default(),
             },
         ],
         resources: vec![ResourceDef {
             resource: ResourceId(0),
             starting: 200,
         }],
+        production: vec![],
+        base_population_cap: 0,
         initial_spawns: vec![
             SpawnDef {
                 owner: PlayerId(0),
@@ -486,13 +493,14 @@ fn a1_golden_hashes_are_pinned() {
     let script = acceptance_script();
     let run = run_match(&world, &setup, &script, TICKS);
 
-    // Regenerated for M4 (state encoding v2: movement radius + path +
-    // counters; fixture encoding v2: passability + radius) — see
-    // docs/ASSUMPTIONS.md A-038.
+    // Regenerated for M5 (state encoding v3: the economy capability blocks,
+    // GatherAt/BuildAt orders, UnderConstruction lifecycle; fixture encoding
+    // v3: buildability + production lists + base cap + kind economy) — see
+    // docs/ASSUMPTIONS.md A-050.
     let golden: &[(u32, u64)] = &[
-        (0, 0x98d7224c004e0c16),
-        (30, 0x79a0085367dbc1bd),
-        (60, 0x612f4864836bf1de),
+        (0, 0x4a01766aec30e255),
+        (30, 0xf051d7ec374d8c30),
+        (60, 0x75d4c17965f26efb),
     ];
     assert_eq!(run.checkpoints.len(), 4, "tick 0 + 30 + 60 + final 65");
     for (want_tick, want_hash) in golden {
@@ -503,7 +511,7 @@ fn a1_golden_hashes_are_pinned() {
             .unwrap_or_else(|| panic!("missing checkpoint at tick {want_tick}"));
         assert_eq!(found.hash, *want_hash, "golden hash at tick {want_tick}");
     }
-    assert_eq!(run.final_hash, 0xc569b0bc22198de0);
+    assert_eq!(run.final_hash, 0x675d60c8e466bc31);
     assert_eq!(run.next_entity_id, 9);
 }
 

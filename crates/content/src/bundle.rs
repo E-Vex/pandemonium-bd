@@ -17,7 +17,9 @@ use std::path::Path;
 
 use pandemonium_fx::Fnv1a64;
 use pandemonium_sim::TrivialWorld;
-use pandemonium_sim::{CapTemplate, KindTemplate, ResourceDef as SimResourceDef, SpawnDef};
+use pandemonium_sim::{
+    CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
+};
 use pandemonium_sim_api::{PlayerId, ResourceId, Vec2Fx};
 
 use crate::defs;
@@ -345,6 +347,10 @@ impl ContentBundle {
                     .iter()
                     .filter_map(capability_template)
                     .collect(),
+                // The economy stats (cost, build time, population, requires)
+                // and the production lists join the world seam with M5's
+                // economy mapping — see docs/DEBT.md DEBT-006.
+                economy: KindEconomy::default(),
             })
             .collect();
 
@@ -405,8 +411,13 @@ impl ContentBundle {
             width_tiles: self.map.width,
             height_tiles: self.map.height,
             passability,
+            buildability: map_buildability(&self.map),
             kinds,
             resources,
+            // Faction production lists join the seam with M5's economy mapping
+            // (docs/DEBT.md DEBT-006).
+            production: Vec::new(),
+            base_population_cap: self.rules.base_population_cap,
             initial_spawns,
             scheduled_spawns: Vec::new(),
             spawn_jitter_milli: 0,
@@ -477,6 +488,28 @@ fn map_passability(map: &defs::MapDef) -> Vec<u8> {
         }
     }
     passability
+}
+
+/// The map's terrain as the simulation's buildability grid: one byte per tile,
+/// row-major, 1 buildable and 0 not — the Build command's placement input
+/// (plan §10.5). Mirrors [`map_passability`].
+fn map_buildability(map: &defs::MapDef) -> Vec<u8> {
+    let class_of: BTreeMap<char, &defs::TerrainClass> = map
+        .terrain
+        .iter()
+        .map(|class| (class.code, class))
+        .collect();
+    let mut buildability = Vec::with_capacity((map.width as u64 * map.height as u64) as usize);
+    for row in &map.grid {
+        for code in row.chars() {
+            let buildable = class_of
+                .get(&code)
+                .map(|class| class.buildable)
+                .unwrap_or(false); // unknown codes never validate; fail closed
+            buildability.push(u8::from(buildable));
+        }
+    }
+    buildability
 }
 
 // ---------------------------------------------------------------------------

@@ -35,10 +35,14 @@ mod world;
 use pandemonium_sim_api::Tick;
 
 pub use fixture::{
-    CapTemplate, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
+    CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
 };
 pub use sim::{Sim, StepOutput};
-pub use world::{CapabilityData, HealthDef, Lifecycle, MoveDef, Order, VisionDef, World};
+pub use world::{
+    BuildDef, CapabilityData, ConstructionDef, FootprintDef, GatherDef, HealthDef, Lifecycle,
+    MoveDef, Order, PopulationDef, ProduceDef, QueueItem, ResourceBodyDef, StorageDef, VisionDef,
+    World,
+};
 
 /// Simulation frequency in ticks per second (FD-1: fixed-tick, render-decoupled).
 pub const TICKS_PER_SECOND: u32 = 30;

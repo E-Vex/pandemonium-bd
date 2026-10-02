@@ -6,7 +6,7 @@
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
 use pandemonium_sim::Sim;
 use pandemonium_sim::{
-    CapTemplate, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
+    CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
 };
 use pandemonium_sim_api::{
     Command, CommandKind, ControllerKind, EntityId, MatchSetup, PlayerId, PlayerSetup, ResourceId,
@@ -34,6 +34,7 @@ pub fn demo_world() -> TrivialWorld {
         // The demo map is open ground: no terrain obstacles, so every demo
         // order exercises the straight-line fast path of the M4 mover.
         passability: TrivialWorld::open_passability(64, 64),
+        buildability: TrivialWorld::open_buildability(64, 64),
         map_id: DEMO_MAP_ID,
         width_tiles: 64,
         height_tiles: 64,
@@ -52,11 +53,13 @@ pub fn demo_world() -> TrivialWorld {
                         radius_milli_tiles: 7000,
                     },
                 ],
+                economy: KindEconomy::default(),
             },
             KindTemplate {
                 caps: vec![CapTemplate::Vision {
                     radius_milli_tiles: 9000,
                 }],
+                economy: KindEconomy::default(),
             },
             KindTemplate {
                 caps: vec![
@@ -72,12 +75,15 @@ pub fn demo_world() -> TrivialWorld {
                         radius_milli_tiles: 5000,
                     },
                 ],
+                economy: KindEconomy::default(),
             },
         ],
         resources: vec![ResourceDef {
             resource: ResourceId(0),
             starting: 200,
         }],
+        production: vec![],
+        base_population_cap: 0,
         initial_spawns: vec![
             // Player 0: three grunts and a watcher.
             SpawnDef {

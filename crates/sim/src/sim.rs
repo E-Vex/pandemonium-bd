@@ -78,6 +78,13 @@ impl Sim {
             spawn_queue: world.scheduled_spawns.clone(),
             spawn_cursor: 0,
         };
+        // The buildability grid must match the map shape (the fixture and the
+        // content seam both guarantee it; a mismatch is programmer error).
+        debug_assert_eq!(
+            world.buildability.len(),
+            (world.width_tiles as u64 * world.height_tiles as u64) as usize,
+            "buildability must be width * height bytes"
+        );
         // Deterministic schedule order: (tick, then fixture order preserved by the
         // stable sort).
         sim.spawn_queue.sort_by_key(|s| s.tick);
@@ -331,7 +338,7 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture::{CapTemplate, KindTemplate, ResourceDef};
+    use crate::fixture::{CapTemplate, KindEconomy, KindTemplate, ResourceDef};
     use pandemonium_sim_api::{
         CommandKind, ControllerKind, KindId, MoveState, PlayerSetup, ResourceId,
     };
@@ -344,6 +351,7 @@ mod tests {
             width_tiles: 64,
             height_tiles: 64,
             passability: TrivialWorld::open_passability(64, 64),
+            buildability: TrivialWorld::open_buildability(64, 64),
             kinds: vec![
                 KindTemplate {
                     caps: vec![
@@ -359,11 +367,13 @@ mod tests {
                             radius_milli_tiles: 7000,
                         },
                     ],
+                    economy: KindEconomy::default(),
                 },
                 KindTemplate {
                     caps: vec![CapTemplate::Vision {
                         radius_milli_tiles: 9000,
                     }],
+                    economy: KindEconomy::default(),
                 },
                 KindTemplate {
                     caps: vec![
@@ -379,12 +389,15 @@ mod tests {
                             radius_milli_tiles: 5000,
                         },
                     ],
+                    economy: KindEconomy::default(),
                 },
             ],
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,
             }],
+            production: vec![],
+            base_population_cap: 0,
             initial_spawns: vec![
                 SpawnDef {
                     owner: PlayerId(0),

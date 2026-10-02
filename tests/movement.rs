@@ -32,7 +32,7 @@ fn repo_content() -> PathBuf {
 
 /// A 50-unit open world: one mover kind, units in a 7x8 block.
 fn fifty_unit_world() -> TrivialWorld {
-    use pandemonium_sim::{CapTemplate, KindTemplate, ResourceDef, SpawnDef};
+    use pandemonium_sim::{CapTemplate, KindEconomy, KindTemplate, ResourceDef, SpawnDef};
 
     let mut spawns = Vec::new();
     for index in 0..50u32 {
@@ -52,6 +52,7 @@ fn fifty_unit_world() -> TrivialWorld {
         width_tiles: 64,
         height_tiles: 64,
         passability: TrivialWorld::open_passability(64, 64),
+        buildability: TrivialWorld::open_buildability(64, 64),
         kinds: vec![KindTemplate {
             caps: vec![
                 CapTemplate::Health {
@@ -66,11 +67,14 @@ fn fifty_unit_world() -> TrivialWorld {
                     radius_milli_tiles: 7000,
                 },
             ],
+            economy: KindEconomy::default(),
         }],
         resources: vec![ResourceDef {
             resource: pandemonium_sim_api::ResourceId(0),
             starting: 200,
         }],
+        production: vec![],
+        base_population_cap: 0,
         initial_spawns: spawns,
         scheduled_spawns: vec![],
         spawn_jitter_milli: 0,

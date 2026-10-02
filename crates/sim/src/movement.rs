@@ -55,18 +55,20 @@ pub(crate) fn advance_movement(world: &mut World, nav: &NavGrid, events: &mut Ve
     detect_stuck(world, &positions_before, events);
 }
 
-/// The destination of an order (the movement vocabulary is MoveTo-only for
-/// now; richer intents extend here with their milestones).
-fn order_target(order: &Order) -> Vec2Fx {
+/// The destination of an order. `MoveTo` carries its target inline; economy
+/// orders (`GatherAt`, `BuildAt`) compute theirs from world state in stage 4
+/// — until their systems land (M5), they resolve to no movement target.
+fn order_target(order: &Order) -> Option<Vec2Fx> {
     match order {
-        Order::MoveTo { target } => *target,
+        Order::MoveTo { target } => Some(*target),
+        Order::GatherAt { .. } | Order::BuildAt { .. } => None,
     }
 }
 
 /// Layer 1 — path requests: ordered movers with an empty path compute one
 /// from their current position to the current order's target.
 fn request_paths(world: &mut World, nav: &NavGrid, events: &mut Vec<Event>) {
-    let needing: Vec<(EntityId, Vec2Fx)> = world
+    let needing: Vec<(EntityId, Option<Vec2Fx>)> = world
         .entities
         .iter()
         .filter(|entity| !entity.orders.is_empty())
@@ -78,6 +80,9 @@ fn request_paths(world: &mut World, nav: &NavGrid, events: &mut Vec<Event>) {
         .map(|entity| (entity.id, order_target(&entity.orders[0])))
         .collect();
     for (id, target) in needing {
+        let Some(target) = target else {
+            continue; // the order resolves no movement target this tick
+        };
         let from = world.entity(id).expect("the id came from the store").pos;
         let speed = world
             .move_of(id)
@@ -294,7 +299,9 @@ fn detect_stuck(
         if entity.orders.is_empty() {
             continue; // completed this tick — nothing to detect
         }
-        let target = order_target(&entity.orders[0]);
+        let Some(target) = order_target(&entity.orders[0]) else {
+            continue; // no movement target: not a traveling order this tick
+        };
         let Some(def) = world.move_of(*id) else {
             continue;
         };
@@ -354,7 +361,9 @@ fn fail_order(world: &mut World, id: EntityId, events: &mut Vec<Event>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture::{CapTemplate, KindTemplate, ResourceDef, SpawnDef, TrivialWorld};
+    use crate::fixture::{
+        CapTemplate, KindEconomy, KindTemplate, ResourceDef, SpawnDef, TrivialWorld,
+    };
     use crate::sim::Sim;
     use crate::world::{CapabilityData, MoveDef, PlayerState};
     use pandemonium_sim_api::{
@@ -369,6 +378,7 @@ mod tests {
             width_tiles: 16,
             height_tiles: 16,
             passability: TrivialWorld::open_passability(16, 16),
+            buildability: TrivialWorld::open_buildability(16, 16),
             kinds: vec![KindTemplate {
                 caps: vec![
                     CapTemplate::Health {
@@ -383,11 +393,14 @@ mod tests {
                         radius_milli_tiles: 5000,
                     },
                 ],
+                economy: KindEconomy::default(),
             }],
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,
             }],
+            production: vec![],
+            base_population_cap: 0,
             initial_spawns: vec![],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,

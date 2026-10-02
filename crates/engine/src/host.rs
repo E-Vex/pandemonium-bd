@@ -193,7 +193,9 @@ impl MatchHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pandemonium_sim::{CapTemplate, KindTemplate, ResourceDef as SimResourceDef, SpawnDef};
+    use pandemonium_sim::{
+        CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
+    };
     use pandemonium_sim_api::{
         CommandKind, ControllerKind, EntityId, KindId, PlayerSetup, ResourceId,
     };
@@ -204,6 +206,7 @@ mod tests {
             width_tiles: 16,
             height_tiles: 16,
             passability: TrivialWorld::open_passability(16, 16),
+            buildability: TrivialWorld::open_buildability(16, 16),
             kinds: vec![KindTemplate {
                 caps: vec![
                     CapTemplate::Health {
@@ -218,11 +221,14 @@ mod tests {
                         radius_milli_tiles: 7000,
                     },
                 ],
+                economy: KindEconomy::default(),
             }],
             resources: vec![SimResourceDef {
                 resource: ResourceId(0),
                 starting: 200,
             }],
+            production: vec![],
+            base_population_cap: 0,
             initial_spawns: vec![SpawnDef {
                 owner: PlayerId(0),
                 kind: KindId(0),
