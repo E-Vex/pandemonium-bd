@@ -31,3 +31,7 @@ path = "content_pipeline.rs"
 [[test]]
 name = "movement"
 path = "movement.rs"
+
+[[test]]
+name = "economy"
+path = "economy.rs"

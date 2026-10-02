@@ -284,8 +284,8 @@ fn spawn_position(world: &World, nav: &NavGrid, producer: EntityId) -> Vec2Fx {
             for x in (x0 - ring)..=(x0 + w - 1 + ring) {
                 if nav.passable(x, y) {
                     return Vec2Fx::new(
-                        Fx::from_milli(x * 2000 + 1000),
-                        Fx::from_milli(y * 2000 + 1000),
+                        Fx::from_milli(x * 1000 + 500),
+                        Fx::from_milli(y * 1000 + 500),
                     );
                 }
             }
