@@ -192,6 +192,41 @@ impl PlayerState {
             .map(|(_, amount)| *amount)
             .unwrap_or(0)
     }
+
+    /// Whether the ledger can pay every entry of the cost (plan §9.3). Entries
+    /// for unknown resources or with non-positive amounts are no-ops — costs
+    /// are validated non-negative at load, so this is defensive only.
+    pub fn can_afford(&self, cost: &[(ResourceId, i64)]) -> bool {
+        cost.iter()
+            .all(|(resource, amount)| *amount <= 0 || self.balance(*resource) >= *amount)
+    }
+
+    /// Deducts a cost already found affordable (plan §9.3 "spend"). Saturating
+    /// subtraction keeps extremes defined; callers gate on [`Self::can_afford`]
+    /// first, so the balance stays non-negative (the A12 invariant).
+    pub fn spend(&mut self, cost: &[(ResourceId, i64)]) {
+        for (resource, amount) in cost {
+            if *amount <= 0 {
+                continue;
+            }
+            if let Some(entry) = self.resources.iter_mut().find(|(id, _)| id == resource) {
+                entry.1 = entry.1.saturating_sub(*amount);
+            }
+        }
+    }
+
+    /// Returns a previously spent cost (plan §9.3 "refund" — queue
+    /// cancellation). Saturating addition: a refund never overflows the ledger.
+    pub fn refund(&mut self, cost: &[(ResourceId, i64)]) {
+        for (resource, amount) in cost {
+            if *amount <= 0 {
+                continue;
+            }
+            if let Some(entry) = self.resources.iter_mut().find(|(id, _)| id == resource) {
+                entry.1 = entry.1.saturating_add(*amount);
+            }
+        }
+    }
 }
 
 /// The whole mutable world: entity store, one store per capability type, players.
@@ -452,5 +487,69 @@ mod tests {
         assert_eq!(state.balance(ResourceId(3)), 10);
         assert_eq!(state.balance(ResourceId(9)), 0);
         assert!(!state.resigned);
+    }
+
+    #[test]
+    fn ledger_can_afford_spend_and_refund_round_trip() {
+        let setup = PlayerSetup {
+            player: PlayerId(0),
+            controller: ControllerKind::Human,
+        };
+        let mut state = PlayerState::from_setup(&setup, &[(ResourceId(0), 200)]);
+        let worker_cost = [(ResourceId(0), 50)];
+        assert!(state.can_afford(&worker_cost));
+        state.spend(&worker_cost);
+        assert_eq!(state.balance(ResourceId(0)), 150);
+        state.refund(&worker_cost);
+        assert_eq!(state.balance(ResourceId(0)), 200);
+        // Beyond the balance: not affordable, and spending is the caller's
+        // gate — the refund path is the only way money comes back.
+        let huge = [(ResourceId(0), 201)];
+        assert!(!state.can_afford(&huge));
+    }
+
+    #[test]
+    fn ledger_costs_are_per_resource_and_empty_costs_are_free() {
+        let setup = PlayerSetup {
+            player: PlayerId(0),
+            controller: ControllerKind::Human,
+        };
+        // Two resources: a second resource is data-only (plan §9.3).
+        let mut state = PlayerState::from_setup(&setup, &[(ResourceId(0), 30), (ResourceId(1), 5)]);
+        let mixed = [(ResourceId(0), 30), (ResourceId(1), 5)];
+        assert!(state.can_afford(&mixed));
+        let short = [(ResourceId(0), 30), (ResourceId(1), 6)];
+        assert!(!state.can_afford(&short), "every entry must be payable");
+        state.spend(&mixed);
+        assert_eq!(state.balance(ResourceId(0)), 0);
+        assert_eq!(state.balance(ResourceId(1)), 0);
+        // Unknown resources carry a zero balance, so a positive cost on one
+        // is unpayable — the loader only emits registry-mapped costs, this
+        // pins the defensive fail-closed behavior.
+        assert!(!state.can_afford(&[(ResourceId(9), 999)]));
+        assert!(state.can_afford(&[]));
+        state.spend(&[(ResourceId(9), 999), (ResourceId(0), -5)]);
+        assert_eq!(state.balance(ResourceId(0)), 0);
+    }
+
+    #[test]
+    fn ledger_extremes_saturate_instead_of_panicking() {
+        let setup = PlayerSetup {
+            player: PlayerId(0),
+            controller: ControllerKind::Human,
+        };
+        let mut state = PlayerState::from_setup(&setup, &[(ResourceId(0), i64::MAX)]);
+        state.refund(&[(ResourceId(0), 1)]);
+        assert_eq!(state.balance(ResourceId(0)), i64::MAX);
+        let mut poor = PlayerState::from_setup(&setup, &[(ResourceId(0), 0)]);
+        poor.spend(&[(ResourceId(0), i64::MAX)]);
+        assert_eq!(
+            poor.balance(ResourceId(0)),
+            -i64::MAX,
+            "saturates, never wraps"
+        );
+        // Saturating spend floors at the minimum; the gate keeps real ledgers
+        // non-negative, this pins the defined behavior at the extreme.
+        assert!(poor.balance(ResourceId(0)) <= 0);
     }
 }
