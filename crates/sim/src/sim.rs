@@ -46,6 +46,12 @@ pub struct Sim {
     /// Scheduled spawns, sorted by `(tick, fixture order)`, with a cursor.
     spawn_queue: Vec<ScheduledSpawnDef>,
     spawn_cursor: usize,
+    /// Per-player per-tile fog state (plan §9.5, M6). Derived state — NOT
+    /// part of the canonical state hash (A-059: fog is a pure function of
+    /// positions + Vision radii, both of which ARE hashed, so hashing fog
+    /// would be redundant and would couple the hash to a per-player
+    /// derivative that A10 explicitly wants "hashes equal fog on/off").
+    fog: crate::vision::FogState,
 }
 
 impl Sim {
@@ -77,6 +83,7 @@ impl Sim {
             events: Vec::new(),
             spawn_queue: world.scheduled_spawns.clone(),
             spawn_cursor: 0,
+            fog: crate::vision::FogState::new(players.len(), world.width_tiles, world.height_tiles),
         };
         // The buildability grid must match the map shape (the fixture and the
         // content seam both guarantee it; a mismatch is programmer error).
@@ -111,6 +118,10 @@ impl Sim {
             &sim.fixture.kinds,
             sim.fixture.base_population_cap,
         );
+        // Initial fog pass: mark every tile inside any friendly vision radius
+        // Visible (plan §9.5: "full recompute only at match start"). The
+        // per-tick incremental pass (stage 9) maintains it from here.
+        crate::vision::advance_vision(&mut sim.fog, &sim.world);
         sim
     }
 
@@ -202,13 +213,18 @@ impl Sim {
     /// The fog-filtered view for one player (plan §9.6): own entities plus
     /// entities inside friendly vision radii — the *only* window an AI controller
     /// gets (FD-7, FD-8). A slot that is not in the match gets an empty view.
+    ///
+    /// M6 uses the cached fog state (stage 9 maintains it). The M1 path
+    /// (`crate::command::visible_to`) is still used by the command gate for
+    /// targeting; both produce the same answer — the cache is a pure
+    /// function of the same positions + Vision radii the on-demand scan reads.
     pub fn player_view(&self, player: PlayerId) -> PlayerView {
         let state = self.world.player(player);
         let entities = self
             .world
             .entities
             .iter()
-            .filter(|e| crate::command::visible_to(&self.world, player, e.id))
+            .filter(|e| crate::vision::visible_to(&self.fog, &self.world, player, e.id))
             .map(|e| self.entity_view(e.id))
             .collect();
         let (resources, population, population_cap) = match state {
@@ -319,8 +335,12 @@ impl Sim {
         #[cfg(debug_assertions)]
         crate::invariants::check(&self.world, &self.fixture, &self.nav, self.next_entity_id);
 
-        // Stage 9 — Vision: incremental per-player visibility update (M6; the
-        //           view recomputes on demand until then).
+        // Stage 9 — Vision: incremental per-player visibility update (M6,
+        //           plan §9.5). The fog state is derived (A-059: not part of
+        //           the canonical hash — it is a pure function of positions +
+        //           Vision radii, both of which ARE hashed).
+        crate::vision::advance_vision(&mut self.fog, &self.world);
+
         // Stage 10 — Match rules: defeat/victory evaluation (M8).
         // Stage 11 — Finalize: increment the tick, flush events, compute the
         //            periodic hash.

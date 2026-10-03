@@ -34,6 +34,7 @@ mod movement;
 mod nav;
 mod production;
 mod sim;
+mod vision;
 mod world;
 
 use pandemonium_sim_api::Tick;
