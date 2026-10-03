@@ -404,3 +404,86 @@ confirms or rejects it.
   mode (which only affects what `player_view` returns, not the canonical
   state) cannot change the hash. The targeted test
   (`a10_fog_integrity_hashes_equal`) pins this.
+
+- **A-060 (§6.4, §13 A5/A11, M7).** Controller labels are hashed match
+  identity, never behavior. `PlayerState` has carried `ControllerKind`
+  since M1 and the state hash encodes it (`hash.rs`'s `controller_tag`),
+  so the same command log re-simulated under different labels hashes
+  differently — by design, the same way the seed does: a replay records
+  `player_setup` and must re-simulate under those exact labels. Behavior
+  is label-blind: the M7 battery runs identical mirrored commands under
+  Human/Ai, Human/Human, and Ai/Ai setups and the outcome maps are
+  identical (`a11_command_outcomes_are_issuer_blind`). The A5 audit's
+  "no AI-specific entry point" is therefore structural (sim never
+  references the ai crate) *and* behavioral (labels change nothing).
+
+- **A-061 (§9.6, FD-7/FD-8, M7).** The AI knowledge boundary. Everything
+  about *live entities* — positions, ownership, health, existence — flows
+  to a controller only through the fog-filtered `PlayerView`. Everything
+  else the plan carries (`AiPlan`) is public knowledge a player reads off
+  the screen before the match: kind ids, costs, build times, start
+  positions, and candidate build ground. Fog hides entities, never
+  terrain or prices. The plan builder (`engine::ai_host::alpha_plan`)
+  resolves kinds by capability shape — the production lists decide the
+  roster (a producer whose list trains combat kinds is the barracks, the
+  other trains workers), supply is the cheapest non-CC population
+  structure, the node kind carries a Resource body — never by display
+  name, and the controller itself never matches anything at all.
+
+- **A-062 (§9.6, M7).** The controller acts blind and verifies by sight.
+  The plan's `Controller` trait receives only a view — no events — so the
+  script cannot see rejections, queues, or lifecycles. It verifies
+  through the next views instead: pending trains retire when a new own
+  entity of the kind appears, or expire at `2x build time + slack`
+  (a rejection or a spawn-and-death between thinks); build attempts
+  settle by the count of own entities of that kind (a successful `Build`
+  spawns the site on the spot the moment the command applies, so a count
+  increase is exact — an earlier spot-proximity check gave false
+  successes on adjacent candidate spots and cycled placements every two
+  ticks; the count is pure view arithmetic). Fixed cooldowns pace the
+  retries.
+
+- **A-063 (§4, M7).** The AI hosting loop lives in the engine
+  (`engine::ai_host::AiMatchHost`): A-003 already declared `engine -> ai`
+  for hosting controllers on the tick boundary, and one loop serves the
+  tools' headless runner (plan §12), the acceptance tests, and — in M8 —
+  the client's vs-AI matches. This adds the `tools -> engine` edge to
+  the architecture law's allow-list, an A-003-style amendment (the plan's
+  §4 diagram is non-exhaustive; the tools' headless AI-vs-AI runner is a
+  match host exactly like the client). Recorded here rather than in an
+  ADR because it changes no frozen decision — the law test's allow-list
+  is the codification of A-003's reading.
+
+- **A-064 (§12, M7).** `tools headless --p1/--p2` (`demo|ai|idle`) both
+  default to `demo` — the M1 scripted match and its pinned final hash are
+  unchanged (the CI replay job and the §4 verification command keep
+  their meaning); `demo` mixes with nothing (a precise error says so).
+  AI matches load `--content` (default `./content`) and print a
+  per-player evidence line (deliveries, trained, built, hits, deaths) —
+  the machine-visible "result" until match rules land in M8.
+  `replay-verify` resolves the world by content identity (the demo world
+  first, then the content directory), failing with every candidate's
+  hash when nothing matches.
+
+- **A-065 (§9.6, M7).** The scripted opponent's semantics, the reading
+  of plan §9.6's "Alpha behavior". Worker management: `MoveState::Idle`
+  means *no orders at all* (an empty order queue — auto-acquired combat
+  shows Idle too), so re-tasking idle workers can never cancel gather,
+  build, or march work in progress; idle workers go to the nodes nearest
+  home, round-robin. Worker target 10; army cap 12 with round-robin
+  composition over the barracks' production list; depot target 3 with a
+  headroom-below-3 trigger; the barracks waits for six workers or a
+  standing depot — the "workers -> depot -> barracks -> mixed army"
+  order. Waves: a Massing/Attacking machine that fires on army size
+  (six) or a 1500-tick pressure timer (minimum three), marches by
+  `AttackMove` at the enemy start with a seeded jitter of ±600
+  milli-tiles (the M4 funnel lesson), and rallies the barracks to the
+  front; it regroups only when fewer than three survive — mid-fight
+  idleness is not a regroup signal. Defense preempts waves: the nearest
+  visible intruder within twelve tiles of home is `Attack`ed on a
+  45-tick cooldown. The wave jitter is the controller's only
+  randomness; its RNG seed derives from the match seed mixed by slot
+  (`seed + (slot+1) * golden-ratio constant`), so pre-wave decision
+  logs are seed-independent — the states still diverge through the
+  hashed RNG stream (the sim's own), which the determinism test asserts
+  instead of log inequality.
