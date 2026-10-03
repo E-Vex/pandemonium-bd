@@ -173,6 +173,13 @@ impl Sim {
             .unwrap_or_default()
     }
 
+    /// Test-only window into an entity's Attack capability (the combat tests
+    /// assert cooldown + target slot transitions through this).
+    #[cfg(test)]
+    pub(crate) fn attack_probe(&self, id: EntityId) -> Option<crate::world::AttackDef> {
+        self.world.attack_of(id).copied()
+    }
+
     /// The on-demand canonical state hash (plan §6.4).
     pub fn state_hash(&self) -> u64 {
         hash_state(&self.world, self.tick, &self.rng, self.next_entity_id)

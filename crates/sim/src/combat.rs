@@ -527,4 +527,171 @@ mod tests {
         // Negative damage clamps to zero (defensive — authored damage is non-negative).
         assert_eq!(mitigate(-3), 0);
     }
+
+    /// End-to-end: combat damage kills a target through the full Sim pipeline.
+    /// Verifies the death lifecycle (plan §9.2 stage 8): hp 0 → Died event +
+    /// entity removed + id-never-reused + the attacker's target slot cleared
+    /// (combat::clear_dead_targets, called by stage 8).
+    #[test]
+    fn combat_kills_target_through_the_full_pipeline() {
+        use crate::fixture::{CapTemplate, KindTemplate, ResourceDef, SpawnDef, TrivialWorld};
+        use crate::sim::Sim;
+        use pandemonium_fx::Fx;
+        use pandemonium_sim_api::{
+            Command, CommandKind, ControllerKind, KindId, MatchSetup, PlayerId, PlayerSetup,
+            Reject, RejectReason, ResourceId, Vec2Fx,
+        };
+
+        let world = TrivialWorld {
+            map_id: 0xDEAD_BEEF,
+            width_tiles: 16,
+            height_tiles: 16,
+            passability: TrivialWorld::open_passability(16, 16),
+            buildability: TrivialWorld::open_buildability(16, 16),
+            kinds: vec![
+                // Kind 0: attacker (damage 15, range 1000 milli = 1 tile, cd 1 tick).
+                //   cooldown_ms 33 → ms_to_ticks(33, 30) = ceil(33*30/1000) = 1.
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Health {
+                        max_hp: 100,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Move {
+                        speed_milli_tiles_per_s: 2400,
+                        radius_milli_tiles: 350,
+                    },
+                    CapTemplate::Attack {
+                        damage: 15,
+                        range_milli_tiles: 1000,
+                        cooldown_ms: 33,
+                        acquire_range_milli_tiles: 5000,
+                    },
+                    CapTemplate::Vision {
+                        radius_milli_tiles: 7000,
+                    },
+                ]),
+                // Kind 1: target (30 hp).
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Health {
+                        max_hp: 30,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Move {
+                        speed_milli_tiles_per_s: 2400,
+                        radius_milli_tiles: 350,
+                    },
+                    CapTemplate::Vision {
+                        radius_milli_tiles: 7000,
+                    },
+                ]),
+            ],
+            resources: vec![ResourceDef {
+                resource: ResourceId(0),
+                starting: 200,
+            }],
+            production: vec![],
+            base_population_cap: 10,
+            initial_spawns: vec![
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(0),
+                    pos: Vec2Fx::from_ints(4, 4),
+                },
+                SpawnDef {
+                    owner: PlayerId(1),
+                    kind: KindId(1),
+                    pos: Vec2Fx::from_ints(4, 5),
+                },
+            ],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+        };
+        let setup = MatchSetup {
+            seed: 42,
+            players: vec![
+                PlayerSetup {
+                    player: PlayerId(0),
+                    controller: ControllerKind::Human,
+                },
+                PlayerSetup {
+                    player: PlayerId(1),
+                    controller: ControllerKind::Ai,
+                },
+            ],
+        };
+        let mut sim = Sim::new(&world, setup);
+        // Tick 0: apply the Attack command. Stage 1 sets the AttackUnit order
+        // and the attack.target slot; stage 7 (combat) then fires the first
+        // hit. Target hp 30 → 15. Cooldown set to 1.
+        let out = sim.step(&[Command::new(
+            PlayerId(0),
+            0,
+            1,
+            CommandKind::Attack {
+                units: vec![EntityId(1)],
+                target: EntityId(2),
+            },
+        )]);
+        assert!(
+            out.events.iter().any(|e| matches!(
+                e,
+                Event::AttackHit {
+                    attacker: EntityId(1),
+                    target: EntityId(2),
+                    damage: 15
+                }
+            )),
+            "tick 0 should land a hit: {out:?}"
+        );
+        assert_eq!(sim.snapshot().entities.len(), 2);
+        // Tick 1: tick_cooldown decrements cooldown_remaining from 1 to 0,
+        // ready → hit. Target hp 15 → 0 → Died. Stage 8 removes the entity
+        // and clear_dead_targets drops the attacker's target slot.
+        let out = sim.step(&[]);
+        let died = out.events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Died {
+                    entity: EntityId(2)
+                }
+            )
+        });
+        assert!(died, "tick 1 should kill the target: {out:?}");
+        assert_eq!(sim.snapshot().entities.len(), 1);
+        // The id is never reused — a new spawn allocates 3, not 2.
+        assert_eq!(sim.next_entity_id(), 3);
+        // Stage 8's clear_dead_targets dropped the attacker's target slot
+        // (the attacker is still alive; its Attack capability's target field
+        // is now None).
+        assert_eq!(
+            sim.attack_probe(EntityId(1)).map(|d| d.target),
+            Some(None),
+            "the attacker's target slot should be cleared after the target died"
+        );
+        // A follow-up Attack command on the dead id is rejected as
+        // UnknownEntity (ids are never reused).
+        let out = sim.step(&[Command::new(
+            PlayerId(0),
+            2,
+            1,
+            CommandKind::Attack {
+                units: vec![EntityId(1)],
+                target: EntityId(2), // dead id, never reused
+            },
+        )]);
+        assert!(
+            out.events.iter().any(|e| matches!(
+                e,
+                Event::CommandRejected {
+                    issuer: PlayerId(0),
+                    seq: 1,
+                    reject: Reject {
+                        reason: RejectReason::InvalidTarget
+                    }
+                }
+            )),
+            "attack on the dead id should be rejected as InvalidTarget: {out:?}"
+        );
+        let _ = Fx::ZERO; // touch Fx so the import is used.
+    }
 }
