@@ -360,3 +360,15 @@ confirms or rejects it.
   `population_drift_far_past_cap_fires` (replaces the strict-over-cap test).
   The classic alternative — units die or decay when usage exceeds cap — was
   rejected as a feel regression with no compensating simplification.
+
+- **A-056 (§6.4, §5.10, §14 M6).** M6 bumps both canonical encodings:
+  `STATE_ENCODING_VERSION` 3→4 (the Attack capability block: damage, range,
+  cooldown_ticks, cooldown_remaining, acquire_range, target tag + EntityId;
+  the `AttackUnit` order) and `FIXTURE_ENCODING_VERSION` 3→4 (the
+  `CapTemplate::Attack` variant — damage, range_milli_tiles, cooldown_ms,
+  acquire_range_milli_tiles). The determinism goldens regenerated; the tools
+  headless demo's final hash moved to 0x9d5ba9b565060336 (seed 7, 300 ticks).
+  The content hash is unchanged (0x249b69f0ee343a10) — the bundle's
+  `encode_capability` already covered Attack data, so the seam flip from
+  DEBT-006's `None` to `Some(CapTemplate::Attack)` is invisible to the bundle
+  identity by construction. Review-visible value changes, not silent ones.
