@@ -33,6 +33,7 @@ mod invariants;
 mod movement;
 mod nav;
 mod production;
+mod runner;
 mod sim;
 mod vision;
 mod world;
@@ -42,6 +43,7 @@ use pandemonium_sim_api::Tick;
 pub use fixture::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
 };
+pub use runner::{run_command_log, CommandLogRun};
 pub use sim::{Sim, StepOutput};
 pub use world::{
     AttackDef, BuildDef, CapabilityData, ConstructionDef, FootprintDef, GatherDef, HealthDef,

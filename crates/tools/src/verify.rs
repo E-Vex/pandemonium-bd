@@ -1,13 +1,16 @@
 //! Replay verification (plan §12 `tools replay-verify`): re-simulate a recorded
 //! match headlessly and compare every checkpoint hash (acceptance A2).
 //!
-//! The driver lives here — not in the `replay` crate — because re-simulation
-//! needs `sim`, and the dependency law keeps `replay` above `sim` never below it
-//! (plan §4). The acceptance test `tests/determinism.rs` mirrors this short
-//! driver for the same reason (see docs/ASSUMPTIONS.md).
+//! The re-simulation itself is the canonical driver
+//! [`pandemonium_sim::run_command_log`] — the single shared home the `replay`
+//! crate cannot offer (it must stay above `sim`, never below it; plan §4), so
+//! tools and the acceptance tests share one feed loop (docs/DEBT.md DEBT-005,
+//! repaid with M7). This module owns what verification adds on top: the
+//! structural validation of the record, the content-identity check, and the
+//! checkpoint-by-checkpoint comparison.
 
 use pandemonium_replay::{Checkpoint, ReplayError, ReplayFile};
-use pandemonium_sim::Sim;
+use pandemonium_sim::run_command_log;
 use pandemonium_sim::TrivialWorld;
 use pandemonium_sim_api::MatchSetup;
 
@@ -50,43 +53,18 @@ pub fn verify_replay(
         )));
     }
 
-    // Re-simulate to the final checkpoint's tick.
+    // Re-simulate to the final checkpoint's tick through the shared driver.
     let end_tick = replay.checkpoints[replay.checkpoints.len() - 1].tick;
     let setup = MatchSetup {
         seed: replay.seed,
         players: replay.player_setup.clone(),
     };
-    let mut sim = Sim::new(world, setup);
-    let mut checkpoints = vec![Checkpoint {
-        tick: 0,
-        hash: sim.state_hash(),
-    }];
-    let mut sorted: Vec<&pandemonium_sim_api::Command> = replay.commands.iter().collect();
-    sorted.sort_by_key(|cmd| cmd.tick); // stable: preserves feed order within a tick
-    let mut cursor = 0usize;
-    while sim.tick() < end_tick {
-        let tick = sim.tick();
-        let mut feed: Vec<pandemonium_sim_api::Command> = Vec::new();
-        while cursor < sorted.len() && sorted[cursor].tick == tick {
-            feed.push(sorted[cursor].clone());
-            cursor += 1;
-        }
-        let out = sim.step(&feed);
-        if let Some(hash) = out.hash {
-            checkpoints.push(Checkpoint {
-                tick: sim.tick(),
-                hash,
-            });
-        }
-    }
-    // Force the final checkpoint exactly like the recorder did.
-    let final_hash = sim.state_hash();
-    if checkpoints.last().map(|cp| cp.tick) != Some(sim.tick()) {
-        checkpoints.push(Checkpoint {
-            tick: sim.tick(),
-            hash: final_hash,
-        });
-    }
+    let run = run_command_log(world, &setup, &replay.commands, end_tick);
+    let checkpoints: Vec<Checkpoint> = run
+        .checkpoints
+        .iter()
+        .map(|&(tick, hash)| Checkpoint { tick, hash })
+        .collect();
 
     // Compare checkpoint by checkpoint.
     if checkpoints.len() != replay.checkpoints.len() {
@@ -108,17 +86,18 @@ pub fn verify_replay(
             });
         }
     }
-    if replay.final_hash != final_hash {
+    if replay.final_hash != run.final_hash {
         return Ok(Verification::Diverged {
             detail: format!(
                 "final hash mismatch: replay has {:#018x}, re-simulation has {final_hash:#018x}",
-                replay.final_hash
+                replay.final_hash,
+                final_hash = run.final_hash
             ),
         });
     }
     Ok(Verification::Passed {
         checkpoints,
-        final_hash,
+        final_hash: run.final_hash,
     })
 }
 

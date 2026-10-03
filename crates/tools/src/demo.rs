@@ -4,7 +4,7 @@
 //! final hash. The same driver records replays for `tools replay-verify`.
 
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
-use pandemonium_sim::Sim;
+use pandemonium_sim::run_command_log;
 use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
 };
@@ -329,51 +329,24 @@ pub fn demo_script() -> Vec<Command> {
 
 /// Runs the scripted match headlessly and returns the checkpoints (tick 0 plus
 /// every periodic hash plus the forced final one) and the final hash.
+///
+/// The feed loop itself is the shared canonical driver
+/// ([`pandemonium_sim::run_command_log`], the DEBT-005 repayment); this
+/// wrapper only projects its trail into the replay crate's `Checkpoint`.
 pub fn run_scripted(
     world: &TrivialWorld,
     setup: &MatchSetup,
     commands: &[Command],
     ticks: u32,
 ) -> (Vec<Checkpoint>, u64) {
-    let mut sim = Sim::new(world, setup.clone());
-    let mut checkpoints = vec![Checkpoint {
-        tick: 0,
-        hash: sim.state_hash(),
-    }];
-
-    // Feed commands grouped by tick, preserving the log's order within each tick
-    // (feed order is significant for duplicate-sequence resolution, so the
-    // re-simulation must see exactly the original order).
-    let mut sorted: Vec<&Command> = commands.iter().collect();
-    sorted.sort_by_key(|cmd| cmd.tick); // stable: preserves within-tick order
-    let mut cursor = 0usize;
-
-    while sim.tick() < ticks {
-        let tick = sim.tick();
-        let mut feed: Vec<Command> = Vec::new();
-        while cursor < sorted.len() && sorted[cursor].tick == tick {
-            feed.push(sorted[cursor].clone());
-            cursor += 1;
-        }
-        let out = sim.step(&feed);
-        if let Some(hash) = out.hash {
-            checkpoints.push(Checkpoint {
-                tick: sim.tick(),
-                hash,
-            });
-        }
-    }
-
-    // Force a final checkpoint exactly at the last simulated tick so the replay's
-    // end is unambiguous (validate enforces final == last checkpoint).
-    let final_hash = sim.state_hash();
-    if checkpoints.last().map(|cp| cp.tick) != Some(sim.tick()) {
-        checkpoints.push(Checkpoint {
-            tick: sim.tick(),
-            hash: final_hash,
-        });
-    }
-    (checkpoints, final_hash)
+    let run = run_command_log(world, setup, commands, ticks);
+    (
+        run.checkpoints
+            .iter()
+            .map(|&(tick, hash)| Checkpoint { tick, hash })
+            .collect(),
+        run.final_hash,
+    )
 }
 
 /// Builds the replay record of the scripted match (plan §6.5's field list).

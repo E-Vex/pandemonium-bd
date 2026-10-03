@@ -15,6 +15,7 @@
 //! keeps its own fixture so the two prove the same properties independently.
 
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
+use pandemonium_sim::run_command_log;
 use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, Sim, SpawnDef,
     TrivialWorld,
@@ -549,10 +550,16 @@ fn a2_replay_roundtrip_verifies_to_identical_hashes() {
     corrupted[last] ^= 0x01;
     assert!(ReplayFile::decode(&corrupted).is_err());
 
-    // Re-simulation (the local mirror of tools' verify driver) reproduces every
-    // checkpoint and the final hash.
-    let resim = run_match(&world, &setup, &decoded.commands, TICKS);
-    assert_eq!(resim.checkpoints, decoded.checkpoints);
+    // Re-simulation through the shared canonical driver
+    // (`run_command_log` — the same one `tools replay-verify` uses, DEBT-005)
+    // reproduces every checkpoint and the final hash.
+    let resim = run_command_log(&world, &setup, &decoded.commands, TICKS);
+    let resim_checkpoints: Vec<Checkpoint> = resim
+        .checkpoints
+        .iter()
+        .map(|&(tick, hash)| Checkpoint { tick, hash })
+        .collect();
+    assert_eq!(resim_checkpoints, decoded.checkpoints);
     assert_eq!(resim.final_hash, decoded.final_hash);
     assert_eq!(resim.next_entity_id, run.next_entity_id);
 }
