@@ -152,7 +152,7 @@ At M6 the spine stages are live and the systems stages reflect their milestone s
 
 ## Current status
 
-**Milestones M0 through M6 are complete. M7 (AI through commands) is next.** The live status board is
+**Milestones M0 through M7 are complete. M8 (Match rules & full loop) is next.** The live status board is
 [`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated as a bug.
 
 Built and verified through M6:
@@ -183,7 +183,7 @@ Built and verified through M6:
   mesh with heightmap displacement, instanced placeholder entity boxes), selection
   + right-click Move, fontdue text atlas + HUD/debug overlay, `--frames N` windowed
   smoke, headless fallback for CI.
-- **`tools`** — headless runner, `replay-verify`, `content-validate` subcommands.
+- **`tools`** — headless runner (demo + `--p1/--p2 ai` controller matches), `replay-verify`, `content-validate` subcommands.
 - **`tests/`** — determinism acceptance A1/A2 with pinned golden hashes, movement
   acceptance (M4), economy acceptance (M5: divergent openings, soak, invariants),
   combat acceptance (M6: composition + position matter, bit-identical, turret,
@@ -200,7 +200,7 @@ Built and verified through M6:
 
 Not built yet — on purpose, in milestone order:
 
-- No AI: the `ai` crate is a stub; controllers that play through commands land in M7.
+- AI: the scripted Alpha opponent plays the whole game through commands (`--p1 ai --p2 ai`); parity is structural (the crate reaches only `sim_api`).
 - No match rules: victory, defeat, resignation, end screen, restart land in M8.
 - No multiplayer: the hooks are designed in (`Command.tick`, hashed checkpoints
   for desync detection), the netcode is not.
@@ -214,11 +214,11 @@ pandemonium-bd/
 │  ├─ sim_api/    boundary vocabulary: Command, Event, Snapshot, PlayerView, Reject
 │  ├─ sim/        the simulation: tick pipeline, stores, command gate, state hash
 │  ├─ content/    RON schema, versioned loaders, validators, ContentBundle
-│  ├─ ai/         controllers that play through commands           (stub — M7)
+│  ├─ ai/         the scripted Alpha opponent (Controller trait)
 │  ├─ replay/     checksummed replay codec: record, load, verify
 │  ├─ engine/     game loop, interpolation, MatchHost, camera, mesh, renderer
 │  ├─ client/     the playable binary: wgpu 26 + winit, 3D renderer, HUD
-│  └─ tools/      headless runner, replay verifier, content validator
+│  └─ tools/      headless runner (demo + AI matches), replay verifier, content validator
 ├─ tests/         cross-crate acceptance tests (A1–A15)
 ├─ content/       data-only game content: rules, entities, factions, maps
 ├─ docs/          ARCHITECTURE · DEBT · ASSUMPTIONS · CONTENT_GUIDE · adr/
@@ -302,7 +302,7 @@ one question and refuses to move on until it is answered.
 | **M4** — Movement *(P1: do multiple units move responsibly?)* | Nav grid, deterministic A*, path execution, collision, push-apart, stuck detection | 50 units respond within 2 ticks under spam-clicked orders; nobody permanently stuck | ✔ **Complete** |
 | **M5** — Economy & production *(P3: do openings diverge?)* | Resource ledger, gather loop (depletion + auto-seek), production queues (Train/Cancel/SetRally), construction lifecycle, population cap, requirements, footprints blocking tiles, A12 invariant checker | Scripted openings produce measurably different timelines; economy soak holds all invariants | ✔ **Complete** |
 | **M6** — Combat & vision *(P2: is combat legible and meaningful?)* | Immediate-hit attack pipeline (acquire → validate → hit → mitigate → apply → credit), Attack/AttackMove/Stop semantics, three-state fog (Hidden/Explored/Visible per player per tile), turret (no Move, Attack+Footprint), A12 combat invariants | Composition and position matter; fog integrity proven (A10); bit-identical run-to-run | ✔ **Complete** |
-| **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time | ⬜ **Next** |
+| **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time | ✅ **Complete** |
 | **M8** — Match rules *(P5: do all systems work together?)* | Victory, defeat, resignation, end screen, restart, UI depth | 10–15 minute match versus the AI completes and restarts cleanly (A15) | ⬜ Pending |
 | **M9** — Alpha content & feel | Manifest tuning, feedback pass, placeholder audio | Minimum viable loop playable end-to-end | ⬜ Pending |
 | **M10** — Stabilization & declaration | Full acceptance suite A1–A15, nightly soak, benchmark baselines | Every criterion verified with evidence, in writing | ⬜ Pending |

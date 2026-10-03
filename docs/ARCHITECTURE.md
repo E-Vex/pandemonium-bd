@@ -1,6 +1,7 @@
 # Pandemonium — Architecture
 
-Status: milestone M6 complete (combat & vision); M7 (AI through commands) is next. The authoritative specification is
+Status: milestone M7 complete (AI through commands); M8 (match rules & full
+loop) is next. The authoritative specification is
 [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism
 rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
@@ -15,11 +16,11 @@ exists versus what is pending, see [`AI-Handoff.md`](../AI-Handoff.md).
 | `crates/sim_api` | Public vocabulary crossing the sim boundary: ids, commands, events, views | fx |
 | `crates/sim` | World state, entity store, capabilities, tick pipeline, systems, state hash | fx, sim_api |
 | `crates/content` | RON schema, versioned loaders, validators, content bundle + hash | fx, sim, sim_api + serde, ron, thiserror |
-| `crates/ai` | Controllers: perceive a `PlayerView`, decide, emit commands | fx, sim_api |
+| `crates/ai` | The `Controller` trait (plan §9.6) + `ScriptedController`, the scripted Alpha opponent | fx, sim_api |
 | `crates/replay` | Replay record/load/verify format | fx, sim_api |
-| `crates/engine` | Game loop, timing, interpolation, input mapping, camera, UI toolkit | fx, sim, sim_api, content, ai |
+| `crates/engine` | Game loop, timing, interpolation, input mapping, camera, UI toolkit, AI hosting on the tick boundary | fx, sim, sim_api, content, ai |
 | `crates/client` | Playable binary: wgpu renderer, winit window, screens, HUD | fx, sim, sim_api, content, ai, replay, engine |
-| `crates/tools` | Headless runner, soak, replay-verify, content-validate, bench | fx, sim, sim_api, content, ai, replay |
+| `crates/tools` | Headless runner (demo + AI controller slots), soak, replay-verify, content-validate, bench | fx, sim, sim_api, content, ai, replay, engine |
 | `tests` (`pandemonium-tests`) | Cross-crate acceptance suite (plan §13) | any — test host, exempt from the internal law |
 
 The graph is enforced — not merely documented — by `tests/architecture_law.rs`, which
@@ -154,6 +155,14 @@ crates/sim/src/
                incrementally each tick. `FogState` is derived (NOT hashed —
                A-059); `player_view` consults the cache instead of the M1
                on-demand scan. DEBT-004 repaid.
+  runner.rs    `run_command_log` (M7): the one canonical headless
+               re-simulation of a command log — tick-0 checkpoint, a
+               stable tick-sort feed (within-tick order preserved for
+               duplicate-sequence resolution), periodic hashes, a forced
+               final, the allocator watermark. Tools' recorder and
+               verifier and the acceptance suites all drive through it
+               (DEBT-005 repaid; the `replay` crate must stay above
+               `sim`, so it could never host the driver itself).
   invariants.rs The A12 checker (plan §13): debug assertions over the whole
                state at the end of every step in debug builds — ledger
                non-negativity, population cap + usage non-saturating (A-053:
@@ -239,6 +248,20 @@ crates/engine/src/           presentation-layer crate: floats + glam are legal
                   resume); step_once() is the §11.6 single-step debug action;
                   hud_state(player) gathers the HUD values through the
                   boundary.
+  ai_host.rs      AiMatchHost (M7) — the headless shape of the same
+                  ownership: one controller per driven slot, one tick per
+                  advance, controllers invoked in ascending slot order on
+                  their fog-filtered view of the tick being applied, every
+                  fed command recorded (rejections included — a
+                  controller-run match is a plain command log afterwards,
+                  exactly what `sim::run_command_log` re-simulates). Also
+                  `alpha_plan`/`alpha_controller` (the scripted opponent's
+                  config derived from the content by capability shape —
+                  production lists decide the roster — and `build_spots`,
+                  the deterministic ring scan around each start that keeps
+                  candidate placements clear of static claims and node
+                  doorsteps). The M8 client will host its vs-AI opponent
+                  through this same seam (A-063).
   camera.rs       RtsCamera — perspective orbit over the logical ground plane
                   (world.x = sim.x, world.z = sim.y); pan/zoom/rotate with
                   clamps; ground-plane ray picking (inverse view-projection ->
@@ -292,10 +315,14 @@ hashes. The re-simulation driver lives in `tools` and in `tests/determinism.rs`
 ## Tools and acceptance tests (M1 + M2)
 
 `pandemonium-tools` (clap CLI) ships `headless` — the scripted demo match printing
-per-checkpoint and final hashes, with `--record` to write a replay — and
-`replay-verify` — re-simulation with checkpoint comparison (A2). M2 adds
-`content-validate` — strict validation of a content directory plus its content
-identity. `tests/determinism.rs` carries the A1/A2 suite with pinned golden
+per-checkpoint and final hashes, with `--record` to write a replay — and, since
+M7, `--p1/--p2 ai|idle` controller slots over the real content (the per-player
+evidence line: deliveries, trained, built, hits, deaths) — plus
+`replay-verify` — re-simulation with checkpoint comparison (A2), resolving
+the world by content identity (the demo world or the content directory).
+M2 added `content-validate` — strict validation of a content directory plus
+its content identity. The AI match driver and the re-simulation both run
+through the engine's hosting and `sim::run_command_log` respectively. `tests/determinism.rs` carries the A1/A2 suite with pinned golden
 hashes (encoding v3 — A-050); `tests/content_pipeline.rs` carries the M2 suite
 (§10.4 stat pin, loaded-bundle determinism, the A3 add-a-unit scaffold now
 extended to train the data-defined kind from the barracks — DEBT-007's M5
@@ -304,6 +331,12 @@ responsiveness, order resolution, determinism, the real-map detour with the
 blocked-destination arrival envelope); `tests/economy.rs` carries the M5 exit
 suite (divergent scripted openings, scripted-match determinism, the A12
 economy soak, soak determinism); `tests/architecture_law.rs` still pins the
-dependency graph and the source-level determinism bans. CI
+dependency graph and the source-level determinism bans; `tests/ai.rs`
+carries the M7 exit suite — the A5 structural audits (ai reaches only
+fx + sim_api; the sim never references the ai crate), the A5 ledger
+identity (the AI pays the data-defined prices; every entity traces to an
+accepted command), the A11 mirrored battery and label-blindness, the
+A11 proptest fuzz, AI-vs-AI completion and determinism, the golden
+hash, and the log-alone replay. CI
 (`.github/workflows/ci.yml`) runs the whole gate on Linux/Windows/macOS in dev
 and release, plus the replay round-trip.

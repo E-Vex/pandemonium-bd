@@ -31,7 +31,7 @@
 | Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/pandemonium-bd`) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
 | Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
-| Status | **M6 (Combat & vision, P2) COMPLETE** — immediate-hit attack pipeline (Acquire→Validate→Wind→Hit→Mitigate→Apply→Death→Credit, every stage a named function), Attack/AttackMove/Stop command semantics, three-state fog (Hidden/Explored/Visible per player per tile, derived not hashed — A-059), A10 fog integrity green (hashes equal fog on/off, targeting rejects unseen both directions), turret works (no Move, Attack+Footprint), A12 combat invariants (cooldowns sane, target alive, no attack on own), DEBT-006/007/010 retired, encoding v4. Scripted skirmishes show composition + position matter (bit-identical run-to-run); legibility checklist machine-half green (AttackHit + Died fire, hp_fraction_milli on EntityView); the human eyeball half rides DEBT-008. 269/269 dev tests green. **Next: M7 (AI through commands)** |
+| Status | **M7 (AI through commands, P4) COMPLETE** — the Controller trait (plan §9.6 verbatim) + the scripted Alpha opponent in `crates/ai` (workers → depot → barracks → mixed army, idle-worker gather management, attack waves on size + timer triggers, base defense; acts blind and verifies by sight — A-062); `engine::ai_host` hosts controllers on the tick boundary (AiMatchHost, ascending-slot order, the log records everything fed); `tools headless --p1 ai --p2 ai` runs real-content AI-vs-AI matches with per-player evidence; DEBT-005 repaid (one canonical `sim::run_command_log` driver). A5 green (ai reaches only fx+sim_api, the sim never references the ai crate, the ledger identity proves the AI pays the data-defined prices, every entity traces to an accepted command); A11 green (20-pair mirrored battery covering every reachable rejection class, label-blind under Human/Human and Ai/Ai, plus a proptest fuzz of random mirrored commands); AI-vs-AI matches complete bit-identically run-to-run (golden 0x679f4713114765c9 at seed 7/7200) and replay from their logs alone through the codec (A2 over AI-driven logs). 304/304 dev tests green. **Next: M8 (Match rules & full loop)** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -58,56 +58,58 @@ cargo clippy --workspace --all-targets -- -D warnings   # lints, zero tolerance
 cargo test --workspace                      # all tests (debug)
 cargo test --workspace --release            # determinism must hold in release too
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
+cargo run -p pandemonium-tools -- headless --seed 7 --ticks 7200 --p1 ai --p2 ai
 cargo run -p pandemonium-client             # windowed 3D client; headless smoke pass without a display
 cargo run -p pandemonium-client -- --frames 900   # windowed smoke: auto-exit + evidence summary
 ```
 
-Expected at this handoff: all commands succeed; 269 tests pass in dev
-(239 in release — the 5 should-panic invariant-checker tests are
+Expected at this handoff: all commands succeed; 304 tests pass in dev
+(299 in release — the 5 should-panic invariant-checker tests are
 debug-only by nature — `debug_assert` compiles out in release): 39 fx
-unit tests, 15 fx property tests, 95 sim unit tests (economy/production/
-construction/invariants/combat/vision among them — +13 from M5: 8 combat
-+ 5 vision), 4 sim_api unit tests, 8 replay codec tests, 12 tools tests,
-33 content unit tests, 9 determinism acceptance tests, 4 content-pipeline
-acceptance tests (the A3 scaffold now trains AND fights the data-defined
-kind — DEBT-007 retired), 3 movement acceptance tests, 4 economy
-acceptance tests, 7 combat acceptance tests (the M6 exit suite:
-composition, position, bit-identical, turret, A12 soak, legibility),
-5 vision acceptance tests (A10 fog integrity, targeting both directions,
-three-state transition, FD-8), 28 engine unit tests + 2 mesh tests,
-5 client text-atlas tests, 2 architecture-law tests, 1 sim constant
-test; the headless demo's final hash is 0x9d5ba9b565060336 (seed 7,
-300 ticks — moved by M6's encoding v4, see A-056).
+unit tests, 15 fx property tests, 15 ai unit tests (M7), 98 sim unit
+tests (95 + the 3 runner tests that arrived with DEBT-005's repayment),
+4 sim_api unit tests, 8 replay codec tests, 35 engine tests (the 7 M7
+ai_host tests among them), 5 client
+text-atlas tests, 10 tools tests (the 2 M7 ai_match tests among them),
+33 content unit tests, and the acceptance suite: 9 determinism (A1/A2),
+4 content-pipeline, 3 movement, 4 economy, 7 combat, 5 vision, 2
+architecture-law, and the 8 M7 tests (`tests/ai.rs`: two A5 structural
+audits, the A5 ledger identity, the A11 battery, the A11 proptest fuzz,
+completion + determinism, the golden pin, and the log-alone replay).
+The headless demo's final hash is still 0x9d5ba9b565060336 (seed 7,
+300 ticks — unchanged: M7 adds no state-encoding change, and every M6
+golden still pins); the AI-vs-AI flagship (seed 7, 7200 ticks) pins
+0x679f4713114765c9 with tick-0 hash 0x61613bca16b8f00e.
 `tools content-validate content` prints the bundle identity and PASS
 (content hash 0x249b69f0ee343a10, map id 0xbc0970c3cf14e9cf — unchanged
-by M6: the content encoder already covered Attack data, so the seam flip
-from DEBT-006 is invisible to the bundle identity); `cargo run -p
-pandemonium-client` prints the no-display finding and runs the headless
-smoke pass (on a desktop it opens the window); with `--frames N` the
-windowed run exits after N frames and prints the evidence summary. On a
-headless machine the windowed path is verified on Xvfb + llvmpipe per
-DEBT-008/A-037 (selection + Move commands provably work; the human
-visual pass remains — M6's visual cues (AttackHit tracers, per-entity
-health bars) ride this same human pass; the machine-verifiable half —
+by M7: no content files changed); `cargo run -p pandemonium-client`
+prints the no-display finding and runs the headless smoke pass (on a
+desktop it opens the window); with `--frames N` the windowed run exits
+after N frames and prints the evidence summary. On a headless machine
+the windowed path is verified on Xvfb + llvmpipe per DEBT-008/A-037
+(selection + Move commands provably work; the human visual pass
+remains — M6's visual cues (AttackHit tracers, per-entity health
+bars) ride this same human pass; the machine-verifiable half —
 events fire, hp_fraction_milli on EntityView — is green).
 CI additionally runs fmt + clippy + tests on Linux/Windows/macOS in dev and
-release, plus the replay round-trip, when pushed to GitHub
-(`.github/workflows/ci.yml`) — see A-010/A-020 below.
+release, plus the replay round-trip for BOTH the demo and an AI-vs-AI
+match, and the binaries job starts a short `--p1 ai --p2 ai` run, when
+pushed to GitHub (`.github/workflows/ci.yml`) — see A-010/A-020 above.
 
 ## 5. Workspace map (as built; see `docs/ARCHITECTURE.md` for detail)
 
 ```text
 crates/fx        DONE    Q16.16 fixed-point math, isqrt, PCG32 Rng, FNV-1a hasher
 crates/sim_api   DONE    vocabulary: ids, Command/CommandKind, Event, Reject, Snapshot, PlayerView, MatchSetup
-crates/sim       DONE    Sim spine + M4 movement + M5 economy + M6 combat & vision: step pipeline (11 stages, 5/7/9 now wired), entity + capability stores (12 capability types — Attack added), command gate w/ economy + combat checks, state hash (v4), trivial-world fixture w/ terrain grids + production lists, nav grid + A* + footprint occupancy, mover, gather loop, production queues, construction, combat pipeline (acquire/validate/hit/mitigate/apply/credit), three-state fog (Hidden/Explored/Visible per player per tile, derived not hashed), A12 invariant checker w/ combat invariants
+crates/sim       DONE    Sim spine + M4 movement + M5 economy + M6 combat & vision + M7's run_command_log (the one canonical command-log re-simulation driver — DEBT-005 repaid): step pipeline (11 stages, 5/7/9 now wired), entity + capability stores (12 capability types), command gate w/ economy + combat checks, state hash (v4), trivial-world fixture, nav grid + A* + footprint occupancy, mover, gather loop, production queues, construction, combat pipeline, three-state fog (derived not hashed — A-059), A12 invariant checker, + the headless driver returning the checkpoint trail + allocator watermark
 crates/content   DONE    RON schema (strict), versioned loaders + map v1->v2 migration, precise validators, ContentBundle + content hash, world() seam (all 12 capabilities mapped — Attack mapped in M6, DEBT-006 retired)
-crates/ai        STUB    empty lib, role documented (lands in M7)
-crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in tools/tests)
-crates/engine    DONE*   FixedTimestep, Interpolator, MatchHost (structural FD-2) + pause/single-step, RtsCamera (glam) + picking/box-select, terrain mesh, Renderer trait + null renderer, HudState on the Frame boundary
+crates/ai        DONE    Controller trait (plan §9.6 verbatim) + ScriptedController, the scripted Alpha opponent: workers -> depot -> barracks -> mixed army, idle-worker gather management, attack waves on size + timer, base defense, pending/build bookkeeping verified by sight (A-062) — never a rejection channel
+crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in sim since M7)
+crates/engine    DONE*   FixedTimestep, Interpolator, MatchHost (structural FD-2) + pause/single-step, RtsCamera (glam) + picking/box-select, terrain mesh, Renderer trait + null renderer, HudState on the Frame boundary, + ai_host (M7): AiMatchHost — controllers on the tick boundary, ascending slot order, every fed command recorded — and the alpha plan builder (capability-shaped kind resolution, costs through the Ore seam, ring-scanned build ground clear of static claims + node doorsteps) (*engine core)
                    (*engine core)
 crates/client    DONE*   winit window + wgpu 26 3D renderer (depth buffer, terrain mesh + heightmap, instanced placeholder boxes), selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, --frames windowed smoke, headless smoke fallback (*DEBT-008 keeps the human visual pass)
-crates/tools     DONE    headless, replay-verify, content-validate subcommands (clap CLI)
-tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3 — now trains AND fights) + movement.rs (M4/P1) + economy.rs (M5/P3) + combat.rs (M6/P2) + vision.rs (M6/A10)
+crates/tools     DONE    headless (the M1 demo + M7's --p1/--p2 ai|idle controller slots over the real content, per-player evidence lines, --record for both), replay-verify (world resolution by content identity), content-validate (clap CLI)
+tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3) + movement.rs (M4/P1) + economy.rs (M5/P3) + combat.rs (M6/P2) + vision.rs (M6/A10) + ai.rs (M7: A5 + A11 + AI-vs-AI completion/determinism/golden/log-alone replay)
 content/         DONE    rules/, entities/ (9 kinds), factions/ (Legion), maps/ (Crossroads 64x64, symmetric, heightmap)
 docs/            ACTIVE  ARCHITECTURE, DEBT, ASSUMPTIONS, CONTENT_GUIDE, adr/ (ADR-0001 accepted)
 ```
@@ -130,18 +132,18 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M4 | Movement (P1) | ✅ **complete** | 50 units respond within 2 ticks under spam-clicked orders (per-unit motion check, tests/movement.rs); no permanent stuck units (every order resolves — arrival, crowded arrival, or MoveFailed; unreachable/zero-speed fail immediately); hashes green (A1 + regenerated goldens, encoding v2); real-map detour: 4 workers cross Crossroads around the rock walls, never on blocked terrain; push-apart separates stacks and never pushes into terrain (DEBT-003 repaid) |
 | M5 | Economy/production/construction (P3) | ✅ **complete** | divergent scripted openings produce measurably different timelines (worker-heavy vs early-Raider: worker counts, barracks, Raiders fielded, income, balances, hashes branch ≤ tick 60); scripted matches bit-identical run-to-run; A12 invariant checker fires every tick in debug and 3 openings × 2 seeds × 900 ticks of both-player economy soak hold every invariant; the soak caught and fixed a real spawn-position bug |
 | M6 | Combat & vision (P2) | ✅ **complete** | immediate-hit attack pipeline (every stage a named function); Attack/AttackMove/Stop semantics; three-state fog (Hidden/Explored/Visible, derived not hashed — A-059); A10 fog integrity green (hashes equal fog on/off, targeting rejects unseen both directions); turret works (no Move, Attack+Footprint); A12 combat invariants (cooldowns sane, target alive, no attack on own); scripted skirmishes show composition + position matter (bit-identical run-to-run); legibility checklist machine-half green (AttackHit + Died fire, hp_fraction_milli on EntityView); DEBT-006/007/010 retired; encoding v4 |
-| M7 | AI through commands (P4) | ⬜ pending | A5 + A11 green; AI-vs-AI headless matches complete |
+| M7 | AI through commands (P4) | ✅ **complete** | A5 + A11 green (ai depends only on fx+sim_api, re-asserted; the sim never references the ai crate; the ledger identity — starting + deliveries − accepted data-defined costs — holds per player; every entity beyond the starting forces traces to an accepted Train/Build; the 20-pair mirrored battery over every reachable rejection class is label-blind; proptest fuzz of random mirrored commands); AI-vs-AI headless matches complete (3 seeds × 2400 ticks under the A12 checker, bit-identical re-runs, seed divergence); golden pinned (0x679f4713114765c9); AI-driven logs replay through the codec (A2); DEBT-005 repaid |
 | M8 | Match rules & full loop (P5) | ⬜ pending | 10–15 min match vs AI completes and restarts cleanly (A15) |
 | M9 | Alpha content & feel pass | ⬜ pending | minimum viable loop playable end-to-end vs the AI |
 | M10 | Stabilization & declaration | ⬜ pending | every A1–A15 criterion verified; soak green; docs/ALPHA_DECLARATION.md with evidence |
 
-**The plan was broken into parts along these milestones.** Parts 1–6 (M0–M3,
-M4 movement, M5 economy/production/construction, and M6 combat & vision) are
-complete (M3's windowed path machine-verified; the human visual pass stays
-open as DEBT-008's narrowed scope); parts 7–11 (M7–M10) remain, in strict
-order.
+**The plan was broken into parts along these milestones.** Parts 1–7 (M0–M3,
+M4 movement, M5 economy/production/construction, M6 combat & vision, and M7
+AI through commands) are complete (M3's windowed path machine-verified; the
+human visual pass stays open as DEBT-008's narrowed scope); parts 8–11
+(M8–M10) remain, in strict order.
 
-## 7. M0–M3 inventory — what exists today, concretely
+## 7. Milestone inventory — what exists today, concretely
 
 **Workspace & guardrails**
 
@@ -374,17 +376,63 @@ see DEBT-008/009 for what remains)**
   resolution bounds, determinism, and the real-map detour; sim crate +21
   tests; workspace 208/208 in dev and release.
 
+**M7 — AI through commands (plan §14, citing §9.6; see `crates/ai/src/`,
+`crates/engine/src/ai_host.rs`, `crates/tools/src/ai_match.rs`,
+`tests/ai.rs`, and A-060..A-065 for the semantics)**
+
+- `crates/ai` — the plan's `Controller` trait verbatim
+  (`think(&mut self, view: &PlayerView, tick, out: &mut Vec<Command>)`):
+  perceive a fog-filtered view, decide, act by emitting commands. The
+  crate depends only on fx + sim_api — "AI reaches into game state" is a
+  link error (FD-7). `ScriptedController` is the Alpha opponent: gather
+  management for idle workers (nearest nodes, round-robin), worker
+  training to target with pending bookkeeping, depot + barracks builds
+  on headroom/script triggers with candidate spots consumed in order and
+  attempts verified by count, round-robin army composition, defense
+  (`Attack` on the nearest visible intruder near home), and a
+  Massing/Attacking wave machine with the seeded per-wave jitter. 15
+  unit tests pin every behavior including controller determinism.
+- `crates/engine/src/ai_host.rs` — `AiMatchHost`: the headless hosting of
+  controllers on the tick boundary (ascending slot order, every fed
+  command recorded — rejections included), `alpha_controller`/`alpha_plan`
+  (capability-shaped kind resolution from the bundle: production lists
+  decide the roster, supply is a population structure, the node kind
+  carries a Resource body; costs through the Ore seam; starts from the
+  map), and `build_spots` (the deterministic ring scan: footprint-fitting,
+  buildable, clear of t0 static claims, one tile off node doorsteps).
+  7 engine tests: fog-filtered views feed the gate, the log records
+  rejections verbatim, controller order, outside-slot refusal, and
+  log-only re-simulation equality.
+- `crates/tools/src/ai_match.rs` — the CLI driver: setup from map starts,
+  controllers via the engine host, checkpoints + forced final, the replay
+  record, and the per-player evidence summary from the event stream
+  (site owners mapped through ConstructionStarted's builder). `--p1/--p2
+  demo|ai|idle` (demo default — the M1 match and its pinned hash are
+  unchanged); `replay-verify` resolves the world by content identity.
+- `crates/sim/src/runner.rs` — `run_command_log`, the one canonical
+  re-simulation driver (DEBT-005 repaid): tick-0 checkpoint, stable
+  tick-sort feed, periodic hashes, forced final, allocator watermark.
+  Tools' recorder and verifier and the acceptance suites all drive
+  through it.
+- `tests/ai.rs` — the M7 exit suite (8 tests): the two A5 structural
+  audits, the A5 ledger identity + entity accounting, the A11 mirrored
+  battery (label-blind), the A11 proptest fuzz, AI-vs-AI completion +
+  determinism across seeds, the golden pin, and the log-alone replay
+  (codec round-trip + re-simulation equality).
+
 ## 8. What is NOT built yet
 
-M3, M4, M5, and M6 are complete: the engine shell with its machine-verified
+M3 through M7 are complete: the engine shell with its machine-verified
 windowed client, the HUD/debug overlay slice (DEBT-009 repaid), the
 three-layer movement system (DEBT-003 repaid), the economy stack — ledger,
 gather loop, production queues, construction lifecycle, population,
-requirements, footprints blocking tiles, and the A12 checker — and the
-combat & vision stack: the immediate-hit attack pipeline, Attack/AttackMove/
-Stop semantics, the three-state fog model, the A10 fog integrity proof,
-and the A12 combat invariants (DEBT-004/006/007/010 all retired). What
-remains, in order:
+requirements, footprints blocking tiles, and the A12 checker — the
+combat & vision stack (the immediate-hit attack pipeline, the three-state
+fog model, the A10 fog integrity proof, the A12 combat invariants), and
+now the AI stack: the Controller trait, the scripted Alpha opponent,
+controller hosting on the tick boundary, the headless AI-vs-AI runner,
+and the A5/A11 parity audits (DEBT-005 also repaid). What remains, in
+order:
 
 1. **The human visual pass of DEBT-008 (small)**: on a desktop display, eyeball
    `cargo run -p pandemonium-client` — the map + entities render from a live
@@ -393,19 +441,28 @@ remains, in order:
    + per-entity health bars once rendered) and close the row. The
    machine-verifiable half (events fire, hp_fraction_milli on EntityView)
    is green; the pixel-level rendering of bars/tracers is a feel-pass item.
-2. **M7 — AI through commands (P4)**: the Controller trait, PlayerView
-   consumption, scripted controller, parity audit (A5 + A11).
+2. **M8 — Match rules & full loop (P5)**: victory/defeat/resign evaluation
+   (stage 10 is still a documented no-op; the Resign command marks state
+   only), the end screen, restart cleanliness (A15), UI depth (control
+   groups, hotkeys, queue UI, minimap), and the windowed client hosting
+   the AI opponent through the engine's existing `ai_host` seam (A-063)
+   so a human can actually play the 10–15 minute match the exit demands.
 3. Known limitations to carry forward honestly: the formation-less jam shape
    (A-040), path-smoothing-free staircases on detours, stalled construction
    sites when the builder dies (no reassignment command — A-045, carried
-   forward; M6 combat makes dead builders more common but the stall is
-   still a corner case behind the lines), and the O(N*V) per-tick fog
-   recompute (DEBT-004's full repayment — truly incremental updates wait
-   for a profile-driven need).
+   forward; the scripted AI also shares this hole — a killed builder's site
+   stalls, and the script never reassigns), the O(N*V) per-tick fog
+   recompute (truly incremental updates wait for a profile-driven need),
+   and the scripted AI's sight-verification latency (a rejected order is
+   retried only after its cooldown — A-062's deliberate shape). The AI is
+   a scripted opponent, not an evaluative one (plan §17 sequences that
+   post-Alpha).
 
-Nothing of the AI (M7) or match rules (M8) exists beyond stubs.
+Nothing of the match rules (M8) exists beyond the Resign command's state
+flag; the client does not yet host AI opponents (M8's work, through the
+existing seam).
 
-## 9. Sharp edges and gotchas discovered during M0–M3
+## 9. Sharp edges and gotchas discovered along the way
 
 - **fontdue reports y-up metrics**: `Metrics::ymin` counts upward from the
   baseline, so a y-down screen-space top edge is `baseline - (ymin + height)`
@@ -552,6 +609,37 @@ Nothing of the AI (M7) or match rules (M8) exists beyond stubs.
   client is a human-eyeball item — without a display, the windowed path
   can't be verified. Do not claim M6's visual cues are complete without a
   human pass on a real display.
+- **M7 controller sequences reset every tick**. `(issuer, seq)` is unique
+  only within one tick — a controller restarts its seq counter each think.
+  Any cross-tick accounting (rejection maps, log analysis) must key on
+  `(tick, issuer, seq)` or silently collide (the A5 ledger test hit this
+  exactly: spent costs vanished into phantom rejections).
+- **M7 build verification must be count-based, not proximity-based**. A
+  successful Build spawns the site instantly, so "an own entity of the kind
+  appeared" (count increase) is exact — while a spot-proximity check gave
+  false successes on adjacent candidate spots and cycled placements every
+  two ticks (the first AI match burned 71 depot attempts for 4 sites).
+- **M7 `MoveState::Idle` means NO ORDERS, not "standing still"**. A worker
+  mid-gather, mid-build, or mid-march has orders; an auto-acquiring fighter
+  in combat does NOT (the Attack target slot is not an order). Re-tasking
+  idle entities can therefore never cancel work in progress — and "all
+  army idle" is NOT a wave-regroup signal.
+- **M7 construction sites spawn without Spawned events**. They surface as
+  ConstructionStarted (with their builder); owner bookkeeping must flow
+  through the builder id. The tools' evidence summary and the tests' owner
+  maps both do this.
+- **M7 pre-wave AI logs are seed-independent**. The script's only
+  randomness is the wave jitter, so two seeds can produce identical early
+  logs — assert state divergence (the hashed RNG stream), not log
+  inequality.
+- **M7 milli-tiles vs tiles, the classic slip**. `radius_milli * 65,536`
+  is a radius in TILES of raw units; milli-tiles need `* 65,536 / 1,000`.
+  The first version made the AI's 12-tile defense radius a 12,000-tile
+  one — the unit tests caught an "intruder" at 36 tiles being attacked.
+- **M7 RefCell test controllers deadlock on held borrows**. A test
+  controller that records views must clone the view out before the next
+  advance — holding `&seen.borrow()[0]` across `advance()` panics
+  (already-borrowed) because the next think does `borrow_mut()`.
 
 ## 10. Maintenance protocol — every future agent, every milestone
 
@@ -580,10 +668,10 @@ Nothing of the AI (M7) or match rules (M8) exists beyond stubs.
 | §6 simulation core | `crates/sim/src/` — `sim.rs` (pipeline), `world.rs` (stores), `hash.rs` (state hash), `fixture.rs` (trivial world) |
 | §7 entity model | `crates/sim/src/world.rs` + capability stores; `crates/sim_api` ids |
 | §8 commands | `crates/sim_api/src/lib.rs` (types) + `crates/sim/src/command.rs` (gate + application) |
-| §9 systems | per-milestone; see status board §6 (M1 spine; M4 movement; M5: economy.rs + production.rs + invariants.rs) |
+| §9 systems | per-milestone; see status board §6 (M1 spine; M4 movement; M5: economy.rs + production.rs + invariants.rs; M6: combat.rs + vision.rs; M7: crates/ai + engine ai_host) |
 | §10 content | `docs/CONTENT_GUIDE.md`, `content/` (live), `crates/content/src/` (schema/version/loader/defs/validate/bundle) |
-| §11 engine/client | `crates/engine` (clock, interpolate, host + pause/single-step, camera, mesh, renderer + HudState) + `crates/client` (wgpu renderer, UI overlay pass, input, text.rs) — 3D per ADR-0001; DEBT-008 keeps only the human visual pass |
-| §12 tools | `crates/tools` — headless, replay-verify, content-validate live |
-| §13 acceptance | `tests/` — A13 live; A1/A2 + spine proofs (M1); A3 scaffold + §10.4 pin (M2, `content_pipeline.rs`) |
+| §11 engine/client | `crates/engine` (clock, interpolate, host + pause/single-step, camera, mesh, renderer + HudState, ai_host) + `crates/client` (wgpu renderer, UI overlay pass, input, text.rs) — 3D per ADR-0001; DEBT-008 keeps only the human visual pass |
+| §12 tools | `crates/tools` — headless (demo + `--p1/--p2 ai|idle`), replay-verify (content-identity world resolution), content-validate live |
+| §13 acceptance | `tests/` — A13 live; A1/A2 + spine proofs (M1); A3 scaffold + §10.4 pin (M2, `content_pipeline.rs`); A5 + A11 (M7, `ai.rs`) |
 | §14 milestones | this file §6 status board |
 | §15–§19 budgets/risks/debt | `plan.md`; debt live in `docs/DEBT.md` |
