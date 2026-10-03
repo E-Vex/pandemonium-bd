@@ -297,10 +297,11 @@ confirms or rejects it.
   static map features and the three-state fog model is M6's work, so the gate
   checks node existence and Resource-carriage only. The vision milestone
   revisits target legality for economy commands.
-- **A-049 (§13 A12).** `population <= cap` is asserted strictly. It holds
+- **A-049 (§13 A12).** ~~`population <= cap` is asserted strictly. It holds
   through M5 (caps only grow; deaths only lower usage). M6 combat can destroy
   population-providing structures and legitimately open an over-cap window —
-  the allowance (or its absence) is an explicit decision then; see DEBT-010.
+  the allowance (or its absence) is an explicit decision then; see DEBT-010.~~
+  Superseded by A-053 (M6's first decision). Kept struck for the audit trail.
 - **A-050 (§6.4, §5.10, §14 M5).** M5 bumps both canonical encodings:
   `STATE_ENCODING_VERSION` 2→3 (the Gather/Build/Produce/Storage/
   ProvidesPopulation/Resource/Footprint/Construction capability blocks, the
@@ -346,3 +347,16 @@ confirms or rejects it.
   insufficient funds → `CannotAfford`; no population headroom →
   `PopulationFull`; blocked placement → `PlacementBlocked` (terrain, claim,
   mover, or bounds).
+
+- **A-053 (§13 A12, DEBT-010 retired).** `population <= cap` is the spawn-
+  blocking rule, not an always-on invariant. Combat can destroy population-
+  providing structures while units live, opening a temporary over-cap window:
+  usage may then exceed cap, and the M5 production queue already holds
+  completed items at the queue front until headroom returns (A-042), so no new
+  spawns happen while over cap. The A12 checker is therefore relaxed to a
+  cap-non-corrupt + usage-non-saturating assertion (catching only wild drift,
+  not the legitimate combat-loss window). This decision touches A12 only;
+  §9.4's production/construction semantics are unchanged. Pinned by
+  `population_drift_far_past_cap_fires` (replaces the strict-over-cap test).
+  The classic alternative — units die or decay when usage exceeds cap — was
+  rejected as a feel regression with no compensating simplification.
