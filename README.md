@@ -290,12 +290,12 @@ one question and refuses to move on until it is answered.
 
 | Milestone | Delivers | Exit gate | Status |
 |---|---|---|---|
-| **M0** — Skeleton & guardrails | Workspace, toolchain pin, guardrails, `fx` crate | fmt, clippy, fx property tests, architecture law | ✅ **Complete** |
-| **M1** — Simulation core | Tick pipeline, entity/capability stores, command gate, state hash, replay, determinism proofs | A1/A2 green, pinned golden hashes, replay round-trip | ✅ **Complete** |
-| **M2** — Content pipeline | RON schemas, versioned loaders, validators, map loader, content hash, `content-validate` tool | All Alpha content loads from data; add-a-unit scaffold proves the boundary | ✅ **Complete** |
-| **M3** — Engine shell | Window, wgpu 26 3D renderer, camera, snapshot interpolation, fixed loop, input → commands, HUD/debug overlay | Windowed build shows live simulation; Move commands work; `--frames` smoke pass | ✅ **Complete** |
-| **M4** — Movement *(P1: do multiple units move responsibly?)* | Nav grid, deterministic A*, path execution, collision, push-apart, stuck detection | 50 units respond within 2 ticks under spam-clicked orders; nobody permanently stuck | ✅ **Complete** |
-| **M5** — Economy & production *(P3: do openings diverge?)* | Resource ledger, gather loop (depletion + auto-seek), production queues (Train/Cancel/SetRally), construction lifecycle, population cap, requirements, footprints blocking tiles, A12 invariant checker | Scripted openings produce measurably different timelines; economy soak holds all invariants | ✅ **Complete** |
+| **M0** — Skeleton & guardrails | Workspace, toolchain pin, guardrails, `fx` crate | fmt, clippy, fx property tests, architecture law | ✔ **Complete** |
+| **M1** — Simulation core | Tick pipeline, entity/capability stores, command gate, state hash, replay, determinism proofs | A1/A2 green, pinned golden hashes, replay round-trip | ✔ **Complete** |
+| **M2** — Content pipeline | RON schemas, versioned loaders, validators, map loader, content hash, `content-validate` tool | All Alpha content loads from data; add-a-unit scaffold proves the boundary | ✔ **Complete** |
+| **M3** — Engine shell | Window, wgpu 26 3D renderer, camera, snapshot interpolation, fixed loop, input → commands, HUD/debug overlay | Windowed build shows live simulation; Move commands work; `--frames` smoke pass | ✔ **Complete** |
+| **M4** — Movement *(P1: do multiple units move responsibly?)* | Nav grid, deterministic A*, path execution, collision, push-apart, stuck detection | 50 units respond within 2 ticks under spam-clicked orders; nobody permanently stuck | ✔ **Complete** |
+| **M5** — Economy & production *(P3: do openings diverge?)* | Resource ledger, gather loop (depletion + auto-seek), production queues (Train/Cancel/SetRally), construction lifecycle, population cap, requirements, footprints blocking tiles, A12 invariant checker | Scripted openings produce measurably different timelines; economy soak holds all invariants | ✔ **Complete** |
 | **M6** — Combat & vision *(P2: is combat legible and meaningful?)* | Combat pipeline, targeting, three-state fog, turrets, event cues | Composition and position matter; fog integrity proven (A10) | ⬜ **Next** |
 | **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time | ⬜ Pending |
 | **M8** — Match rules *(P5: do all systems work together?)* | Victory, defeat, resignation, end screen, restart, UI depth | 10–15 minute match versus the AI completes and restarts cleanly (A15) | ⬜ Pending |
