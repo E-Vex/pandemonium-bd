@@ -1,6 +1,6 @@
 # Pandemonium — Architecture
 
-Status: milestone M5 complete (economy/production/construction); M6 (combat & vision) is next. The authoritative specification is
+Status: milestone M6 complete (combat & vision); M7 (AI through commands) is next. The authoritative specification is
 [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism
 rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
@@ -138,23 +138,39 @@ crates/sim/src/
   hash.rs      The canonical state hash (plan §6.4): little-endian, fixed field
                order, entity-major with a capability presence bitmask (u16,
                eleven slots), through fx::Fnv1a64; carries
-               STATE_ENCODING_VERSION = 3 (the economy capability blocks, the
-               GatherAt/BuildAt orders, the UnderConstruction lifecycle).
+               STATE_ENCODING_VERSION = 4 (the economy capability blocks, the
+               GatherAt/BuildAt orders, the UnderConstruction lifecycle, the
+               Attack capability block + AttackUnit order — M6).
+  combat.rs    Stage 7 (plan §9.2, M6): the immediate-hit attack pipeline —
+               every stage a named function (acquire, validate, wind_up,
+               hit, mitigate, apply, death-via-stage-8, credit). Cooldowns
+               in ticks; squared-distance range checks; acquisition priority
+               commanded > units-attacking-friendly > other units >
+               structures; ties to lower id (A-057). `clear_dead_targets`
+               is called by stage 8 after removal so attacker target slots
+               pointing at the dead don't dangle.
+  vision.rs    Stage 9 (plan §9.5, M6): the three-state fog model — per-
+               player per-tile Hidden/Explored/Visible, maintained
+               incrementally each tick. `FogState` is derived (NOT hashed —
+               A-059); `player_view` consults the cache instead of the M1
+               on-demand scan. DEBT-004 repaid.
   invariants.rs The A12 checker (plan §13): debug assertions over the whole
                state at the end of every step in debug builds — ledger
-               non-negativity, population within cap, hp bounds, no mover on
-               blocked or claimed tiles, store order + allocator ceilings,
-               queue-cost consistency, construction budgets, live gather
-               targets.
+               non-negativity, population cap + usage non-saturating (A-053:
+               over-cap allowed from combat-destroyed structures), hp bounds,
+               no mover on blocked or claimed tiles, store order + allocator
+               ceilings, queue-cost consistency, construction budgets, live
+               gather targets, combat invariants (cooldowns sane, target
+               alive, no attack on own — M6).
   sim.rs       Sim — new/step/state_hash/snapshot/player_view/next_entity_id.
                step() runs plan §6.3's eleven stages verbatim; stages whose
                systems arrive in later milestones are documented no-ops with
                milestone pointers. Stage contents today: command application
                (1), scheduled spawns + production + construction + population
                recompute (3), the gather loop (4), the three-layer mover (6),
-               health advance + death & cleanup (8), the A12 checker (debug,
-               end of tick), finalize with the periodic hash every 30 ticks
-               (11).
+               combat (7), health advance + death & cleanup + clear_dead_targets
+               (8), the A12 checker (debug, end of tick), vision (9), finalize
+               with the periodic hash every 30 ticks (11).
 ```
 
 Events are outputs, never state: the buffer is drained by each `step` and is not

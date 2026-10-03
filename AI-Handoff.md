@@ -31,7 +31,7 @@
 | Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/pandemonium-bd`) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
 | Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
-| Status | **M5 (Economy/production/construction, P3) COMPLETE** — resource ledger, worker gather loop with depletion + auto-seek, production queues (Train/Cancel/SetRally) with paid-on-enqueue costs, construction lifecycle (Build + committed builder), population cap, shared requirements checker, footprints blocking tiles, A12 invariant checker; divergent-opening and economy-soak exit tests green (244/244 dev, 239 release — 5 should-panic checker tests are debug-only). **Next: M6 (Combat & vision)** |
+| Status | **M6 (Combat & vision, P2) COMPLETE** — immediate-hit attack pipeline (Acquire→Validate→Wind→Hit→Mitigate→Apply→Death→Credit, every stage a named function), Attack/AttackMove/Stop command semantics, three-state fog (Hidden/Explored/Visible per player per tile, derived not hashed — A-059), A10 fog integrity green (hashes equal fog on/off, targeting rejects unseen both directions), turret works (no Move, Attack+Footprint), A12 combat invariants (cooldowns sane, target alive, no attack on own), DEBT-006/007/010 retired, encoding v4. Scripted skirmishes show composition + position matter (bit-identical run-to-run); legibility checklist machine-half green (AttackHit + Died fire, hp_fraction_milli on EntityView); the human eyeball half rides DEBT-008. 269/269 dev tests green. **Next: M7 (AI through commands)** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -62,25 +62,34 @@ cargo run -p pandemonium-client             # windowed 3D client; headless smoke
 cargo run -p pandemonium-client -- --frames 900   # windowed smoke: auto-exit + evidence summary
 ```
 
-Expected at this handoff: all commands succeed; 244 tests pass in dev and
-239 in release (the 5 should-panic invariant-checker tests are debug-only by
-nature — `debug_assert` compiles out in release): 39 fx unit tests, 15 fx
-property tests, 82 sim unit tests (economy/production/construction/invariants
-among them), 4 sim_api unit tests, 8 replay codec tests, 12 tools tests,
+Expected at this handoff: all commands succeed; 269 tests pass in dev
+(239 in release — the 5 should-panic invariant-checker tests are
+debug-only by nature — `debug_assert` compiles out in release): 39 fx
+unit tests, 15 fx property tests, 95 sim unit tests (economy/production/
+construction/invariants/combat/vision among them — +13 from M5: 8 combat
++ 5 vision), 4 sim_api unit tests, 8 replay codec tests, 12 tools tests,
 33 content unit tests, 9 determinism acceptance tests, 4 content-pipeline
-acceptance tests (the A3 scaffold now trains the data-defined kind),
-3 movement acceptance tests, 4 economy acceptance tests (the M5 exit suite),
-28 engine unit tests + 2 mesh tests, 5 client text-atlas tests,
-2 architecture-law tests, 1 sim constant test; the headless demo's final hash
-is 0xbc86a622e357252d (seed 7, 300 ticks — moved by M5's encoding v3, see
-A-050). `tools content-validate content` prints the bundle identity and PASS
-(content hash 0x249b69f0ee343a10, map id 0xbc0970c3cf14e9cf — moved by the
-contested-node relocation, A-052); `cargo run -p pandemonium-client` prints
-the no-display finding and runs the headless smoke pass (on a desktop it
-opens the window); with `--frames N` the windowed run exits after N frames
-and prints the evidence summary. On a headless machine the windowed path is
-verified on Xvfb + llvmpipe per DEBT-008/A-037 (selection + Move commands
-provably work; the human visual pass remains).
+acceptance tests (the A3 scaffold now trains AND fights the data-defined
+kind — DEBT-007 retired), 3 movement acceptance tests, 4 economy
+acceptance tests, 7 combat acceptance tests (the M6 exit suite:
+composition, position, bit-identical, turret, A12 soak, legibility),
+5 vision acceptance tests (A10 fog integrity, targeting both directions,
+three-state transition, FD-8), 28 engine unit tests + 2 mesh tests,
+5 client text-atlas tests, 2 architecture-law tests, 1 sim constant
+test; the headless demo's final hash is 0x9d5ba9b565060336 (seed 7,
+300 ticks — moved by M6's encoding v4, see A-056).
+`tools content-validate content` prints the bundle identity and PASS
+(content hash 0x249b69f0ee343a10, map id 0xbc0970c3cf14e9cf — unchanged
+by M6: the content encoder already covered Attack data, so the seam flip
+from DEBT-006 is invisible to the bundle identity); `cargo run -p
+pandemonium-client` prints the no-display finding and runs the headless
+smoke pass (on a desktop it opens the window); with `--frames N` the
+windowed run exits after N frames and prints the evidence summary. On a
+headless machine the windowed path is verified on Xvfb + llvmpipe per
+DEBT-008/A-037 (selection + Move commands provably work; the human
+visual pass remains — M6's visual cues (AttackHit tracers, per-entity
+health bars) ride this same human pass; the machine-verifiable half —
+events fire, hp_fraction_milli on EntityView — is green).
 CI additionally runs fmt + clippy + tests on Linux/Windows/macOS in dev and
 release, plus the replay round-trip, when pushed to GitHub
 (`.github/workflows/ci.yml`) — see A-010/A-020 below.
@@ -90,15 +99,15 @@ release, plus the replay round-trip, when pushed to GitHub
 ```text
 crates/fx        DONE    Q16.16 fixed-point math, isqrt, PCG32 Rng, FNV-1a hasher
 crates/sim_api   DONE    vocabulary: ids, Command/CommandKind, Event, Reject, Snapshot, PlayerView, MatchSetup
-crates/sim       DONE    Sim spine + M4 movement + M5 economy: step pipeline, entity + capability stores (11 capability types), command gate w/ economy checks, state hash (v3), trivial-world fixture w/ terrain grids + production lists, nav grid + A* + footprint occupancy, mover, gather loop, production queues, construction, A12 invariant checker
-crates/content   DONE    RON schema (strict), versioned loaders + map v1->v2 migration, precise validators, ContentBundle + content hash, world() seam
+crates/sim       DONE    Sim spine + M4 movement + M5 economy + M6 combat & vision: step pipeline (11 stages, 5/7/9 now wired), entity + capability stores (12 capability types — Attack added), command gate w/ economy + combat checks, state hash (v4), trivial-world fixture w/ terrain grids + production lists, nav grid + A* + footprint occupancy, mover, gather loop, production queues, construction, combat pipeline (acquire/validate/hit/mitigate/apply/credit), three-state fog (Hidden/Explored/Visible per player per tile, derived not hashed), A12 invariant checker w/ combat invariants
+crates/content   DONE    RON schema (strict), versioned loaders + map v1->v2 migration, precise validators, ContentBundle + content hash, world() seam (all 12 capabilities mapped — Attack mapped in M6, DEBT-006 retired)
 crates/ai        STUB    empty lib, role documented (lands in M7)
 crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in tools/tests)
 crates/engine    DONE*   FixedTimestep, Interpolator, MatchHost (structural FD-2) + pause/single-step, RtsCamera (glam) + picking/box-select, terrain mesh, Renderer trait + null renderer, HudState on the Frame boundary
                    (*engine core)
 crates/client    DONE*   winit window + wgpu 26 3D renderer (depth buffer, terrain mesh + heightmap, instanced placeholder boxes), selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, --frames windowed smoke, headless smoke fallback (*DEBT-008 keeps the human visual pass)
 crates/tools     DONE    headless, replay-verify, content-validate subcommands (clap CLI)
-tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3 + the M5 train extension) + movement.rs (M4/P1) + economy.rs (M5/P3)
+tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3 — now trains AND fights) + movement.rs (M4/P1) + economy.rs (M5/P3) + combat.rs (M6/P2) + vision.rs (M6/A10)
 content/         DONE    rules/, entities/ (9 kinds), factions/ (Legion), maps/ (Crossroads 64x64, symmetric, heightmap)
 docs/            ACTIVE  ARCHITECTURE, DEBT, ASSUMPTIONS, CONTENT_GUIDE, adr/ (ADR-0001 accepted)
 ```
@@ -120,16 +129,17 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M3 | Engine shell | ✅ **complete** | engine + client implemented and green (183 tests): FixedTimestep loop w/ catch-up cap, interpolation, MatchHost (the step-only mutation guarantee is structural) + pause/single-step, RtsCamera + ground picking + box select, terrain mesh + null renderer, wgpu 26 windowed client w/ depth buffer, terrain + heightmap, instanced placeholder boxes, selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, `--frames` windowed smoke. **Windowed path machine-verified on Xvfb + llvmpipe** (DEBT-008/A-037: 900 frames presented, XTEST drag-box selection of the 5 start entities, 2 Move commands, visible motion); the *human* visual pass remains open in DEBT-008. HUD/overlay slice landed (DEBT-009 repaid) |
 | M4 | Movement (P1) | ✅ **complete** | 50 units respond within 2 ticks under spam-clicked orders (per-unit motion check, tests/movement.rs); no permanent stuck units (every order resolves — arrival, crowded arrival, or MoveFailed; unreachable/zero-speed fail immediately); hashes green (A1 + regenerated goldens, encoding v2); real-map detour: 4 workers cross Crossroads around the rock walls, never on blocked terrain; push-apart separates stacks and never pushes into terrain (DEBT-003 repaid) |
 | M5 | Economy/production/construction (P3) | ✅ **complete** | divergent scripted openings produce measurably different timelines (worker-heavy vs early-Raider: worker counts, barracks, Raiders fielded, income, balances, hashes branch ≤ tick 60); scripted matches bit-identical run-to-run; A12 invariant checker fires every tick in debug and 3 openings × 2 seeds × 900 ticks of both-player economy soak hold every invariant; the soak caught and fixed a real spawn-position bug |
-| M6 | Combat & vision (P2) | ⬜ pending | composition/position matter; legibility checklist; A10 fog integrity green |
+| M6 | Combat & vision (P2) | ✅ **complete** | immediate-hit attack pipeline (every stage a named function); Attack/AttackMove/Stop semantics; three-state fog (Hidden/Explored/Visible, derived not hashed — A-059); A10 fog integrity green (hashes equal fog on/off, targeting rejects unseen both directions); turret works (no Move, Attack+Footprint); A12 combat invariants (cooldowns sane, target alive, no attack on own); scripted skirmishes show composition + position matter (bit-identical run-to-run); legibility checklist machine-half green (AttackHit + Died fire, hp_fraction_milli on EntityView); DEBT-006/007/010 retired; encoding v4 |
 | M7 | AI through commands (P4) | ⬜ pending | A5 + A11 green; AI-vs-AI headless matches complete |
 | M8 | Match rules & full loop (P5) | ⬜ pending | 10–15 min match vs AI completes and restarts cleanly (A15) |
 | M9 | Alpha content & feel pass | ⬜ pending | minimum viable loop playable end-to-end vs the AI |
 | M10 | Stabilization & declaration | ⬜ pending | every A1–A15 criterion verified; soak green; docs/ALPHA_DECLARATION.md with evidence |
 
-**The plan was broken into parts along these milestones.** Parts 1–5 (M0–M3,
-M4 movement, and M5 economy/production/construction) are complete (M3's
-windowed path machine-verified; the human visual pass stays open as
-DEBT-008's narrowed scope); parts 6–11 (M6–M10) remain, in strict order.
+**The plan was broken into parts along these milestones.** Parts 1–6 (M0–M3,
+M4 movement, M5 economy/production/construction, and M6 combat & vision) are
+complete (M3's windowed path machine-verified; the human visual pass stays
+open as DEBT-008's narrowed scope); parts 7–11 (M7–M10) remain, in strict
+order.
 
 ## 7. M0–M3 inventory — what exists today, concretely
 
@@ -366,33 +376,34 @@ see DEBT-008/009 for what remains)**
 
 ## 8. What is NOT built yet
 
-M3, M4, and M5 are complete: the engine shell with its machine-verified
+M3, M4, M5, and M6 are complete: the engine shell with its machine-verified
 windowed client, the HUD/debug overlay slice (DEBT-009 repaid), the
-three-layer movement system (DEBT-003 repaid), and the economy stack —
-ledger, gather loop, production queues, construction lifecycle, population,
-requirements, footprints blocking tiles, and the A12 checker (DEBT-006
-narrowed to Attack-only, DEBT-007 narrowed to the fight half). What remains,
-in order:
+three-layer movement system (DEBT-003 repaid), the economy stack — ledger,
+gather loop, production queues, construction lifecycle, population,
+requirements, footprints blocking tiles, and the A12 checker — and the
+combat & vision stack: the immediate-hit attack pipeline, Attack/AttackMove/
+Stop semantics, the three-state fog model, the A10 fog integrity proof,
+and the A12 combat invariants (DEBT-004/006/007/010 all retired). What
+remains, in order:
 
 1. **The human visual pass of DEBT-008 (small)**: on a desktop display, eyeball
    `cargo run -p pandemonium-client` — the map + entities render from a live
    sim, selection and right-click Move work (both already machine-proven);
-   confirm the visuals read well (colors, legibility) and close the row.
-2. **M6 — Combat & vision (P2)**: the attack pipeline (acquire → validate →
-   hit → mitigate → damage → death → credit), Attack/AttackMove/Stop
-   semantics, the Turret, the three-state fog model, targeting filters, and
-   the last carried-but-unmapped capability (Attack — DEBT-006's remainder).
-   The A12 `pop <= cap` strictness needs its combat decision then (A-049,
-   DEBT-010), and DEBT-007's fight half extends the A3 test.
+   confirm the visuals read well (colors, legibility, M6's AttackHit tracers
+   + per-entity health bars once rendered) and close the row. The
+   machine-verifiable half (events fire, hp_fraction_milli on EntityView)
+   is green; the pixel-level rendering of bars/tracers is a feel-pass item.
+2. **M7 — AI through commands (P4)**: the Controller trait, PlayerView
+   consumption, scripted controller, parity audit (A5 + A11).
 3. Known limitations to carry forward honestly: the formation-less jam shape
    (A-040), path-smoothing-free staircases on detours, stalled construction
-   sites when the builder dies (no reassignment command — A-045), gather
-   targeting without fog filtering (A-048), and economy scripts that do not
-   queue-cancel under pressure.
+   sites when the builder dies (no reassignment command — A-045, carried
+   forward; M6 combat makes dead builders more common but the stall is
+   still a corner case behind the lines), and the O(N*V) per-tick fog
+   recompute (DEBT-004's full repayment — truly incremental updates wait
+   for a profile-driven need).
 
-Nothing of the AI (M7) or match rules (M8) exists beyond stubs, and the
-remaining M1 scopes are the deferred capabilities (DEBT-004, and the M6
-halves of DEBT-006/007).
+Nothing of the AI (M7) or match rules (M8) exists beyond stubs.
 
 ## 9. Sharp edges and gotchas discovered during M0–M3
 
@@ -515,6 +526,32 @@ halves of DEBT-006/007).
 - **The `is_none_or` / `is_multiple_of` new-style lints** now also bite test
   code (cooldown sentinels as `u32::MAX / 2` fight `saturating_add`; use
   `Option<u32>` + `is_none_or`).
+- **M6 combat cooldowns: author in ms, compare in ticks**. `cooldown_ms: 33`
+  → `ms_to_ticks(33, 30) = ceil(33*30/1000) = 1` tick. `cooldown_ms: 100` →
+  `ceil(100*30/1000) = 3` ticks (NOT 1). The fixture/content loader uses
+  `(ms * tps + 999) / 1000` (ceiling division); always check the converted
+  value, not the authored ms, when reasoning about hit cadence.
+- **M6 fog is derived, not hashed (A-059)**. The `FogState` on `Sim` is a
+  per-tick cache recomputed in stage 9; it is NOT part of the canonical
+  state hash. A10's "fog on/off, hashes equal" is trivially true because
+  the hash never includes the bitsets. Do NOT add fog to `hash_state` —
+  it would couple the hash to a per-player derivative and break A10.
+- **M6 combat `acquire_target` scans the entity store ascending id**. The
+  tie-break is "lower dist_sq wins, ties to the lower id" — `update_best`
+  uses `<=` so a same-distance later candidate loses. If you change the
+  scan order or the comparison operator, the acquisition tie-break changes
+  and the M6 combat tests will catch it.
+- **M6 `clear_dead_targets` runs in stage 8, AFTER removal**. Stage 8
+  collects the dead ids, removes them, then calls `clear_dead_targets` so
+  attacker target slots pointing at the dead don't dangle (ids are never
+  reused, so a stale slot would never re-resolve). If you add a new death
+  path, make sure it goes through stage 8's removal + clear_dead_targets.
+- **M6 visual cues ride DEBT-008**. The machine-verifiable half (AttackHit
+  fires, hp_fraction_milli on EntityView, events flow to the client) is
+  green. The pixel-level rendering of tracers + health bars in the wgpu
+  client is a human-eyeball item — without a display, the windowed path
+  can't be verified. Do not claim M6's visual cues are complete without a
+  human pass on a real display.
 
 ## 10. Maintenance protocol — every future agent, every milestone
 
