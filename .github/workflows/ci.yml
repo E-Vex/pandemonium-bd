@@ -62,6 +62,10 @@ jobs:
         run: |
           cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300 --record ci-replay.pdrp
           cargo run -p pandemonium-tools -- replay-verify ci-replay.pdrp
+      - name: Record and verify an AI-vs-AI match (M7)
+        run: |
+          cargo run -p pandemonium-tools -- headless --seed 7 --ticks 1200 --p1 ai --p2 ai --record ci-ai-replay.pdrp
+          cargo run -p pandemonium-tools -- replay-verify ci-ai-replay.pdrp
 
   binaries:
     name: workspace builds and runs
@@ -75,4 +79,5 @@ jobs:
       - name: Every binary starts (plan §0: the game must build and run)
         run: |
           cargo run -p pandemonium-tools -- headless --seed 1 --ticks 30
+          cargo run -p pandemonium-tools -- headless --seed 1 --ticks 60 --p1 ai --p2 ai
           cargo run -p pandemonium-client
