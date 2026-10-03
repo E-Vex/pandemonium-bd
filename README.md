@@ -12,7 +12,7 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 [![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
 ![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
-![stage](https://img.shields.io/badge/stage-M1_simulation_core-9E6A03?labelColor=21262D)
+![stage](https://img.shields.io/badge/stage-M5_economy_done-9E6A03?labelColor=21262D)
 ![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
 
 <picture>
@@ -134,57 +134,69 @@ simulation.
 ### Inside a tick
 
 The fixed update order inside `step()` never varies per content item (plan §6.3).
-At M1 the spine stages are live and the systems stages are documented no-ops
-waiting for their milestones — the status is deliberate, not hidden:
+At M5 the spine stages are live and the systems stages reflect their milestone status:
 
-| # | Stage | State at M1 |
+| # | Stage | State at M5 |
 |---|---|---|
 | 1 | Apply commands — sort by (issuer, seq), validate, apply or reject | **live** |
-| 2 | Orders — resolve current orders into system intents | reserved (M4–M5) |
-| 3 | Production & construction — queues, progress, spawns | stand-in: scheduled spawns |
-| 4 | Economy — gathering, delivery, storage, spending | reserved (M5) |
+| 2 | Orders — resolve current orders into system intents | **live** (M4/M5) |
+| 3 | Production & construction — queues, progress, spawns | **live** (M5) |
+| 4 | Economy — gathering, delivery, storage, spending | **live** (M5) |
 | 5 | Target acquisition | reserved (M6) |
-| 6 | Movement — path requests, steering, collision | placeholder straight-line mover ([DEBT-003](docs/DEBT.md)) |
+| 6 | Movement — path requests, steering, collision | **live** (M4) |
 | 7 | Combat — the fixed resolution pipeline | reserved (M6) |
 | 8 | Death & cleanup — health advance, lifecycle events, removal | **live** |
-| 9 | Vision — per-player visibility | on-demand fog filter ([DEBT-004](docs/DEBT.md)) |
+| 9 | Vision — per-player visibility | on-demand fog filter (DEBT-004, M6) |
 | 10 | Match rules — defeat and victory evaluation | reserved (M8) |
 | 11 | Finalize — tick++, flush events, periodic hash every 30 ticks | **live** |
 
 ## Current status
 
-**Milestone M0 (skeleton & guardrails) and M1 (simulation core) are complete.
-M2 (content pipeline) is next.** The live status board is
+**Milestones M0 through M5 are complete. M6 (Combat & Vision) is next.** The live status board is
 [`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated as a bug.
 
-Built and verified at M1:
+Built and verified through M5:
 
 - **`fx`** — Q16.16 fixed-point math with 64-bit intermediates, round-toward-zero
   and saturating contracts (identical in debug and release), exact integer square
   root over the full u64 range, PCG32 RNG with canonical seeding, FNV-1a 64-bit
   hashing — all property-tested.
-- **`sim`** — the tick pipeline above; entity and capability stores kept in
-  ascending-ID order by construction; the shared command gate covering all ten
-  command kinds with rejection events and zero state change on refusal; canonical
-  little-endian state hash; snapshots and fog-filtered player views.
+- **`sim`** — the tick pipeline (all 11 stages planned; M1 spine live, M4 movement live,
+  M5 economy/production/construction live); entity and capability stores kept in
+  ascending-ID order by construction; the shared command gate covering all command
+  kinds with rejection events and zero state change on refusal; canonical
+  little-endian state hash (v3); snapshots and fog-filtered player views.
+- **`content`** — strict RON schema with versioned loaders and forward migration
+  (map v1→v2), precise validators at file and placement level, `ContentBundle`
+  with canonical content hash and map id, `world()` seam producing the plain
+  `TrivialWorld` the simulation receives with **zero changes under sim/sim_api/fx/ai**.
 - **`replay`** — a checksummed canonical little-endian codec (record, load,
   validate) with typed errors. No serde: the dependency law forbids it here.
-- **`tools`** — a headless runner for scripted matches and `replay-verify`, which
-  re-simulates a replay and compares every checkpoint hash (acceptance A2).
-- **`tests/`** — determinism acceptance A1/A2 with pinned golden hashes, plus
-  proofs that IDs are never reused, iteration order is strictly ascending,
-  invalid commands change no state, and the dependency law holds (A13).
+- **`engine`** — `FixedTimestep` (30 Hz, 5-tick catch-up cap), `Interpolator`
+  (snapshot blending, spawn/death handling), `MatchHost` (owns `Sim` privately,
+  `submit` + `advance` are the only mutation paths), `RtsCamera` (perspective
+  orbit, ground picking, box select), terrain mesh, `Renderer` trait + `NullRenderer`.
+- **`client`** — winit 0.30 + wgpu 26 windowed 3D renderer (depth buffer, terrain
+  mesh with heightmap displacement, instanced placeholder entity boxes), selection
+  + right-click Move, fontdue text atlas + HUD/debug overlay, `--frames N` windowed
+  smoke, headless fallback for CI.
+- **`tools`** — headless runner, `replay-verify`, `content-validate` subcommands.
+- **`tests/`** — determinism acceptance A1/A2 with pinned golden hashes, movement
+  acceptance (M4), economy acceptance (M5: divergent openings, soak, invariants),
+  content pipeline acceptance (M2 + M5 train extension), architecture law (A13),
+  plus proofs that IDs are never reused, iteration order is strictly ascending,
+  invalid commands change no state, and the dependency law holds.
 - **CI** — fmt, clippy with `-D warnings`, and the test suite in dev *and*
   release on Linux, Windows, and macOS, plus the replay round-trip and a
-  binaries-run check. 113 tests green, dev and release identical.
+  binaries-run check. **244 tests green in dev, 239 in release** (5 should-panic
+  invariant-checker tests are debug-only by nature).
 
 Not built yet — on purpose, in milestone order:
 
-- No window or renderer: the client binary prints a placeholder banner until M3.
-- No content loading: `content/` is an empty tree until M2; the simulation
-  currently runs against a documented in-code fixture.
-- No pathfinding, combat, economy, or AI: the mover is an acknowledged placeholder
-  (DEBT-003), and the systems land with M4–M7.
+- No combat or vision system: target acquisition, damage pipeline, three-state fog,
+  and turrets land in M6.
+- No AI: the `ai` crate is a stub; controllers that play through commands land in M7.
+- No match rules: victory, defeat, resignation, end screen, restart land in M8.
 - No multiplayer: the hooks are designed in (`Command.tick`, hashed checkpoints
   for desync detection), the netcode is not.
 
@@ -196,14 +208,14 @@ pandemonium-bd/
 │  ├─ fx/         fixed-point math (Fx, Vec2Fx, isqrt), PCG32 RNG, FNV-1a hasher
 │  ├─ sim_api/    boundary vocabulary: Command, Event, Snapshot, PlayerView, Reject
 │  ├─ sim/        the simulation: tick pipeline, stores, command gate, state hash
-│  ├─ content/    RON schema, versioned loaders, validators        (M2)
-│  ├─ ai/         controllers that play through commands           (M7)
+│  ├─ content/    RON schema, versioned loaders, validators, ContentBundle
+│  ├─ ai/         controllers that play through commands           (stub — M7)
 │  ├─ replay/     checksummed replay codec: record, load, verify
-│  ├─ engine/     game loop, interpolation, input mapping, UI kit  (M3)
-│  ├─ client/     the playable binary: wgpu + winit                (M3)
-│  └─ tools/      headless runner, replay verifier (soak, bench: M7/M10)
+│  ├─ engine/     game loop, interpolation, MatchHost, camera, mesh, renderer
+│  ├─ client/     the playable binary: wgpu 26 + winit, 3D renderer, HUD
+│  └─ tools/      headless runner, replay verifier, content validator
 ├─ tests/         cross-crate acceptance tests (A1–A15)
-├─ content/       data-only game content: entities, factions, maps, rules (lands in M2)
+├─ content/       data-only game content: rules, entities, factions, maps
 ├─ docs/          ARCHITECTURE · DEBT · ASSUMPTIONS · CONTENT_GUIDE · adr/
 ├─ plan.md        the authoritative specification (v2.0)
 └─ AI-Handoff.md  live status board and resume protocol
@@ -223,8 +235,13 @@ cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300 --record demo.pdrp
 cargo run -p pandemonium-tools -- replay-verify demo.pdrp
 
-# the client binary (placeholder banner until the windowed client lands in M3)
+# validate the content bundle (prints content hash + map id, exits 0 on PASS)
+cargo run -p pandemonium-tools -- content-validate content
+
+# the windowed 3D client — on a desktop opens a window; headless runs a smoke pass
 cargo run -p pandemonium-client
+# windowed smoke: auto-exit after N frames with evidence summary
+cargo run -p pandemonium-client -- --frames 900
 ```
 
 The full verification gate — the same one CI runs:
@@ -271,17 +288,19 @@ Milestones are gates, not dates — the calendar (~26 weeks for a small human te
 is a reference, the exit criteria are the truth. Each prototype gate P1–P5 asks
 one question and refuses to move on until it is answered.
 
-| Milestone | Delivers | Exit gate |
-|---|---|---|
-| **M2** — Content pipeline | RON schemas, versioned loaders, validators, map loader, content hash, `content-validate` tool | all Alpha content loads from data; the add-a-unit scaffold proves the boundary |
-| **M3** — Engine shell | window, wgpu 2D renderer, camera, snapshot interpolation, fixed loop, input → commands, minimal HUD | a windowed build shows a live simulation; Move commands work |
-| **M4** — Movement *(P1: do multiple units move responsibly?)* | nav grid, deterministic A*, path execution, collision, stuck detection | 50 units respond within 2 ticks under spam-clicked orders; nobody is permanently stuck |
-| **M5** — Economy & production *(P3: do openings diverge?)* | resource registry, gather loop, queues, construction, population, requirements | scripted openings produce measurably different timelines |
-| **M6** — Combat & vision *(P2: is combat legible and meaningful?)* | combat pipeline, targeting, three-state fog, turrets, event cues | composition and position matter; fog integrity proven |
-| **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time |
-| **M8** — Match rules *(P5: do all systems work together?)* | victory, defeat, resignation, end screen, restart, UI depth | a 10–15 minute match versus the AI completes and restarts cleanly |
-| **M9** — Alpha content & feel | manifest tuning, feedback pass, placeholder audio | the minimum viable loop is playable end-to-end |
-| **M10** — Stabilization & declaration | full acceptance suite A1–A15, nightly soak, benchmark baselines | every criterion verified with evidence, in writing |
+| Milestone | Delivers | Exit gate | Status |
+|---|---|---|---|
+| **M0** — Skeleton & guardrails | Workspace, toolchain pin, guardrails, `fx` crate | fmt, clippy, fx property tests, architecture law | ✅ **Complete** |
+| **M1** — Simulation core | Tick pipeline, entity/capability stores, command gate, state hash, replay, determinism proofs | A1/A2 green, pinned golden hashes, replay round-trip | ✅ **Complete** |
+| **M2** — Content pipeline | RON schemas, versioned loaders, validators, map loader, content hash, `content-validate` tool | All Alpha content loads from data; add-a-unit scaffold proves the boundary | ✅ **Complete** |
+| **M3** — Engine shell | Window, wgpu 26 3D renderer, camera, snapshot interpolation, fixed loop, input → commands, HUD/debug overlay | Windowed build shows live simulation; Move commands work; `--frames` smoke pass | ✅ **Complete** |
+| **M4** — Movement *(P1: do multiple units move responsibly?)* | Nav grid, deterministic A*, path execution, collision, push-apart, stuck detection | 50 units respond within 2 ticks under spam-clicked orders; nobody permanently stuck | ✅ **Complete** |
+| **M5** — Economy & production *(P3: do openings diverge?)* | Resource ledger, gather loop (depletion + auto-seek), production queues (Train/Cancel/SetRally), construction lifecycle, population cap, requirements, footprints blocking tiles, A12 invariant checker | Scripted openings produce measurably different timelines; economy soak holds all invariants | ✅ **Complete** |
+| **M6** — Combat & vision *(P2: is combat legible and meaningful?)* | Combat pipeline, targeting, three-state fog, turrets, event cues | Composition and position matter; fog integrity proven (A10) | ⬜ **Next** |
+| **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time | ⬜ Pending |
+| **M8** — Match rules *(P5: do all systems work together?)* | Victory, defeat, resignation, end screen, restart, UI depth | 10–15 minute match versus the AI completes and restarts cleanly (A15) | ⬜ Pending |
+| **M9** — Alpha content & feel | Manifest tuning, feedback pass, placeholder audio | Minimum viable loop playable end-to-end | ⬜ Pending |
+| **M10** — Stabilization & declaration | Full acceptance suite A1–A15, nightly soak, benchmark baselines | Every criterion verified with evidence, in writing | ⬜ Pending |
 
 Beyond the Alpha, the expansion sequence is already audited against the
 architecture: new unit, new building, new map, stat rebalance, second faction —
@@ -300,8 +319,7 @@ change per commit, the green gate before every commit, and automated proof for
 any claim the code makes. Simplifications go to the debt register; guesses go to
 the assumptions log; frozen decisions change only through an ADR.
 
-Gameplay content is not accepted yet — the content pipeline is M2, and content
-is data, so the door opens when the data boundary exists. Bug reports, however,
+Gameplay content is not accepted yet — the content pipeline is **complete** (M2), but the Alpha content manifest is locked per the plan; content is data, so the door opens when the data boundary exists and the Alpha declares. Bug reports, however,
 are welcome now, and this project makes them unusually actionable: a report that
 includes the seed and the tick is a reproducible incident. Anything else is a war
 story.
