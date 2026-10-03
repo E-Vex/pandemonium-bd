@@ -298,7 +298,11 @@ impl Sim {
         //           push-apart, and stuck detection ending in MoveFailed.
         advance_movement(&mut self.world, &self.nav, &mut self.events);
 
-        // Stage 7 — Combat: resolve attacks, apply damage, mark deaths (M6).
+        // Stage 7 — Combat: resolve attacks, apply damage, fire AttackHit (M6,
+        //           plan §9.2). Damage subtracts from Health.hp; stage 8
+        //           detects the resulting deaths and removes the entities.
+        crate::combat::advance_combat(&mut self.world, &mut self.events);
+
         // Stage 8 — Death & cleanup: advance health, fire lifecycle events,
         //           remove the dead. Ids are never reused (plan §6.3.8).
         self.advance_health_and_cleanup();
@@ -428,6 +432,10 @@ impl Sim {
             .filter(|(_, def)| def.hp <= 0)
             .map(|(id, _)| *id)
             .collect();
+        // The dead list (ascending id — the health store's invariant) is what
+        // `clear_dead_targets` will match against attacker slots, so clone it
+        // before the removal loop consumes it.
+        let dead_ids = dead.clone();
         for id in dead {
             if let Some(entity) = self.world.entity_mut(id) {
                 entity.lifecycle = Lifecycle::Dead;
@@ -436,6 +444,10 @@ impl Sim {
             self.world.remove(id);
             self.events.push(Event::Died { entity: id });
         }
+        // After removal, drop any attacker target slots pointing at the dead
+        // (the dead id is never reused, so the slot would otherwise dangle
+        // forever). Ascending attacker-id order (combat.rs's contract).
+        crate::combat::clear_dead_targets(&mut self.world, &dead_ids);
         crate::production::recompute_population(
             &mut self.world,
             &self.fixture.kinds,

@@ -24,6 +24,7 @@
 )]
 #![warn(missing_docs)]
 
+mod combat;
 mod command;
 mod economy;
 mod fixture;
@@ -42,9 +43,9 @@ pub use fixture::{
 };
 pub use sim::{Sim, StepOutput};
 pub use world::{
-    BuildDef, CapabilityData, ConstructionDef, FootprintDef, GatherDef, HealthDef, Lifecycle,
-    MoveDef, Order, PopulationDef, ProduceDef, QueueItem, ResourceBodyDef, StorageDef, VisionDef,
-    World,
+    AttackDef, BuildDef, CapabilityData, ConstructionDef, FootprintDef, GatherDef, HealthDef,
+    Lifecycle, MoveDef, Order, PopulationDef, ProduceDef, QueueItem, ResourceBodyDef, StorageDef,
+    VisionDef, World,
 };
 
 /// Simulation frequency in ticks per second (FD-1: fixed-tick, render-decoupled).
