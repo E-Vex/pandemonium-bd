@@ -17,7 +17,7 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.svg">
-  <img src="assets/hero-light.svg" alt="Pandemonium theater display: on the left, scattered debris and an amber strike reticle labeled CONTACTS — UNSORTED; three dashed unit movement paths run from friendly markers to a hostile target diamond; on the right, build-order footprint outlines labeled CONTACTS — SORTED; instrument labels read seed 7, 30 ticks per second, checkpoint every 30 ticks, T+300, replay verify pass." width="100%">
+  <img src="assets/hero-light.svg" alt="Pandemonium theater display rendered in 3D: on the left, scattered debris and an amber strike reticle labeled CONTACTS — UNSORTED; in the centre, three tanks follow dashed movement paths to a hostile target diamond while an F-16-style fighter jet with a lit afterburner and vapor trails fires a missile that locks onto it (TGT LOCK); on the right, build-order footprints and a neat row of contacts labeled CONTACTS — SORTED. A tick ruler along the bottom runs to T+300 with a checkpoint every 30 ticks. Instrument labels read simulation feed live, replay verify pass, seed 7, 30 ticks per second, and Q16.16 fixed-point, no floats." width="100%">
 </picture>
 
 </div>
