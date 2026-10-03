@@ -19,7 +19,7 @@ use crate::world::{BuildDef, GatherDef, PopulationDef, ProduceDef, StorageDef, V
 /// The encoding version of the fixture hash, so an intentional change to the
 /// canonical encoding shows up as a golden-hash change in review rather than a
 /// silent collision.
-const FIXTURE_ENCODING_VERSION: u32 = 3;
+const FIXTURE_ENCODING_VERSION: u32 = 4;
 
 /// A world template: kinds as capability compositions (with their economy
 /// stats), a resource registry with starting balances, the production lists,
@@ -248,6 +248,18 @@ pub enum CapTemplate {
         /// Footprint height in tiles.
         h: u32,
     },
+    /// Immediate-hit attack (plan §9.2, M6). Authored in milli-tiles + ms; the
+    /// simulator converts them to fixed-point + ticks at load (plan §10.2).
+    Attack {
+        /// Damage per hit (integer).
+        damage: i32,
+        /// Attack range in milli-tiles (the hit-test radius).
+        range_milli_tiles: i32,
+        /// Cooldown between hits, in milliseconds.
+        cooldown_ms: u32,
+        /// Acquisition range in milli-tiles (auto-target scan radius).
+        acquire_range_milli_tiles: i32,
+    },
 }
 
 impl CapTemplate {
@@ -304,6 +316,18 @@ impl CapTemplate {
                 h.write_u8(10);
                 h.write_u32(*w);
                 h.write_u32(*height);
+            }
+            CapTemplate::Attack {
+                damage,
+                range_milli_tiles,
+                cooldown_ms,
+                acquire_range_milli_tiles,
+            } => {
+                h.write_u8(11);
+                h.write_i32(*damage);
+                h.write_i32(*range_milli_tiles);
+                h.write_u32(*cooldown_ms);
+                h.write_i32(*acquire_range_milli_tiles);
             }
         }
     }
@@ -367,6 +391,17 @@ impl CapTemplate {
                     h: (*h).max(1),
                 })
             }
+            CapTemplate::Attack {
+                damage,
+                range_milli_tiles,
+                cooldown_ms,
+                acquire_range_milli_tiles,
+            } => crate::CapabilityData::Attack(crate::world::AttackDef::new(
+                *damage,
+                Fx::from_milli((*range_milli_tiles).max(0)),
+                ms_to_ticks(*cooldown_ms, ticks_per_second),
+                Fx::from_milli((*acquire_range_milli_tiles).max(0)),
+            )),
         }
     }
 }

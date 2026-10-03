@@ -328,8 +328,8 @@ impl ContentBundle {
     /// Capability mapping: `Health`, `Move` (speed + collision radius), `Vision`,
     /// and — since M5 — the economy set flow into the world: `Gather`, `Build`,
     /// `Produce`, `Storage`, `ProvidesPopulation`, `Resource`, and `Footprint`.
-    /// `Attack` remains validated-and-carried for combat's milestone (M6 — see
-    /// docs/DEBT.md DEBT-006).
+    /// Since M6, `Attack` flows in too (DEBT-006 retired): the combat pipeline
+    /// consumes it as the immediate-hit capability (plan §9.2).
     pub fn world(&self) -> TrivialWorld {
         let kind_index: BTreeMap<&str, u32> = self
             .entities
@@ -541,8 +541,25 @@ fn capability_template(
             amount: *amount,
         }),
         defs::CapabilityDef::Footprint { w, h } => Some(CapTemplate::Footprint { w: *w, h: *h }),
-        // Attack arrives with combat (M6) — validated, carried, unmapped.
-        defs::CapabilityDef::Attack { .. } => None,
+        // Attack mapped at the seam (M6, DEBT-006 retired). The content
+        // encoder already includes Attack data in the bundle's hash
+        // (`encode_capability` writes the tag + fields), so flipping this arm
+        // does not change the content hash — only what the simulation sees.
+        // `cooldown_ticks` is precomputed by the loader (plan §10.2 ms -> ticks
+        // ceiling division); we carry the ms field for parity with the other
+        // milli-unit templates and let `to_runtime` recompute ticks itself.
+        defs::CapabilityDef::Attack {
+            damage,
+            range_milli_tiles,
+            cooldown_ms,
+            cooldown_ticks: _,
+            acquire_range_milli_tiles,
+        } => Some(CapTemplate::Attack {
+            damage: *damage,
+            range_milli_tiles: *range_milli_tiles,
+            cooldown_ms: *cooldown_ms,
+            acquire_range_milli_tiles: *acquire_range_milli_tiles,
+        }),
     }
 }
 

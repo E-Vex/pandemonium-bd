@@ -23,8 +23,11 @@ use crate::world::{CapabilityData, Order, World};
 /// v2 added the M4 movement fields (Move radius, remaining waypoints, stuck
 /// counters). v3 adds the M5 economy state: the Gather/Build/Produce/Storage/
 /// ProvidesPopulation/Resource/Footprint/Construction capability blocks, the
-/// `GatherAt`/`BuildAt` orders, and the `UnderConstruction` lifecycle.
-pub(crate) const STATE_ENCODING_VERSION: u32 = 3;
+/// `GatherAt`/`BuildAt` orders, and the `UnderConstruction` lifecycle. v4
+/// adds the M6 combat state: the `Attack` capability block (damage, range,
+/// cooldown_ticks, cooldown_remaining, acquire_range, target) and the
+/// `AttackUnit` order.
+pub(crate) const STATE_ENCODING_VERSION: u32 = 4;
 
 /// Encodes the whole state into the hasher, in canonical order.
 pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u64) -> u64 {
@@ -133,6 +136,20 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
             h.write_u32(def.progress_ticks);
             h.write_u32(def.total_ticks);
         }
+        if let Some(CapabilityData::Attack(def)) = capability_of(world, entity.id, mask, 11) {
+            h.write_i32(def.damage);
+            h.write_i32(def.range.raw());
+            h.write_u32(def.cooldown_ticks);
+            h.write_u32(def.cooldown_remaining);
+            h.write_i32(def.acquire_range.raw());
+            match def.target {
+                None => h.write_u8(0),
+                Some(target) => {
+                    h.write_u8(1);
+                    h.write_u64(target.0);
+                }
+            }
+        }
     }
 
     // Players, ascending by slot.
@@ -168,6 +185,10 @@ fn encode_order(h: &mut Fnv1a64, order: &Order) {
             h.write_u8(3);
             h.write_u64(site.0);
         }
+        Order::AttackUnit { target } => {
+            h.write_u8(4);
+            h.write_u64(target.0);
+        }
     }
 }
 
@@ -189,7 +210,7 @@ fn controller_tag(player: &crate::world::PlayerState) -> u8 {
 /// Presence bitmask over the fixed capability order: bit 0 Health, bit 1 Move,
 /// bit 2 Vision, bit 3 Gather, bit 4 Build, bit 5 Produce, bit 6 Storage,
 /// bit 7 ProvidesPopulation, bit 8 Resource, bit 9 Footprint, bit 10
-/// Construction.
+/// Construction, bit 11 Attack.
 fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u16 {
     let mut mask = 0u16;
     if world.health_of(id).is_some() {
@@ -224,6 +245,9 @@ fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u16 {
     }
     if world.construction_of(id).is_some() {
         mask |= 1 << 10;
+    }
+    if world.attack_of(id).is_some() {
+        mask |= 1 << 11;
     }
     mask
 }
@@ -263,9 +287,10 @@ fn capability_of(
         9 => world
             .footprint_of(id)
             .map(|def| CapabilityData::Footprint(*def)),
-        _ => world
+        10 => world
             .construction_of(id)
             .map(|def| CapabilityData::Construction(*def)),
+        _ => world.attack_of(id).map(|def| CapabilityData::Attack(*def)),
     }
 }
 

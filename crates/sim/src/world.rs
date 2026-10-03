@@ -21,7 +21,8 @@ use pandemonium_sim_api::{
 /// `Health`, `Move`, `Vision`; M5 adds the economy vocabulary (plan §7.4,
 /// §9.3, §9.4): `Gather`, `Build`, `Produce`, `Storage`, `ProvidesPopulation`,
 /// `Resource`, `Footprint`, plus the sim-internal `Construction` runtime block
-/// a site carries until it completes. Attack arrives with combat (M6).
+/// a site carries until it completes. M6 adds `Attack` (plan §9.2) with its
+/// per-attacker runtime cooldown + target slot.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CapabilityData {
     /// Hit points and regeneration.
@@ -47,6 +48,8 @@ pub enum CapabilityData {
     /// Construction-site runtime state (never authored in content — the Build
     /// command injects it; completion removes it).
     Construction(ConstructionDef),
+    /// Immediate-hit attack with a per-attacker cooldown (plan §9.2, M6).
+    Attack(AttackDef),
 }
 
 /// Health capability: current hp plus its parameters. Regeneration advances every
@@ -258,10 +261,88 @@ pub struct ConstructionDef {
     pub total_ticks: u32,
 }
 
+/// Attack capability in runtime units (plan §9.2, M6). Carries the data
+/// parameters that define an attacker's stat block plus the per-attacker
+/// runtime cooldown + current target slot the combat pipeline maintains.
+/// "Immediate-hit" means damage applies the tick the cooldown allows and the
+/// target is in range; no projectile entity is spawned — the tracer is a
+/// presentation-only cue drawn from the `AttackHit` event.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AttackDef {
+    /// Integer damage applied per hit (subtracted from the target's Health
+    /// `hp` field; values are i32 so a future negative-damage heal keeps the
+    /// same shape — Alpha damage is non-negative).
+    pub damage: i32,
+    /// Attack range in fixed-point tile units (a hit requires the target's
+    /// center within `range` of the attacker's center — squared-distance
+    /// compare, no roots, plan §5.8).
+    pub range: Fx,
+    /// Cooldown between hits, in whole ticks. `cooldown_remaining = 0` means
+    /// the attacker is ready this tick.
+    pub cooldown_ticks: u32,
+    /// Cooldown countdown: ticks until the next hit is allowed. Decremented
+    /// every tick the attacker is alive; reset to `cooldown_ticks` on a hit.
+    pub cooldown_remaining: u32,
+    /// Acquisition range in fixed-point tile units. When the attacker has no
+    /// commanded target, the combat pipeline scans within this radius for a
+    /// legal target (priority: units-attacking-friendly > other units >
+    /// structures — plan §9.2).
+    pub acquire_range: Fx,
+    /// The current acquired target, if any. `None` means the attacker is
+    /// idle (no commanded target, no auto-acquired target in range).
+    /// Stored here rather than as an `Order` so the cooldown + acquisition
+    /// state stays with the capability that owns it.
+    pub target: Option<EntityId>,
+}
+
+impl AttackDef {
+    /// Builds the runtime attack block from authoring units. Cooldowns start
+    /// ready (the attacker can hit on the tick it acquires a target).
+    pub fn new(damage: i32, range: Fx, cooldown_ticks: u32, acquire_range: Fx) -> Self {
+        Self {
+            damage: damage.max(0),
+            range: if range.raw() < 0 { Fx::ZERO } else { range },
+            cooldown_ticks,
+            cooldown_remaining: 0,
+            acquire_range: if acquire_range.raw() < 0 {
+                Fx::ZERO
+            } else {
+                acquire_range
+            },
+            target: None,
+        }
+    }
+
+    /// True when the attacker is ready to hit this tick.
+    pub fn ready(&self) -> bool {
+        self.cooldown_remaining == 0
+    }
+
+    /// Resets the cooldown after a hit.
+    pub fn consume(&mut self) {
+        self.cooldown_remaining = self.cooldown_ticks;
+    }
+
+    /// Decrements the cooldown by one tick (floor at zero). Called every tick
+    /// the attacker is alive.
+    pub fn tick_cooldown(&mut self) {
+        if self.cooldown_remaining > 0 {
+            self.cooldown_remaining -= 1;
+        }
+    }
+
+    /// Clears runtime state — a Stop command or a target's death uses this so
+    /// the attacker's cooldown is preserved but its target slot is freed.
+    pub fn clear_target(&mut self) {
+        self.target = None;
+    }
+}
+
 /// An order in an entity's queue (plan §6.3 stage 2: the order queue resolves into
 /// system intents). M1's order vocabulary is movement-only; M5 adds the economy
 /// intents (plan §9.3/§9.4): a worker gathers from a node or raises a site.
-/// Combat intents extend this enum with M6.
+/// M6 adds `AttackUnit` — a commanded attack on a specific entity, which the
+/// combat pipeline consumes alongside the per-attacker `target` slot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Order {
     /// Advance to a position.
@@ -281,6 +362,13 @@ pub enum Order {
     BuildAt {
         /// The site entity.
         site: EntityId,
+    },
+    /// Attack a specific entity (plan §9.2, M6). The attacker approaches if
+    /// out of range (chase via MoveTo), then hits when in range and off
+    /// cooldown. Popped when the target dies or the order is replaced.
+    AttackUnit {
+        /// The entity to attack.
+        target: EntityId,
     },
 }
 
@@ -454,6 +542,8 @@ pub struct World {
     pub footprints: Vec<(EntityId, FootprintDef)>,
     /// Construction runtime store, ascending by id (M5).
     pub construction: Vec<(EntityId, ConstructionDef)>,
+    /// Attack capability store, ascending by id (M6).
+    pub attack: Vec<(EntityId, AttackDef)>,
     /// Player states, ascending by slot.
     pub players: Vec<PlayerState>,
     /// How many kind templates the loaded fixture defines — the ceiling for valid
@@ -622,6 +712,27 @@ impl World {
         }
     }
 
+    /// Attack data for an entity (M6).
+    pub fn attack_of(&self, id: EntityId) -> Option<&AttackDef> {
+        self.attack
+            .binary_search_by_key(&id, |(eid, _)| *eid)
+            .ok()
+            .map(|i| &self.attack[i].1)
+    }
+
+    /// Mutable attack data for an entity (M6).
+    pub fn attack_of_mut(&mut self, id: EntityId) -> Option<&mut AttackDef> {
+        match self.attack.binary_search_by_key(&id, |(eid, _)| *eid) {
+            Ok(i) => Some(&mut self.attack[i].1),
+            Err(_) => None,
+        }
+    }
+
+    /// True when the entity carries the Attack capability (M6).
+    pub fn has_attack(&self, id: EntityId) -> bool {
+        self.attack_of(id).is_some()
+    }
+
     /// True when the entity carries the given capability.
     pub fn has_move(&self, id: EntityId) -> bool {
         self.move_of(id).is_some()
@@ -686,6 +797,7 @@ impl World {
                 CapabilityData::Resource(def) => self.resources.push((id, def)),
                 CapabilityData::Footprint(def) => self.footprints.push((id, def)),
                 CapabilityData::Construction(def) => self.construction.push((id, def)),
+                CapabilityData::Attack(def) => self.attack.push((id, def)),
             }
         }
     }
@@ -733,6 +845,9 @@ impl World {
         }
         if let Ok(i) = self.construction.binary_search_by_key(&id, |(eid, _)| *eid) {
             self.construction.remove(i);
+        }
+        if let Ok(i) = self.attack.binary_search_by_key(&id, |(eid, _)| *eid) {
+            self.attack.remove(i);
         }
     }
 }

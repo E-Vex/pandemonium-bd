@@ -44,6 +44,7 @@ pub(crate) fn check(world: &World, content: &TrivialWorld, nav: &NavGrid, next_e
         ("resources", store_ids(&world.resources)),
         ("footprints", store_ids(&world.footprints)),
         ("construction", store_ids(&world.construction)),
+        ("attack", store_ids(&world.attack)),
     ] {
         let (_, ids) = store;
         debug_assert!(

@@ -56,12 +56,15 @@ pub(crate) fn advance_movement(world: &mut World, nav: &NavGrid, events: &mut Ve
 }
 
 /// The movement destination of an entity's head order (plan §6.3 stage 2's
-/// resolution into intents): `MoveTo` carries its target inline; economy
+/// resolution into intents): `MoveTo` carries its target inline;
+/// `AttackUnit` resolves to the target's current position (chase — the path
+/// rebuilds when it completes, so a fleeing target is followed); economy
 /// orders resolve theirs from world state through the economy system's
 /// travel-target helpers (stage 4 keeps the phases current).
 fn movement_target(world: &World, id: EntityId) -> Option<Vec2Fx> {
     match world.entity(id)?.orders.first()? {
         Order::MoveTo { target } => Some(*target),
+        Order::AttackUnit { target } => world.entity(*target).map(|t| t.pos),
         Order::GatherAt { .. } | Order::BuildAt { .. } => crate::economy::travel_target(world, id),
     }
 }
@@ -178,14 +181,18 @@ fn consume_waypoint(world: &mut World, id: EntityId) {
         def.path.is_empty()
     };
     if completed {
-        let is_move_to = world
+        let pop_head = world
             .entity(id)
             .is_some_and(|entity| matches!(entity.orders.first(), Some(Order::MoveTo { .. })));
-        if is_move_to {
+        if pop_head {
             if let Some(entity) = world.entity_mut(id) {
                 entity.orders.remove(0);
             }
         }
+        // `AttackUnit` orders do NOT pop on path completion — the combat
+        // pipeline pops them when the target dies (the chase keeps the path
+        // rebuilding toward the target's current position). Economy orders
+        // are popped by their own systems, not here.
         if let Some(def) = world.move_of_mut(id) {
             def.reset_runtime();
         }
@@ -329,7 +336,10 @@ fn detect_stuck(
             let crowd_radius = def.radius + Fx::from_milli(CROWD_ARRIVE_MILLI);
             let crowd_target = match entity.orders[0] {
                 Order::MoveTo { target } => Some(target),
-                Order::GatherAt { .. } | Order::BuildAt { .. } => None,
+                // AttackUnit resolves its target through movement_target on the
+                // next path request; combat owns the close-range resolution, so
+                // crowded arrival never pops it (the attacker keeps chasing).
+                Order::AttackUnit { .. } | Order::GatherAt { .. } | Order::BuildAt { .. } => None,
             };
             if crowd_target.is_some_and(|target| Vec2Fx::dist(entity.pos, target) <= crowd_radius) {
                 if let Some(entity) = world.entity_mut(*id) {

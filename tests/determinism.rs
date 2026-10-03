@@ -493,14 +493,13 @@ fn a1_golden_hashes_are_pinned() {
     let script = acceptance_script();
     let run = run_match(&world, &setup, &script, TICKS);
 
-    // Regenerated for M5 (state encoding v3: the economy capability blocks,
-    // GatherAt/BuildAt orders, UnderConstruction lifecycle; fixture encoding
-    // v3: buildability + production lists + base cap + kind economy) — see
-    // docs/ASSUMPTIONS.md A-050.
+    // Regenerated for M6 (state encoding v4: the Attack capability block +
+    // AttackUnit order; fixture encoding v4: Attack CapTemplate) — see
+    // docs/ASSUMPTIONS.md A-056.
     let golden: &[(u32, u64)] = &[
-        (0, 0x4a01766aec30e255),
-        (30, 0xf051d7ec374d8c30),
-        (60, 0x75d4c17965f26efb),
+        (0, 0x20EB18080A514366),
+        (30, 0x09149ED9FC29C507),
+        (60, 0x9719C3BDD713159E),
     ];
     assert_eq!(run.checkpoints.len(), 4, "tick 0 + 30 + 60 + final 65");
     for (want_tick, want_hash) in golden {
@@ -511,7 +510,7 @@ fn a1_golden_hashes_are_pinned() {
             .unwrap_or_else(|| panic!("missing checkpoint at tick {want_tick}"));
         assert_eq!(found.hash, *want_hash, "golden hash at tick {want_tick}");
     }
-    assert_eq!(run.final_hash, 0x675d60c8e466bc31);
+    assert_eq!(run.final_hash, 0xAA8857A41E6B757E);
     assert_eq!(run.next_entity_id, 9);
 }
 

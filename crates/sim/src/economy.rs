@@ -257,10 +257,14 @@ fn remove_depleted_nodes(world: &mut World, nav: &mut NavGrid, events: &mut Vec<
 /// The travel target of an economy order for stage 6: `Some` position to walk
 /// toward, `None` when the worker is where it should be (or is waiting).
 /// `MoveTo` is not an economy order — movement owns its targeting.
+/// `AttackUnit` is a combat order — its chase target is resolved by the
+/// movement system through `movement_target` (the target's current position);
+/// this function returns `None` for it so the economy system does not feed a
+/// conflicting travel target into the mover.
 pub(crate) fn travel_target(world: &World, id: EntityId) -> Option<Vec2Fx> {
     let entity = world.entity(id)?;
     match entity.orders.first()? {
-        Order::MoveTo { .. } => None,
+        Order::MoveTo { .. } | Order::AttackUnit { .. } => None,
         Order::GatherAt { node } => gather_travel_target(world, id, *node),
         Order::BuildAt { site } => build_travel_target(world, id, *site),
     }
