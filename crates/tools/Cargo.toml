@@ -12,6 +12,10 @@ pandemonium-sim-api = { path = "../sim_api" }
 pandemonium-content = { path = "../content" }
 pandemonium-ai = { path = "../ai" }
 pandemonium-replay = { path = "../replay" }
+# A-003 amendment (A-063): the headless AI-vs-AI runner (plan §12) hosts
+# controllers through the same engine-owned hosting the client will use (M8) —
+# one implementation, not a second copy of the hosting loop.
+pandemonium-engine = { path = "../engine" }
 # Plan §3.2 allows clap for the tools CLI and anyhow for binary error handling.
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

@@ -1429,6 +1429,7 @@ dependencies = [
  "clap",
  "pandemonium-ai",
  "pandemonium-content",
+ "pandemonium-engine",
  "pandemonium-fx",
  "pandemonium-replay",
  "pandemonium-sim",

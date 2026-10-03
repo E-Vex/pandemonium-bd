@@ -3,18 +3,22 @@
 //! trivial-world match that prints its final hash) and `replay-verify`
 //! (re-simulation with checkpoint comparison — acceptance A2). M2 adds
 //! `content-validate` (strict validation of a content directory, plan §14).
-//! The remaining subcommands arrive with their milestones (the AI runners in
-//! M7, soak in nightly CI, bench in M10).
+//! M7 makes `headless` drive real content with AI controllers (`--p1 ai --p2
+//! ai`, plan §12's own shape) and teaches `replay-verify` to resolve either
+//! world by content identity. The remaining subcommands arrive with their
+//! milestones (soak in nightly CI, bench in M10).
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
 
+mod ai_match;
 mod demo;
 mod validate_content;
 mod verify;
 
+use ai_match::{load_content, resolve_replay_world, run_ai_match, Slot};
 use demo::record_replay;
 use validate_content::validate_content;
 use verify::{verify_replay, Verification};
@@ -32,7 +36,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the scripted trivial-world match headlessly; print checkpoint hashes.
+    /// Run a headless match and print its checkpoint hashes.
     Headless {
         /// The match seed (plan §6.5: a match is seed + content + command log).
         #[arg(long, default_value_t = 7)]
@@ -43,11 +47,23 @@ enum Command {
         /// Also write a replay file for `replay-verify`.
         #[arg(long)]
         record: Option<PathBuf>,
+        /// What drives the first map start's slot (plan §12: `--p1 ai`).
+        #[arg(long, default_value = "demo")]
+        p1: Slot,
+        /// What drives the second map start's slot (plan §12: `--p2 ai`).
+        #[arg(long, default_value = "demo")]
+        p2: Slot,
+        /// The content directory AI matches load (ignored by the demo).
+        #[arg(long, default_value = "content")]
+        content: PathBuf,
     },
     /// Re-simulate a replay file and compare every checkpoint hash (A2).
     ReplayVerify {
         /// The replay file to verify.
         file: PathBuf,
+        /// The content directory candidate for world resolution.
+        #[arg(long, default_value = "content")]
+        content: PathBuf,
     },
     /// Validate a content directory (strict mode) and print its identity (M2).
     ContentValidate {
@@ -64,39 +80,95 @@ fn main() -> anyhow::Result<()> {
             seed,
             ticks,
             record,
-        } => {
-            let replay = record_replay(seed, ticks);
-            println!("pandemonium headless — scripted trivial-world match");
-            println!("  seed:        {}", replay.seed);
-            println!("  ticks:       {ticks}");
-            println!("  content:     {:#018x}", replay.content_hash);
-            println!("  map id:      {}", replay.map_id);
-            println!(
-                "  commands:    {} (rejections included, all deterministic)",
-                replay.commands.len()
-            );
-            println!("  checkpoints:");
-            for cp in &replay.checkpoints {
-                println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
-            }
-            println!("  final hash:  {:#018x}", replay.final_hash);
-            if let Some(path) = record {
-                let bytes = replay.encode();
-                std::fs::write(&path, &bytes)
-                    .with_context(|| format!("writing replay to {}", path.display()))?;
+            p1,
+            p2,
+            content,
+        } => match (p1, p2) {
+            (Slot::Demo, Slot::Demo) => {
+                // The M1 scripted demo over the trivial world — unchanged,
+                // including its pinned final hash.
+                let replay = record_replay(seed, ticks);
+                println!("pandemonium headless — scripted trivial-world match");
+                println!("  seed:        {}", replay.seed);
+                println!("  ticks:       {ticks}");
+                println!("  content:     {:#018x}", replay.content_hash);
+                println!("  map id:      {}", replay.map_id);
                 println!(
-                    "  replay file: {} ({} bytes, checksummed)",
-                    path.display(),
-                    bytes.len()
+                    "  commands:    {} (rejections included, all deterministic)",
+                    replay.commands.len()
                 );
+                println!("  checkpoints:");
+                for cp in &replay.checkpoints {
+                    println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
+                }
+                println!("  final hash:  {:#018x}", replay.final_hash);
+                if let Some(path) = record {
+                    let bytes = replay.encode();
+                    std::fs::write(&path, &bytes)
+                        .with_context(|| format!("writing replay to {}", path.display()))?;
+                    println!(
+                        "  replay file: {} ({} bytes, checksummed)",
+                        path.display(),
+                        bytes.len()
+                    );
+                }
             }
-        }
-        Command::ReplayVerify { file } => {
+            (p1, p2) => {
+                if p1 == Slot::Demo || p2 == Slot::Demo {
+                    bail!("`demo` mixes with nothing: choose it for both slots or neither");
+                }
+                let bundle = load_content(&content)?;
+                let slot_name = |slot: Slot| match slot {
+                    Slot::Ai => "ai",
+                    Slot::Idle => "idle",
+                    Slot::Demo => "demo",
+                };
+                let match_result = run_ai_match(&bundle, seed, ticks, p1, p2)?;
+                println!("pandemonium headless — controller-driven match");
+                println!("  seed:        {}", seed);
+                println!("  ticks:       {ticks}");
+                println!("  slots:       {} vs {}", slot_name(p1), slot_name(p2));
+                println!("  content:     {:#018x}", match_result.replay.content_hash);
+                println!("  map id:      {}", match_result.replay.map_id);
+                println!(
+                    "  commands:    {} (rejections included, all deterministic)",
+                    match_result.replay.commands.len()
+                );
+                let summary = &match_result.summary;
+                for (index, player) in match_result.replay.player_setup.iter().enumerate() {
+                    println!(
+                        "  player {}:    deliveries {}, trained {}, built {}, hits {}, deaths {}",
+                        player.player.0,
+                        summary.delivered.get(index).copied().unwrap_or(0),
+                        summary.trained.get(index).copied().unwrap_or(0),
+                        summary.built.get(index).copied().unwrap_or(0),
+                        summary.attack_hits.get(index).copied().unwrap_or(0),
+                        summary.deaths.get(index).copied().unwrap_or(0),
+                    );
+                }
+                println!("  checkpoints:");
+                for cp in &match_result.replay.checkpoints {
+                    println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
+                }
+                println!("  final hash:  {:#018x}", match_result.replay.final_hash);
+                if let Some(path) = record {
+                    let bytes = match_result.replay.encode();
+                    std::fs::write(&path, &bytes)
+                        .with_context(|| format!("writing replay to {}", path.display()))?;
+                    println!(
+                        "  replay file: {} ({} bytes, checksummed)",
+                        path.display(),
+                        bytes.len()
+                    );
+                }
+            }
+        },
+        Command::ReplayVerify { file, content } => {
             let bytes = std::fs::read(&file)
                 .with_context(|| format!("reading replay {}", file.display()))?;
             let replay = pandemonium_replay::ReplayFile::decode(&bytes)
                 .with_context(|| format!("decoding replay {}", file.display()))?;
-            let world = demo::demo_world();
+            let world = resolve_replay_world(&content, &replay)?;
             match verify_replay(&world, &replay)? {
                 Verification::Passed {
                     checkpoints,
