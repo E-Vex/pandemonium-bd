@@ -162,6 +162,35 @@ pub(crate) fn check(world: &World, content: &TrivialWorld, nav: &NavGrid, next_e
             );
         }
     }
+
+    // --- Combat invariants (M6). -------------------------------------------
+    // Cooldowns: cooldown_remaining <= cooldown_ticks (never negative; the
+    // tick_cooldown floor + consume reset keep it bounded). An attacker's
+    // target slot must point at a live entity (stage 8's clear_dead_targets
+    // drops slots pointing at the dead — a stale slot would never resolve
+    // since ids are never reused). Targeting your own entity is forbidden
+    // at the gate (InvalidTarget), so the runtime slot can never hold a
+    // friendly id either.
+    for (id, def) in &world.attack {
+        debug_assert!(
+            def.cooldown_remaining <= def.cooldown_ticks,
+            "A12 combat: attacker {id:?} cooldown_remaining {} exceeds cooldown_ticks {}",
+            def.cooldown_remaining,
+            def.cooldown_ticks
+        );
+        if let Some(target) = def.target {
+            debug_assert!(
+                world.entity(target).is_some(),
+                "A12 combat: attacker {id:?} targets dead/absent {target:?}"
+            );
+            if let (Some(attacker), Some(target_e)) = (world.entity(*id), world.entity(target)) {
+                debug_assert!(
+                    attacker.owner != target_e.owner,
+                    "A12 combat: attacker {id:?} targets own entity {target:?}"
+                );
+            }
+        }
+    }
 }
 
 /// The entity store's ids.

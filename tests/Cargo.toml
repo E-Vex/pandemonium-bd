@@ -35,3 +35,11 @@ path = "movement.rs"
 [[test]]
 name = "economy"
 path = "economy.rs"
+
+[[test]]
+name = "combat"
+path = "combat.rs"
+
+[[test]]
+name = "vision"
+path = "vision.rs"
