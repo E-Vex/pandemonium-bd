@@ -107,6 +107,7 @@ fn allowed_internal() -> BTreeMap<&'static str, &'static [&'static str]> {
             "pandemonium-content",
             "pandemonium-ai",
             "pandemonium-replay",
+            "pandemonium-engine",
         ][..],
     );
     m
