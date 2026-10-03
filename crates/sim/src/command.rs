@@ -14,8 +14,9 @@
 //! The economy checks read the world *and* the loaded content (kind costs,
 //! production lists, requirements) through the fixture handed in by
 //! [`crate::Sim::step`]. The placement command (Build) arrives with the
-//! construction system (the M5 construction commit); `Attack` remains refused
-//! as missing capability until combat lands (M6).
+//! construction system (the M5 construction commit); Attack/AttackMove arrive
+//! with the combat pipeline (M6 — the gate checks the Attack capability per
+//! unit and the target's visibility per issuer).
 
 use pandemonium_sim_api::{
     Command, CommandKind, EntityId, Event, KindId, PlayerId, Reject, RejectReason, TilePos, Vec2Fx,
@@ -91,9 +92,8 @@ fn validate(
     cmd: &Command,
 ) -> Result<(), RejectReason> {
     match &cmd.kind {
-        CommandKind::Move { units, .. } | CommandKind::AttackMove { units, .. } => {
-            // AttackMove will additionally require Attack when combat lands (M6);
-            // the movement leg it exercises today is Move.
+        CommandKind::Move { units, .. } => {
+            // Move requires only the Move capability — pure locomotion.
             check_units(world, cmd.issuer, units, |id| {
                 if world.has_move(id) {
                     Ok(())
@@ -103,18 +103,51 @@ fn validate(
             })?;
             Ok(())
         }
+        CommandKind::AttackMove { units, .. } => {
+            // AttackMove requires both Move (for the movement leg) and Attack
+            // (for engaging enemies en route — plan §9.2, M6). Units without
+            // Attack can still be ordered to Move; AttackMove is the stricter
+            // command. A unit with Attack but no Move (e.g. the Turret) is
+            // refused here — it cannot move to the destination. The turret
+            // can still receive an Attack command on a specific target.
+            check_units(world, cmd.issuer, units, |id| {
+                if !world.has_move(id) {
+                    return Err(RejectReason::MissingCapability);
+                }
+                if !world.has_attack(id) {
+                    return Err(RejectReason::MissingCapability);
+                }
+                Ok(())
+            })?;
+            Ok(())
+        }
         CommandKind::Stop { units } => {
             // Stopping is always legal for owned entities: an entity with no
-            // orders (or no mover) is already stopped — a valid no-op.
+            // orders (or no mover) is already stopped — a valid no-op. Stop
+            // also clears any Attack target slot (combat.rs's clear_dead_targets
+            // drops dead targets; Stop drops live ones the player wants gone).
             check_units(world, cmd.issuer, units, |_| Ok(()))?;
             Ok(())
         }
         CommandKind::Attack { units, target } => {
-            check_units_exist_and_owned(world, cmd.issuer, units)?;
-            // The Attack capability variant arrives with combat (M6). Until the
-            // vocabulary can carry it, no entity can satisfy an Attack order.
-            check_capability_present()?;
+            // Attack requires the Attack capability per unit (plan §9.2, M6).
+            // The target must exist and be visible to the issuer (FD-8: fog
+            // never alters the simulation — hidden targets are rejected at
+            // the gate, never quietly attacked).
+            check_units(world, cmd.issuer, units, |id| {
+                if world.has_attack(id) {
+                    Ok(())
+                } else {
+                    Err(RejectReason::MissingCapability)
+                }
+            })?;
             check_target(world, cmd.issuer, *target)?;
+            // Cannot attack your own entity (the gate's NotVisible check would
+            // already pass for own entities, since friendlies are always
+            // visible — so an explicit ownership check is the right gate here).
+            if world.entity(*target).is_some_and(|t| t.owner == cmd.issuer) {
+                return Err(RejectReason::InvalidTarget);
+            }
             Ok(())
         }
         CommandKind::Gather { units, node } => {
@@ -209,7 +242,7 @@ fn apply_valid(
     events: &mut Vec<Event>,
 ) {
     match &cmd.kind {
-        CommandKind::Move { units, target } | CommandKind::AttackMove { units, target } => {
+        CommandKind::Move { units, target } => {
             for id in sorted_unique(units) {
                 if let Some(entity) = world.entity_mut(id) {
                     if cmd.queue {
@@ -225,6 +258,24 @@ fn apply_valid(
                 }
             }
         }
+        CommandKind::AttackMove { units, target } => {
+            // AttackMove pushes a MoveTo order (the engage-en-route semantics
+            // are M6's combat work — the combat pipeline's auto-acquisition
+            // will engage enemies within acquire_range as the unit moves).
+            // A replacing order resets the runtime path like Move does.
+            for id in sorted_unique(units) {
+                if let Some(entity) = world.entity_mut(id) {
+                    if cmd.queue {
+                        entity.orders.push(Order::MoveTo { target: *target });
+                    } else {
+                        entity.orders = vec![Order::MoveTo { target: *target }];
+                        if let Some(def) = world.move_of_mut(id) {
+                            def.reset_runtime();
+                        }
+                    }
+                }
+            }
+        }
         CommandKind::Stop { units } => {
             for id in sorted_unique(units) {
                 if let Some(entity) = world.entity_mut(id) {
@@ -232,6 +283,29 @@ fn apply_valid(
                 }
                 if let Some(def) = world.move_of_mut(id) {
                     def.reset_runtime();
+                }
+                // Clear the Attack target slot too — Stop means "stand down".
+                if let Some(def) = world.attack_of_mut(id) {
+                    def.clear_target();
+                }
+            }
+        }
+        CommandKind::Attack { units, target } => {
+            for id in sorted_unique(units) {
+                if let Some(entity) = world.entity_mut(id) {
+                    if cmd.queue {
+                        entity.orders.push(Order::AttackUnit { target: *target });
+                    } else {
+                        entity.orders = vec![Order::AttackUnit { target: *target }];
+                        if let Some(def) = world.move_of_mut(id) {
+                            def.reset_runtime();
+                        }
+                    }
+                }
+                // Set the Attack capability's target slot immediately so the
+                // combat pipeline (stage 7, this same tick) can hit if in range.
+                if let Some(def) = world.attack_of_mut(id) {
+                    def.target = Some(*target);
                 }
             }
         }
@@ -287,13 +361,6 @@ fn apply_valid(
                 player.resigned = true;
             }
         }
-        // Reaching these arms means validation passed a command whose capability
-        // does not exist yet — a logic error in the gate, not a state to paper
-        // over. The exhaustive match makes the compiler demand an arm when a
-        // future capability variant is added (plan §8.3).
-        CommandKind::Attack { .. } => {
-            unreachable!("validated command {cmd:?} reached apply without a handler")
-        }
     }
 }
 
@@ -338,13 +405,6 @@ fn check_single_entity(world: &World, issuer: PlayerId, id: EntityId) -> Result<
         Some(entity) if entity.owner != issuer => Err(RejectReason::NotOwnedByIssuer),
         Some(_) => Ok(()),
     }
-}
-
-/// Placeholder capability check for capabilities that do not exist yet in the
-/// vocabulary: no entity can carry them, so the command is refused as missing
-/// capability. Replaced by a store lookup when the variant lands (M6).
-fn check_capability_present() -> Result<(), RejectReason> {
-    Err(RejectReason::MissingCapability)
 }
 
 /// A producer must carry the Produce capability and be a completed structure
