@@ -823,6 +823,47 @@ fn add_a_unit_is_data_only() {
         "the skirmisher never trained in {ticks} ticks"
     );
 
+    // 4c. DEBT-007's M6 half: the data-defined kind FIGHTS. The trained
+    //     skirmisher (kind 6, Attack damage 5 / range 3500 / cd 700ms /
+    //     acquire 6000) auto-acquires enemies within its acquire_range and
+    //     fires AttackHit. The starting skirmisher (player 0's starting
+    //     force, also kind 6) is already on the field and engages player
+    //     1's starting forces when they wander into range. We run the
+    //     simulation until an AttackHit fires from any kind-6 entity —
+    //     proving the data-defined kind fights with zero changes under
+    //     crates/sim.
+    //
+    //     (A commanded Attack on player 1's CC is rejected as NotVisible —
+    //     the CC is across the map, outside the starting vision radius.
+    //     The auto-acquisition path is the honest test: the data-defined
+    //     kind's Attack capability works through the same combat pipeline
+    //     every other attacker uses.)
+    let mut skirmisher_fired = false;
+    let mut fight_ticks = 0u32;
+    while fight_ticks < 2400 {
+        let out = sim.step(&[]);
+        fight_ticks += 1;
+        // Look for an AttackHit where the attacker is a kind-6 entity.
+        let snapshot = sim.snapshot();
+        for event in &out.events {
+            if let Event::AttackHit { attacker, .. } = event {
+                if snapshot.entities.iter().any(|entity| {
+                    entity.id == *attacker && entity.kind == pandemonium_sim_api::KindId(6)
+                }) {
+                    skirmisher_fired = true;
+                    break;
+                }
+            }
+        }
+        if skirmisher_fired {
+            break;
+        }
+    }
+    assert!(
+        skirmisher_fired,
+        "the data-defined skirmisher (kind 6) must fire an AttackHit through auto-acquisition (DEBT-007 fight half) in {fight_ticks} ticks"
+    );
+
     // 5. The simulation sources contain zero knowledge of the new kind —
     //    nothing under crates/sim/ mentions it (no special-casing, FD-4).
     let sim_dir = repo_content().parent().unwrap().join("crates").join("sim");
