@@ -1414,11 +1414,14 @@ dependencies = [
 name = "pandemonium-tests"
 version = "0.1.0"
 dependencies = [
+ "pandemonium-ai",
  "pandemonium-content",
+ "pandemonium-engine",
  "pandemonium-fx",
  "pandemonium-replay",
  "pandemonium-sim",
  "pandemonium-sim-api",
+ "proptest",
 ]
 
 [[package]]

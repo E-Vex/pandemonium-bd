@@ -16,6 +16,16 @@ pandemonium-sim = { path = "../crates/sim" }
 pandemonium-sim-api = { path = "../crates/sim_api" }
 pandemonium-replay = { path = "../crates/replay" }
 pandemonium-content = { path = "../crates/content" }
+# The AI acceptance suite (M7) drives controller-hosted matches through the
+# engine's hosting loop — the same one the tools use (A-063).
+pandemonium-engine = { path = "../crates/engine" }
+pandemonium-ai = { path = "../crates/ai" }
+
+[dev-dependencies]
+# A11's command-parity fuzz (plan §13: "Property test: same command from
+# 'player' and 'AI' issuer produces same outcome"). Allowed for this package
+# by the external allow-list; test-only, never ships.
+proptest = "1"
 
 [[test]]
 name = "architecture_law"
@@ -43,3 +53,7 @@ path = "combat.rs"
 [[test]]
 name = "vision"
 path = "vision.rs"
+
+[[test]]
+name = "ai"
+path = "ai.rs"
