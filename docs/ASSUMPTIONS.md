@@ -372,3 +372,35 @@ confirms or rejects it.
   `encode_capability` already covered Attack data, so the seam flip from
   DEBT-006's `None` to `Some(CapTemplate::Attack)` is invisible to the bundle
   identity by construction. Review-visible value changes, not silent ones.
+
+- **A-057 (§9.2, M6).** Combat acquisition's tie-break: when two candidate
+  targets are at the same squared distance from the attacker, the lower
+  `EntityId` wins. The acquisition scan walks candidates ascending id and
+  keeps the first at each distance bucket (`update_best` uses `<=` so a
+  same-distance later candidate loses), so the ascending-id order is the
+  tiebreak. Pinned by `auto_acquisition_picks_closest_enemy_unit_in_acquire_range`.
+
+- **A-058 (§9.5, §9.2, M6).** Auto-acquired combat targets are by construction
+  visible: the `acquire_range` for every authored unit is ≤ the `Vision`
+  radius (raider 5000 ≤ 8000, rifleman 7000 ≤ 8000, guardian 9000 ≤ 9000,
+  turret 8000 ≤ 9000 — verified by content validation). The combat pipeline's
+  `validate` stage therefore does not re-check visibility for auto-acquired
+  targets — the command gate already enforced `NotVisible` for commanded
+  targets (plan §8.2), and auto-acquired targets within `acquire_range` are
+  within vision. A unit whose `acquire_range` exceeds its `Vision` radius
+  would be a content bug (a turret firing into fog); content validation
+  catches this. Revisit if a future unit kind breaks the invariant.
+
+- **A-059 (§9.5, §13 A10, M6).** Where the fog state lives: per-player
+  per-tile visibility is **derived** state, not canonical hashed state. The
+  state hash already includes every entity's position and the Vision
+  capability radius, both of which fully determine the fog state at any
+  tick. Adding the fog bitsets to the hash would be redundant (the same
+  inputs always produce the same bitsets) and would couple the hash to a
+  per-player derivative that A10 explicitly wants "hashes equal fog on/off".
+  `FogState` is therefore carried on `Sim` as a non-hashed cache,
+  recomputed each tick in stage 9. A10's "fog on/off, hashes equal" is then
+  trivially true: the hash never includes the bitsets, so toggling observer
+  mode (which only affects what `player_view` returns, not the canonical
+  state) cannot change the hash. The targeted test
+  (`a10_fog_integrity_hashes_equal`) pins this.
