@@ -30,6 +30,7 @@ mod economy;
 mod fixture;
 mod hash;
 mod invariants;
+mod match_rules;
 mod movement;
 mod nav;
 mod production;
@@ -43,6 +44,7 @@ use pandemonium_sim_api::Tick;
 pub use fixture::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
 };
+pub use match_rules::MatchOutcome;
 pub use runner::{run_command_log, CommandLogRun};
 pub use sim::{Sim, StepOutput};
 pub use world::{

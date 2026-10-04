@@ -52,6 +52,13 @@ pub struct Sim {
     /// would be redundant and would couple the hash to a per-player
     /// derivative that A10 explicitly wants "hashes equal fog on/off").
     fog: crate::vision::FogState,
+    /// The resolved match outcome, once stage 10 has fired `MatchEnded` (M8,
+    /// plan §9.7). Derived state — NOT part of the canonical hash (A-066:
+    /// the outcome is a pure function of the entity set and the players'
+    /// `resigned` flags, both of which ARE hashed). `None` while the match
+    /// is ongoing; `Some` once it has ended, cached so `MatchEnded` is
+    /// emitted exactly once.
+    outcome: Option<crate::match_rules::MatchOutcome>,
 }
 
 impl Sim {
@@ -84,6 +91,7 @@ impl Sim {
             spawn_queue: world.scheduled_spawns.clone(),
             spawn_cursor: 0,
             fog: crate::vision::FogState::new(players.len(), world.width_tiles, world.height_tiles),
+            outcome: None,
         };
         // The buildability grid must match the map shape (the fixture and the
         // content seam both guarantee it; a mismatch is programmer error).
@@ -135,6 +143,21 @@ impl Sim {
     /// that ids are never reused.
     pub fn next_entity_id(&self) -> u64 {
         self.next_entity_id
+    }
+
+    /// The resolved match outcome (M8, plan §9.7). `None` while the match is
+    /// ongoing; `Some` once stage 10 has fired `MatchEnded`. The outcome is
+    /// derived state (A-066: not part of the canonical hash) cached so the
+    /// event is emitted exactly once. The host consults this to stop driving
+    /// controllers and to show the end screen.
+    pub fn outcome(&self) -> Option<crate::match_rules::MatchOutcome> {
+        self.outcome
+    }
+
+    /// Whether the match has ended (plan §9.7, M8). Convenience over
+    /// [`Self::outcome`] for the host's loop gate.
+    pub fn is_finished(&self) -> bool {
+        self.outcome.is_some()
     }
 
     /// Test-only window into one mover's runtime movement state (the
@@ -341,7 +364,16 @@ impl Sim {
         //           Vision radii, both of which ARE hashed).
         crate::vision::advance_vision(&mut self.fog, &self.world);
 
-        // Stage 10 — Match rules: defeat/victory evaluation (M8).
+        // Stage 10 — Match rules: defeat/victory evaluation (M8, plan §9.7).
+        //            Idempotent: once `outcome` is `Some`, this is a no-op.
+        //            When the match transitions to ended this tick, exactly
+        //            one `MatchEnded` event is emitted. The outcome is
+        //            derived state (A-066: not part of the canonical hash —
+        //            a pure function of the entity set and `resigned` flags,
+        //            both of which ARE hashed), so toggling evaluation on/off
+        //            cannot change a checkpoint.
+        crate::match_rules::evaluate(&self.world, self.tick, &mut self.outcome, &mut self.events);
+
         // Stage 11 — Finalize: increment the tick, flush events, compute the
         //            periodic hash.
         self.tick = self.tick.wrapping_add(1);
