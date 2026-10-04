@@ -187,6 +187,131 @@ mod camera_tests {
     }
 
     #[test]
+    fn pan_follows_the_screen_axes_at_yaw_zero() {
+        // The default camera sits at +Z looking -Z: screen-right is +X and
+        // up-screen (away from the camera) is -Z. D must pan the view right
+        // and W must pan it up-screen (M9.1: both were mirrored since M3 —
+        // the DEBT-008 human pass caught it; these pins keep them honest).
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        let before = camera.target();
+        camera.pan(2.0, 0.0);
+        assert!(
+            (camera.target().x - before.x - 2.0).abs() < 1e-4,
+            "dx is screen-right (+X at yaw 0): {:?}",
+            camera.target()
+        );
+        assert!((camera.target().z - before.z).abs() < 1e-4);
+        camera.pan(0.0, 3.0);
+        assert!(
+            (camera.target().z - before.z + 3.0).abs() < 1e-4,
+            "dz is up-screen (-Z at yaw 0): {:?}",
+            camera.target()
+        );
+        assert!((camera.target().x - before.x - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pan_stays_screen_relative_when_rotated() {
+        // A quarter turn orbits the camera to +X looking -X: screen-right
+        // becomes -Z and up-screen becomes -X.
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        camera.rotate(std::f32::consts::FRAC_PI_2);
+        let before = camera.target();
+        camera.pan(1.5, 0.0);
+        assert!(
+            (camera.target().z - before.z + 1.5).abs() < 1e-3,
+            "dx is screen-right (-Z at yaw 90°): {:?}",
+            camera.target()
+        );
+        assert!((camera.target().x - before.x).abs() < 1e-3);
+        camera.pan(0.0, 1.5);
+        assert!(
+            (camera.target().x - before.x + 1.5).abs() < 1e-3,
+            "dz is up-screen (-X at yaw 90°): {:?}",
+            camera.target()
+        );
+    }
+
+    #[test]
+    fn pan_clamps_the_target_to_the_map_rectangle() {
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        camera.pan(-1000.0, 1000.0);
+        // West edge, and the up-screen (north) edge — positive dz pans
+        // toward the top of the screen, which is -Z.
+        assert!((camera.target().x - 0.0).abs() < 1e-4, "west edge");
+        assert!((camera.target().z - 0.0).abs() < 1e-4, "north edge");
+        camera.pan(2000.0, -2000.0);
+        assert!((camera.target().x - 64.0).abs() < 1e-4, "east edge");
+        assert!((camera.target().z - 64.0).abs() < 1e-4, "south edge");
+    }
+
+    #[test]
+    fn pan_world_translates_the_target_without_screen_axes() {
+        // The middle-drag pan: the target moves by the world-space delta the
+        // cursor's ground anchor moved, independent of yaw.
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        camera.focus(32.0, 32.0, 30.0);
+        camera.pan_world(glam::Vec3::new(4.0, 5.0, -6.0)); // height ignored
+        let target = camera.target();
+        assert!((target.x - 36.0).abs() < 1e-4);
+        assert!((target.z - 26.0).abs() < 1e-4);
+        assert_eq!(target.y, 0.0);
+    }
+
+    #[test]
+    fn zoom_toward_keeps_the_cursor_anchor_under_the_cursor() {
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        camera.focus(32.0, 32.0, 40.0);
+        let cursor = Vec2::new(0.4, -0.2);
+        let anchor = camera.ground_point(cursor).expect("cursor on the map");
+        camera.zoom_toward(0.5, cursor);
+        let projected = camera.project(anchor);
+        assert!(
+            (projected - cursor).length() < 0.02,
+            "the anchor stays under the cursor: {projected:?} vs {cursor:?}"
+        );
+        assert!(
+            ((camera.eye() - camera.target()).length() - 20.0).abs() < 1e-3,
+            "the distance halved"
+        );
+    }
+
+    #[test]
+    fn zoom_toward_on_the_center_keeps_the_target_put() {
+        // Zooming on the screen center (the orbit target itself) must not
+        // drift the target beyond f32 picking noise (the ground-point
+        // round-trip is accurate to ~1e-3 tiles, not exactly zero).
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        camera.focus(20.0, 30.0, 40.0);
+        let target = camera.target();
+        camera.zoom_toward(0.75, Vec2::ZERO);
+        assert!(
+            (camera.target() - target).length() < 0.01,
+            "no drift beyond picking noise: {:?}",
+            camera.target()
+        );
+    }
+
+    #[test]
+    fn focus_recenters_clamps_and_sets_distance() {
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        camera.focus(-20.0, 100.0, 999.0);
+        assert!(
+            (camera.target().x - 0.0).abs() < 1e-4,
+            "x clamped into the map"
+        );
+        assert!(
+            (camera.target().z - 64.0).abs() < 1e-4,
+            "z clamped into the map"
+        );
+        assert_eq!(camera.target().y, 0.0);
+        assert!(
+            (camera.eye() - camera.target()).length() < 161.0,
+            "distance clamped to the range"
+        );
+    }
+
+    #[test]
     fn picked_ground_points_convert_back_to_logical_positions() {
         let camera = RtsCamera::new(64, 64, 16.0 / 9.0);
         let picked = camera.ground_point(Vec2::ZERO).expect("center on map");

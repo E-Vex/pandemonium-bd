@@ -35,11 +35,16 @@ pub struct RtsCamera {
     distance: f32,
     fov_y: f32,
     aspect: f32,
+    /// The map's extent in tiles — panning clamps the target inside it so
+    /// the view can never wander off the battlefield (M9.1: the DEBT-008
+    /// human pass found "get lost in the void" was a real failure mode).
+    bounds: Vec2,
 }
 
 impl RtsCamera {
     /// A camera looking at the center of a `width` x `height` tile map, from a
-    /// comfortable default angle and distance.
+    /// comfortable default angle and distance. See [`RtsCamera::focus`] for
+    /// the player-start framing the windowed client opens with (M9.1).
     pub fn new(map_width: u32, map_height: u32, aspect: f32) -> Self {
         Self {
             target: Vec3::new(map_width as f32 / 2.0, 0.0, map_height as f32 / 2.0),
@@ -48,6 +53,7 @@ impl RtsCamera {
             distance: (map_width.max(map_height) as f32) * 0.9,
             fov_y: DEFAULT_FOV_Y,
             aspect,
+            bounds: Vec2::new(map_width as f32, map_height as f32),
         }
     }
 
@@ -85,18 +91,68 @@ impl RtsCamera {
 
     /// Pans the target along the camera-relative ground axes: `dx` is
     /// rightward on screen, `dz` forward (toward the top of the screen) —
-    /// both in world units, already scaled by the caller (e.g. by zoom).
+    /// both in world units, already scaled by the caller (e.g. by the
+    /// frame delta).
+    ///
+    /// The screen-right axis is `forward x up` — the same right-handed
+    /// basis `Mat4::look_at_rh` builds, so a world-space pan to the right
+    /// lands right on screen. (M9.1: the M3 implementation negated this
+    /// axis, which mirrored D/A; the DEBT-008 human pass caught it — no
+    /// sim-side test can, presentation direction is invisible to the
+    /// hash. Direction tests now pin the convention.)
     pub fn pan(&mut self, dx: f32, dz: f32) {
         let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos()).normalize();
-        let right = Vec3::new(forward.z, 0.0, -forward.x);
+        let right = Vec3::new(-forward.z, 0.0, forward.x);
         self.target += right * dx + forward * dz;
-        self.target.y = 0.0;
+        self.clamp_target();
+    }
+
+    /// Translates the orbit target by a world-space ground-plane offset —
+    /// the middle-drag "grab the ground" pan: the grabbed point stays
+    /// under the cursor while the offset tracks the cursor's ground delta
+    /// (M9.1, plan §11.3's mouse panning).
+    pub fn pan_world(&mut self, delta: Vec3) {
+        self.target.x += delta.x;
+        self.target.z += delta.z;
+        self.clamp_target();
     }
 
     /// Zooms by a multiplicative factor (values < 1 zoom in), clamped to
     /// [`DISTANCE_RANGE`].
     pub fn zoom(&mut self, factor: f32) {
         self.distance = (self.distance * factor).clamp(DISTANCE_RANGE.0, DISTANCE_RANGE.1);
+    }
+
+    /// Zooms by `factor` while keeping the ground point currently under
+    /// the cursor's NDC position under that same position — plan §11.3's
+    /// "zoom toward the cursor" (M9.1: zooming the orbit distance alone
+    /// reads as the view sliding away from where the player is looking).
+    pub fn zoom_toward(&mut self, factor: f32, cursor_ndc: Vec2) {
+        let anchor = self.ground_point(cursor_ndc);
+        self.zoom(factor);
+        if let (Some(before), Some(after)) = (anchor, self.ground_point(cursor_ndc)) {
+            let delta = before - after;
+            self.target.x += delta.x;
+            self.target.z += delta.z;
+        }
+    }
+
+    /// Re-centers the orbit target on a ground-plane point at a given
+    /// distance (clamped) — the windowed client's opening framing on the
+    /// player's start and its restart re-focus (M9.1: the map-center
+    /// default opened on the empty crossroads at 58 tiles out, where the
+    /// starting force reads as specks — "nothing appears on the screen").
+    pub fn focus(&mut self, x: f32, z: f32, distance: f32) {
+        self.target = Vec3::new(x, 0.0, z);
+        self.clamp_target();
+        self.distance = distance.clamp(DISTANCE_RANGE.0, DISTANCE_RANGE.1);
+    }
+
+    /// Keeps the orbit target on the map's ground rectangle (height zero).
+    fn clamp_target(&mut self) {
+        self.target.x = self.target.x.clamp(0.0, self.bounds.x);
+        self.target.z = self.target.z.clamp(0.0, self.bounds.y);
+        self.target.y = 0.0;
     }
 
     /// Rotates the camera around the target by `delta_yaw` radians.
