@@ -57,3 +57,7 @@ path = "vision.rs"
 [[test]]
 name = "ai"
 path = "ai.rs"
+
+[[test]]
+name = "match_rules"
+path = "match_rules.rs"
