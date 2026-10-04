@@ -590,16 +590,28 @@ impl ApplicationHandler for App {
 
 impl App {
     /// The windowed smoke summary: what the `--frames` run proved (frames
-    /// presented, sim progress, commands submitted through input, selection).
+    /// presented, sim progress, commands submitted through input, selection,
+    /// and — the M9 full-loop evidence — whether the match resolved).
     fn windowed_summary(&self) {
+        let outcome = match self.host.outcome() {
+            Some(outcome) => format!(
+                "match ended, {} wins (tick {})",
+                match outcome.winner {
+                    PlayerId(id) => format!("player {id}"),
+                },
+                outcome.ended_tick
+            ),
+            None => "match ongoing".to_string(),
+        };
         println!(
             "pandemonium client — windowed smoke: {} frames presented, tick {}, state hash {:#018x}, \
-             {} commands submitted, selection {}",
+             {} commands submitted, selection {}, {}",
             self.frames_presented,
             self.host.tick(),
             self.host.state_hash(),
             self.commands_submitted,
-            self.selection.len()
+            self.selection.len(),
+            outcome
         );
     }
 

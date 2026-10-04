@@ -31,7 +31,7 @@
 | Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/pandemonium-bd`) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
 | Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
-| Status | **M8 (Match rules & full loop, P5) COMPLETE** — stage 10 (plan §6.3.10, §9.7) lands: defeat = zero owned Footprint structures OR resigned; victory = one survivor; `MatchEnded` fires exactly once (idempotent — `Sim::outcome` caches the result). The defeat check only fires when the match is "structure-bearing" (A-067: at least one player owns a structure) so the M1 spine-test fixture and the M3 headless smoke path stay green; the Alpha content (every player starts with a Command Center) ends the moment a side is eliminated. The outcome is derived state (A-066: not part of the canonical hash — a pure function of the entity set and the players' `resigned` flags, both of which ARE hashed), the same reasoning as fog (A-059). The M7 goldens stay green by construction: no `STATE_ENCODING_VERSION` bump, no golden regen. `MatchHost` extended with optional AI controllers (`with_controllers` — the M8 client's hosting seam, A-063), a command log (`log()`), and the match outcome (`outcome()` / `is_finished()`). The windowed client hosts its vs-AI opponent through this same seam, renders the end-screen panel (VICTORY/DEFEAT/MUTUAL DESTRUCTION), supports restart (R — drop + reconstruct with fresh controllers from the same bundle + seed, A15), control groups (1-9, Ctrl+digit assigns, digit recalls), and Stop/AttackMove hotkeys (S/A). A15 green (two fresh `MatchHost` instances from the same seed produce identical hashes; with AI controllers the deterministic controller RNG makes the command logs identical too). 320/320 dev tests green. **Next: M9 (Alpha content & feel pass)** |
+| Status | **M9 (Alpha content & feel pass) COMPLETE** — the minimum viable loop is playable end to end against the AI. The M8 handoff's one honest gap (the scripted Alpha vs Alpha match at 7200 ticks never resolved) closed in three moves: (1) a simulation fix — a chase order whose commanded target died was never popped, so both sides' defense orders outlived their dead intruders and the armies froze mid-chase forever, still reporting `Moving` with empty paths (movement.rs documents the pop as the combat pipeline's job; the code never did it — combat stage 1 pops it now, A-071); (2) the wave machine re-issues its march on the pressure cadence while a wave is alive, so a live wave never parks (march orders can drain — failed at a choke, completed over a cleared target, or replaced by a defense pull), and it focuses the sighted enemy command center (the elimination target) through the fog-filtered view; (3) waves of ten (from six) with an army cap of sixteen (from twelve) — waves of six traded forever in low-count attrition cycles that never accumulated the damage to level a defended base. Measured across a 32-seed sweep: every match resolves, 9.1k–23.3k ticks, inside the fifteen-minute budget (`tests/alpha_loop.rs` pins it). The feel pass landed: hit flashes (entities push toward hot white on `AttackHit`), health bars over damaged units (`hp_fraction_milli` finally drawn), command-acknowledgment pings, and the plan §11.5 audio seam (`engine::audio`: `AudioSink` trait + a pure event → cue mapping + a null counter sink — no audible backend yet, DEBT-011). The manifest review found no value to change — the stall was code, not content (§10.4 stays pinned). The M7-era AI-vs-AI golden moved (twice — once per behavior change, each re-pinned with its written reason) and the demo golden is untouched. 333/333 dev tests green. **Next: M10 (Stabilization & declaration)** | defeat = zero owned Footprint structures OR resigned; victory = one survivor; `MatchEnded` fires exactly once (idempotent — `Sim::outcome` caches the result). The defeat check only fires when the match is "structure-bearing" (A-067: at least one player owns a structure) so the M1 spine-test fixture and the M3 headless smoke path stay green; the Alpha content (every player starts with a Command Center) ends the moment a side is eliminated. The outcome is derived state (A-066: not part of the canonical hash — a pure function of the entity set and the players' `resigned` flags, both of which ARE hashed), the same reasoning as fog (A-059). The M7 goldens stay green by construction: no `STATE_ENCODING_VERSION` bump, no golden regen. `MatchHost` extended with optional AI controllers (`with_controllers` — the M8 client's hosting seam, A-063), a command log (`log()`), and the match outcome (`outcome()` / `is_finished()`). The windowed client hosts its vs-AI opponent through this same seam, renders the end-screen panel (VICTORY/DEFEAT/MUTUAL DESTRUCTION), supports restart (R — drop + reconstruct with fresh controllers from the same bundle + seed, A15), control groups (1-9, Ctrl+digit assigns, digit recalls), and Stop/AttackMove hotkeys (S/A). A15 green (two fresh `MatchHost` instances from the same seed produce identical hashes; with AI controllers the deterministic controller RNG makes the command logs identical too). 320/320 dev tests green. **Next: M9 (Alpha content & feel pass)** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -63,37 +63,51 @@ cargo run -p pandemonium-client             # windowed 3D client; headless smoke
 cargo run -p pandemonium-client -- --frames 900   # windowed smoke: auto-exit + evidence summary
 ```
 
-Expected at this handoff: all commands succeed; 320 tests pass in dev
-(315 in release — the 5 should-panic invariant-checker tests are
+Expected at this handoff: all commands succeed; 333 tests pass in dev
+(328 in release — the 5 should-panic invariant-checker tests are
 debug-only by nature — `debug_assert` compiles out in release): 39 fx
-unit tests, 15 fx property tests, 15 ai unit tests (M7), 103 sim unit
-tests (98 + the 5 M8 match_rules tests), 4 sim_api unit tests, 8 replay
-codec tests, 38 engine tests (35 + the 3 M8 MatchHost extension tests),
-5 client text-atlas tests, 11 tools tests (10 + the 1 M8 winner-field
-test), 33 content unit tests, and the acceptance suite: 9 determinism
-(A1/A2), 4 content-pipeline, 3 movement, 4 economy, 7 combat, 5
-vision, 2 architecture-law, 8 M7 tests (`tests/ai.rs`: two A5
-structural audits, the A5 ledger identity, the A11 battery, the A11
-proptest fuzz, completion + determinism, the golden pin, and the
-log-alone replay), and 7 M8 tests (`tests/match_rules.rs`: resignation
-ends the match, MatchEnded fires once, the human resigning ends with
-the AI winning, A15 two fresh hosts identical hashes, A15 two fresh
-hosts with AI identical logs + hashes, stage 10 hash-neutral vs M7
-golden, MatchEnded surfaces in the event stream).
+unit tests, 15 fx property tests, 16 ai unit tests (15 + M9's
+re-march pin), 105 sim unit tests (103 + M9's two chase-order-pop
+tests), 4 sim_api unit tests, 8 replay codec tests, 41 engine tests
+(38 + M9's three audio-cue tests), 10 client tests (5 text-atlas + 5
+feedback), 11 tools tests, 33 content unit tests, and the acceptance
+suite: 9 determinism (A1/A2), 4 content-pipeline, 3 movement, 4
+economy, 7 combat, 5 vision, 2 architecture-law, 8 M7 tests
+(`tests/ai.rs`: two A5 structural audits, the A5 ledger identity, the
+A11 battery, the A11 proptest fuzz, completion + determinism, the
+golden pin, and the log-alone replay), 7 M8 tests
+(`tests/match_rules.rs`: resignation ends the match, MatchEnded fires
+once, the human resigning ends with the AI winning, A15 two fresh
+hosts identical hashes, A15 two fresh hosts with AI identical logs +
+hashes, the pinned-trail regression guard, MatchEnded surfaces in the
+event stream), and 3 M9 tests (`tests/alpha_loop.rs`: resolution
+within the fifteen-minute budget across seeds, end-to-end resolution
+determinism, the windowed host's vs-AI loop closing naturally).
 The headless demo's final hash is still 0x9d5ba9b565060336 (seed 7,
-300 ticks — unchanged: M8 adds no state-encoding change, and every M7
-golden still pins); the AI-vs-AI flagship (seed 7, 7200 ticks) pins
-0x679f4713114765c9 with tick-0 hash 0x61613bca16b8f00e — both unchanged
-by M8 (stage 10 is hash-neutral, A-066). The `--p1 ai --p2 ai` runner
-now prints a `match ended:` line (player N wins / mutual destruction /
-unresolved) from stage 10's `MatchEnded` event.
+300 ticks — unchanged through M9: its lone Attack command is
+gate-refused on the trivial world, so the chase-order pop never
+fires there); the AI-vs-AI flagship (seed 7, 7200 ticks) pins
+0x01b3b60b741f03e9 with tick-0 hash 0x61613bca16b8f00e — the tick-0
+hash is the M7 original (no orders exist at tick 0); the final hash
+moved twice in M9 (the chase-order pop, then the AI tuning), each
+re-pinned with its written reason in the test. The `--p1 ai --p2 ai`
+runner prints a `match ended:` line; at longer budgets it now ends
+naturally (player N wins) — run `--ticks 27000 --p1 ai --p2 ai` to
+watch a full match resolve.
 `tools content-validate content` prints the bundle identity and PASS
 (content hash 0x249b69f0ee343a10, map id 0xbc0970c3cf14e9cf — unchanged
-by M8: no content files changed); `cargo run -p pandemonium-client`
-prints the no-display finding and runs the headless smoke pass (on a
-desktop it opens the window — the M8 client now hosts the AI opponent
-through `MatchHost::with_controllers`); with `--frames N` the windowed
-run exits after N frames and prints the evidence summary. On a headless
+by M9: the manifest review changed no values); `cargo run -p
+pandemonium-client` prints the no-display finding and runs the headless
+smoke pass — which since M9 drives the windowed path's exact hosting
+seam (the AI opponent included) and prints the feedback-wiring
+evidence line (events fed the audio sink, cues mapped, attacks
+flashed); on a desktop it opens the window; with `--frames N` the
+windowed run exits after N frames and prints the evidence summary,
+including whether the match ended and who won. The M9 full-windowed
+verification: under Xvfb + llvmpipe (320x180 screen) a `--frames 40000`
+run hosted the AI opponent through the real wgpu pipeline and the match
+resolved naturally — "match ended, player 1 wins (tick 5250)" — recorded
+in DEBT-008 with the environment recipe. On a headless
 machine the windowed path is verified on Xvfb + llvmpipe per DEBT-008
 (selection + Move commands provably work; the M8 additions — end screen,
 restart, control groups, Stop/AttackMove — are compiled and clippy-clean
@@ -111,11 +125,11 @@ crates/fx        DONE    Q16.16 fixed-point math, isqrt, PCG32 Rng, FNV-1a hashe
 crates/sim_api   DONE    vocabulary: ids, Command/CommandKind, Event, Reject, Snapshot, PlayerView, MatchSetup
 crates/sim       DONE    Sim spine + M4 movement + M5 economy + M6 combat & vision + M7's run_command_log (the one canonical command-log re-simulation driver — DEBT-005 repaid): step pipeline (11 stages, 5/7/9 now wired), entity + capability stores (12 capability types), command gate w/ economy + combat checks, state hash (v4), trivial-world fixture, nav grid + A* + footprint occupancy, mover, gather loop, production queues, construction, combat pipeline, three-state fog (derived not hashed — A-059), A12 invariant checker, + the headless driver returning the checkpoint trail + allocator watermark
 crates/content   DONE    RON schema (strict), versioned loaders + map v1->v2 migration, precise validators, ContentBundle + content hash, world() seam (all 12 capabilities mapped — Attack mapped in M6, DEBT-006 retired)
-crates/ai        DONE    Controller trait (plan §9.6 verbatim) + ScriptedController, the scripted Alpha opponent: workers -> depot -> barracks -> mixed army, idle-worker gather management, attack waves on size + timer, base defense, pending/build bookkeeping verified by sight (A-062) — never a rejection channel
+crates/ai        DONE    Controller trait (plan §9.6 verbatim) + ScriptedController, the scripted Alpha opponent: workers -> depot -> barracks -> mixed army, idle-worker gather management, attack waves on size + timer that RE-MARCH on the pressure cadence while alive and focus the sighted enemy CC (M9 — matches resolve), base defense, pending/build bookkeeping verified by sight (A-062) — never a rejection channel
 crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in sim since M7)
-crates/engine    DONE*   FixedTimestep, Interpolator, MatchHost (structural FD-2) + pause/single-step, RtsCamera (glam) + picking/box-select, terrain mesh, Renderer trait + null renderer, HudState on the Frame boundary, + ai_host (M7): AiMatchHost — controllers on the tick boundary, ascending slot order, every fed command recorded — and the alpha plan builder (capability-shaped kind resolution, costs through the Ore seam, ring-scanned build ground clear of static claims + node doorsteps) (*engine core)
+crates/engine    DONE*   FixedTimestep, Interpolator, MatchHost (structural FD-2) + pause/single-step, RtsCamera (glam) + picking/box-select, terrain mesh, Renderer trait + null renderer (Frame carries selection + M9's flash set), HudState on the Frame boundary, ai_host (M7): AiMatchHost — controllers on the tick boundary, ascending slot order, every fed command recorded — and the alpha plan builder (capability-shaped kind resolution, costs through the Ore seam, ring-scanned build ground clear of static claims + node doorsteps), + audio (M9, §11.5): AudioSink trait, the pure event -> cue mapping, the null counter sink (*engine core)
                    (*engine core)
-crates/client    DONE*   winit window + wgpu 26 3D renderer (depth buffer, terrain mesh + heightmap, instanced placeholder boxes), selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, --frames windowed smoke, headless smoke fallback (*DEBT-008 keeps the human visual pass)
+crates/client    DONE*   winit window + wgpu 26 3D renderer (depth buffer, terrain mesh + heightmap, instanced placeholder boxes), selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, --frames windowed smoke, headless smoke fallback (drives the AI-hosting seam since M9), + the M9 feel pass: feedback.rs (hit flashes, health bars, command pings — pure, unit-tested geometry) wired into draw() with the audio sink (*DEBT-008 keeps the human visual pass)
 crates/tools     DONE    headless (the M1 demo + M7's --p1/--p2 ai|idle controller slots over the real content, per-player evidence lines, --record for both), replay-verify (world resolution by content identity), content-validate (clap CLI)
 tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3) + movement.rs (M4/P1) + economy.rs (M5/P3) + combat.rs (M6/P2) + vision.rs (M6/A10) + ai.rs (M7: A5 + A11 + AI-vs-AI completion/determinism/golden/log-alone replay)
 content/         DONE    rules/, entities/ (9 kinds), factions/ (Legion), maps/ (Crossroads 64x64, symmetric, heightmap)
@@ -142,14 +156,16 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M6 | Combat & vision (P2) | ✅ **complete** | immediate-hit attack pipeline (every stage a named function); Attack/AttackMove/Stop semantics; three-state fog (Hidden/Explored/Visible, derived not hashed — A-059); A10 fog integrity green (hashes equal fog on/off, targeting rejects unseen both directions); turret works (no Move, Attack+Footprint); A12 combat invariants (cooldowns sane, target alive, no attack on own); scripted skirmishes show composition + position matter (bit-identical run-to-run); legibility checklist machine-half green (AttackHit + Died fire, hp_fraction_milli on EntityView); DEBT-006/007/010 retired; encoding v4 |
 | M7 | AI through commands (P4) | ✅ **complete** | A5 + A11 green (ai depends only on fx+sim_api, re-asserted; the sim never references the ai crate; the ledger identity — starting + deliveries − accepted data-defined costs — holds per player; every entity beyond the starting forces traces to an accepted Train/Build; the 20-pair mirrored battery over every reachable rejection class is label-blind; proptest fuzz of random mirrored commands); AI-vs-AI headless matches complete (3 seeds × 2400 ticks under the A12 checker, bit-identical re-runs, seed divergence); golden pinned (0x679f4713114765c9); AI-driven logs replay through the codec (A2); DEBT-005 repaid |
 | M8 | Match rules & full loop (P5) | ✅ **complete** | Stage 10 (plan §6.3.10, §9.7) lands: defeat = zero owned Footprint structures OR resigned; victory = one survivor; `MatchEnded` fires exactly once (idempotent — `Sim::outcome` caches the result). The defeat check only fires when the match is "structure-bearing" (A-067) so the M1 spine-test fixture and the M3 headless smoke stay green. The outcome is derived state (A-066: not part of the canonical hash) — the M7 goldens stay green by construction (no `STATE_ENCODING_VERSION` bump). `MatchHost` extended with optional AI controllers (`with_controllers`), a command log (`log()`), and the match outcome (`outcome()` / `is_finished()`). The windowed client hosts its vs-AI opponent through this seam, renders the end-screen panel (VICTORY/DEFEAT/MUTUAL DESTRUCTION), supports restart (R — drop + reconstruct, A15), control groups (1-9), and Stop/AttackMove hotkeys (S/A). A15 green (two fresh hosts, same seed → identical hashes; with AI → identical logs too). The `--p1 ai --p2 ai` runner prints a `match ended:` line. DEBT-008 narrowed by M8 (the human visual pass over the full vs-AI loop remains) |
-| M9 | Alpha content & feel pass | ⬜ pending | minimum viable loop playable end-to-end vs the AI |
+| M9 | Alpha content & feel pass | ✅ **complete** | The M8 gap closed: the frozen-chase-order sim bug fixed (defense orders outliving their dead targets froze both armies; combat stage 1 pops them now — 2 unit tests), the wave machine re-marches on the pressure cadence and focuses the sighted enemy CC (re-pinned + a new pin test), waves of ten / army cap sixteen. `tests/alpha_loop.rs`: AI-vs-AI resolves inside 27000 ticks across seeds (measured 9.1k–23.3k over a 32-seed sweep), end-to-end resolution determinism (same seed → same winner, end tick, log, final hash), and the windowed host's vs-AI loop closes naturally (an idle human's base falls to the AI, `outcome()` surfaces through the end-screen boundary). Feel pass: hit flashes, health bars, command pings (5 unit tests, no GPU needed), the `AudioSink` seam + placeholder cue set (3 unit tests; no audible backend — DEBT-011). Manifest review: no value changed — the stall was code, not content (§10.4 pins hold). Goldens: the demo untouched; the AI flagship re-pinned twice with written reasons |
 | M10 | Stabilization & declaration | ⬜ pending | every A1–A15 criterion verified; soak green; docs/ALPHA_DECLARATION.md with evidence |
 
-**The plan was broken into parts along these milestones.** Parts 1–7 (M0–M3,
-M4 movement, M5 economy/production/construction, M6 combat & vision, and M7
-AI through commands) are complete (M3's windowed path machine-verified; the
-human visual pass stays open as DEBT-008's narrowed scope); parts 8–11
-(M8–M10) remain, in strict order.
+**The plan was broken into parts along these milestones.** Parts 1–8 (M0–M3,
+M4 movement, M5 economy/production/construction, M6 combat & vision, M7
+AI through commands, and M8 match rules & full loop) are complete, plus
+M9's Alpha content & feel pass — the loop now resolves and feels like a
+game (M3's windowed path machine-verified; the human visual pass stays
+open as DEBT-008's narrowed scope); M10 (stabilization & declaration)
+remains, in strict order.
 
 ## 7. Milestone inventory — what exists today, concretely
 
@@ -425,8 +441,53 @@ see DEBT-008/009 for what remains)**
 - `tests/ai.rs` — the M7 exit suite (8 tests): the two A5 structural
   audits, the A5 ledger identity + entity accounting, the A11 mirrored
   battery (label-blind), the A11 proptest fuzz, AI-vs-AI completion +
-  determinism across seeds, the golden pin, and the log-alone replay
+  determinism across seeds, the golden pin (re-pinned by M9, twice,
+  each with its written reason in the test), and the log-alone replay
   (codec round-trip + re-simulation equality).
+
+**M9 — Alpha content & feel pass (plan §14 M9; see `crates/sim/src/combat.rs`,
+`crates/ai/src/scripted.rs`, `crates/engine/src/audio.rs`,
+`crates/client/src/feedback.rs`, and `tests/alpha_loop.rs`)**
+
+- `crates/sim/src/combat.rs` — the chase-order pop: combat stage 1 pops a
+  head `Order::AttackUnit` whose commanded target is gone (dead and
+  removed by stage 8, or removed by its own system), resets the runtime
+  path, and the queue behind it advances. The M8 flagship's stall
+  diagnosis: both sides' defense `Attack` orders outlived their dead
+  intruders; the chasers kept reporting `Moving` (orders non-empty) while
+  movement resolved no target, requested no path, and the stuck detector
+  skipped their empty paths — frozen forever, still shooting whatever
+  entered acquire range. Two unit tests pin the pop and the
+  queue-advance (a queued Move takes over when the chase target dies).
+- `crates/ai/src/scripted.rs` — the closing tuning: WAVE_SIZE 10,
+  ARMY_CAP 16, MIN_WAVE 4, WAVE_TIMER_TICKS 2400; the Attacking state
+  re-issues the march on the pressure cadence (a live wave never parks);
+  `hunt_focus` aims the march at the sighted enemy command center (the
+  elimination target) through the fog, falling back to the enemy start.
+  The view-level tests re-pinned; a new test pins the re-march and the
+  CC focus.
+- `crates/engine/src/audio.rs` — plan §11.5 verbatim: the `AudioSink`
+  trait, a pure `cue_for(&Event) -> Option<AudioCue>` mapping (attack
+  landed, unit lost, unit ready, structure done, delivery, match ended
+  — bookkeeping events stay silent), and the `NullAudioSink` counter
+  implementation (headless + tests). 3 unit tests.
+- `crates/client/src/feedback.rs` + `main.rs` + `render.rs` — the feel
+  pass: `FeedbackState` (hit flashes with frame expiry, command pings,
+  counters) fed from the draw loop's event drain; health-bar quads
+  projected through the camera (the box-select path); the flash set
+  crossing the Frame boundary so the wgpu renderer tints flashing
+  entities; pings at the clicked ground on Move/AttackMove; restart
+  resets the feedback state. 5 unit tests (pure geometry, no GPU). The
+  headless smoke now drives the windowed hosting seam (AI included) and
+  prints the feedback-wiring counters; the windowed summary reports the
+  match outcome.
+- `tests/alpha_loop.rs` — the M9 exit suite (3 tests): resolution within
+  the fifteen-minute budget across seeds (7 typical, 3 slow-resolving),
+  end-to-end resolution determinism (same seed → same winner, end tick,
+  bit-identical log + final hash; a different seed diverges), and the
+  windowed host loop resolving against the AI (`MatchHost::with_controllers`
+  with an idle human slot; the AI eliminates the human's base; `outcome()`
+  surfaces through the end-screen boundary).
 
 ## 8. What is NOT built yet
 
@@ -445,24 +506,24 @@ event, the `MatchHost` extensions for AI hosting + outcome + log, the
 windowed client's vs-AI loop with end screen + restart + control groups +
 hotkeys, and the A15 restart cleanliness proof). What remains, in order:
 
-1. **The human visual pass of DEBT-008 (small, narrowed by M8)**: on a
+1. **The human visual pass of DEBT-008 (small, narrowed further by M9)**: on a
    desktop display, play `cargo run -p pandemonium-client` through a full
    vs-AI match to resolution — the map + entities render, selection and
    right-click Move work (both already machine-proven), the end-screen
    panel reads well, restart (R) reconstructs cleanly, control groups
-   recall correctly, and the Stop/AttackMove hotkeys feel responsive.
-   Confirm the full 10-15 minute loop reads well and close the row. The
-   machine-verifiable half (the host surfaces `outcome()`, the client
-   renders the panel, restart reconstructs the host, A15 hashes pin) is
-   green; the pixel-level "does the full loop feel good" is a feel-pass
-   item.
-2. **M9 — Alpha content & feel pass (Phase 4)**: finalize manifest
-   values, tune the AI script (the Alpha vs Alpha match at 7200 ticks
-   doesn't resolve — the opponent isn't aggressive enough to eliminate
-   the other's command center in four minutes; M9's tuning pass makes a
-   10-15 minute match resolve reliably), feel pass (feedback cues,
-   responsiveness), placeholder audio cues. Exit: minimum viable loop
-   fully playable end to end against the AI.
+   recall correctly, the Stop/AttackMove hotkeys feel responsive, and the
+   M9 feedback cues (hit flashes, health bars, pings) actually look good.
+   M9's machine additions: the windowed client now reports the match
+   outcome in its `--frames` summary, and the full windowed vs-AI loop
+   was machine-run to resolution under Xvfb + llvmpipe (see DEBT-008).
+   What still needs a human: the pixel-level "does the full loop read
+   well" judgement.
+2. **M10 — Stabilization & declaration (Phase 5)**: the full A1–A15
+   acceptance sweep with written evidence, the 1000-match nightly soak
+   (A7), benchmark baselines (plan §15), the documentation pass, and
+   `docs/ALPHA_DECLARATION.md`. DEBT-011 (no audible audio backend)
+   is a declaration-time finding, not a blocker — plan §11.5's letter
+   is satisfied by the seam.
 3. Known limitations to carry forward honestly: the formation-less jam shape
    (A-040), path-smoothing-free staircases on detours, stalled construction
    sites when the builder dies (no reassignment command — A-045, carried
@@ -471,11 +532,9 @@ hotkeys, and the A15 restart cleanliness proof). What remains, in order:
    recompute (truly incremental updates wait for a profile-driven need),
    the scripted AI's sight-verification latency (a rejected order is
    retried only after its cooldown — A-062's deliberate shape), and the
-   scripted AI's lack of elimination focus (the Alpha vs Alpha match at
-   7200 ticks doesn't resolve — A-065's "scripted opponent, not an
-   evaluative one" shape; M9's tuning or a post-Alpha evaluative AI
-   addresses this). The AI is a scripted opponent, not an evaluative one
-   (plan §17 sequences that post-Alpha).
+   scripted AI's scriptedness itself (it closes games now — A-072's
+   re-march + CC focus + wave-mass tuning — but it is still a script,
+   not an evaluator; plan §17 sequences the evaluative AI post-Alpha).
 
 The match rules (M8) are complete: stage 10 fires `MatchEnded` exactly
 once, the outcome surfaces through the host, restart cleanliness (A15) is
@@ -694,6 +753,46 @@ existing `ai_host` seam.
   `MatchHost` (the M3 tests assert on outcomes, not on the host itself),
   so removing the derives is safe. Restart is by drop + reconstruct,
   not by clone-and-reset.
+- **M9 a chase order outlives its target unless combat pops it**. The
+  bug shape: `Order::AttackUnit` whose target died stays on the queue;
+  `movement_target` resolves to None (no path request), the stuck
+  detector skips empty-path movers, and the unit reports `Moving`
+  forever while frozen. movement.rs's own doc comment says the combat
+  pipeline pops them when the target dies — the code never did. Any
+  new death-adjacent removal path must keep stage 1's pop (or route
+  through it): the pop checks `world.entity(target).is_none()`, which
+  covers every removal (stage 8 deaths, node depletion) one tick after
+  the removal lands.
+- **M9 a wave that merely exists does not press**. The wave machine's
+  `army >= MIN_WAVE` liveness check read parked camps as an active
+  press: march orders drain (MoveFailed at a choke, completed over a
+  cleared target, replaced by a defense pull) and the army sits idle
+  with the state machine still `Attacking`. The fix is the re-march
+  cadence — while a wave is alive, its timer re-issues the march. Any
+  future scripted behavior with the same "state implies activity"
+  assumption needs the same timer-based liveness proof.
+- **M9 the wave-mass numbers are load-bearing**. Waves of six traded
+  forever in low-count attrition cycles (both sides rebuild ~1 unit per
+  300 ticks from one barracks; the cycles never accumulate the ~100
+  DPS-seconds needed to level 1900 HP of structures). Waves of ten —
+  with the round-robin Guardian in the mix — close in one successful
+  press. If a content pass changes build times or HP substantially,
+  re-run the 32-seed resolution sweep before believing anything.
+- **M9 feedback state is frame-indexed, not tick-indexed**. Flashes and
+  pings expire by *presented frame* count (the feel pass lives between
+  sim ticks); under the 5-tick catch-up cap a slow frame can run several
+  ticks — the cues stay smooth because they key off the draw loop, not
+  the tick counter. Keep it that way: tick-indexed cues would strobe
+  under catch-up.
+- **M9 the full-windowed Xvfb stack works on this machine family**.
+  Xvfb + `WGPU_BACKEND=gl` + `LIBGL_ALWAYS_SOFTWARE=1` + a userland
+  `LD_LIBRARY_PATH` with `libEGL.so`/`libGLESv2.so`/`libxkbcommon*.so`
+  (unversioned symlinks — xkbcommon-dl dlopens the unversioned names)
+  + a hand-written glvnd `__EGL_VENDOR_LIBRARY_DIRS` json pointing at
+  `libEGL_mesa.so.0` (the system had none) renders on llvmpipe and
+  lets the windowed client run a FULL vs-AI match to resolution —
+  the summary prints the outcome. `xvfb-run` itself is broken here
+  (no xauth): start `Xvfb :99` directly and set `DISPLAY=:99`.
 
 ## 10. Maintenance protocol — every future agent, every milestone
 
@@ -722,10 +821,10 @@ existing `ai_host` seam.
 | §6 simulation core | `crates/sim/src/` — `sim.rs` (pipeline), `world.rs` (stores), `hash.rs` (state hash), `fixture.rs` (trivial world) |
 | §7 entity model | `crates/sim/src/world.rs` + capability stores; `crates/sim_api` ids |
 | §8 commands | `crates/sim_api/src/lib.rs` (types) + `crates/sim/src/command.rs` (gate + application) |
-| §9 systems | per-milestone; see status board §6 (M1 spine; M4 movement; M5: economy.rs + production.rs + invariants.rs; M6: combat.rs + vision.rs; M7: crates/ai + engine ai_host; M8: sim/match_rules.rs + engine host extensions + client vs-AI loop) |
+| §9 systems | per-milestone; see status board §6 (M1 spine; M4 movement; M5: economy.rs + production.rs + invariants.rs; M6: combat.rs + vision.rs; M7: crates/ai + engine ai_host; M8: sim/match_rules.rs + engine host extensions + client vs-AI loop; M9: combat.rs's chase-order pop + ai/scripted.rs's wave closing + engine audio.rs) |
 | §10 content | `docs/CONTENT_GUIDE.md`, `content/` (live), `crates/content/src/` (schema/version/loader/defs/validate/bundle) |
-| §11 engine/client | `crates/engine` (clock, interpolate, host + pause/single-step + M8 controllers/log/outcome, camera, mesh, renderer + HudState, ai_host) + `crates/client` (wgpu renderer, UI overlay pass + M8 end screen, input + M8 control groups/hotkeys/restart, text.rs) — 3D per ADR-0001; DEBT-008 keeps only the human visual pass |
+| §11 engine/client | `crates/engine` (clock, interpolate, host + pause/single-step + M8 controllers/log/outcome, camera, mesh, renderer + HudState + M9 flashes on Frame, ai_host, audio) + `crates/client` (wgpu renderer, UI overlay pass + M8 end screen, input + M8 control groups/hotkeys/restart, text.rs, feedback.rs) — 3D per ADR-0001; DEBT-008 keeps only the human visual pass |
 | §12 tools | `crates/tools` — headless (demo + `--p1/--p2 ai|idle` + M8 winner line), replay-verify (content-identity world resolution), content-validate live |
-| §13 acceptance | `tests/` — A13 live; A1/A2 + spine proofs (M1); A3 scaffold + §10.4 pin (M2, `content_pipeline.rs`); A5 + A11 (M7, `ai.rs`); A15 + match rules (M8, `match_rules.rs`) |
+| §13 acceptance | `tests/` — A13 live; A1/A2 + spine proofs (M1); A3 scaffold + §10.4 pin (M2, `content_pipeline.rs`); A5 + A11 (M7, `ai.rs`); A15 + match rules (M8, `match_rules.rs`); the M9 resolution exit (M9, `alpha_loop.rs`) |
 | §14 milestones | this file §6 status board |
 | §15–§19 budgets/risks/debt | `plan.md`; debt live in `docs/DEBT.md` |

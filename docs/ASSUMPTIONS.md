@@ -554,3 +554,87 @@ confirms or rejects it.
   match seed) makes the command logs identical too — a same-seed restart
   reproduces the same match bit-for-bit. The windowed client's "Press R
   to restart" UX relies on this.
+
+- **A-071 (§9.2, M9).** A chase order dies with its target. movement.rs
+  documents "`AttackUnit` orders do NOT pop on path completion — the
+  combat pipeline pops them when the target dies" — but no code ever
+  popped them, and the M8 flagship's unresolved matches traced exactly
+  to that hole: defense `Attack` orders outlived their dead intruders,
+  the chasers froze reporting `Moving` (orders non-empty, path empty,
+  no stuck detection for empty paths), and both armies parked forever.
+  The M9 reading: stage 1 pops a head `AttackUnit` whose target is no
+  longer in the world (covering every removal path — stage 8 deaths,
+  node depletion — one tick after the removal), resets the runtime
+  path, and the queue behind it advances; the unit falls back to its
+  next order or pure auto-acquisition. Orders are canonical hashed
+  state, so this is a behavior-visible fix (the demo golden is
+  untouched: its lone Attack is gate-refused on the trivial world).
+
+- **A-072 (§9.6, M9).** The wave machine's closing semantics — the
+  M9 reading of "attack waves on timers and army-size thresholds".
+  While a wave is alive (`Attacking`), the pressure timer re-issues
+  the march for the whole living army at the cadence (WAVE_TIMER_TICKS,
+  2400): a wave whose march orders drained (a `MoveFailed` choke, a
+  completed march over a cleared target, a defense pull that brought
+  the army home) still exists in the state machine, and "army ≥
+  MIN_WAVE" is a liveness check, not an activity proof — a live wave
+  must press or it parks. The march aims at the enemy's command center
+  when it is in sight (`hunt_focus`, through the fog-filtered view —
+  a hidden CC is not focused) and falls back to the enemy start. The
+  mass tuning: waves of ten (from six) and an army cap of sixteen
+  (from twelve), measured across a 32-seed sweep — every match
+  resolves in 9.1k–23.3k ticks, inside the fifteen-minute budget.
+  Waves of six never closed: they traded in low-count attrition
+  cycles that never accumulated the damage to level a defended base.
+
+- **A-073 (§14 M8/M9, §13).** "A 10–15 minute match resolves
+  reliably" is read as a *ceiling*, not a floor: the match must end
+  with a declared winner inside the fifteen-minute budget (27,000
+  ticks at 30 Hz), after a real build phase (the resolution test also
+  asserts the match ran past tick 3000 — no instant snowballs). The
+  machine-verifiable form is `tests/alpha_loop.rs`: seeded AI-vs-AI
+  matches (a typical and a slow-resolving seed) resolve within the
+  budget; the same seed reproduces the winner, the end tick, and the
+  bit-identical command log + final hash. AI-vs-AI resolution times
+  (5–13 minutes in the sweep) are the machine's pace; a human's first
+  vs-AI playthrough runs longer at human speed, which is the
+  experience the window names.
+
+- **A-074 (§11.5, M9).** The Alpha audio shape is the seam, not the
+  sound: plan §11.5 says "an AudioSink trait fed by events, with a
+  null implementation and optionally a few placeholder cues" — the
+  M9 landing is exactly that (`engine::audio`: the trait, the pure
+  `cue_for` event → cue mapping, the null counter sink; the client
+  feeds it from the draw loop's event drain, FD-9 outward-only). The
+  cues are named feedback moments (attack landed, unit lost, unit
+  ready, structure done, delivery, match ended); spawn bookkeeping,
+  rejections, path failures, and depletion carry no cue. An audible
+  backend is DEBT-011 (post-Alpha, swapped behind the same trait) —
+  "placeholder audio cues" means the cue vocabulary exists and flows,
+  not that the Alpha ships sound.
+
+- **A-075 (§11.2, §11.5, M9).** The feel pass's scope: the three cues
+  a player needs to read the game through the placeholder art — hit
+  flashes (an `AttackHit` victim pushes toward hot white for 18
+  presented frames), health bars (the `hp_fraction_milli` field
+  `RenderEntity` has carried since M6, drawn as backing + fill rects
+  above the projected head, three color bands), and
+  command-acknowledgment pings (a fading crosshair at the clicked
+  ground position, the instant the command is issued). Tracer lines
+  (§11.2's overlay list) are NOT included: `AttackHit` carries the
+  target's position but not the attacker's, so an honest tracer needs
+  either an event field addition or an attacker lookup the cue layer
+  shouldn't do — deferred with the rest of the overlay layer (fog
+  visualization, minimap) to the milestones that need them. All three
+  cues are frame-indexed presentation state (DEBT-008's human pass
+  judges whether they read well); the geometry is pure and
+  unit-tested without a GPU.
+
+- **A-076 (§10.4, M9).** Manifest finalization was a review, not a
+  change: the M9 diagnosis attributed the unresolved matches to code
+  (the frozen chase orders, the parked wave machine, the wave mass),
+  and every §10.4 value survived the review unchanged — the content
+  hash (0x249b69f0ee343a10) and the §10.4 pin in
+  `tests/content_pipeline.rs` are unmoved by M9. The plan's
+  "starter values — placeholders, tunable as data only" posture
+  holds: tuning happened where the diagnosis said the defect lived.
