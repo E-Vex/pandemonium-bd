@@ -12,7 +12,7 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 [![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
 ![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
-![stage](https://img.shields.io/badge/stage-M6_combat_&_vision_done-9E6A03?labelColor=21262D)
+![stage](https://img.shields.io/badge/stage-M8_match_rules_&_full_loop_done-9E6A03?labelColor=21262D)
 ![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
 
 <picture>
@@ -134,9 +134,9 @@ simulation.
 ### Inside a tick
 
 The fixed update order inside `step()` never varies per content item (plan §6.3).
-At M6 the spine stages are live and the systems stages reflect their milestone status:
+At M8 all eleven stages are live and the systems reflect their milestone status:
 
-| # | Stage | State at M6 |
+| # | Stage | State at M8 |
 |---|---|---|
 | 1 | Apply commands — sort by (issuer, seq), validate, apply or reject | **live** |
 | 2 | Orders — resolve current orders into system intents | **live** (M4/M5/M6) |
@@ -147,61 +147,78 @@ At M6 the spine stages are live and the systems stages reflect their milestone s
 | 7 | Combat — immediate-hit pipeline: acquire → validate → hit → mitigate → apply → credit | **live** (M6) |
 | 8 | Death & cleanup — health advance, lifecycle events, removal, clear dead targets | **live** |
 | 9 | Vision — per-player per-tile three-state fog (Hidden/Explored/Visible) | **live** (M6) |
-| 10 | Match rules — defeat and victory evaluation | reserved (M8) |
+| 10 | Match rules — defeat/victory/resignation evaluation; `MatchEnded` fires once (idempotent) | **live** (M8) |
 | 11 | Finalize — tick++, flush events, periodic hash every 30 ticks | **live** |
 
 ## Current status
 
-**Milestones M0 through M7 are complete. M8 (Match rules & full loop) is next.** The live status board is
+**Milestones M0 through M8 are complete. M9 (Alpha content & feel pass) is next.** The live status board is
 [`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated as a bug.
 
-Built and verified through M6:
+Built and verified through M8:
 
 - **`fx`** — Q16.16 fixed-point math with 64-bit intermediates, round-toward-zero
   and saturating contracts (identical in debug and release), exact integer square
   root over the full u64 range, PCG32 RNG with canonical seeding, FNV-1a 64-bit
   hashing — all property-tested.
-- **`sim`** — the tick pipeline (all 11 stages planned; M1 spine live, M4 movement live,
-  M5 economy/production/construction live, M6 combat & vision live); entity and
-  capability stores kept in ascending-ID order by construction (12 capability
-  types — Attack added in M6); the shared command gate covering all command
-  kinds including Attack/AttackMove/Stop with rejection events and zero state
-  change on refusal; canonical little-endian state hash (v4); snapshots and
-  fog-filtered player views backed by the per-tick three-state fog cache.
+- **`sim`** — the tick pipeline (all 11 stages live, including M8's match rules);
+  entity and capability stores kept in ascending-ID order by construction
+  (12 capability types); the shared command gate covering all command kinds
+  including Attack/AttackMove/Stop with rejection events and zero state change
+  on refusal; canonical little-endian state hash (v4); snapshots and
+  fog-filtered player views backed by the per-tick three-state fog cache;
+  `outcome()` / `is_finished()` surfacing stage 10's `MatchEnded` (M8 — derived
+  state, not hashed, so the M7 goldens stay pinned).
 - **`content`** — strict RON schema with versioned loaders and forward migration
   (map v1→v2), precise validators at file and placement level, `ContentBundle`
   with canonical content hash and map id, `world()` seam producing the plain
   `TrivialWorld` the simulation receives with **zero changes under sim/sim_api/fx/ai**
-  (all 12 capabilities mapped — Attack mapped in M6, DEBT-006 retired).
+  (all 12 capabilities mapped).
 - **`replay`** — a checksummed canonical little-endian codec (record, load,
   validate) with typed errors. No serde: the dependency law forbids it here.
 - **`engine`** — `FixedTimestep` (30 Hz, 5-tick catch-up cap), `Interpolator`
   (snapshot blending, spawn/death handling), `MatchHost` (owns `Sim` privately,
-  `submit` + `advance` are the only mutation paths), `RtsCamera` (perspective
-  orbit, ground picking, box select), terrain mesh, `Renderer` trait + `NullRenderer`.
+  `submit` + `advance` are the only mutation paths; M8 adds `with_controllers`
+  for AI hosting, `log()` for the command log, `outcome()` / `is_finished()`
+  for the end screen), `AiMatchHost` (headless controller hosting), `RtsCamera`
+  (perspective orbit, ground picking, box select), terrain mesh, `Renderer`
+  trait + `NullRenderer`.
 - **`client`** — winit 0.30 + wgpu 26 windowed 3D renderer (depth buffer, terrain
   mesh with heightmap displacement, instanced placeholder entity boxes), selection
-  + right-click Move, fontdue text atlas + HUD/debug overlay, `--frames N` windowed
-  smoke, headless fallback for CI.
-- **`tools`** — headless runner (demo + `--p1/--p2 ai` controller matches), `replay-verify`, `content-validate` subcommands.
+  + right-click Move, fontdue text atlas + HUD/debug overlay, `--frames N`
+  windowed smoke, headless fallback for CI. **M8**: hosts the AI opponent through
+  `MatchHost::with_controllers`, renders the end-screen panel (VICTORY/DEFEAT/
+  MUTUAL DESTRUCTION), supports restart (R), control groups (1-9), and
+  Stop/AttackMove hotkeys (S/A).
+- **`tools`** — headless runner (demo + `--p1/--p2 ai` controller matches; M8
+  adds a `match ended:` line printing the winner), `replay-verify`,
+  `content-validate` subcommands.
 - **`tests/`** — determinism acceptance A1/A2 with pinned golden hashes, movement
   acceptance (M4), economy acceptance (M5: divergent openings, soak, invariants),
   combat acceptance (M6: composition + position matter, bit-identical, turret,
   A12 soak, legibility), vision acceptance (M6: A10 fog integrity, targeting both
   directions, three-state transition, FD-8), content pipeline acceptance (M2 +
   M5 train extension + M6 fight half — the data-defined kind now trains AND fights),
+  AI acceptance (M7: A5 parity, A11 issuer-blindness, AI-vs-AI determinism,
+  golden pin, log-alone replay), match-rules acceptance (M8: `MatchEnded` fires
+  on resignation and surfaces through the host; A15 restart cleanliness — two
+  fresh hosts from the same seed produce identical hashes, and with AI
+  controllers identical logs too; stage 10 is hash-neutral vs the M7 golden),
   architecture law (A13), plus proofs that IDs are never reused, iteration order
   is strictly ascending, invalid commands change no state, and the dependency
   law holds.
 - **CI** — fmt, clippy with `-D warnings`, and the test suite in dev *and*
   release on Linux, Windows, and macOS, plus the replay round-trip and a
-  binaries-run check. **269 tests green in dev, 264 in release** (5 should-panic
+  binaries-run check. **320 tests green in dev, 315 in release** (5 should-panic
   invariant-checker tests are debug-only by nature).
 
 Not built yet — on purpose, in milestone order:
 
-- AI: the scripted Alpha opponent plays the whole game through commands (`--p1 ai --p2 ai`); parity is structural (the crate reaches only `sim_api`).
-- No match rules: victory, defeat, resignation, end screen, restart land in M8.
+- M9 (Alpha content & feel pass): finalize manifest values, tune the AI script
+  (the scripted Alpha vs Alpha match at 7200 ticks doesn't resolve yet — the
+  opponent isn't aggressive enough to eliminate the other's command center;
+  M9's tuning makes a 10-15 minute match resolve reliably), feel pass
+  (feedback cues, responsiveness), placeholder audio cues.
 - No multiplayer: the hooks are designed in (`Command.tick`, hashed checkpoints
   for desync detection), the netcode is not.
 
@@ -303,7 +320,7 @@ one question and refuses to move on until it is answered.
 | **M5** — Economy & production *(P3: do openings diverge?)* | Resource ledger, gather loop (depletion + auto-seek), production queues (Train/Cancel/SetRally), construction lifecycle, population cap, requirements, footprints blocking tiles, A12 invariant checker | Scripted openings produce measurably different timelines; economy soak holds all invariants | ✔ **Complete** |
 | **M6** — Combat & vision *(P2: is combat legible and meaningful?)* | Immediate-hit attack pipeline (acquire → validate → hit → mitigate → apply → credit), Attack/AttackMove/Stop semantics, three-state fog (Hidden/Explored/Visible per player per tile), turret (no Move, Attack+Footprint), A12 combat invariants | Composition and position matter; fog integrity proven (A10); bit-identical run-to-run | ✔ **Complete** |
 | **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time | ✅ **Complete** |
-| **M8** — Match rules *(P5: do all systems work together?)* | Victory, defeat, resignation, end screen, restart, UI depth | 10–15 minute match versus the AI completes and restarts cleanly (A15) | ⬜ Pending |
+| **M8** — Match rules *(P5: do all systems work together?)* | Stage 10 defeat/victory/resignation evaluation, `MatchEnded` event (idempotent), `MatchHost` AI hosting + command log + outcome, windowed client end screen + restart (R) + control groups + Stop/AttackMove hotkeys | A15 restart cleanliness (two fresh hosts, same seed → identical hashes; with AI → identical logs too); stage 10 is hash-neutral (M7 golden holds) | ✅ **Complete** |
 | **M9** — Alpha content & feel | Manifest tuning, feedback pass, placeholder audio | Minimum viable loop playable end-to-end | ⬜ Pending |
 | **M10** — Stabilization & declaration | Full acceptance suite A1–A15, nightly soak, benchmark baselines | Every criterion verified with evidence, in writing | ⬜ Pending |
 
