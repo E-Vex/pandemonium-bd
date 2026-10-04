@@ -53,13 +53,20 @@ pub type Cost = Vec<(ResourceId, i64)>;
 ///
 /// Pacing: ten workers keep a Legion base fed (~12 Ore per second); supply
 /// blocks are prevented by the [`DEPOT_HEADROOM_TRIGGER`] margin; the first
-/// wave of six marches when the barracks has fielded it, with a 50-second
-/// timer pressure trigger for smaller attack groups.
+/// wave marches when the barracks has fielded it, with an 80-second
+/// timer pressure trigger for smaller attack groups (and, while a wave is
+/// out, the same cadence re-issues the march — a live wave never parks).
+/// M9's closing tuning: waves of ten (with the round-robin mix that is
+/// roughly one Guardian per three riflemen) carry enough sustained damage to
+/// level a defended base in one successful press, and the army cap leaves
+/// headroom for a decisive second wave — the M8 flagship stalled with waves
+/// of six trading forever in low-count attrition cycles that never
+/// accumulated killing power.
 const WORKER_TARGET: u32 = 10;
-const ARMY_CAP: u32 = 12;
-const WAVE_SIZE: u32 = 6;
-const MIN_WAVE: u32 = 3;
-const WAVE_TIMER_TICKS: u32 = 1500;
+const ARMY_CAP: u32 = 16;
+const WAVE_SIZE: u32 = 10;
+const MIN_WAVE: u32 = 4;
+const WAVE_TIMER_TICKS: u32 = 2400;
 const DEPOT_TARGET: u32 = 3;
 const DEPOT_HEADROOM_TRIGGER: u32 = 3;
 const BARRACKS_MIN_WORKERS: u32 = 6;
@@ -472,15 +479,16 @@ impl Controller for ScriptedController {
             }
         }
 
-        // ---- Attack waves: fire on army size or the pressure timer, then
-        //      regroup when the wave is spent. ----
+        // ---- Attack waves: fire on army size or the pressure timer, press on
+        //      the pressure cadence while attacking, and regroup when the
+        //      wave is spent. ----
         let army_ids: Vec<EntityId> = army.iter().map(|unit| unit.id).collect();
         match self.wave {
             WaveState::Massing => {
                 let size = army.len() as u32;
                 if let Some(enemy_start) = self.plan.enemy_start {
                     if size >= MIN_WAVE && (size >= WAVE_SIZE || tick >= self.next_wave_timer) {
-                        let target = self.wave_target(enemy_start);
+                        let target = self.wave_target(self.hunt_focus(&enemies, enemy_start));
                         self.emit(
                             out,
                             tick,
@@ -504,18 +512,54 @@ impl Controller for ScriptedController {
                 }
             }
             WaveState::Attacking { .. } => {
-                if army.len() < MIN_WAVE as usize {
-                    self.wave = WaveState::Massing;
-                    self.next_wave_timer = tick + WAVE_TIMER_TICKS;
-                    if let Some(barracks) = barracks {
-                        self.emit(
-                            out,
-                            tick,
-                            CommandKind::SetRally {
-                                producer: barracks.id,
-                                target: self.plan.home,
-                            },
-                        );
+                if let Some(enemy_start) = self.plan.enemy_start {
+                    if army.len() < MIN_WAVE as usize {
+                        // Spent: fewer than three survivors anywhere. Regroup
+                        // at home and rebuild.
+                        self.wave = WaveState::Massing;
+                        self.next_wave_timer = tick + WAVE_TIMER_TICKS;
+                        if let Some(barracks) = barracks {
+                            self.emit(
+                                out,
+                                tick,
+                                CommandKind::SetRally {
+                                    producer: barracks.id,
+                                    target: self.plan.home,
+                                },
+                            );
+                        }
+                    } else if tick >= self.next_wave_timer {
+                        // Still pressing, but the wave has gone quiet: its
+                        // march orders drained (failed at a choke, or
+                        // completed after the target area was cleared) or
+                        // defense pulled the army home after intruders. A
+                        // wave that merely *exists* does not press — the
+                        // timer re-issues the march at the pressure cadence,
+                        // so a live wave never parks. The kill focus is the
+                        // enemy's command center when it is in sight (the
+                        // elimination target), else the enemy start.
+                        let target = self.wave_target(self.hunt_focus(&enemies, enemy_start));
+                        if !army_ids.is_empty() {
+                            self.emit(
+                                out,
+                                tick,
+                                CommandKind::AttackMove {
+                                    units: army_ids,
+                                    target,
+                                },
+                            );
+                        }
+                        if let Some(barracks) = barracks {
+                            self.emit(
+                                out,
+                                tick,
+                                CommandKind::SetRally {
+                                    producer: barracks.id,
+                                    target,
+                                },
+                            );
+                        }
+                        self.next_wave_timer = tick + WAVE_TIMER_TICKS;
                     }
                 }
             }
@@ -589,13 +633,26 @@ impl ScriptedController {
         spots.get(index).copied()
     }
 
-    /// The wave's destination: the enemy start plus a seeded per-wave jitter,
-    /// so marching blobs do not funnel onto one exact tile (the M4 crowd
-    /// lesson). The only randomness the controller uses.
-    fn wave_target(&mut self, enemy_start: Vec2Fx) -> Vec2Fx {
+    /// The wave's preferred destination: the enemy's command center when it
+    /// is in sight (the elimination target — plan §9.7's defeat rule is zero
+    /// owned structures, and the CC is the one structure every player starts
+    /// with), else the enemy start position (map knowledge). Sight comes from
+    /// the fog-filtered view — a hidden CC is not focused.
+    fn hunt_focus(&self, enemies: &[EntityView], enemy_start: Vec2Fx) -> Vec2Fx {
+        enemies
+            .iter()
+            .find(|enemy| enemy.kind == self.plan.command_center)
+            .map(|cc| cc.pos)
+            .unwrap_or(enemy_start)
+    }
+
+    /// The wave's destination: the focus position plus a seeded per-wave
+    /// jitter, so marching blobs do not funnel onto one exact tile (the M4
+    /// crowd lesson). The only randomness the controller uses.
+    fn wave_target(&mut self, focus: Vec2Fx) -> Vec2Fx {
         let jx = self.rng.bounded(1201) as i32 - 600;
         let jy = self.rng.bounded(1201) as i32 - 600;
-        enemy_start + Vec2Fx::new(Fx::from_milli(jx), Fx::from_milli(jy))
+        focus + Vec2Fx::new(Fx::from_milli(jx), Fx::from_milli(jy))
     }
 }
 
@@ -1056,10 +1113,10 @@ mod tests {
                 unit: RAIDER
             }
         ));
-        // Twelve live army at the cap: no further training — and the full
+        // Sixteen live army at the cap: no further training — and the full
         // wave marches (which is what an at-cap army exists to do).
         let mut fresh = ScriptedController::new(plan());
-        let commands = think(&mut fresh, &world(0, 12));
+        let commands = think(&mut fresh, &world(0, 16));
         assert!(
             commands
                 .iter()
@@ -1123,10 +1180,10 @@ mod tests {
     #[test]
     fn waves_fire_on_size_and_regroup_when_spent() {
         let world = |tick: Tick, army: Vec<EntityView>| view(tick, 0, 4, 10, army);
-        // Five units (below WAVE_SIZE) before the timer: nothing marches.
+        // Nine units (below WAVE_SIZE) before the timer: nothing marches.
         let mut controller = ScriptedController::new(plan());
         let mut five = vec![entity(90, CC, 14, 14, MoveState::Idle)];
-        for id in 0..5 {
+        for id in 0..9 {
             five.push(entity(20 + id, RIFLE, 15, 15, MoveState::Idle));
         }
         assert!(think(&mut controller, &world(0, five)).is_empty());
@@ -1137,7 +1194,7 @@ mod tests {
             entity(90, CC, 14, 14, MoveState::Idle),
             entity(91, BARRACKS, 20, 10, MoveState::Idle),
         ];
-        for id in 0..6 {
+        for id in 0..10 {
             six.push(entity(20 + id, RIFLE, 15, 15, MoveState::Idle));
         }
         let attacking = world(0, six.clone());
@@ -1145,7 +1202,7 @@ mod tests {
         assert_eq!(commands.len(), 2, "AttackMove + SetRally: {commands:?}");
         match &commands[0].kind {
             CommandKind::AttackMove { units, target } => {
-                assert_eq!(units.len(), 6);
+                assert_eq!(units.len(), 10);
                 let delta = *target - Vec2Fx::from_ints(50, 50);
                 let bound = Fx::from_milli(600);
                 assert!(
@@ -1163,8 +1220,8 @@ mod tests {
             }
         ));
 
-        // The wave is spent (fewer than MIN_WAVE survivors): regroup, rally
-        // home, and the timer restarts.
+        // The wave is spent (fewer than MIN_WAVE survivors — two is below
+        // four): regroup, rally home, and the timer restarts.
         let survivors = world(
             60,
             vec![
@@ -1179,6 +1236,67 @@ mod tests {
         assert!(matches!(
             commands[0].kind,
             CommandKind::SetRally { ref target, .. } if *target == Vec2Fx::from_ints(14, 14)
+        ));
+    }
+
+    /// M9's stall fix: a wave that is still alive but has gone quiet (its
+    /// march orders drained — failed at a choke, or completed after the
+    /// target area was cleared — or defense pulled the army home) re-issues
+    /// the march on the pressure cadence. A wave that merely exists does not
+    /// press; the timer makes it press again. The march aims at the enemy
+    /// command center when it is in sight (the elimination target).
+    #[test]
+    fn a_live_wave_re_marches_when_its_timer_expires() {
+        let world = |tick: Tick, entities: Vec<EntityView>| view(tick, 0, 4, 40, entities);
+        let mut controller = ScriptedController::new(plan());
+        // Fire the wave: ten riflemen at home, tick 0.
+        let mut marching = vec![
+            entity(90, CC, 14, 14, MoveState::Idle),
+            entity(91, BARRACKS, 20, 10, MoveState::Idle),
+        ];
+        for id in 0..10 {
+            marching.push(entity(20 + id, RIFLE, 15, 15, MoveState::Idle));
+        }
+        let fired = think(&mut controller, &world(0, marching.clone()));
+        assert_eq!(fired.len(), 2, "AttackMove + SetRally: {fired:?}");
+
+        // Mid-press (before the cadence): the quiet wave — every unit idle,
+        // its march orders long gone — is NOT re-tasked.
+        let quiet = world(1000, marching.clone());
+        assert!(think(&mut controller, &quiet).is_empty());
+
+        // The cadence expires with the wave alive: the march re-issues for
+        // the whole army, and the rally follows it. The enemy CC is in
+        // sight at (48, 47), so the march aims there (hunt focus), not at
+        // the enemy start (50, 50).
+        let mut stalled = vec![
+            entity(90, CC, 14, 14, MoveState::Idle),
+            entity(91, BARRACKS, 20, 10, MoveState::Idle),
+            foreign(95, CC, 48, 47),
+        ];
+        for id in 0..10 {
+            stalled.push(entity(20 + id, RIFLE, 30, 30, MoveState::Idle));
+        }
+        let commands = think(&mut controller, &world(2400, stalled));
+        assert_eq!(commands.len(), 2, "AttackMove + SetRally: {commands:?}");
+        match &commands[0].kind {
+            CommandKind::AttackMove { units, target } => {
+                assert_eq!(units.len(), 10, "the whole living army re-marches");
+                let delta = *target - Vec2Fx::from_ints(48, 47);
+                let bound = Fx::from_milli(600);
+                assert!(
+                    delta.x.abs() <= bound && delta.y.abs() <= bound,
+                    "the re-march aims at the sighted enemy CC: {delta:?}"
+                );
+            }
+            other => panic!("expected an attack move, got {other:?}"),
+        }
+        assert!(matches!(
+            commands[1].kind,
+            CommandKind::SetRally {
+                producer: EntityId(91),
+                ..
+            }
         ));
     }
 
@@ -1198,9 +1316,9 @@ mod tests {
             ],
         );
         assert!(think(&mut controller, &early).is_empty());
-        // At the timer, three units (MIN_WAVE) march.
+        // At the timer, four units (MIN_WAVE) march.
         let on_time = view(
-            1500,
+            2400,
             0,
             4,
             10,
@@ -1209,6 +1327,7 @@ mod tests {
                 entity(20, RIFLE, 15, 15, MoveState::Idle),
                 entity(21, RIFLE, 16, 15, MoveState::Idle),
                 entity(22, RIFLE, 15, 16, MoveState::Idle),
+                entity(23, RIFLE, 16, 16, MoveState::Idle),
             ],
         );
         let commands = think(&mut controller, &on_time);

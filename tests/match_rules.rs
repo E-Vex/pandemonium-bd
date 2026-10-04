@@ -263,7 +263,7 @@ fn stage_10_does_not_change_the_m7_golden_checkpoint_trail() {
     while host.tick() < 7200 {
         host.advance();
     }
-    assert_eq!(host.state_hash(), 0x5a98_4c54_4db1_e82e);
+    assert_eq!(host.state_hash(), 0x01b3_b60b_741f_03e9);
 }
 
 // ---------------------------------------------------------------------------

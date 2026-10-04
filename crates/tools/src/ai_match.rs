@@ -334,6 +334,6 @@ mod tests {
             match_result.replay.checkpoints.len(),
             (7200 / 30) as usize + 1
         );
-        assert_eq!(match_result.replay.final_hash, 0x5a98_4c54_4db1_e82e);
+        assert_eq!(match_result.replay.final_hash, 0x01b3_b60b_741f_03e9);
     }
 }
