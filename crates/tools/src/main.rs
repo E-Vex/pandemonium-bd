@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
+use pandemonium_sim_api::PlayerId;
 
 mod ai_match;
 mod demo;
@@ -151,6 +152,17 @@ fn main() -> anyhow::Result<()> {
                     println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
                 }
                 println!("  final hash:  {:#018x}", match_result.replay.final_hash);
+                match match_result.summary.winner {
+                    Some(winner) if winner == PlayerId::NEUTRAL => {
+                        println!("  match ended: mutual destruction (no winner)");
+                    }
+                    Some(winner) => {
+                        println!("  match ended: player {} wins", winner.0);
+                    }
+                    None => {
+                        println!("  match ended: unresolved (ran the tick budget)");
+                    }
+                }
                 if let Some(path) = record {
                     let bytes = match_result.replay.encode();
                     std::fs::write(&path, &bytes)

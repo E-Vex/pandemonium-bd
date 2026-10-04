@@ -48,6 +48,11 @@ pub struct MatchSummary {
     pub attack_hits: Vec<u32>,
     /// Per-player lost entities (`Died`).
     pub deaths: Vec<u32>,
+    /// The match winner (M8, plan §9.7). `None` while the match is ongoing
+    /// (the runner hit its tick budget before anyone was eliminated);
+    /// `Some(PlayerId)` once stage 10 fired `MatchEnded`. `Some(NEUTRAL)`
+    /// for the mutual-destruction edge case (no survivors).
+    pub winner: Option<PlayerId>,
 }
 
 /// The full outcome of one headless AI match: the replay record (log +
@@ -123,6 +128,7 @@ pub fn run_ai_match(
         built: vec![0; players.len()],
         attack_hits: vec![0; players.len()],
         deaths: vec![0; players.len()],
+        winner: None,
     };
     let mut owners: BTreeMap<EntityId, PlayerId> = BTreeMap::new();
     let player_index = |owners: &BTreeMap<EntityId, PlayerId>, id: EntityId| -> Option<usize> {
@@ -170,6 +176,13 @@ pub fn run_ai_match(
                     if let Some(index) = player_index(&owners, *attacker) {
                         summary.attack_hits[index] += 1;
                     }
+                }
+                // M8: MatchEnded records the winner. The host keeps running
+                // its tick budget regardless — the M7 "matches complete"
+                // contract is "ran the budget under the A12 checker without
+                // crashing", not "the match resolved".
+                Event::MatchEnded { winner } => {
+                    summary.winner = Some(*winner);
                 }
                 _ => {}
             }
@@ -294,5 +307,28 @@ mod tests {
         let world =
             resolve_replay_world(&repo_content(), &replay).expect("the demo replay resolves");
         assert_eq!(world.content_hash(), replay.content_hash);
+    }
+
+    #[test]
+    fn an_ai_vs_ai_match_summary_carries_a_winner_field() {
+        // Stage 10 (M8) adds the `winner` field to MatchSummary. Over the
+        // real content at the flagship budget the scripted Alpha vs Alpha
+        // match doesn't resolve — the opponent isn't aggressive enough to
+        // eliminate the other's command center in four minutes (the plan
+        // notes the Alpha is a scripted opponent, not an evaluative one).
+        // The field is therefore `None` here; the M8 acceptance test
+        // (tests/match_rules.rs) drives a forced defeat to assert
+        // `MatchEnded` actually fires and sets the field.
+        let bundle = ContentBundle::load_dir(&repo_content()).expect("repo content loads");
+        let match_result =
+            run_ai_match(&bundle, 7, 7200, Slot::Ai, Slot::Ai).expect("the match runs");
+        // The field exists and is readable (the structural assertion).
+        let _ = match_result.summary.winner;
+        // The M7 golden contract holds: 241 checkpoints, final hash unchanged.
+        assert_eq!(
+            match_result.replay.checkpoints.len(),
+            (7200 / 30) as usize + 1
+        );
+        assert_eq!(match_result.replay.final_hash, 0x679f_4713_1147_65c9);
     }
 }
