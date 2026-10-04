@@ -28,10 +28,10 @@
 |---|---|
 | What | Pandemonium — an RTS **foundation** that grows into a game (architecture first, content is data) |
 | Stack | Rust, fully custom engine (own loop, entity store, renderer on top of winit/wgpu — no game engine, no ECS framework) |
-| Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/pandemonium-bd`) |
+| Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/bd` — the M9.1 session's path; wherever it lives, `git status` must be clean before work begins) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
 | Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
-| Status | **M9 (Alpha content & feel pass) COMPLETE** — the minimum viable loop is playable end to end against the AI. The M8 handoff's one honest gap (the scripted Alpha vs Alpha match at 7200 ticks never resolved) closed in three moves: (1) a simulation fix — a chase order whose commanded target died was never popped, so both sides' defense orders outlived their dead intruders and the armies froze mid-chase forever, still reporting `Moving` with empty paths (movement.rs documents the pop as the combat pipeline's job; the code never did it — combat stage 1 pops it now, A-071); (2) the wave machine re-issues its march on the pressure cadence while a wave is alive, so a live wave never parks (march orders can drain — failed at a choke, completed over a cleared target, or replaced by a defense pull), and it focuses the sighted enemy command center (the elimination target) through the fog-filtered view; (3) waves of ten (from six) with an army cap of sixteen (from twelve) — waves of six traded forever in low-count attrition cycles that never accumulated the damage to level a defended base. Measured across a 32-seed sweep: every match resolves, 9.1k–23.3k ticks, inside the fifteen-minute budget (`tests/alpha_loop.rs` pins it). The feel pass landed: hit flashes (entities push toward hot white on `AttackHit`), health bars over damaged units (`hp_fraction_milli` finally drawn), command-acknowledgment pings, and the plan §11.5 audio seam (`engine::audio`: `AudioSink` trait + a pure event → cue mapping + a null counter sink — no audible backend yet, DEBT-011). The manifest review found no value to change — the stall was code, not content (§10.4 stays pinned). The M7-era AI-vs-AI golden moved (twice — once per behavior change, each re-pinned with its written reason) and the demo golden is untouched. 333/333 dev tests green. **Next: M10 (Stabilization & declaration)** | defeat = zero owned Footprint structures OR resigned; victory = one survivor; `MatchEnded` fires exactly once (idempotent — `Sim::outcome` caches the result). The defeat check only fires when the match is "structure-bearing" (A-067: at least one player owns a structure) so the M1 spine-test fixture and the M3 headless smoke path stay green; the Alpha content (every player starts with a Command Center) ends the moment a side is eliminated. The outcome is derived state (A-066: not part of the canonical hash — a pure function of the entity set and the players' `resigned` flags, both of which ARE hashed), the same reasoning as fog (A-059). The M7 goldens stay green by construction: no `STATE_ENCODING_VERSION` bump, no golden regen. `MatchHost` extended with optional AI controllers (`with_controllers` — the M8 client's hosting seam, A-063), a command log (`log()`), and the match outcome (`outcome()` / `is_finished()`). The windowed client hosts its vs-AI opponent through this same seam, renders the end-screen panel (VICTORY/DEFEAT/MUTUAL DESTRUCTION), supports restart (R — drop + reconstruct with fresh controllers from the same bundle + seed, A15), control groups (1-9, Ctrl+digit assigns, digit recalls), and Stop/AttackMove hotkeys (S/A). A15 green (two fresh `MatchHost` instances from the same seed produce identical hashes; with AI controllers the deterministic controller RNG makes the command logs identical too). 320/320 dev tests green. **Next: M9 (Alpha content & feel pass)** |
+| Status | **M9.1 (input hotfix) COMPLETE on top of M9 — the loop is playable, and now *controllable*.** The DEBT-008 human pass finally ran (the project owner played the windowed build) and reported: *"nothing is moving, the control is bad, D goes left and A goes right, I can't move with the mouse, I can't order my army to move or attack, nothing appears on the screen."* Every symptom was real and every root cause was client-side (the simulation itself was machine-verified through M9 and untouched): (1) the camera's screen-right axis had been **negated since M3** — D panned left, A right, W retreated, S advanced; no sim-side test can catch presentation direction, and nobody had ever played it; (2) the mouse **could not move the camera at all** — plan §11.3's "pan by edge + keys" and "zoom toward the cursor" were never implemented, and the wheel direction was inverted (orbit-only); (3) right-click only ever issued `Move` — **the client had no way to order an attack at all** (§11.3's right-click *context* command was unimplemented); (4) 'A' fired attack-move on key-down *and on every OS key repeat* while also being a pan key; (5) **rejected orders were silent** — `CommandRejected` events were dropped, so every illegal order read as "the controls don't work"; (6) the opening camera framed the map center at 58 tiles out — the starting force read as specks ("nothing appears"); (7) `frames_presented` only advanced in `--frames` verification mode, so M9's flashes and pings **never expired and accumulated forever** in normal play. M9.1 fixes all seven: corrected pan axes (with direction-pinning tests at yaw 0 and 90°), WASD + arrow-key panning at frame-rate-independent speed, edge scrolling + middle-drag grab-pan + wheel zoom-toward-cursor, right-click context resolution (enemy → Attack, node → Gather for workers, ground → Move; `client::orders`), 'A' arms attack-move for the next left-click (HUD line included; Esc/right-click cancels), key-repeat guards, refusal cues (red square at the click point + HUD reason line; the smoke run now pins the wiring with a deliberately invalid order), selection corner brackets, an opening camera focused on the player's start at 26 tiles (re-framed on restart), map-bounds clamping, and a viewport-centered end screen. Machine-verified end to end under Xvfb + llvmpipe with XTEST injection (the DEBT-008 recipe, extended — see §8): a 900-frame windowed run with drag-box selection of the 5 start entities and 2 submitted commands (a context Move and an armed attack-move), the loop healthy through pan, zoom, and middle-drag. 352 dev / 347 release tests green (19 new: 7 camera, 8 context-resolution, 4 feedback). **Zero golden movement** — the fix is 100% presentation/input (no sim/ai/content files touched): demo `0x9d5ba9b565060336`, flagship `0x01b3b60b741f03e9`, content `0x249b69f0ee343a10` all re-verified bit-identical. M9 remains complete underneath (the frozen-army chase-order pop, the re-marching wave machine with CC focus, waves of ten — matches resolve in 9.1k–23.3k ticks across a 32-seed sweep, `tests/alpha_loop.rs`; the feel pass: hit flashes, health bars, command pings, the §11.5 audio seam). DEBT-008 is narrowed to its last inch: the human *re-verification* of the fixed build on a real display (the feel judgment). **Next: M10 (Stabilization & declaration)** | defeat = zero owned Footprint structures OR resigned; victory = one survivor; `MatchEnded` fires exactly once (idempotent — `Sim::outcome` caches the result, derived state per A-066, not hashed — the same reasoning as fog A-059; the defeat check fires only in structure-bearing matches, A-067). `MatchHost` hosts the vs-AI opponent (`with_controllers`), keeps the command log, surfaces the outcome; the client's full loop (hosted AI, end screen, R restart, control groups, context orders, feedback cues) runs through it. A15 green (two fresh hosts from the same seed: identical hashes; with AI controllers: identical logs too). |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -50,7 +50,7 @@
 
 ## 4. How to verify the current state
 
-Run from the repo root (`/home/z/my-project/pandemonium-bd`):
+Run from the repo root (the clone — `/home/z/my-project/bd` this handoff):
 
 ```bash
 cargo fmt --all -- --check                 # formatting
@@ -63,15 +63,16 @@ cargo run -p pandemonium-client             # windowed 3D client; headless smoke
 cargo run -p pandemonium-client -- --frames 900   # windowed smoke: auto-exit + evidence summary
 ```
 
-Expected at this handoff: all commands succeed; 333 tests pass in dev
-(328 in release — the 5 should-panic invariant-checker tests are
+Expected at this handoff: all commands succeed; 352 tests pass in dev
+(347 in release — the 5 should-panic invariant-checker tests are
 debug-only by nature — `debug_assert` compiles out in release): 39 fx
 unit tests, 15 fx property tests, 16 ai unit tests (15 + M9's
 re-march pin), 105 sim unit tests (103 + M9's two chase-order-pop
-tests), 4 sim_api unit tests, 8 replay codec tests, 41 engine tests
-(38 + M9's three audio-cue tests), 10 client tests (5 text-atlas + 5
-feedback), 11 tools tests, 33 content unit tests, and the acceptance
-suite: 9 determinism (A1/A2), 4 content-pipeline, 3 movement, 4
+tests), 4 sim_api unit tests, 8 replay codec tests, 48 engine tests
+(41 + M9.1's seven camera direction/pan_world/zoom_toward/focus
+pins), 22 client tests (10 + M9.1's eight context-resolution and
+four refusal/bracket tests), 11 tools tests, 33 content unit tests,
+and the acceptance suite: 9 determinism (A1/A2), 4 content-pipeline, 3 movement, 4
 economy, 7 combat, 5 vision, 2 architecture-law, 8 M7 tests
 (`tests/ai.rs`: two A5 structural audits, the A5 ledger identity, the
 A11 battery, the A11 proptest fuzz, completion + determinism, the
@@ -84,13 +85,16 @@ event stream), and 3 M9 tests (`tests/alpha_loop.rs`: resolution
 within the fifteen-minute budget across seeds, end-to-end resolution
 determinism, the windowed host's vs-AI loop closing naturally).
 The headless demo's final hash is still 0x9d5ba9b565060336 (seed 7,
-300 ticks — unchanged through M9: its lone Attack command is
+300 ticks — unchanged through M9 and M9.1: its lone Attack command is
 gate-refused on the trivial world, so the chase-order pop never
 fires there); the AI-vs-AI flagship (seed 7, 7200 ticks) pins
 0x01b3b60b741f03e9 with tick-0 hash 0x61613bca16b8f00e — the tick-0
 hash is the M7 original (no orders exist at tick 0); the final hash
 moved twice in M9 (the chase-order pop, then the AI tuning), each
-re-pinned with its written reason in the test. The `--p1 ai --p2 ai`
+re-pinned with its written reason in the test — and M9.1 moved
+nothing (all three hashes re-verified bit-identical: the hotfix
+touches only the client and the engine's camera, both above the sim
+boundary). The `--p1 ai --p2 ai`
 runner prints a `match ended:` line; at longer budgets it now ends
 naturally (player N wins) — run `--ticks 27000 --p1 ai --p2 ai` to
 watch a full match resolve.
@@ -101,13 +105,21 @@ pandemonium-client` prints the no-display finding and runs the headless
 smoke pass — which since M9 drives the windowed path's exact hosting
 seam (the AI opponent included) and prints the feedback-wiring
 evidence line (events fed the audio sink, cues mapped, attacks
-flashed); on a desktop it opens the window; with `--frames N` the
+flashed, and since M9.1 refused orders surfaced — the smoke submits
+one deliberately invalid Move and pins its rejection through the
+refusal cues); on a desktop it opens the window; with `--frames N` the
 windowed run exits after N frames and prints the evidence summary,
 including whether the match ended and who won. The M9 full-windowed
-verification: under Xvfb + llvmpipe (320x180 screen) a `--frames 40000`
-run hosted the AI opponent through the real wgpu pipeline and the match
-resolved naturally — "match ended, player 1 wins (tick 5250)" — recorded
-in DEBT-008 with the environment recipe. On a headless
+verification: under Xvfb + llvmpipe a `--frames 40000` run hosted the
+AI opponent through the real wgpu pipeline and the match resolved
+naturally — "match ended, player 1 wins (tick 5250)" — recorded in
+DEBT-008 with the environment recipe. The M9.1 input verification
+(same recipe, extended — see §8): a 900-frame windowed run with XTEST
+injection drag-box-selected the 5 start entities, submitted 2 commands
+(a right-click context Move and an armed-'A' attack-move), and kept
+the loop healthy through pan keys, wheel zoom, and middle-drag —
+"windowed smoke: 900 frames presented, 2 commands submitted,
+selection 5, match ongoing". On a headless
 machine the windowed path is verified on Xvfb + llvmpipe per DEBT-008
 (selection + Move commands provably work; the M8 additions — end screen,
 restart, control groups, Stop/AttackMove — are compiled and clippy-clean
@@ -157,6 +169,7 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M7 | AI through commands (P4) | ✅ **complete** | A5 + A11 green (ai depends only on fx+sim_api, re-asserted; the sim never references the ai crate; the ledger identity — starting + deliveries − accepted data-defined costs — holds per player; every entity beyond the starting forces traces to an accepted Train/Build; the 20-pair mirrored battery over every reachable rejection class is label-blind; proptest fuzz of random mirrored commands); AI-vs-AI headless matches complete (3 seeds × 2400 ticks under the A12 checker, bit-identical re-runs, seed divergence); golden pinned (0x679f4713114765c9); AI-driven logs replay through the codec (A2); DEBT-005 repaid |
 | M8 | Match rules & full loop (P5) | ✅ **complete** | Stage 10 (plan §6.3.10, §9.7) lands: defeat = zero owned Footprint structures OR resigned; victory = one survivor; `MatchEnded` fires exactly once (idempotent — `Sim::outcome` caches the result). The defeat check only fires when the match is "structure-bearing" (A-067) so the M1 spine-test fixture and the M3 headless smoke stay green. The outcome is derived state (A-066: not part of the canonical hash) — the M7 goldens stay green by construction (no `STATE_ENCODING_VERSION` bump). `MatchHost` extended with optional AI controllers (`with_controllers`), a command log (`log()`), and the match outcome (`outcome()` / `is_finished()`). The windowed client hosts its vs-AI opponent through this seam, renders the end-screen panel (VICTORY/DEFEAT/MUTUAL DESTRUCTION), supports restart (R — drop + reconstruct, A15), control groups (1-9), and Stop/AttackMove hotkeys (S/A). A15 green (two fresh hosts, same seed → identical hashes; with AI → identical logs too). The `--p1 ai --p2 ai` runner prints a `match ended:` line. DEBT-008 narrowed by M8 (the human visual pass over the full vs-AI loop remains) |
 | M9 | Alpha content & feel pass | ✅ **complete** | The M8 gap closed: the frozen-chase-order sim bug fixed (defense orders outliving their dead targets froze both armies; combat stage 1 pops them now — 2 unit tests), the wave machine re-marches on the pressure cadence and focuses the sighted enemy CC (re-pinned + a new pin test), waves of ten / army cap sixteen. `tests/alpha_loop.rs`: AI-vs-AI resolves inside 27000 ticks across seeds (measured 9.1k–23.3k over a 32-seed sweep), end-to-end resolution determinism (same seed → same winner, end tick, log, final hash), and the windowed host's vs-AI loop closes naturally (an idle human's base falls to the AI, `outcome()` surfaces through the end-screen boundary). Feel pass: hit flashes, health bars, command pings (5 unit tests, no GPU needed), the `AudioSink` seam + placeholder cue set (3 unit tests; no audible backend — DEBT-011). Manifest review: no value changed — the stall was code, not content (§10.4 pins hold). Goldens: the demo untouched; the AI flagship re-pinned twice with written reasons |
+| M9.1 | Input hotfix (the DEBT-008 human pass findings) | ✅ **complete** | The first human playtest of the windowed client (the project owner, on a real display) reported every input-layer defect the machine pass could not see: mirrored WASD/pan axes (the camera's screen-right vector negated since M3), W/S inverted, no mouse camera control (plan §11.3's edge pan + zoom-toward-cursor never implemented; wheel direction inverted), no attack order path (right-click context resolution unimplemented), 'A' firing attack-move on key-down *and key repeats* while doubling as a pan key, silent rejections, an illegible 58-tile opening zoom, and M9's cues never expiring (the feedback clock only advanced in `--frames` mode). All fixed, all pinned: 7 camera direction/API tests, 8 context-resolution tests, 4 refusal/bracket tests; the smoke run pins the refusal wiring with a deliberately invalid order; Xvfb + XTEST injection re-verified the windowed loop (900 frames, 5-entity drag selection, context Move + armed attack-move submitted). Zero golden movement — presentation/input only. DEBT-008 narrowed to the human re-verification of *this* build |
 | M10 | Stabilization & declaration | ⬜ pending | every A1–A15 criterion verified; soak green; docs/ALPHA_DECLARATION.md with evidence |
 
 **The plan was broken into parts along these milestones.** Parts 1–8 (M0–M3,
@@ -506,18 +519,20 @@ event, the `MatchHost` extensions for AI hosting + outcome + log, the
 windowed client's vs-AI loop with end screen + restart + control groups +
 hotkeys, and the A15 restart cleanliness proof). What remains, in order:
 
-1. **The human visual pass of DEBT-008 (small, narrowed further by M9)**: on a
-   desktop display, play `cargo run -p pandemonium-client` through a full
-   vs-AI match to resolution — the map + entities render, selection and
-   right-click Move work (both already machine-proven), the end-screen
-   panel reads well, restart (R) reconstructs cleanly, control groups
-   recall correctly, the Stop/AttackMove hotkeys feel responsive, and the
-   M9 feedback cues (hit flashes, health bars, pings) actually look good.
-   M9's machine additions: the windowed client now reports the match
-   outcome in its `--frames` summary, and the full windowed vs-AI loop
-   was machine-run to resolution under Xvfb + llvmpipe (see DEBT-008).
-   What still needs a human: the pixel-level "does the full loop read
-   well" judgement.
+1. **The human *re*-verification pass of DEBT-008 (narrowed to its last
+   inch by M9.1)**: the human pass finally RAN (the project owner played
+   the M9 windowed build on a real display) — and it did its job: it
+   found every input-layer defect the machine pass is structurally blind
+   to (mirrored pan axes since M3, no mouse camera control, no attack
+   order path, key-repeat spam, silent rejections, the illegible opening
+   zoom, never-expiring cues). M9.1 fixed them all; the machine half is
+   re-proven (Xvfb + XTEST: 900 frames, 5-entity drag selection, context
+   Move + armed attack-move). What still needs a human: play the M9.1
+   build — `cargo run -p pandemonium-client` — through a full vs-AI
+   match to resolution and judge that the controls now *feel* right
+   (pan/zoom/edge-scroll/middle-drag, right-click context orders, the
+   armed-A flow, the refusal cues, the selection brackets, the opening
+   framing, the end screen + restart). Then DEBT-008 closes.
 2. **M10 — Stabilization & declaration (Phase 5)**: the full A1–A15
    acceptance sweep with written evidence, the 1000-match nightly soak
    (A7), benchmark baselines (plan §15), the documentation pass, and
@@ -543,6 +558,36 @@ existing `ai_host` seam.
 
 ## 9. Sharp edges and gotchas discovered along the way
 
+- **Presentation direction is invisible to the simulation's test wall** (the
+  M9.1 lesson, and the whole reason the input layer shipped mirrored): the
+  canonical hash pins behavior, not feel — the camera's screen-right axis had
+  been negated since M3, every milestone green, until a human pressed D and
+  the view went left. Two defenses now exist: direction-pinning tests
+  (pan/zoom/focus assert *which way* in world coordinates, at yaw 0 and 90°),
+  and the DEBT-008 human pass as a first-class milestone exit. Any new
+  camera/feel primitive needs both.
+- **A winit key repeat re-fires the key-down edge**: `event.repeat` must be
+  filtered, or every held hotkey re-fires once per OS repeat (holding S to
+  pan spammed Stop orders — and 'A' spammed attack-moves at the cursor).
+  The client returns early on repeats before any hotkey logic runs.
+- **Frame-counted presentation state needs a clock that always advances**:
+  M9's flashes and pings expired by `frames_presented`, but that counter only
+  advanced in the `--frames` verification mode — in normal play it was pinned
+  at zero, so every cue accumulated forever. It now increments on every
+  presented frame. Any future "expires after N frames" state must share that
+  clock, and the verification budget must read the counter without owning it.
+- **An Xvfb screen must be at least as large as the client window** for XTEST
+  input to arrive: the default window is 800x600, and on a 640x360 screen the
+  pointer reports the root window — the mapped window never receives button
+  events (it "looks" visible; `xdotool search --onlyvisible` lists it). Use
+  `Xvfb :99 -screen 0 1280x800x24` for the 800x600 default window.
+- **No window manager means no keyboard focus — and installing one breaks the
+  GL surface**: keyboard events go nowhere without a WM, but running twm
+  under Xvfb + llvmpipe makes wgpu fail adapter creation ("gl not compatible
+  with provided surface"). The working recipe is no WM at all +
+  `xdotool windowfocus <id>` (XSetInputFocus) for keyboard, XTEST for mouse
+  (mouse events need no focus; the pointer just has to be over the window,
+  which is what the screen-size rule above guarantees).
 - **fontdue reports y-up metrics**: `Metrics::ymin` counts upward from the
   baseline, so a y-down screen-space top edge is `baseline - (ymin + height)`
   (see `text.rs`'s `bearing_y`). Getting this backwards puts glyphs below
@@ -823,7 +868,7 @@ existing `ai_host` seam.
 | §8 commands | `crates/sim_api/src/lib.rs` (types) + `crates/sim/src/command.rs` (gate + application) |
 | §9 systems | per-milestone; see status board §6 (M1 spine; M4 movement; M5: economy.rs + production.rs + invariants.rs; M6: combat.rs + vision.rs; M7: crates/ai + engine ai_host; M8: sim/match_rules.rs + engine host extensions + client vs-AI loop; M9: combat.rs's chase-order pop + ai/scripted.rs's wave closing + engine audio.rs) |
 | §10 content | `docs/CONTENT_GUIDE.md`, `content/` (live), `crates/content/src/` (schema/version/loader/defs/validate/bundle) |
-| §11 engine/client | `crates/engine` (clock, interpolate, host + pause/single-step + M8 controllers/log/outcome, camera, mesh, renderer + HudState + M9 flashes on Frame, ai_host, audio) + `crates/client` (wgpu renderer, UI overlay pass + M8 end screen, input + M8 control groups/hotkeys/restart, text.rs, feedback.rs) — 3D per ADR-0001; DEBT-008 keeps only the human visual pass |
+| §11 engine/client | `crates/engine` (clock, interpolate, host + pause/single-step + M8 controllers/log/outcome, camera + M9.1's unmirrored axes/pan_world/zoom_toward/focus/map clamp, mesh, renderer + HudState + M9 flashes on Frame, ai_host, audio) + `crates/client` (wgpu renderer, UI overlay pass + M8 end screen + M9.1 viewport-centered, input — M8 control groups/hotkeys/restart, M9.1's WASD/arrows/edge/middle-drag/zoom-toward + repeat guard + armed-'A' — text.rs, feedback.rs + M9.1's brackets/refusals, orders.rs = the §11.3 right-click context resolution) — 3D per ADR-0001; DEBT-008 keeps only the human re-verification |
 | §12 tools | `crates/tools` — headless (demo + `--p1/--p2 ai|idle` + M8 winner line), replay-verify (content-identity world resolution), content-validate live |
 | §13 acceptance | `tests/` — A13 live; A1/A2 + spine proofs (M1); A3 scaffold + §10.4 pin (M2, `content_pipeline.rs`); A5 + A11 (M7, `ai.rs`); A15 + match rules (M8, `match_rules.rs`); the M9 resolution exit (M9, `alpha_loop.rs`) |
 | §14 milestones | this file §6 status board |

@@ -638,3 +638,58 @@ confirms or rejects it.
   `tests/content_pipeline.rs` are unmoved by M9. The plan's
   "starter values — placeholders, tunable as data only" posture
   holds: tuning happened where the diagnosis said the defect lived.
+
+- **A-077 (§11.3, M9.1).** The DEBT-008 human pass forced the input
+  scheme's unresolved choices; these are the resolutions, all
+  feel-judgments pending the human re-verification: WASD and the
+  arrow keys pan (arrows alias the same key set); the pan speed is
+  34 tiles/second scaled by the real frame delta (frame-rate
+  independent; the M3 fixed per-frame speed was a refresh-rate
+  property); edge scrolling runs at a 24-pixel margin, focused
+  windows only; middle-drag is grab-the-ground panning (the world
+  point under the press stays under the cursor); the wheel zooms
+  toward the cursor with up = in; 'A' *arms* attack-move for the
+  next left-click (SC2-style — firing on key-down fought the key's
+  pan role and re-fired through OS key repeats, which are now
+  filtered); Esc cancels an armed order before it ever quits the
+  app; right-click always disarms. The plan's §11.3 letter ("pan by
+  edge + keys, zoom toward the cursor, attack-move hotkey") is
+  satisfied; the specific feels are the assumption.
+
+- **A-078 (§11.3, M9.1).** Right-click context resolution order is
+  enemy → resource node → open ground (plan §11.3's "move/attack/
+  gather resolved from what's under the cursor"): an enemy under
+  the cursor orders Attack for the whole selection; a node orders
+  Gather for the selection's worker-kind units only (soldiers
+  right-clicked onto a node walk there instead — the gather subset
+  empty means the ground click wins); anything else (including
+  clicking one's own units) orders Move to the picked ground
+  point. Hit-testing uses the render snapshot (what is on screen)
+  with the same 0.05 NDC radius as single-click selection; the
+  command gate stays the sole authority — a fog-hidden target
+  rejects NotVisible and the refusal cue surfaces it. Workers and
+  nodes are identified by kind id through the engine's alpha-plan
+  resolution (capability-shaped, never name-matched), reusing the
+  seam the AI host already owns.
+
+- **A-079 (§11.3, M9.1).** The opening camera frames the human
+  player's start anchor (from the map's declared starts) at 26
+  tiles distance, re-framed on restart — the M3 map-center default
+  at 0.9× the map's diagonal (58 tiles on Crossroads) rendered the
+  starting force as unreadable specks, which the human pass
+  reported as "nothing appears on the screen". Panning clamps the
+  orbit target to the map rectangle (zero margin) so the view can
+  never wander off the battlefield. 26 tiles is a readability
+  judgment (the base and its workers fill the lower-center of the
+  frame at 16:9); the human re-verification judges it.
+
+- **A-080 (§8.4, M9.1).** Rejected orders surface as a red hollow
+  square at the click point plus one HUD line ("order refused:
+  <reason>", a total, player-facing mapping of every RejectReason),
+  both living 60 presented frames. The client remembers only the
+  most recent order's click point, so a refusal pings where that
+  order was clicked; any earlier order rejected in the same step
+  still bumps the HUD line and the counter but draws no square.
+  The M9.1 rationale: the plan's gate refuses illegal orders by
+  design, and dropping those events on the floor read, to the first
+  human player, as "the controls don't work".

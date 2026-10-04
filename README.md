@@ -12,7 +12,7 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 [![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
 ![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
-![stage](https://img.shields.io/badge/stage-M9_alpha_content_&_feel_pass_done-9E6A03?labelColor=21262D)
+![stage](https://img.shields.io/badge/stage-M9.1_input_hotfix_done-9E6A03?labelColor=21262D)
 ![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
 
 <picture>
@@ -153,7 +153,13 @@ At M8 all eleven stages went live; M9 fixed the one behavior bug the live loop e
 
 ## Current status
 
-**Milestones M0 through M9 are complete — the Alpha loop is playable end to end against the AI. M10 (Stabilization & declaration) is next.** The live status board is
+**Milestones M0 through M9 are complete, plus the M9.1 hotfix: the first human
+playtest (DEBT-008) found the input layer mirrored and half-missing, and M9.1
+fixed it — corrected WASD/pan axes, mouse panning (edge + middle-drag +
+zoom-toward-cursor), right-click context orders (attack/gather/move), armed
+attack-move, key-repeat guards, rejection feedback, selection brackets, and
+an opening camera framed on the player's base. M10 (Stabilization &
+declaration) is next.** The live status board is
 [`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated as a bug.
 
 Built and verified through M9:
@@ -189,14 +195,21 @@ Built and verified through M9:
   mapping, a null counter sink, the placeholder cue set (plan §11.5).
 - **`client`** — winit 0.30 + wgpu 26 windowed 3D renderer (depth buffer, terrain
   mesh with heightmap displacement, instanced placeholder entity boxes), selection
-  + right-click Move, fontdue text atlas + HUD/debug overlay, `--frames N`
+  + right-click context orders, fontdue text atlas + HUD/debug overlay, `--frames N`
   windowed smoke, headless fallback for CI. **M8**: hosts the AI opponent through
   `MatchHost::with_controllers`, renders the end-screen panel (VICTORY/DEFEAT/
   MUTUAL DESTRUCTION), supports restart (R), control groups (1-9), and
   Stop/AttackMove hotkeys (S/A). **M9**: the feel pass — hit flashes (entities
   flash toward hot white when hit), health bars over damaged units,
   command-acknowledgment pings at the clicked ground, the audio sink wired into
-  the draw loop, and the restart resetting all of it.
+  the draw loop, and the restart resetting all of it. **M9.1**: the input layer
+  actually works — the camera's pan axes were mirrored since M3 (D panned left,
+  W retreated), the mouse could not move the camera at all, and no attack order
+  existed; now WASD/arrows/edge/middle-drag pan with frame-rate-independent
+  speed, the wheel zooms toward the cursor, right-click resolves
+  attack/gather/move from what is under the cursor, 'A' arms attack-move for
+  the next click, refused orders flash red with their reason, selection draws
+  corner brackets, and the match opens framed on the player's base.
 - **`tools`** — headless runner (demo + `--p1/--p2 ai` controller matches; M8
   adds a `match ended:` line printing the winner), `replay-verify`,
   `content-validate` subcommands.
@@ -219,7 +232,7 @@ Built and verified through M9:
   law holds.
 - **CI** — fmt, clippy with `-D warnings`, and the test suite in dev *and*
   release on Linux, Windows, and macOS, plus the replay round-trip and a
-  binaries-run check. **333 tests green in dev, 328 in release** (5 should-panic
+  binaries-run check. **352 tests green in dev, 347 in release** (5 should-panic
   invariant-checker tests are debug-only by nature).
 
 Not built yet — on purpose, in milestone order:
@@ -274,6 +287,13 @@ cargo run -p pandemonium-client
 # windowed smoke: auto-exit after N frames with evidence summary
 cargo run -p pandemonium-client -- --frames 900
 ```
+
+Controls: **WASD / arrows / screen edges / middle-drag** pan the camera, the
+**wheel** zooms toward the cursor, **left-click / drag** selects, **right-click**
+orders (attack an enemy, gather a node with workers, or move over open ground),
+**A** arms attack-move for the next left-click, **S** stops, **1-9** recall
+control groups (**Ctrl+1-9** assigns), **P** pauses, **F3** toggles the debug
+overlay, **R** restarts after the match ends.
 
 The full verification gate — the same one CI runs:
 
