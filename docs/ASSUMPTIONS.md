@@ -487,3 +487,70 @@ confirms or rejects it.
   logs are seed-independent — the states still diverge through the
   hashed RNG stream (the sim's own), which the determinism test asserts
   instead of log inequality.
+
+- **A-066 (§6.4, §5.10, §13 A15, M8).** The match outcome is derived
+  state, not canonical hashed state — the same reasoning as fog (A-059).
+  `MatchOutcome` is a pure function of the entity set (which determines
+  structure counts) and the players' `resigned` flags, both of which ARE
+  part of the canonical hash. Adding the outcome to the hash would be
+  redundant (the same inputs always produce the same result) and would
+  couple the hash to a derivative. The M7 goldens therefore stay green by
+  construction: no `STATE_ENCODING_VERSION` bump, no golden regen. The
+  `outcome` field on `Sim` is `Option<MatchOutcome>`, `None` while the
+  match is ongoing, `Some` once stage 10 has fired `MatchEnded` (cached
+  so the event is emitted exactly once). Toggling "evaluate match rules
+  on/off" cannot change a checkpoint — the M8 invariant.
+
+- **A-067 (§9.7, M8).** The defeat check only fires when the match is
+  "structure-bearing" — at least one player in the match owns at least
+  one structure (an entity carrying a `Footprint` capability, the
+  data-defined "structure" marker). The M1 spine-test fixture
+  (`TrivialWorld`) carries no Footprint kinds at all (it predates the
+  economy milestone), so a strict "zero structures ⇒ defeated" rule would
+  end every spine match at tick 0 with every player simultaneously
+  defeated. The Alpha content (the M2+ real path) starts every player
+  with a Command Center, so the rule fires only when a structure is
+  actually destroyed — the intent of plan §9.7. A degenerate "no one ever
+  had a structure" match simply continues; a real match ends the moment
+  a side is eliminated. Ore nodes carry `Footprint` but are neutral
+  (`PlayerId::NEUTRAL`), so they never count for a player's structure
+  total.
+
+- **A-068 (§9.7, M8).** The match ends when at least one player is
+  defeated **and** at most one non-defeated player remains. The first
+  clause ("at least one defeated") keeps a one-player smoke match (no
+  opponents, no defeat) running — the M3 headless smoke and the client's
+  no-AI test paths stay green. With two players, when one is defeated
+  the match ends (one survivor, the winner); with both defeated
+  simultaneously the match ends with `PlayerId::NEUTRAL` (mutual
+  destruction — well-defined and deterministic, never expected in normal
+  play). A one-player match where the single player is defeated ends
+  with `NEUTRAL` (the single player lost; no winner).
+
+- **A-069 (§4, §11.1, M8).** `MatchHost` extended with optional AI
+  controllers (default empty) is the M8 client's hosting seam — the same
+  shape as `AiMatchHost`, but with the real-time clock and interpolation
+  the windowed client needs. A-003 already declared `engine -> ai` for
+  hosting controllers on the tick boundary; M8 extends the same seam to
+  the client (the plan's hosting loop is one loop, shared with the tools
+  and tests). The M3 exit criterion holds: the `Sim` is still private,
+  `submit` + `advance` are still the only mutation paths, and controllers
+  receive an immutable `PlayerView` (FD-7) — they never see `&mut Sim`.
+  `Clone`/`Debug` derives removed from `MatchHost` (`Box<dyn Controller>`
+  carries neither); restart is by drop + reconstruct (the client retains
+  its `ContentBundle` and `MatchSetup`, A15 constructs two fresh
+  instances).
+
+- **A-070 (§9.7, §13 A15, M8).** Restart cleanliness (A15) is tested by
+  constructing two fresh `MatchHost` instances from the same setup and
+  asserting identical state hashes at every checkpoint — not by a
+  `restart()` method on `MatchHost`. The controller-reset problem (a
+  deterministic controller's RNG state has advanced) makes an in-place
+  `restart()` fragile; drop + reconstruct with fresh controllers (the
+  client re-creates the `ScriptedController` from the same bundle + seed)
+  is the clean path. The M8 acceptance test `a15_two_fresh_hosts_with_ai_
+  produce_identical_logs_and_hashes` pins the stricter guarantee: with
+  AI controllers, the deterministic controller RNG (seeded from the
+  match seed) makes the command logs identical too — a same-seed restart
+  reproduces the same match bit-for-bit. The windowed client's "Press R
+  to restart" UX relies on this.

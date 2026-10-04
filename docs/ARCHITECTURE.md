@@ -1,7 +1,7 @@
 # Pandemonium — Architecture
 
-Status: milestone M7 complete (AI through commands); M8 (match rules & full
-loop) is next. The authoritative specification is
+Status: milestone M8 complete (match rules & full loop); M9 (Alpha content &
+feel pass) is next. The authoritative specification is
 [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism
 rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
@@ -155,6 +155,16 @@ crates/sim/src/
                incrementally each tick. `FogState` is derived (NOT hashed —
                A-059); `player_view` consults the cache instead of the M1
                on-demand scan. DEBT-004 repaid.
+  match_rules.rs Stage 10 (plan §6.3.10, §9.7, M8): defeat/victory
+               evaluation. Idempotent — `Sim::outcome` caches the result so
+               `MatchEnded` fires exactly once per match. The defeat check
+               only fires when the match is "structure-bearing" (A-067: at
+               least one player owns a Footprint structure) so the M1
+               spine-test fixture (no Footprint kinds) stays green. The
+               outcome is derived state (A-066: not part of the canonical
+               hash — a pure function of the entity set and the players'
+               `resigned` flags, both of which ARE hashed), so the M7
+               goldens stay green by construction.
   runner.rs    `run_command_log` (M7): the one canonical headless
                re-simulation of a command log — tick-0 checkpoint, a
                stable tick-sort feed (within-tick order preserved for
@@ -171,15 +181,16 @@ crates/sim/src/
                ceilings, queue-cost consistency, construction budgets, live
                gather targets, combat invariants (cooldowns sane, target
                alive, no attack on own — M6).
-  sim.rs       Sim — new/step/state_hash/snapshot/player_view/next_entity_id.
-               step() runs plan §6.3's eleven stages verbatim; stages whose
-               systems arrive in later milestones are documented no-ops with
-               milestone pointers. Stage contents today: command application
-               (1), scheduled spawns + production + construction + population
-               recompute (3), the gather loop (4), the three-layer mover (6),
-               combat (7), health advance + death & cleanup + clear_dead_targets
-               (8), the A12 checker (debug, end of tick), vision (9), finalize
-               with the periodic hash every 30 ticks (11).
+  sim.rs       Sim — new/step/state_hash/snapshot/player_view/next_entity_id/
+               outcome/is_finished. step() runs plan §6.3's eleven stages
+               verbatim; stages whose systems arrive in later milestones are
+               documented no-ops with milestone pointers. Stage contents
+               today: command application (1), scheduled spawns + production
+               + construction + population recompute (3), the gather loop
+               (4), the three-layer mover (6), combat (7), health advance +
+               death & cleanup + clear_dead_targets (8), the A12 checker
+               (debug, end of tick), vision (9), match rules (10 — M8),
+               finalize with the periodic hash every 30 ticks (11).
 ```
 
 Events are outputs, never state: the buffer is drained by each `step` and is not
@@ -243,11 +254,19 @@ crates/engine/src/           presentation-layer crate: floats + glam are legal
   host.rs         MatchHost — owns the Sim privately; submit() + advance() are
                   the only mutation paths (the M3 exit criterion as a
                   compile-time property, A-033). Commands are tick-stamped for
-                  the next step; FrameOutcome carries events + checkpoint
+                  the next step, FrameOutcome carries events + checkpoint
                   hashes. Pause freezes the clock itself (no catch-up burst on
                   resume); step_once() is the §11.6 single-step debug action;
                   hud_state(player) gathers the HUD values through the
-                  boundary.
+                  boundary. **M8 extensions**: with_controllers() hosts AI
+                  controllers on the tick boundary (the same seam as
+                  AiMatchHost — the client's vs-AI opponent); log() exposes
+                  the command log (for replay recording); outcome() /
+                  is_finished() surface stage 10's MatchEnded (for the end
+                  screen). The Sim is still private (controllers receive an
+                  immutable PlayerView, FD-7). Restart is by drop +
+                  reconstruct (the client retains its ContentBundle +
+                  MatchSetup; A15 constructs two fresh MatchHost instances).
   ai_host.rs      AiMatchHost (M7) — the headless shape of the same
                   ownership: one controller per driven slot, one tick per
                   advance, controllers invoked in ascending slot order on
@@ -283,6 +302,14 @@ crates/client/src/
                   summary (the DEBT-008 windowed verification affordance,
                   A-036). Without a display: prints the finding and runs a
                   headless smoke pass over the real content, exiting 0 (A-034).
+                  **M8**: hosts the AI opponent through
+                  `MatchHost::with_controllers` (A-063 — the engine's hosting
+                  loop is one loop, shared with the tools and tests); the
+                  end-screen panel renders VICTORY/DEFEAT/MUTUAL DESTRUCTION
+                  when `host.is_finished()`; 'R' restarts (drop + reconstruct
+                  the host with fresh controllers from the same bundle + seed,
+                  A15); control groups 1-9 (Ctrl+digit assigns, digit recalls);
+                  'S' Stop and 'A' AttackMove hotkeys on the selection.
   text.rs         our own text renderer (plan §3.1/§3.2): fontdue rasterizes
                   the embedded "Pandemonium Sans" (ASCII subset of DejaVu
                   Sans, renamed per the Bitstream Vera license —
@@ -312,18 +339,23 @@ stream fed to `Sim::step` (rejections included), so re-simulation reproduces the
 hashes. The re-simulation driver lives in `tools` and in `tests/determinism.rs`
 (the crate itself must not depend on `sim`).
 
-## Tools and acceptance tests (M1 + M2)
+## Tools and acceptance tests (M1 + M2 + M7 + M8)
 
-`pandemonium-tools` (clap CLI) ships `headless` — the scripted demo match printing
-per-checkpoint and final hashes, with `--record` to write a replay — and, since
-M7, `--p1/--p2 ai|idle` controller slots over the real content (the per-player
-evidence line: deliveries, trained, built, hits, deaths) — plus
-`replay-verify` — re-simulation with checkpoint comparison (A2), resolving
-the world by content identity (the demo world or the content directory).
-M2 added `content-validate` — strict validation of a content directory plus
-its content identity. The AI match driver and the re-simulation both run
-through the engine's hosting and `sim::run_command_log` respectively. `tests/determinism.rs` carries the A1/A2 suite with pinned golden
-hashes (encoding v3 — A-050); `tests/content_pipeline.rs` carries the M2 suite
+`pandemonium-tools` (clap CLI) ships `headless` — the scripted demo match
+printing per-checkpoint and final hashes, with `--record` to write a replay —
+and, since M7, `--p1/--p2 ai|idle` controller slots over the real content (the
+per-player evidence line: deliveries, trained, built, hits, deaths; M8 adds
+the `winner` field from stage 10's `MatchEnded` event, with the CLI printing
+one of "player N wins", "mutual destruction", or "unresolved (ran the tick
+budget)") — plus `replay-verify` — re-simulation with checkpoint comparison
+(A2), resolving the world by content identity (the demo world or the content
+directory). M2 added `content-validate` — strict validation of a content
+directory plus its content identity. The AI match driver and the
+re-simulation both run through the engine's hosting and
+`sim::run_command_log` respectively.
+
+`tests/determinism.rs` carries the A1/A2 suite with pinned golden hashes
+(encoding v4 — A-056); `tests/content_pipeline.rs` carries the M2 suite
 (§10.4 stat pin, loaded-bundle determinism, the A3 add-a-unit scaffold now
 extended to train the data-defined kind from the barracks — DEBT-007's M5
 half); `tests/movement.rs` carries the M4 exit suite (50-unit spam-click
@@ -331,12 +363,16 @@ responsiveness, order resolution, determinism, the real-map detour with the
 blocked-destination arrival envelope); `tests/economy.rs` carries the M5 exit
 suite (divergent scripted openings, scripted-match determinism, the A12
 economy soak, soak determinism); `tests/architecture_law.rs` still pins the
-dependency graph and the source-level determinism bans; `tests/ai.rs`
-carries the M7 exit suite — the A5 structural audits (ai reaches only
-fx + sim_api; the sim never references the ai crate), the A5 ledger
-identity (the AI pays the data-defined prices; every entity traces to an
-accepted command), the A11 mirrored battery and label-blindness, the
-A11 proptest fuzz, AI-vs-AI completion and determinism, the golden
-hash, and the log-alone replay. CI
-(`.github/workflows/ci.yml`) runs the whole gate on Linux/Windows/macOS in dev
-and release, plus the replay round-trip.
+dependency graph and the source-level determinism bans; `tests/ai.rs` carries
+the M7 exit suite — the A5 structural audits (ai reaches only fx + sim_api;
+the sim never references the ai crate), the A5 ledger identity (the AI pays
+the data-defined prices; every entity traces to an accepted command), the
+A11 mirrored battery and label-blindness, the A11 proptest fuzz, AI-vs-AI
+completion and determinism, the golden hash, and the log-alone replay;
+**`tests/match_rules.rs` (M8) carries the match-rules exit suite** —
+`MatchEnded` fires on resignation and surfaces through the host's outcome;
+A15 restart cleanliness (two fresh hosts, same seed → identical hashes; with
+AI controllers → identical logs too); stage 10 is hash-neutral (the M7
+golden holds with match rules active). CI (`.github/workflows/ci.yml`) runs
+the whole gate on Linux/Windows/macOS in dev and release, plus the replay
+round-trip.
