@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 
 pub mod ai_host;
+pub mod audio;
 pub mod camera;
 pub mod clock;
 pub mod host;
@@ -27,6 +28,7 @@ pub mod mesh;
 pub mod renderer;
 
 pub use ai_host::{alpha_controller, alpha_plan, build_spots, AiMatchHost};
+pub use audio::{cue_for, AudioCue, AudioSink, NullAudioSink};
 pub use camera::RtsCamera;
 pub use clock::{FixedTimestep, MAX_CATCH_UP_STEPS};
 pub use host::{FrameOutcome, MatchHost};
