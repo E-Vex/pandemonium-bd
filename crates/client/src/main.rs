@@ -11,6 +11,7 @@
 //! of M3 needs a display and is recorded as such (plan §13 honest declaration).
 
 mod feedback;
+mod orders;
 mod render;
 mod text;
 
@@ -27,10 +28,11 @@ use pandemonium_engine::audio::{AudioSink, NullAudioSink};
 use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
 use pandemonium_engine::{
-    alpha_controller, MatchHost, MatchOutcome, NullRenderer, Renderer, RtsCamera,
+    alpha_controller, alpha_plan, MatchHost, MatchOutcome, NullRenderer, Renderer, RtsCamera,
 };
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, EntityId, MatchSetup, PlayerId, PlayerSetup,
+    Command, CommandKind, ControllerKind, EntityId, Event, KindId, MatchSetup, PlayerId,
+    PlayerSetup, Vec2Fx,
 };
 use render::WgpuRenderer;
 use text::{TextAtlas, UiQuad};
@@ -51,6 +53,22 @@ const CLICK_SLOP: f32 = 0.01;
 const HEIGHT_SCALE: f32 = 0.02;
 /// How many control groups the client tracks (plan §11.3: control groups).
 const CONTROL_GROUP_COUNT: usize = 9;
+/// Camera pan speed in tiles per second (keys and edge scrolling share it —
+/// scaled by the real frame delta so pan speed does not depend on the
+/// display's refresh rate; M9.1: the old fixed per-frame speed made a 144 Hz
+/// monitor pan more than twice as fast as 60 Hz).
+const PAN_TILES_PER_SECOND: f32 = 34.0;
+/// The frame-delta clamp for camera motion — a stall must not teleport the
+/// view when the loop resumes.
+const MAX_PAN_FRAME_SECONDS: f32 = 0.05;
+/// How close (in pixels) the cursor must sit to a window border for edge
+/// scrolling (plan §11.3: "pan by edge + keys" — M9.1: the edge half was
+/// missing entirely, so the mouse could not move the camera at all).
+const EDGE_SCROLL_PX: f64 = 24.0;
+/// The opening camera distance from the player's start anchor (M9.1: the
+/// old map-center default at 58 tiles out rendered the starting force as
+/// specks — "nothing appears on the screen").
+const START_CAMERA_DISTANCE: f32 = 26.0;
 
 fn main() -> anyhow::Result<()> {
     let content = content_path();
@@ -122,6 +140,28 @@ struct App {
     keys: BTreeSet<Key<&'static str>>,
     /// M8: the current keyboard modifiers (Ctrl for control-group assignment).
     modifiers: ModifiersState,
+    /// M9.1: the middle-drag pan anchor — the ground point grabbed when the
+    /// middle button went down (None when not dragging).
+    middle_anchor: Option<glam::Vec3>,
+    /// M9.1: whether the window has keyboard focus (edge scrolling runs
+    /// focused only, so an unfocused game never steals the desktop).
+    focused: bool,
+    /// M9.1 (plan §11.3): 'A' arms attack-move; the next left-click places
+    /// it. Firing on key-down fought the key's camera-pan role and spammed
+    /// orders through key repeats (the DEBT-008 human pass: "the control
+    /// is bad").
+    attack_move_armed: bool,
+    /// M9.1: the last submitted order (its seq and the ground point it
+    /// targeted) — rejection feedback pings there.
+    last_order: Option<(u32, Vec2Fx)>,
+    /// M9.1: the human start anchor (the opening camera focus and restart's
+    /// re-focus), from the map's declared starts.
+    start_anchor: (f32, f32),
+    /// M9.1: the content's worker kind id (right-click gather resolution).
+    worker_kind: Option<KindId>,
+    /// M9.1: the content's gatherable node kind id (right-click gather
+    /// resolution).
+    node_kind: Option<KindId>,
     last_frame: Instant,
     command_seq: u32,
     /// Display names of the loaded resources, indexed by ResourceId (the
@@ -167,7 +207,28 @@ impl App {
             .iter()
             .map(|resource| resource.display_name.clone())
             .collect();
-        let camera = RtsCamera::new(bundle.map.width, bundle.map.height, 16.0 / 9.0);
+        // M9.1: open on the player's base, not the map center — the start
+        // anchor with its starting force fills the frame at the closer
+        // distance, so the player sees their units on frame one.
+        let start_anchor = bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| start.player == 0)
+            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+            .unwrap_or((
+                bundle.map.width as f32 / 2.0,
+                bundle.map.height as f32 / 2.0,
+            ));
+        let mut camera = RtsCamera::new(bundle.map.width, bundle.map.height, 16.0 / 9.0);
+        camera.focus(start_anchor.0, start_anchor.1, START_CAMERA_DISTANCE);
+        // M9.1: the right-click context resolver needs the content's worker
+        // and node kind ids — the engine's alpha-plan resolution (capability
+        // shaped, never name-matched) already derives exactly those.
+        let world = bundle.world();
+        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
+        let worker_kind = Some(plan.worker);
+        let node_kind = plan.node;
         let host = Self::build_host(&bundle, setup.clone());
         Ok(Self {
             bundle,
@@ -182,6 +243,13 @@ impl App {
             drag_current: None,
             keys: BTreeSet::new(),
             modifiers: ModifiersState::empty(),
+            middle_anchor: None,
+            focused: true,
+            attack_move_armed: false,
+            last_order: None,
+            start_anchor,
+            worker_kind,
+            node_kind,
             last_frame: Instant::now(),
             command_seq: 0,
             resource_names,
@@ -220,6 +288,15 @@ impl App {
         self.control_groups = vec![Vec::new(); CONTROL_GROUP_COUNT];
         self.command_seq = 0;
         self.commands_submitted = 0;
+        // M9.1: the camera re-frames on the base and the armed order clears
+        // — a fresh match starts from the same readable opening view.
+        self.camera.focus(
+            self.start_anchor.0,
+            self.start_anchor.1,
+            START_CAMERA_DISTANCE,
+        );
+        self.attack_move_armed = false;
+        self.last_order = None;
         // M9: the feel pass's state resets with the match — a fresh match
         // starts with clean feedback (no stale flashes or pings).
         self.audio = NullAudioSink::new();
@@ -280,31 +357,60 @@ impl App {
                 .box_select(&own, glam::Vec2::new(a.0, a.1), glam::Vec2::new(b.0, b.1));
     }
 
-    /// Right-click move: the picked ground point becomes a Move order for the
-    /// selection (the only path through which the client affects the sim).
-    fn issue_move(&mut self, ndc: (f32, f32)) {
+    /// The one place orders enter the host: stamps the seq, pings the
+    /// acknowledgment, and remembers the order for rejection feedback
+    /// (M9.1 — the last two are the "the control works" cues).
+    fn submit_order(&mut self, kind: CommandKind, ping_at: Option<Vec2Fx>) {
+        self.command_seq += 1;
+        self.commands_submitted += 1;
+        if let Some(at) = ping_at {
+            self.feedback.ping(at, self.frames_presented);
+            self.last_order = Some((self.command_seq, at));
+        }
+        self.host
+            .submit(Command::new(HUMAN, 0, self.command_seq, kind));
+    }
+
+    /// M9.1 (plan §11.3): the right-click context command — what is under
+    /// the cursor decides the order. An enemy issues Attack (the player's
+    /// only way to order an attack — previously impossible), a resource
+    /// node issues Gather for the selection's workers, open ground issues
+    /// Move. The gate stays the authority; refusals surface as feedback.
+    fn issue_context_order(&mut self, ndc: (f32, f32)) {
         if self.selection.is_empty() {
             return;
         }
-        let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
-            return;
-        };
-        let target = MatchHost::world_to_logical(point.x, point.z);
-        // M9: the immediate acknowledgment cue — the crosshair the player
-        // sees on the frame they clicked (the motion follows within the
-        // A8 tick bounds; this is the intent-to-visible-response ping).
-        self.feedback.ping(target, self.frames_presented);
-        self.command_seq += 1;
-        self.commands_submitted += 1;
-        self.host.submit(Command::new(
+        let snapshot = self.host.render_snapshot();
+        let Some(order) = orders::resolve_context_order(
+            &self.camera,
+            &snapshot,
+            glam::Vec2::new(ndc.0, ndc.1),
             HUMAN,
-            0,
-            self.command_seq,
-            CommandKind::Move {
-                units: self.selection.clone(),
-                target,
-            },
-        ));
+            self.node_kind,
+            self.worker_kind,
+            &self.selection,
+        ) else {
+            return; // cursor above the horizon — nothing to order
+        };
+        match order {
+            orders::ContextOrder::Attack { target, at } => self.submit_order(
+                CommandKind::Attack {
+                    units: self.selection.clone(),
+                    target,
+                },
+                Some(at),
+            ),
+            orders::ContextOrder::Gather { node, at, units } => {
+                self.submit_order(CommandKind::Gather { units, node }, Some(at));
+            }
+            orders::ContextOrder::Move { target } => self.submit_order(
+                CommandKind::Move {
+                    units: self.selection.clone(),
+                    target,
+                },
+                Some(target),
+            ),
+        }
     }
 
     /// M8 (plan §11.3): Stop hotkey — clears the selection's order queues and
@@ -313,21 +419,18 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
-        self.command_seq += 1;
-        self.commands_submitted += 1;
-        self.host.submit(Command::new(
-            HUMAN,
-            0,
-            self.command_seq,
+        self.submit_order(
             CommandKind::Stop {
                 units: self.selection.clone(),
             },
-        ));
+            None,
+        );
     }
 
-    /// M8 (plan §11.3): AttackMove hotkey — the selection moves to the picked
+    /// M8 (plan §11.3): AttackMove — the selection moves to the picked
     /// ground point, engaging enemies encountered en route (combat semantics
-    /// from M6). Falls back to a plain Move for units without Attack.
+    /// from M6). M9.1: issued only from the armed-'A' left-click, never from
+    /// the key-down itself.
     fn issue_attack_move(&mut self, ndc: (f32, f32)) {
         if self.selection.is_empty() {
             return;
@@ -336,18 +439,13 @@ impl App {
             return;
         };
         let target = MatchHost::world_to_logical(point.x, point.z);
-        self.feedback.ping(target, self.frames_presented);
-        self.command_seq += 1;
-        self.commands_submitted += 1;
-        self.host.submit(Command::new(
-            HUMAN,
-            0,
-            self.command_seq,
+        self.submit_order(
             CommandKind::AttackMove {
                 units: self.selection.clone(),
                 target,
             },
-        ));
+            Some(target),
+        );
     }
 
     /// M8 (plan §11.3): assign the current selection to control group `index`
@@ -444,10 +542,15 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.draw();
+                // M9.1: the presented-frame counter is the feedback clock
+                // (flashes and pings expire by it) — it advances on every
+                // presented frame, not only in the `--frames` verification
+                // mode. In normal play it was pinned at zero, so M9's cues
+                // never expired and accumulated forever.
+                self.frames_presented += 1;
                 // The windowed smoke budget (DEBT-008 verification): exit after
                 // N presented frames, with the evidence summary.
                 if let Some(budget) = self.frames_budget {
-                    self.frames_presented += 1;
                     if self.frames_presented >= budget {
                         self.windowed_summary();
                         event_loop.exit();
@@ -455,7 +558,18 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.drag_current = Some((position.x, position.y));
+                let _ = self.drag_current.insert((position.x, position.y));
+                // M9.1: middle-drag panning — the grabbed ground point
+                // follows the cursor ("grab the ground and pull").
+                if let Some(anchor) = self.middle_anchor {
+                    let Some(window) = &self.window else {
+                        return;
+                    };
+                    let ndc = Self::to_ndc(window, position.x, position.y);
+                    if let Some(current) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) {
+                        self.camera.pan_world(anchor - current);
+                    }
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let Some(window) = &self.window else { return };
@@ -463,7 +577,15 @@ impl ApplicationHandler for App {
                 let ndc = Self::to_ndc(window, cursor.0, cursor.1);
                 match (button, state) {
                     (MouseButton::Left, ElementState::Pressed) => {
-                        self.drag_start = Some(cursor);
+                        if self.attack_move_armed {
+                            // M9.1: the armed attack-move fires at the click,
+                            // consumes the press, and disarms — the press
+                            // never starts a selection drag.
+                            self.attack_move_armed = false;
+                            self.issue_attack_move(ndc);
+                        } else {
+                            self.drag_start = Some(cursor);
+                        }
                     }
                     (MouseButton::Left, ElementState::Released) => {
                         if let Some(start) = self.drag_start.take() {
@@ -477,31 +599,67 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    (MouseButton::Right, ElementState::Pressed) => self.issue_move(ndc),
+                    // M9.1 (plan §11.3): the right-click context command —
+                    // attack/gather/move resolved from what is under the
+                    // cursor. It also cancels an armed attack-move (any
+                    // other order disarms).
+                    (MouseButton::Right, ElementState::Pressed) => {
+                        self.attack_move_armed = false;
+                        self.issue_context_order(ndc);
+                    }
+                    // M9.1: middle-drag panning grabs the ground on press.
+                    (MouseButton::Middle, ElementState::Pressed) => {
+                        self.middle_anchor =
+                            self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1));
+                    }
+                    (MouseButton::Middle, ElementState::Released) => {
+                        self.middle_anchor = None;
+                    }
                     _ => {}
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => match delta {
-                MouseScrollDelta::LineDelta(_, lines) => self.camera.zoom(1.0 + lines * 0.1),
-                MouseScrollDelta::PixelDelta(delta) => {
-                    self.camera.zoom(1.0 + delta.y as f32 * 0.001)
+            WindowEvent::MouseWheel { delta, .. } => {
+                // M9.1: wheel up zooms in, and the zoom keeps the cursor's
+                // ground anchor under the cursor (plan §11.3: "zoom toward
+                // the cursor" — the old orbit-only zoom read as the view
+                // sliding away, and the direction was inverted).
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => lines,
+                    MouseScrollDelta::PixelDelta(delta) => delta.y as f32 * 0.05,
+                };
+                if lines != 0.0 {
+                    let ndc = self.cursor_ndc();
+                    self.camera
+                        .zoom_toward(1.0 - lines * 0.1, glam::Vec2::new(ndc.0, ndc.1));
                 }
-            },
+            }
             WindowEvent::KeyboardInput { event, .. } => {
+                // M9.1: key repeats re-press an already-held key — they must
+                // not re-fire hotkeys (holding S to pan spammed Stop orders
+                // through every repeat; the DEBT-008 human pass).
+                if event.repeat {
+                    return;
+                }
                 let pressed = event.state == ElementState::Pressed;
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match code {
                         winit::keyboard::KeyCode::KeyW => set_key(&mut self.keys, "w", pressed),
+                        // M9.1: the arrow keys alias the WASD pan (plan
+                        // §11.3's key panning covers both habits).
+                        winit::keyboard::KeyCode::ArrowUp => set_key(&mut self.keys, "w", pressed),
                         winit::keyboard::KeyCode::KeyA => {
                             set_key(&mut self.keys, "a", pressed);
-                            // M8: 'A' is also the AttackMove hotkey on press
-                            // (camera pan uses the held state; the command
-                            // fires once on the key-down edge). Only when the
-                            // match is ongoing — end-screen 'R' takes over.
+                            // M9.1 (plan §11.3): 'A' arms attack-move; the
+                            // next left-click places it (pressing the key
+                            // no longer fires at the cursor — that fought
+                            // the key's camera-pan role). Only while the
+                            // match is ongoing; the end screen takes over.
                             if pressed && !self.host.is_finished() {
-                                let ndc = self.cursor_ndc();
-                                self.issue_attack_move(ndc);
+                                self.attack_move_armed = true;
                             }
+                        }
+                        winit::keyboard::KeyCode::ArrowLeft => {
+                            set_key(&mut self.keys, "a", pressed)
                         }
                         winit::keyboard::KeyCode::KeyS => {
                             set_key(&mut self.keys, "s", pressed);
@@ -510,7 +668,13 @@ impl ApplicationHandler for App {
                                 self.issue_stop();
                             }
                         }
+                        winit::keyboard::KeyCode::ArrowDown => {
+                            set_key(&mut self.keys, "s", pressed)
+                        }
                         winit::keyboard::KeyCode::KeyD => set_key(&mut self.keys, "d", pressed),
+                        winit::keyboard::KeyCode::ArrowRight => {
+                            set_key(&mut self.keys, "d", pressed)
+                        }
                         // §11.6 debug tooling: overlay toggle, pause, single-step.
                         winit::keyboard::KeyCode::F3 if pressed => {
                             self.debug_overlay = !self.debug_overlay;
@@ -550,7 +714,15 @@ impl ApplicationHandler for App {
                                 self.restart();
                             }
                         }
-                        winit::keyboard::KeyCode::Escape if pressed => event_loop.exit(),
+                        winit::keyboard::KeyCode::Escape if pressed => {
+                            // M9.1: Esc cancels an armed attack-move first;
+                            // with nothing armed it quits.
+                            if self.attack_move_armed {
+                                self.attack_move_armed = false;
+                            } else {
+                                event_loop.exit();
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -558,26 +730,63 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+            }
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Continuous camera motion from held keys, then keep the frames coming.
-        let pan_speed = 0.8;
+        // M9.1: camera motion from held keys and the screen edge, scaled by
+        // the real frame delta (frame-rate independent — the old fixed
+        // per-frame speed made pan speed a property of the monitor).
+        let dt = self
+            .last_frame
+            .elapsed()
+            .as_secs_f32()
+            .min(MAX_PAN_FRAME_SECONDS);
+        let pan = PAN_TILES_PER_SECOND * dt;
         let mut dx = 0.0;
         let mut dz = 0.0;
+        // M9.1: W pans the view up-screen (away from the camera), D pans
+        // right — the M3 signs were mirrored along with the camera's right
+        // axis (the DEBT-008 human pass: "d goes left and a goes right").
         if self.keys.contains(&Key::Character("w")) {
-            dz -= pan_speed;
+            dz += pan;
         }
         if self.keys.contains(&Key::Character("s")) {
-            dz += pan_speed;
+            dz -= pan;
         }
         if self.keys.contains(&Key::Character("a")) {
-            dx -= pan_speed;
+            dx -= pan;
         }
         if self.keys.contains(&Key::Character("d")) {
-            dx += pan_speed;
+            dx += pan;
+        }
+        // M9.1 (plan §11.3: "pan by edge + keys"): a cursor resting on a
+        // window border pans toward that border, corners combine. Focused
+        // windows only — an unfocused game never scrolls the desktop.
+        if self.focused {
+            if let (Some(window), Some((mx, my))) = (&self.window, self.drag_current) {
+                let size = window.inner_size();
+                if size.width > 0 && size.height > 0 {
+                    let (width, height) = (size.width as f64, size.height as f64);
+                    let margin = EDGE_SCROLL_PX;
+                    if mx < margin {
+                        dx -= pan;
+                    }
+                    if mx > width - margin {
+                        dx += pan;
+                    }
+                    if my < margin {
+                        dz += pan;
+                    }
+                    if my > height - margin {
+                        dz -= pan;
+                    }
+                }
+            }
         }
         if dx != 0.0 || dz != 0.0 {
             self.camera.pan(dx, dz);
@@ -625,6 +834,28 @@ impl App {
         self.audio.on_events(&outcome.events);
         self.feedback
             .on_events(&outcome.events, self.frames_presented);
+        // M9.1: a refused order surfaces — the red square at its click
+        // point and the HUD line with the reason. The human pass found
+        // silent rejections read as "the controls don't work"; the client
+        // knows where each order was clicked, so the refusal lands there.
+        for event in &outcome.events {
+            if let Event::CommandRejected {
+                issuer,
+                seq,
+                reject,
+            } = event
+            {
+                if *issuer == HUMAN
+                    && self
+                        .last_order
+                        .is_some_and(|(last_seq, _)| last_seq == *seq)
+                {
+                    let (_, at) = self.last_order.expect("just checked");
+                    self.feedback
+                        .refuse(at, reject.reason, self.frames_presented);
+                }
+            }
+        }
         self.feedback.expire(self.frames_presented);
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -645,11 +876,33 @@ impl App {
                 (size.width as f32, size.height as f32)
             })
             .unwrap_or((1920.0, 1080.0));
-        let mut quads =
-            feedback::health_bar_quads(renderer.atlas(), &snapshot, &self.camera, viewport);
+        // M9.1: the selection brackets — the persistent read of what is
+        // selected (the brightened team color alone did not read at play
+        // distance).
+        let mut quads = feedback::selection_quads(
+            renderer.atlas(),
+            &self.selection,
+            &snapshot,
+            &self.camera,
+            viewport,
+        );
+        quads.extend(feedback::health_bar_quads(
+            renderer.atlas(),
+            &snapshot,
+            &self.camera,
+            viewport,
+        ));
         quads.extend(feedback::ping_quads(
             renderer.atlas(),
             self.feedback.active_pings(),
+            &self.camera,
+            self.frames_presented,
+            viewport,
+        ));
+        // M9.1: the refusal squares.
+        quads.extend(feedback::refusal_quads(
+            renderer.atlas(),
+            self.feedback.active_refusals(),
             &self.camera,
             self.frames_presented,
             viewport,
@@ -665,6 +918,13 @@ impl App {
             entities: snapshot.entities.len(),
             outcome: outcome.as_ref(),
             log_len: self.host.log().len(),
+            viewport,
+            armed: self.attack_move_armed,
+            notice: self
+                .feedback
+                .refusal_notice
+                .as_ref()
+                .map(|(text, _)| text.as_str()),
         }));
         renderer.queue_ui(&quads);
         let flashes: Vec<EntityId> = snapshot
@@ -695,6 +955,13 @@ struct OverlayInput<'a> {
     entities: usize,
     outcome: Option<&'a MatchOutcome>,
     log_len: usize,
+    /// The window's pixel size (M9.1: the end screen centers in the actual
+    /// viewport, not a guessed 320x240).
+    viewport: (f32, f32),
+    /// M9.1: whether an attack-move is armed (the HUD instruction line).
+    armed: bool,
+    /// M9.1: the refusal notice line, when a recent order was refused.
+    notice: Option<&'a str>,
 }
 
 /// Builds the overlay quads for one frame: the resource/population HUD
@@ -710,6 +977,9 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
         entities,
         outcome,
         log_len,
+        viewport,
+        armed,
+        notice,
     } = input;
     /// Screen margin between panels and the window edge.
     const MARGIN: f32 = 8.0;
@@ -742,7 +1012,46 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
     ));
     quads.extend(atlas.layout(&line, MARGIN + PAD, baseline, [1.0, 1.0, 1.0, 0.95]));
 
-    // The debug overlay (§11.6), below the HUD panel.
+    // M9.1: the armed attack-move instruction (amber) and the refusal
+    // notice (red), directly under the resource line — one line each, so
+    // the player always knows what the next click will do.
+    let mut notice_top = MARGIN + line_height + 2.0 * PAD + MARGIN;
+    if armed {
+        let line = "ATTACK MOVE - left-click a target (Esc cancels)";
+        let width = atlas.measure(line);
+        quads.push(atlas.solid_rect(
+            MARGIN,
+            notice_top,
+            width + 2.0 * PAD,
+            line_height + 2.0 * PAD,
+            [0.25, 0.18, 0.02, 0.55],
+        ));
+        quads.extend(atlas.layout(
+            line,
+            MARGIN + PAD,
+            notice_top + PAD + atlas.ascent,
+            [1.0, 0.8, 0.3, 0.95],
+        ));
+        notice_top += line_height + 2.0 * PAD + MARGIN;
+    }
+    if let Some(notice) = notice {
+        let width = atlas.measure(notice);
+        quads.push(atlas.solid_rect(
+            MARGIN,
+            notice_top,
+            width + 2.0 * PAD,
+            line_height + 2.0 * PAD,
+            [0.22, 0.03, 0.03, 0.55],
+        ));
+        quads.extend(atlas.layout(
+            notice,
+            MARGIN + PAD,
+            notice_top + PAD + atlas.ascent,
+            [1.0, 0.45, 0.4, 0.95],
+        ));
+    }
+
+    // The debug overlay (§11.6), below the notice lines.
     if debug {
         let lines = [
             format!("tick {}", hud.tick),
@@ -758,7 +1067,7 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
             .iter()
             .map(|line| atlas.measure(line))
             .fold(0.0f32, f32::max);
-        let top = MARGIN + line_height + 2.0 * PAD + MARGIN;
+        let top = notice_top;
         let panel_height = lines.len() as f32 * line_height + 2.0 * PAD;
         quads.push(atlas.solid_rect(
             MARGIN,
@@ -814,13 +1123,10 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
             .fold(0.0f32, f32::max);
         let panel_w = widest + 4.0 * PAD;
         let panel_h = lines.len() as f32 * line_height + 4.0 * PAD;
-        // Center the panel in the window — the atlas doesn't know the window
-        // size, so we use a fixed large offset (the renderer's NDC pipeline
-        // clips anything off-screen). 320x240 px is a safe center for the
-        // default window; on other sizes the panel stays anchored top-left
-        // of center.
-        let panel_x = 320.0 - panel_w / 2.0;
-        let panel_y = 240.0 - panel_h / 2.0;
+        // M9.1: center the panel in the actual window (the old fixed
+        // 320x240 guess only centered the default window size).
+        let panel_x = viewport.0 * 0.5 - panel_w * 0.5;
+        let panel_y = viewport.1 * 0.5 - panel_h * 0.5;
         let panel_color = if outcome.winner == HUMAN {
             [0.05, 0.12, 0.05, 0.85]
         } else {
@@ -881,12 +1187,46 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
     // display (their counters are the printed evidence).
     let mut audio = NullAudioSink::new();
     let mut feedback = FeedbackState::default();
+    // M9.1: the smoke also exercises the refusal wiring — one deliberately
+    // invalid order (a Move naming a unit that does not exist) must come
+    // back as a CommandRejected the client can see, and the feedback
+    // layer turns it into the red-square cue + HUD notice the windowed
+    // path draws. The same loop below surfaces it.
+    host.submit(Command::new(
+        HUMAN,
+        0,
+        1,
+        CommandKind::Move {
+            units: vec![EntityId(999_999)],
+            target: Vec2Fx::from_ints(12, 12),
+        },
+    ));
     let frame_dt = std::time::Duration::from_secs_f64(1.0 / 60.0);
     let mut entities = 0;
+    let mut refusal_surfaced = false;
     for frame in 0..180 {
         let outcome = host.advance(frame_dt);
         audio.on_events(&outcome.events);
         feedback.on_events(&outcome.events, frame);
+        for event in &outcome.events {
+            if let Event::CommandRejected {
+                issuer,
+                seq,
+                reject,
+            } = event
+            {
+                if *issuer == HUMAN && *seq == 1 {
+                    feedback.refuse(Vec2Fx::from_ints(12, 12), reject.reason, frame);
+                    refusal_surfaced = true;
+                    // Set the moment the refusal lands (it expires frames
+                    // later by design — that is the cue's lifetime).
+                    assert!(
+                        feedback.refusal_notice.is_some(),
+                        "the refusal notice line is set for the HUD"
+                    );
+                }
+            }
+        }
         feedback.expire(frame);
         let snapshot = host.render_snapshot();
         entities = snapshot.entities.len();
@@ -919,8 +1259,13 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
         hud.tick, hud.paused, hud.population, hud.population_cap
     );
     println!(
-        "  feedback wiring: {} events fed the audio sink ({} cues), {} attacks flashed on screen",
-        audio.fed, audio.cues, feedback.hits_seen
+        "  feedback wiring: {} events fed the audio sink ({} cues), {} attacks flashed on screen, \
+         {} refused orders surfaced",
+        audio.fed, audio.cues, feedback.hits_seen, feedback.refusals_seen
+    );
+    assert!(
+        refusal_surfaced && feedback.refusals_seen > 0,
+        "the invalid order must have surfaced as a refusal cue"
     );
     println!("  content hash:    {:#018x}", bundle.content_hash());
     println!("pandemonium client — smoke PASS (windowed M3 verification requires a display)");
