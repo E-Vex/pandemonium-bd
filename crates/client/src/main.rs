@@ -19,10 +19,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
+use pandemonium_ai::Controller;
 use pandemonium_content::ContentBundle;
 use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
-use pandemonium_engine::{MatchHost, NullRenderer, Renderer, RtsCamera};
+use pandemonium_engine::{
+    alpha_controller, MatchHost, MatchOutcome, NullRenderer, Renderer, RtsCamera,
+};
 use pandemonium_sim_api::{
     Command, CommandKind, ControllerKind, EntityId, MatchSetup, PlayerId, PlayerSetup,
 };
@@ -31,16 +34,20 @@ use text::{TextAtlas, UiQuad};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, PhysicalKey};
+use winit::keyboard::{Key, ModifiersState, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 /// The player the human controls.
 const HUMAN: PlayerId = PlayerId(0);
+/// The AI opponent's slot.
+const AI: PlayerId = PlayerId(1);
 /// How far the cursor can drift (in NDC) for a press-release to count as a
 /// click rather than a drag.
 const CLICK_SLOP: f32 = 0.01;
 /// Heightmap units -> tiles of vertical displacement (display-only, ADR-0001).
 const HEIGHT_SCALE: f32 = 0.02;
+/// How many control groups the client tracks (plan §11.3: control groups).
+const CONTROL_GROUP_COUNT: usize = 9;
 
 fn main() -> anyhow::Result<()> {
     let content = content_path();
@@ -93,14 +100,25 @@ fn content_path() -> &'static Path {
 
 /// The windowed application state.
 struct App {
+    /// The loaded content bundle (M8: retained for restart — fresh controllers
+    /// are re-derived from the bundle + seed on each restart).
+    bundle: ContentBundle,
+    /// The match setup (M8: retained for restart — the same seed reproduces
+    /// the same match bit-for-bit, A15).
+    setup: MatchSetup,
     host: MatchHost,
     camera: RtsCamera,
     renderer: Option<WgpuRenderer>,
     window: Option<Arc<Window>>,
     selection: Vec<EntityId>,
+    /// M8 (plan §11.3): control groups 1-9. Ctrl+digit assigns the current
+    /// selection to a group; digit alone recalls it.
+    control_groups: Vec<Vec<EntityId>>,
     drag_start: Option<(f64, f64)>,
     drag_current: Option<(f64, f64)>,
     keys: BTreeSet<Key<&'static str>>,
+    /// M8: the current keyboard modifiers (Ctrl for control-group assignment).
+    modifiers: ModifiersState,
     last_frame: Instant,
     command_seq: u32,
     /// Display names of the loaded resources, indexed by ResourceId (the
@@ -132,23 +150,27 @@ impl App {
                 },
             ],
         };
-        let host = MatchHost::new(&bundle.world(), setup);
-        let camera = RtsCamera::new(bundle.map.width, bundle.map.height, 16.0 / 9.0);
         let resource_names: Vec<String> = bundle
             .rules
             .resources
             .iter()
             .map(|resource| resource.display_name.clone())
             .collect();
+        let camera = RtsCamera::new(bundle.map.width, bundle.map.height, 16.0 / 9.0);
+        let host = Self::build_host(&bundle, setup.clone());
         Ok(Self {
+            bundle,
+            setup,
             host,
             camera,
             renderer: None,
             window: None,
             selection: Vec::new(),
+            control_groups: vec![Vec::new(); CONTROL_GROUP_COUNT],
             drag_start: None,
             drag_current: None,
             keys: BTreeSet::new(),
+            modifiers: ModifiersState::empty(),
             last_frame: Instant::now(),
             command_seq: 0,
             resource_names,
@@ -159,6 +181,34 @@ impl App {
         })
     }
 
+    /// Builds a fresh `MatchHost` with a fresh AI controller for the opponent
+    /// slot (M8). Used at construction and on restart — the controller's RNG
+    /// seed derives from the match seed (plan §9.6: seeded, never its own
+    /// entropy), so a same-seed restart reproduces the same match.
+    fn build_host(bundle: &ContentBundle, setup: MatchSetup) -> MatchHost {
+        let world = bundle.world();
+        let controllers: Vec<(PlayerId, Box<dyn Controller>)> = vec![(
+            AI,
+            Box::new(alpha_controller(bundle, &world, AI, setup.seed)),
+        )];
+        MatchHost::with_controllers(&world, setup, controllers)
+    }
+
+    /// Restarts the match: drops the current host and builds a fresh one from
+    /// the same bundle + setup (M8, plan §9.7, A15 — "new Sim from the same
+    /// setup with a new seed, with no leaked state"). The fresh controller
+    /// re-derives its RNG seed from the match seed, so a same-seed restart
+    /// reproduces the same match bit-for-bit. The camera, selection, control
+    /// groups, and counters all reset.
+    fn restart(&mut self) {
+        let setup = self.setup.clone();
+        self.host = Self::build_host(&self.bundle, setup);
+        self.selection = Vec::new();
+        self.control_groups = vec![Vec::new(); CONTROL_GROUP_COUNT];
+        self.command_seq = 0;
+        self.commands_submitted = 0;
+    }
+
     /// Converts window pixel coordinates to NDC (Y up).
     fn to_ndc(window: &Window, x: f64, y: f64) -> (f32, f32) {
         let size = window.inner_size();
@@ -166,6 +216,20 @@ impl App {
             (x / size.width.max(1) as f64) as f32 * 2.0 - 1.0,
             1.0 - (y / size.height.max(1) as f64) as f32 * 2.0,
         )
+    }
+
+    /// The cursor's current NDC position (M8: used by the AttackMove hotkey,
+    /// which fires on key-down without a fresh cursor event). Falls back to
+    /// the screen center when the cursor hasn't moved yet.
+    fn cursor_ndc(&self) -> (f32, f32) {
+        let Some(window) = &self.window else {
+            return (0.0, 0.0);
+        };
+        let (x, y) = self.drag_current.unwrap_or_else(|| {
+            let size = window.inner_size();
+            (size.width as f64 / 2.0, size.height as f64 / 2.0)
+        });
+        Self::to_ndc(window, x, y)
     }
 
     /// Single-click selection: the nearest own entity to the cursor.
@@ -221,6 +285,77 @@ impl App {
             },
         ));
     }
+
+    /// M8 (plan §11.3): Stop hotkey — clears the selection's order queues and
+    /// any auto-acquired combat targets (the gate's Stop command).
+    fn issue_stop(&mut self) {
+        if self.selection.is_empty() {
+            return;
+        }
+        self.command_seq += 1;
+        self.commands_submitted += 1;
+        self.host.submit(Command::new(
+            HUMAN,
+            0,
+            self.command_seq,
+            CommandKind::Stop {
+                units: self.selection.clone(),
+            },
+        ));
+    }
+
+    /// M8 (plan §11.3): AttackMove hotkey — the selection moves to the picked
+    /// ground point, engaging enemies encountered en route (combat semantics
+    /// from M6). Falls back to a plain Move for units without Attack.
+    fn issue_attack_move(&mut self, ndc: (f32, f32)) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
+            return;
+        };
+        let target = MatchHost::world_to_logical(point.x, point.z);
+        self.command_seq += 1;
+        self.commands_submitted += 1;
+        self.host.submit(Command::new(
+            HUMAN,
+            0,
+            self.command_seq,
+            CommandKind::AttackMove {
+                units: self.selection.clone(),
+                target,
+            },
+        ));
+    }
+
+    /// M8 (plan §11.3): assign the current selection to control group `index`
+    /// (0-8 mapping to display 1-9).
+    fn assign_control_group(&mut self, index: usize) {
+        if index < self.control_groups.len() {
+            self.control_groups[index] = self.selection.clone();
+        }
+    }
+
+    /// M8 (plan §11.3): recall control group `index` (0-8). Selection becomes
+    /// the group's members that are still alive (the snapshot filters the
+    /// dead — ids are never reused, so a stale group reference is harmless).
+    fn recall_control_group(&mut self, index: usize) {
+        if index >= self.control_groups.len() {
+            return;
+        }
+        let live: std::collections::BTreeSet<EntityId> = self
+            .host
+            .render_snapshot()
+            .entities
+            .iter()
+            .map(|entity| entity.id)
+            .collect();
+        self.selection = self.control_groups[index]
+            .iter()
+            .copied()
+            .filter(|id| live.contains(id))
+            .collect();
+    }
 }
 
 /// Tracks a WASD key's state (camera panning).
@@ -230,6 +365,23 @@ fn set_key(keys: &mut BTreeSet<Key<&'static str>>, character: &'static str, pres
         keys.insert(key);
     } else {
         keys.remove(&key);
+    }
+}
+
+/// M8: maps a DigitN KeyCode to its 1-based group index (1..=9). Used by the
+/// control-group hotkeys.
+fn digit_to_group_index(code: winit::keyboard::KeyCode) -> usize {
+    match code {
+        winit::keyboard::KeyCode::Digit1 => 1,
+        winit::keyboard::KeyCode::Digit2 => 2,
+        winit::keyboard::KeyCode::Digit3 => 3,
+        winit::keyboard::KeyCode::Digit4 => 4,
+        winit::keyboard::KeyCode::Digit5 => 5,
+        winit::keyboard::KeyCode::Digit6 => 6,
+        winit::keyboard::KeyCode::Digit7 => 7,
+        winit::keyboard::KeyCode::Digit8 => 8,
+        winit::keyboard::KeyCode::Digit9 => 9,
+        _ => 0,
     }
 }
 
@@ -318,8 +470,24 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match code {
                         winit::keyboard::KeyCode::KeyW => set_key(&mut self.keys, "w", pressed),
-                        winit::keyboard::KeyCode::KeyA => set_key(&mut self.keys, "a", pressed),
-                        winit::keyboard::KeyCode::KeyS => set_key(&mut self.keys, "s", pressed),
+                        winit::keyboard::KeyCode::KeyA => {
+                            set_key(&mut self.keys, "a", pressed);
+                            // M8: 'A' is also the AttackMove hotkey on press
+                            // (camera pan uses the held state; the command
+                            // fires once on the key-down edge). Only when the
+                            // match is ongoing — end-screen 'R' takes over.
+                            if pressed && !self.host.is_finished() {
+                                let ndc = self.cursor_ndc();
+                                self.issue_attack_move(ndc);
+                            }
+                        }
+                        winit::keyboard::KeyCode::KeyS => {
+                            set_key(&mut self.keys, "s", pressed);
+                            // M8: 'S' is also the Stop hotkey on press.
+                            if pressed && !self.host.is_finished() {
+                                self.issue_stop();
+                            }
+                        }
                         winit::keyboard::KeyCode::KeyD => set_key(&mut self.keys, "d", pressed),
                         // §11.6 debug tooling: overlay toggle, pause, single-step.
                         winit::keyboard::KeyCode::F3 if pressed => {
@@ -331,10 +499,42 @@ impl ApplicationHandler for App {
                         winit::keyboard::KeyCode::Period if pressed => {
                             let _ = self.host.step_once();
                         }
+                        // M8 (plan §11.3): control groups 1-9. Ctrl+digit
+                        // assigns the current selection; digit alone recalls.
+                        // Digit 0 is unused (9 groups, 1-9).
+                        winit::keyboard::KeyCode::Digit1
+                        | winit::keyboard::KeyCode::Digit2
+                        | winit::keyboard::KeyCode::Digit3
+                        | winit::keyboard::KeyCode::Digit4
+                        | winit::keyboard::KeyCode::Digit5
+                        | winit::keyboard::KeyCode::Digit6
+                        | winit::keyboard::KeyCode::Digit7
+                        | winit::keyboard::KeyCode::Digit8
+                        | winit::keyboard::KeyCode::Digit9
+                            if pressed =>
+                        {
+                            let index = digit_to_group_index(code) - 1;
+                            if self.modifiers.control_key() {
+                                self.assign_control_group(index);
+                            } else {
+                                self.recall_control_group(index);
+                            }
+                        }
+                        // M8 (plan §9.7, A15): 'R' restarts the match when
+                        // it has ended. The host's outcome surfaces through
+                        // the boundary; restart drops + reconstructs.
+                        winit::keyboard::KeyCode::KeyR if pressed => {
+                            if self.host.is_finished() {
+                                self.restart();
+                            }
+                        }
                         winit::keyboard::KeyCode::Escape if pressed => event_loop.exit(),
                         _ => {}
                     }
                 }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
             }
             _ => {}
         }
@@ -392,16 +592,19 @@ impl App {
         let view_projection = self.camera.view_projection();
         let eye = self.camera.eye();
         let hud = self.host.hud_state(HUMAN);
+        let outcome = self.host.outcome();
         // The HUD and debug overlay quads (plan §11.4 / §11.6) queue before the
         // frame; the renderer drains them on top of the world.
-        let quads = overlay_quads(
-            renderer.atlas(),
-            &hud,
-            &self.resource_names,
-            self.debug_overlay,
-            self.selection.len(),
-            snapshot.entities.len(),
-        );
+        let quads = overlay_quads(OverlayInput {
+            atlas: renderer.atlas(),
+            hud: &hud,
+            resource_names: &self.resource_names,
+            debug: self.debug_overlay,
+            selected: self.selection.len(),
+            entities: snapshot.entities.len(),
+            outcome: outcome.as_ref(),
+            log_len: self.host.log().len(),
+        });
         renderer.queue_ui(&quads);
         renderer.render(Frame {
             snapshot: &snapshot,
@@ -413,17 +616,33 @@ impl App {
     }
 }
 
-/// Builds the overlay quads for one frame: the resource/population HUD
-/// (plan §11.4's minimal slice) and, when toggled, the §11.6 debug overlay
-/// (tick counter, state hash, entity/selection counts, pause state).
-fn overlay_quads(
-    atlas: &TextAtlas,
-    hud: &HudState,
-    resource_names: &[String],
+/// The inputs to [`overlay_quads`] for one frame (M8: gathered into a struct
+/// to keep the call readable as the panel set grew). All presentation-only.
+struct OverlayInput<'a> {
+    atlas: &'a TextAtlas,
+    hud: &'a HudState,
+    resource_names: &'a [String],
     debug: bool,
     selected: usize,
     entities: usize,
-) -> Vec<UiQuad> {
+    outcome: Option<&'a MatchOutcome>,
+    log_len: usize,
+}
+
+/// Builds the overlay quads for one frame: the resource/population HUD
+/// (plan §11.4's minimal slice), the §11.6 debug overlay (when toggled), and
+/// (M8) the end-screen panel when the match has resolved.
+fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
+    let OverlayInput {
+        atlas,
+        hud,
+        resource_names,
+        debug,
+        selected,
+        entities,
+        outcome,
+        log_len,
+    } = input;
     /// Screen margin between panels and the window edge.
     const MARGIN: f32 = 8.0;
     /// Padding inside a panel.
@@ -460,7 +679,7 @@ fn overlay_quads(
         let lines = [
             format!("tick {}", hud.tick),
             format!("hash {:#018x}", hud.state_hash),
-            format!("entities {entities}  selected {selected}"),
+            format!("entities {entities}  selected {selected}  log {log_len}"),
             if hud.paused {
                 "PAUSED  [.] step".to_string()
             } else {
@@ -503,6 +722,58 @@ fn overlay_quads(
             [0.2, 0.15, 0.0, 0.45],
         ));
         quads.extend(atlas.layout(tag, tag_x + PAD, baseline, [1.0, 0.85, 0.3, 0.95]));
+    }
+
+    // M8: the end-screen panel (plan §11.4: "match end screen with restart").
+    // Rendered on top of everything when the match has resolved. The human's
+    // slot is 0; the AI's is 1; NEUTRAL is the mutual-destruction edge case.
+    if let Some(outcome) = outcome {
+        let headline = match outcome.winner {
+            HUMAN => "VICTORY",
+            AI => "DEFEAT",
+            _ => "MUTUAL DESTRUCTION",
+        };
+        let subline = match outcome.winner {
+            HUMAN => "You eliminated the enemy.",
+            AI => "Your base was destroyed.",
+            _ => "Both sides were eliminated.",
+        };
+        let hint = "[R] restart    [Esc] quit";
+        let lines = [headline, subline, hint];
+        let widest = lines
+            .iter()
+            .map(|l| atlas.measure(l))
+            .fold(0.0f32, f32::max);
+        let panel_w = widest + 4.0 * PAD;
+        let panel_h = lines.len() as f32 * line_height + 4.0 * PAD;
+        // Center the panel in the window — the atlas doesn't know the window
+        // size, so we use a fixed large offset (the renderer's NDC pipeline
+        // clips anything off-screen). 320x240 px is a safe center for the
+        // default window; on other sizes the panel stays anchored top-left
+        // of center.
+        let panel_x = 320.0 - panel_w / 2.0;
+        let panel_y = 240.0 - panel_h / 2.0;
+        let panel_color = if outcome.winner == HUMAN {
+            [0.05, 0.12, 0.05, 0.85]
+        } else {
+            [0.18, 0.04, 0.04, 0.85]
+        };
+        quads.push(atlas.solid_rect(panel_x, panel_y, panel_w, panel_h, panel_color));
+        for (index, line) in lines.iter().enumerate() {
+            let line_baseline = panel_y + 2.0 * PAD + atlas.ascent + index as f32 * line_height;
+            let color = if index == 0 {
+                if outcome.winner == HUMAN {
+                    [0.6, 1.0, 0.6, 1.0]
+                } else {
+                    [1.0, 0.5, 0.5, 1.0]
+                }
+            } else {
+                [1.0, 1.0, 1.0, 0.9]
+            };
+            let line_w = atlas.measure(line);
+            let line_x = panel_x + (panel_w - line_w) / 2.0;
+            quads.extend(atlas.layout(line, line_x, line_baseline, color));
+        }
     }
     quads
 }
