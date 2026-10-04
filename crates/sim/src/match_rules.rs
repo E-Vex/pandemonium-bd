@@ -74,9 +74,10 @@ pub(crate) fn evaluate(
     // at least one player owns at least one structure (A-067). A no-structure
     // world (the M1 spine-test fixture) never triggers defeat; the rule fires
     // only on a real match where someone actually had a structure to lose.
-    let any_structure = world.entities.iter().any(|entity| {
-        entity.owner != PlayerId::NEUTRAL && world.footprint_of(entity.id).is_some()
-    });
+    let any_structure = world
+        .entities
+        .iter()
+        .any(|entity| entity.owner != PlayerId::NEUTRAL && world.footprint_of(entity.id).is_some());
     if !any_structure {
         return;
     }
@@ -85,9 +86,10 @@ pub(crate) fn evaluate(
     // Ore nodes carry Footprint but are neutral and so never count.
     let mut defeated: Vec<PlayerId> = Vec::new();
     for player in &world.players {
-        let has_structures = world.entities.iter().any(|entity| {
-            entity.owner == player.player && world.footprint_of(entity.id).is_some()
-        });
+        let has_structures = world
+            .entities
+            .iter()
+            .any(|entity| entity.owner == player.player && world.footprint_of(entity.id).is_some());
         if player.resigned || !has_structures {
             defeated.push(player.player);
         }

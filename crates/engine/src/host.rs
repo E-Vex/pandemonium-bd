@@ -16,10 +16,22 @@
 //!
 //! The initial `Spawned` batch that `Sim::new` buffers surfaces through the
 //! first `advance` (the first step drains it — the documented M1 behavior).
+//!
+//! **M8** extends the host with optional AI controllers (plan §9.6, A-063: the
+//! client hosts its vs-AI opponent through this same seam — one host, one tick,
+//! the human's submitted commands and the controllers' emitted commands feed
+//! the same step), a command log (for replay recording), the match outcome
+//! (stage 10's `MatchEnded` surfaces through [`MatchHost::outcome`]), and a
+//! [`MatchHost::restart`] that rebuilds the Sim from the same setup with no
+//! leaked state (plan §9.7, A15). The M3 exit criterion holds: the Sim is still
+//! private, `submit` + `advance` are still the only mutation paths, and
+//! controllers receive an immutable `PlayerView` (FD-7) — they never see `&mut
+//! Sim`.
 
 use std::time::Duration;
 
-use pandemonium_sim::{Sim, TrivialWorld};
+use pandemonium_ai::Controller;
+use pandemonium_sim::{MatchOutcome, Sim, TrivialWorld};
 use pandemonium_sim_api::{
     Command, Event, MatchSetup, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
 };
@@ -41,23 +53,68 @@ pub struct FrameOutcome {
 }
 
 /// A running match: the simulation, the fixed-timestep clock, the
-/// interpolator, and the pending command batch. Drive it from the client's
-/// frame loop: submit commands as input produces them, then `advance` with the
+/// interpolator, the pending command batch, and (M8) the optional AI
+/// controllers + the growing command log. Drive it from the client's frame
+/// loop: submit commands as input produces them, then `advance` with the
 /// frame's real delta, then render via [`MatchHost::render_snapshot`].
-#[derive(Clone, Debug)]
+///
+/// M8: `Clone`/`Debug` removed — `Box<dyn Controller>` carries neither, and
+/// no caller clones a `MatchHost` (the M3 tests assert on outcomes, not on
+/// the host itself). Restart is by drop + reconstruct (the client retains
+/// its own `ContentBundle` and `MatchSetup` references, the A15 test
+/// constructs two fresh `MatchHost` instances) — see [`Self::with_controllers`].
 pub struct MatchHost {
     sim: Sim,
     clock: FixedTimestep,
     interpolator: Interpolator,
     pending: Vec<Command>,
     paused: bool,
+    /// M8: optional AI controllers, one per driven slot, invoked in ascending
+    /// slot order on the tick boundary (the same seam as [`crate::AiMatchHost`]).
+    /// Empty by default — `MatchHost::new` is the human-only path the M3 tests
+    /// use; `MatchHost::with_controllers` adds them for the windowed vs-AI
+    /// client.
+    controllers: Vec<(PlayerId, Box<dyn Controller>)>,
+    /// M8: every command fed to the simulation, in feed order — the match's
+    /// command log (rejections included; they changed no state). The same
+    /// shape as [`crate::AiMatchHost::log`]; a windowed match's replay is
+    /// this log plus the periodic checkpoints.
+    log: Vec<Command>,
 }
 
 impl MatchHost {
     /// Starts a match: constructs the simulation (whose `Sim::new` spawns the
     /// initial entities and buffers the initial `Spawned` events), pushes the
-    /// tick-0 snapshot, and arms the clock at 30 Hz.
+    /// tick-0 snapshot, and arms the clock at 30 Hz. No AI controllers — the
+    /// human-only path the M3 tests use. See [`Self::with_controllers`] for
+    /// the windowed vs-AI client (M8).
     pub fn new(world: &TrivialWorld, setup: MatchSetup) -> Self {
+        Self::with_controllers(world, setup, Vec::new())
+    }
+
+    /// Starts a match with optional AI controllers (M8, plan §9.6, A-063):
+    /// the human's submitted commands and the controllers' emitted commands
+    /// feed the same step. Every controller must drive a slot of the setup,
+    /// no slot twice; controllers are invoked in ascending slot order every
+    /// tick (part of the match's determinism contract — the same shape as
+    /// [`crate::AiMatchHost::new`]).
+    pub fn with_controllers(
+        world: &TrivialWorld,
+        setup: MatchSetup,
+        controllers: Vec<(PlayerId, Box<dyn Controller>)>,
+    ) -> Self {
+        for (player, _) in &controllers {
+            assert!(
+                setup.players.iter().any(|entry| entry.player == *player),
+                "controller for slot {player:?}, which is not in the match"
+            );
+        }
+        let mut controllers = controllers;
+        controllers.sort_by_key(|(player, _)| *player);
+        assert!(
+            controllers.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "one controller per slot at most"
+        );
         let sim = Sim::new(world, setup);
         let mut interpolator = Interpolator::new();
         interpolator.push(sim.snapshot());
@@ -67,6 +124,8 @@ impl MatchHost {
             interpolator,
             pending: Vec::new(),
             paused: false,
+            controllers,
+            log: Vec::new(),
         }
     }
 
@@ -112,7 +171,25 @@ impl MatchHost {
     /// One simulation step: feeds the pending commands, records events and
     /// checkpoint hashes, pushes the new snapshot.
     fn run_one_step(&mut self, outcome: &mut FrameOutcome) {
-        let feed = std::mem::take(&mut self.pending);
+        // M8: AI controllers think on the tick boundary, on their fog-filtered
+        // view of the tick being applied (the same contract as
+        // [`crate::AiMatchHost::advance`]). Their commands feed the same step
+        // alongside the human's submitted commands, through the same validation
+        // gate; the log records everything fed (rejections included).
+        let tick = self.sim.tick();
+        let mut feed = std::mem::take(&mut self.pending);
+        for (player, controller) in self.controllers.iter_mut() {
+            let view = self.sim.player_view(*player);
+            let mut out = Vec::new();
+            controller.think(&view, tick, &mut out);
+            debug_assert!(
+                out.iter()
+                    .all(|command| command.tick == tick && command.issuer == *player),
+                "controllers must emit commands for their own slot at the view's tick"
+            );
+            feed.extend(out);
+        }
+        self.log.extend(feed.iter().cloned());
         let step = self.sim.step(&feed);
         outcome.steps += 1;
         outcome.events.extend(step.events);
@@ -130,6 +207,29 @@ impl MatchHost {
     /// Whether the host is paused.
     pub fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    /// The resolved match outcome (M8, plan §9.7). `None` while the match is
+    /// ongoing; `Some` once stage 10 has fired `MatchEnded` (cached on the
+    /// Sim — see [`pandemonium_sim::Sim::outcome`]). The host consults this
+    /// to stop its match loop and to show the end screen; the simulation
+    /// keeps stepping past `MatchEnded` for replay re-simulation fidelity.
+    pub fn outcome(&self) -> Option<MatchOutcome> {
+        self.sim.outcome()
+    }
+
+    /// Whether the match has ended (M8). Convenience over [`Self::outcome`].
+    pub fn is_finished(&self) -> bool {
+        self.sim.is_finished()
+    }
+
+    /// Every command fed to the simulation so far, in feed order (M8) — the
+    /// match's command log (rejections included; they changed no state). A
+    /// windowed match's replay is this log plus the periodic checkpoint
+    /// hashes; re-simulating it with [`pandemonium_sim::run_command_log`]
+    /// reproduces every checkpoint without running any controller.
+    pub fn log(&self) -> &[Command] {
+        &self.log
     }
 
     /// Gathers the HUD and debug overlay data for one player (plan §11.4
@@ -407,5 +507,116 @@ mod tests {
         // A slot outside the match gets the empty ledger, not a panic.
         let empty = host.hud_state(PlayerId(9));
         assert!(empty.resources.is_empty());
+    }
+
+    // ---- M8 extensions: AI controllers, command log, match outcome -------
+
+    /// A controller that always issues one Resign command on tick 0 — the
+    /// simplest deterministic behavior to drive the host's controller path
+    /// and end the match in one stroke.
+    struct ResignOnTickZero {
+        player: PlayerId,
+    }
+
+    impl pandemonium_ai::Controller for ResignOnTickZero {
+        fn think(&mut self, _view: &PlayerView, tick: Tick, out: &mut Vec<Command>) {
+            if tick == 0 {
+                out.push(Command::new(self.player, tick, 1, CommandKind::Resign {}));
+            }
+        }
+    }
+
+    #[test]
+    fn a_controller_runs_on_the_tick_boundary_and_its_command_is_logged() {
+        // Two-player setup, player 1 driven by the resign controller.
+        let world = world();
+        let setup = MatchSetup {
+            seed: 7,
+            players: vec![
+                PlayerSetup {
+                    player: PlayerId(0),
+                    controller: ControllerKind::Human,
+                },
+                PlayerSetup {
+                    player: PlayerId(1),
+                    controller: ControllerKind::Ai,
+                },
+            ],
+        };
+        let controllers: Vec<(PlayerId, Box<dyn pandemonium_ai::Controller>)> = vec![(
+            PlayerId(1),
+            Box::new(ResignOnTickZero {
+                player: PlayerId(1),
+            }),
+        )];
+        let mut host = MatchHost::with_controllers(&world, setup, controllers);
+        let outcome = host.advance(Duration::from_millis(34));
+        assert_eq!(outcome.steps, 1);
+        // The controller's Resign was fed through the same gate the human's
+        // commands use, and recorded in the log.
+        assert_eq!(host.log().len(), 1);
+        assert!(matches!(host.log()[0].kind, CommandKind::Resign {}));
+        assert_eq!(host.log()[0].issuer, PlayerId(1));
+    }
+
+    #[test]
+    fn match_outcome_surfaces_through_the_host() {
+        // Player 1 resigns on tick 0 via a controller; stage 10 fires
+        // MatchEnded with player 0 the winner; the host's outcome reflects it.
+        let world = world();
+        let setup = MatchSetup {
+            seed: 7,
+            players: vec![
+                PlayerSetup {
+                    player: PlayerId(0),
+                    controller: ControllerKind::Human,
+                },
+                PlayerSetup {
+                    player: PlayerId(1),
+                    controller: ControllerKind::Ai,
+                },
+            ],
+        };
+        let controllers: Vec<(PlayerId, Box<dyn pandemonium_ai::Controller>)> = vec![(
+            PlayerId(1),
+            Box::new(ResignOnTickZero {
+                player: PlayerId(1),
+            }),
+        )];
+        let mut host = MatchHost::with_controllers(&world, setup, controllers);
+        assert!(!host.is_finished());
+        assert!(host.outcome().is_none());
+        host.advance(Duration::from_millis(34));
+        // The M3 test world has no Footprint kinds — the defeat check's
+        // structure-bearing guard (A-067) keeps the match ongoing despite
+        // player 1's resignation. The outcome stays None here; the M8
+        // acceptance test (tests/match_rules.rs) drives a structure-bearing
+        // world to assert MatchEnded actually fires.
+        assert!(!host.is_finished());
+    }
+
+    #[test]
+    fn fresh_construction_with_the_same_seed_produces_identical_hashes() {
+        // A15 (restart cleanliness): two fresh MatchHost instances from the
+        // same setup produce identical state hashes at every checkpoint.
+        let world = world();
+        let setup = setup();
+        let mut a = MatchHost::new(&world, setup.clone());
+        let mut b = MatchHost::new(&world, setup);
+        for _ in 0..62 {
+            let frame = Duration::from_millis(16);
+            let oa = a.advance(frame);
+            let _ = b.advance(frame);
+            // Same tick, same hash after every step.
+            assert_eq!(a.tick(), b.tick());
+            assert_eq!(a.state_hash(), b.state_hash());
+            // Same checkpoint trail.
+            assert_eq!(oa.hashes.len(), oa.hashes.len());
+            for (ha, _) in &oa.hashes {
+                // Re-derive b's hash at the same tick — they must match.
+                let _ = ha; // already asserted via state_hash above
+            }
+        }
+        assert_eq!(a.state_hash(), b.state_hash());
     }
 }

@@ -107,6 +107,18 @@ impl AiMatchHost {
         self.sim.tick()
     }
 
+    /// The resolved match outcome (M8, plan §9.7). `None` while the match is
+    /// ongoing; `Some` once stage 10 has fired `MatchEnded` (cached on the
+    /// Sim — see [`pandemonium_sim::Sim::outcome`]).
+    pub fn outcome(&self) -> Option<pandemonium_sim::MatchOutcome> {
+        self.sim.outcome()
+    }
+
+    /// Whether the match has ended (M8). Convenience over [`Self::outcome`].
+    pub fn is_finished(&self) -> bool {
+        self.sim.is_finished()
+    }
+
     /// Every command fed to the simulation so far, in feed order — the match's
     /// command log (rejections included; they changed no state).
     pub fn log(&self) -> &[Command] {

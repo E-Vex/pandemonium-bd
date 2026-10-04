@@ -36,6 +36,11 @@ pub use interpolate::{
 pub use mesh::{terrain_mesh, TerrainMesh, TerrainVertex};
 pub use renderer::{Frame, HudState, NullRenderer, Renderer};
 
+/// Re-export of [`pandemonium_sim::MatchOutcome`] so the engine's clients
+/// (the windowed client, the tools) can read the match outcome through the
+/// engine boundary without depending on `sim` directly for the type (M8).
+pub use pandemonium_sim::MatchOutcome;
+
 #[cfg(test)]
 mod camera_tests {
     use super::*;
