@@ -61,3 +61,7 @@ path = "ai.rs"
 [[test]]
 name = "match_rules"
 path = "match_rules.rs"
+
+[[test]]
+name = "alpha_loop"
+path = "alpha_loop.rs"
