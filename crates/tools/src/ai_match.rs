@@ -319,16 +319,21 @@ mod tests {
         // The field is therefore `None` here; the M8 acceptance test
         // (tests/match_rules.rs) drives a forced defeat to assert
         // `MatchEnded` actually fires and sets the field.
+        // (M9 note: the hash below moved once M9 fixed the frozen chase
+        // orders — orders are canonical hashed state; see the re-pin
+        // reasons in tests/ai.rs. The "doesn't resolve at 7200" narrative
+        // is unchanged by that fix; the M9 tuning pass closes matches at
+        // longer budgets — tests/alpha_loop.rs is the resolution exit.)
         let bundle = ContentBundle::load_dir(&repo_content()).expect("repo content loads");
         let match_result =
             run_ai_match(&bundle, 7, 7200, Slot::Ai, Slot::Ai).expect("the match runs");
         // The field exists and is readable (the structural assertion).
         let _ = match_result.summary.winner;
-        // The M7 golden contract holds: 241 checkpoints, final hash unchanged.
+        // The golden contract holds: 241 checkpoints, final hash pinned.
         assert_eq!(
             match_result.replay.checkpoints.len(),
             (7200 / 30) as usize + 1
         );
-        assert_eq!(match_result.replay.final_hash, 0x679f_4713_1147_65c9);
+        assert_eq!(match_result.replay.final_hash, 0x5a98_4c54_4db1_e82e);
     }
 }

@@ -1024,9 +1024,17 @@ fn ai_vs_ai_golden_hash_is_pinned() {
     // Pinned after the first green run (M7). Any change to the controller's
     // decisions, the hosting order, or the simulation shows up as a value
     // change in review; regenerate deliberately when a milestone intends one.
+    //
+    // M9 re-pin (written reason): the simulation now pops a chase order
+    // whose commanded target died (combat stage 1 — the M8 flagship's
+    // stall diagnosis: defense Attack orders outlived their dead
+    // intruders and the armies froze reporting Moving with empty paths).
+    // Orders are canonical hashed state, so the tick-0 checkpoint is
+    // unchanged (no orders exist yet) and every post-combat checkpoint
+    // moves. The M9 AI tuning re-pins this again on top (see below).
     assert_eq!(run.checkpoints.len(), (FLAGSHIP_TICKS / 30) as usize + 1);
     assert_eq!(run.checkpoints[0].hash, 0x6161_3bca_16b8_f00e);
-    assert_eq!(run.final_hash, 0x679f_4713_1147_65c9);
+    assert_eq!(run.final_hash, 0x5a98_4c54_4db1_e82e);
     assert_eq!(run.final_hash, run.checkpoints.last().unwrap().hash);
 }
 

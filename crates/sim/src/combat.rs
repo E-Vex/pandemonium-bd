@@ -59,6 +59,27 @@ pub(crate) fn advance_combat(world: &mut World, events: &mut Vec<Event>) {
     let attackers: Vec<(EntityId, AttackDef)> =
         world.attack.iter().map(|(id, def)| (*id, *def)).collect();
     for (attacker_id, mut attacker_def) in attackers {
+        // A chase order dies with its target: if the queue's head is an
+        // `AttackUnit` whose target is no longer in the world (it died and
+        // was removed by stage 8, or was removed by its own system), pop the
+        // order here. Without this the order outlives its target forever —
+        // movement resolves no destination, requests no path, and the unit
+        // freezes in place still reporting `Moving` (movement.rs documents
+        // this pop as the combat pipeline's job). Queued `AttackUnit` orders
+        // are popped the same way when they reach the head. The unit falls
+        // back to its next order or to pure auto-acquisition.
+        let head_is_dead_chase = match world.entity(attacker_id).and_then(|e| e.orders.first()) {
+            Some(Order::AttackUnit { target }) => world.entity(*target).is_none(),
+            _ => false,
+        };
+        if head_is_dead_chase {
+            if let Some(entity) = world.entity_mut(attacker_id) {
+                entity.orders.remove(0);
+            }
+            if let Some(def) = world.move_of_mut(attacker_id) {
+                def.reset_runtime();
+            }
+        }
         // Resolve the commanded target if the order queue's head is AttackUnit.
         let commanded = world
             .entity(attacker_id)
@@ -538,8 +559,8 @@ mod tests {
         use crate::sim::Sim;
         use pandemonium_fx::Fx;
         use pandemonium_sim_api::{
-            Command, CommandKind, ControllerKind, KindId, MatchSetup, PlayerId, PlayerSetup,
-            Reject, RejectReason, ResourceId, Vec2Fx,
+            Command, CommandKind, ControllerKind, KindId, MatchSetup, MoveState, PlayerId,
+            PlayerSetup, Reject, RejectReason, ResourceId, Vec2Fx,
         };
 
         let world = TrivialWorld {
@@ -692,6 +713,175 @@ mod tests {
             )),
             "attack on the dead id should be rejected as InvalidTarget: {out:?}"
         );
+        // The chase order died with its target (M9): stage 1 popped the head
+        // `AttackUnit` the tick after stage 8 removed the corpse, so the
+        // attacker reports Idle — not a frozen Moving with an empty path.
+        assert!(
+            sim.snapshot()
+                .entities
+                .iter()
+                .any(|e| e.id == EntityId(1) && e.move_state == MoveState::Idle),
+            "the attacker's chase order should pop when its target dies"
+        );
         let _ = Fx::ZERO; // touch Fx so the import is used.
+    }
+
+    /// M9: a chase order whose target dies pops, and the queue behind it
+    /// advances — the attacker executes its queued follow-up order instead of
+    /// freezing mid-chase forever. This is the stall the M8 AI-vs-AI flagship
+    /// exposed: defense `Attack` orders outlived their (dead) intruders, the
+    /// army froze reporting `Moving`, and neither side could close the match.
+    #[test]
+    fn chase_order_pops_and_the_queue_advances_when_the_target_dies() {
+        use crate::fixture::{CapTemplate, KindTemplate, ResourceDef, SpawnDef, TrivialWorld};
+        use crate::sim::Sim;
+        use pandemonium_sim_api::{
+            Command, CommandKind, ControllerKind, KindId, MatchSetup, MoveState, PlayerId,
+            PlayerSetup, ResourceId,
+        };
+
+        let world = TrivialWorld {
+            map_id: 0x0BAD_C0DE,
+            width_tiles: 16,
+            height_tiles: 16,
+            passability: TrivialWorld::open_passability(16, 16),
+            buildability: TrivialWorld::open_buildability(16, 16),
+            kinds: vec![
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Health {
+                        max_hp: 100,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Move {
+                        speed_milli_tiles_per_s: 2400,
+                        radius_milli_tiles: 350,
+                    },
+                    CapTemplate::Attack {
+                        damage: 15,
+                        range_milli_tiles: 1000,
+                        cooldown_ms: 33,
+                        acquire_range_milli_tiles: 5000,
+                    },
+                    CapTemplate::Vision {
+                        radius_milli_tiles: 7000,
+                    },
+                ]),
+                KindTemplate::from_caps(vec![
+                    CapTemplate::Health {
+                        max_hp: 30,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Move {
+                        speed_milli_tiles_per_s: 2400,
+                        radius_milli_tiles: 350,
+                    },
+                    CapTemplate::Vision {
+                        radius_milli_tiles: 7000,
+                    },
+                ]),
+            ],
+            resources: vec![ResourceDef {
+                resource: ResourceId(0),
+                starting: 200,
+            }],
+            production: vec![],
+            base_population_cap: 10,
+            initial_spawns: vec![
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(0),
+                    pos: Vec2Fx::from_ints(4, 4),
+                },
+                SpawnDef {
+                    owner: PlayerId(1),
+                    kind: KindId(1),
+                    pos: Vec2Fx::from_ints(4, 5),
+                },
+            ],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+        };
+        let setup = MatchSetup {
+            seed: 42,
+            players: vec![
+                PlayerSetup {
+                    player: PlayerId(0),
+                    controller: ControllerKind::Human,
+                },
+                PlayerSetup {
+                    player: PlayerId(1),
+                    controller: ControllerKind::Ai,
+                },
+            ],
+        };
+        let mut sim = Sim::new(&world, setup);
+        // Attack the target (non-queued: the head), then queue a follow-up
+        // Move far away. The target is one hit from death at tick 0, dies on
+        // tick 1 (stage 8 removes it), and the chase order pops on tick 2's
+        // stage 1 — the queued MoveTo becomes the head and the attacker
+        // actually moves (no frozen Moving state with an empty path).
+        sim.step(&[Command::new(
+            PlayerId(0),
+            0,
+            1,
+            CommandKind::Attack {
+                units: vec![EntityId(1)],
+                target: EntityId(2),
+            },
+        )]);
+        // Queued (append): the Move must wait behind the head AttackUnit —
+        // a replacing Move would swap the chase out and test nothing. The
+        // second hit lands this tick (cooldown 1 → 0 → ready): the target
+        // dies and stage 8 removes it, but the chase order is still the head.
+        let out = sim.step(&[Command {
+            queue: true,
+            ..Command::new(
+                PlayerId(0),
+                1,
+                1,
+                CommandKind::Move {
+                    units: vec![EntityId(1)],
+                    target: Vec2Fx::from_ints(12, 12),
+                },
+            )
+        }]);
+        assert!(
+            out.events.iter().any(|e| matches!(
+                e,
+                Event::Died {
+                    entity: EntityId(2)
+                }
+            )),
+            "tick 1 should kill the target: {out:?}"
+        );
+        // Tick 2: the chase order pops (its target is gone) and the queued
+        // MoveTo takes over — the attacker is Moving with a real path.
+        sim.step(&[]);
+        let snap = sim.snapshot();
+        let attacker = snap
+            .entities
+            .iter()
+            .find(|e| e.id == EntityId(1))
+            .expect("the attacker survives");
+        assert_eq!(
+            attacker.move_state,
+            MoveState::Moving,
+            "the queued Move order should advance when the chase target dies"
+        );
+        let before = attacker.pos;
+        // Tick 3+: the attacker makes real progress toward (12, 12).
+        for _ in 0..30 {
+            sim.step(&[]);
+        }
+        let snap = sim.snapshot();
+        let after = snap
+            .entities
+            .iter()
+            .find(|e| e.id == EntityId(1))
+            .expect("the attacker survives");
+        assert!(
+            (after.pos - before).len_sq_raw() > 0,
+            "the attacker should be moving, not frozen: {after:?}"
+        );
     }
 }

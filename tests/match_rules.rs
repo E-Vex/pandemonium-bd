@@ -217,12 +217,25 @@ fn a15_two_fresh_hosts_with_ai_produce_identical_logs_and_hashes() {
 
 #[test]
 fn stage_10_does_not_change_the_m7_golden_checkpoint_trail() {
-    // The M7 flagship golden (tests/ai.rs pins 0x679f4713114765c9 at seed 7 /
+    // The M7 flagship golden (tests/ai.rs pins the final hash at seed 7 /
     // 7200 ticks) was pinned when stage 10 was a no-op. Stage 10 (M8) is
     // hash-neutral (A-066: the outcome is derived, not hashed), so the same
     // match run with stage 10 active produces the same checkpoint trail and
-    // final hash. This is the M8 invariant: match rules land without
-    // breaking a single M7 golden.
+    // final hash. This was the M8 invariant: match rules landed without
+    // breaking a single M7 golden — proven then, against the M7 value.
+    //
+    // M9 re-pin (written reason): the trail moved — not because stage 10
+    // started hashing anything (it still derives its result from the entity
+    // set and the resigned flags, both already hashed; A-066's reasoning is
+    // untouched) but because M9's first work item fixed a simulation bug the
+    // M8 flagship exposed: a chase order whose commanded target died was
+    // never popped, so the AI's defense orders outlived their dead intruders
+    // and its armies froze mid-chase forever (movement.rs documents the pop
+    // as the combat pipeline's job; the code never did it). Orders are
+    // canonical hashed state, so the fix moves every post-combat checkpoint.
+    // The test stays as the pinned-trail regression guard it has been since
+    // M8; the hash-neutrality property itself is a static argument (derived
+    // state, not in hash_state — see A-066), not something a value can prove.
     let world = bundle().world();
     let setup = MatchSetup {
         seed: SEED,
@@ -250,7 +263,7 @@ fn stage_10_does_not_change_the_m7_golden_checkpoint_trail() {
     while host.tick() < 7200 {
         host.advance();
     }
-    assert_eq!(host.state_hash(), 0x679f_4713_1147_65c9);
+    assert_eq!(host.state_hash(), 0x5a98_4c54_4db1_e82e);
 }
 
 // ---------------------------------------------------------------------------
