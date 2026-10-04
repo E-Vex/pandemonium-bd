@@ -30,8 +30,10 @@ pub struct HudState {
 
 /// Everything one draw call needs: the interpolated entities, the camera's
 /// view-projection, the client's current selection (for highlights —
-/// selection state lives in the client, plan §11.3), and the HUD/debug data
-/// for the overlay pass (plan §11.4, §11.6). Presentation-only data — never
+/// selection state lives in the client, plan §11.3), entities currently
+/// flashing from a recent hit (M9's feedback cue — presentation-only state
+/// the client derives from `AttackHit` events), and the HUD/debug data for
+/// the overlay pass (plan §11.4, §11.6). Presentation-only data — never
 /// simulation state.
 #[derive(Clone, Copy, Debug)]
 pub struct Frame<'a> {
@@ -43,6 +45,11 @@ pub struct Frame<'a> {
     pub eye: Vec3,
     /// The selected entity ids (client-local state, echoed for rendering).
     pub selection: &'a [pandemonium_sim_api::EntityId],
+    /// Entities hit in the last few presented frames (client-local
+    /// feedback state): renderers brighten or tint them so a landed hit
+    /// is visible the frame it happens (plan §11.5's visual feedback; the
+    /// `AttackHit` event drives it, never a simulation probe).
+    pub flashes: &'a [pandemonium_sim_api::EntityId],
     /// HUD and debug overlay data (resources/population, tick, state hash,
     /// pause state) for the UI pass.
     pub hud: &'a HudState,
@@ -98,6 +105,7 @@ mod tests {
                 view_projection: Mat4::IDENTITY,
                 eye: Vec3::ZERO,
                 selection: &[],
+                flashes: &[],
                 hud: &hud,
             });
         }

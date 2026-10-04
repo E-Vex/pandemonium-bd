@@ -168,7 +168,11 @@ fn cube_corners() -> Vec<[f32; 3]> {
 }
 
 /// Team colors for the placeholder boxes (player slots 0 and 1, neutral).
-fn team_color(owner: PlayerId, selected: bool) -> [f32; 3] {
+/// M9 (plan §11.5, visual feedback): a flashing entity — one hit in the
+/// last few presented frames — is pushed toward a hot white so a landed
+/// hit reads on the frame it happens. Selection brightening still wins
+/// when both apply (the player's own click feedback takes precedence).
+fn team_color(owner: PlayerId, selected: bool, flashing: bool) -> [f32; 3] {
     let base = match owner {
         PlayerId(0) => [0.22, 0.45, 0.92],
         PlayerId(1) => [0.90, 0.30, 0.24],
@@ -176,6 +180,8 @@ fn team_color(owner: PlayerId, selected: bool) -> [f32; 3] {
     };
     if selected {
         [base[0] + 0.35, base[1] + 0.35, base[2] + 0.35]
+    } else if flashing {
+        [base[0] + 0.55, base[1] + 0.45, base[2] + 0.40]
     } else {
         base
     }
@@ -775,12 +781,13 @@ impl Renderer for WgpuRenderer {
             .iter()
             .map(|entity| {
                 let selected = selection.contains(&entity.id);
+                let flashing = frame.flashes.contains(&entity.id);
                 let moving = entity.move_state == MoveState::Moving;
                 let half_extent = if moving { 0.28 } else { 0.34 };
                 EntityInstance {
                     position: [entity.pos.x, entity.pos.y + half_extent, entity.pos.z],
                     half_extent,
-                    color: team_color(entity.owner, selected),
+                    color: team_color(entity.owner, selected, flashing),
                     _pad: [0.0; 3],
                 }
             })

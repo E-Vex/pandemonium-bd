@@ -10,6 +10,7 @@
 //! null renderer) and exits 0 with a printed finding — the windowed exit test
 //! of M3 needs a display and is recorded as such (plan §13 honest declaration).
 
+mod feedback;
 mod render;
 mod text;
 
@@ -19,8 +20,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
+use feedback::FeedbackState;
 use pandemonium_ai::Controller;
 use pandemonium_content::ContentBundle;
+use pandemonium_engine::audio::{AudioSink, NullAudioSink};
 use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
 use pandemonium_engine::{
@@ -133,6 +136,14 @@ struct App {
     /// How many commands the client has submitted this run (the windowed
     /// smoke summary's evidence that input reached the simulation).
     commands_submitted: u32,
+    /// M9 (plan §11.5): the audio sink fed by the step's events — the null
+    /// implementation (cue-counting; a mixer swaps in post-Alpha behind the
+    /// same trait).
+    audio: NullAudioSink,
+    /// M9 (plan §11.2/§11.5, the feel pass): event-driven feedback — hit
+    /// flashes, command acknowledgment pings, and the counters the smoke
+    /// summary reports.
+    feedback: FeedbackState,
 }
 
 impl App {
@@ -178,6 +189,8 @@ impl App {
             frames_budget: None,
             frames_presented: 0,
             commands_submitted: 0,
+            audio: NullAudioSink::new(),
+            feedback: FeedbackState::default(),
         })
     }
 
@@ -207,6 +220,10 @@ impl App {
         self.control_groups = vec![Vec::new(); CONTROL_GROUP_COUNT];
         self.command_seq = 0;
         self.commands_submitted = 0;
+        // M9: the feel pass's state resets with the match — a fresh match
+        // starts with clean feedback (no stale flashes or pings).
+        self.audio = NullAudioSink::new();
+        self.feedback = FeedbackState::default();
     }
 
     /// Converts window pixel coordinates to NDC (Y up).
@@ -273,6 +290,10 @@ impl App {
             return;
         };
         let target = MatchHost::world_to_logical(point.x, point.z);
+        // M9: the immediate acknowledgment cue — the crosshair the player
+        // sees on the frame they clicked (the motion follows within the
+        // A8 tick bounds; this is the intent-to-visible-response ping).
+        self.feedback.ping(target, self.frames_presented);
         self.command_seq += 1;
         self.commands_submitted += 1;
         self.host.submit(Command::new(
@@ -315,6 +336,7 @@ impl App {
             return;
         };
         let target = MatchHost::world_to_logical(point.x, point.z);
+        self.feedback.ping(target, self.frames_presented);
         self.command_seq += 1;
         self.commands_submitted += 1;
         self.host.submit(Command::new(
@@ -584,7 +606,14 @@ impl App {
     fn draw(&mut self) {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
-        let _ = self.host.advance(dt);
+        let outcome = self.host.advance(dt);
+        // M9 (plan §11.5, FD-9): the step's events flow outward — the audio
+        // sink and the feedback state consume them after the step, never
+        // inside it. Presentation-only bookkeeping.
+        self.audio.on_events(&outcome.events);
+        self.feedback
+            .on_events(&outcome.events, self.frames_presented);
+        self.feedback.expire(self.frames_presented);
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -593,9 +622,29 @@ impl App {
         let eye = self.camera.eye();
         let hud = self.host.hud_state(HUMAN);
         let outcome = self.host.outcome();
+        // M9: the health bars and command pings join the overlay pass
+        // (plan §11.2's overlay layer). Projected through the same camera
+        // the box select uses.
+        let viewport = self
+            .window
+            .as_ref()
+            .map(|window| {
+                let size = window.inner_size();
+                (size.width as f32, size.height as f32)
+            })
+            .unwrap_or((1920.0, 1080.0));
+        let mut quads =
+            feedback::health_bar_quads(renderer.atlas(), &snapshot, &self.camera, viewport);
+        quads.extend(feedback::ping_quads(
+            renderer.atlas(),
+            self.feedback.active_pings(),
+            &self.camera,
+            self.frames_presented,
+            viewport,
+        ));
         // The HUD and debug overlay quads (plan §11.4 / §11.6) queue before the
         // frame; the renderer drains them on top of the world.
-        let quads = overlay_quads(OverlayInput {
+        quads.extend(overlay_quads(OverlayInput {
             atlas: renderer.atlas(),
             hud: &hud,
             resource_names: &self.resource_names,
@@ -604,14 +653,21 @@ impl App {
             entities: snapshot.entities.len(),
             outcome: outcome.as_ref(),
             log_len: self.host.log().len(),
-        });
+        }));
         renderer.queue_ui(&quads);
+        let flashes: Vec<EntityId> = snapshot
+            .entities
+            .iter()
+            .map(|entity| entity.id)
+            .filter(|id| self.feedback.is_flashing(*id))
+            .collect();
         renderer.render(Frame {
             snapshot: &snapshot,
             view_projection,
             eye,
             selection: &self.selection,
             hud: &hud,
+            flashes: &flashes,
         });
     }
 }
@@ -803,23 +859,40 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
             },
         ],
     };
-    let mut host = MatchHost::new(&bundle.world(), setup);
+    // M9: the smoke drives the windowed path's exact hosting seam — the AI
+    // opponent runs through MatchHost::with_controllers, so the event wiring
+    // below sees the same stream the windowed client draws from.
+    let mut host = App::build_host(bundle, setup);
     let mut null_renderer = NullRenderer::new();
+    // M9: the smoke run exercises the feel pass's event wiring too — the
+    // same sink + feedback state the windowed draw feeds, driven without a
+    // display (their counters are the printed evidence).
+    let mut audio = NullAudioSink::new();
+    let mut feedback = FeedbackState::default();
     let frame_dt = std::time::Duration::from_secs_f64(1.0 / 60.0);
     let mut entities = 0;
-    for _ in 0..180 {
+    for frame in 0..180 {
         let outcome = host.advance(frame_dt);
-        let _ = outcome;
+        audio.on_events(&outcome.events);
+        feedback.on_events(&outcome.events, frame);
+        feedback.expire(frame);
         let snapshot = host.render_snapshot();
         entities = snapshot.entities.len();
         // The HUD plumbing rides along (gathered through the boundary, drawn by
         // nothing — the null renderer accepts and discards).
         let hud = host.hud_state(HUMAN);
+        let flashes: Vec<EntityId> = snapshot
+            .entities
+            .iter()
+            .map(|entity| entity.id)
+            .filter(|id| feedback.is_flashing(*id))
+            .collect();
         null_renderer.render(Frame {
             snapshot: &snapshot,
             view_projection: glam::Mat4::IDENTITY,
             eye: glam::Vec3::ZERO,
             selection: &[],
+            flashes: &flashes,
             hud: &hud,
         });
     }
@@ -832,6 +905,10 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
     println!(
         "  hud at exit:    tick {}, paused {}, pop {}/{}",
         hud.tick, hud.paused, hud.population, hud.population_cap
+    );
+    println!(
+        "  feedback wiring: {} events fed the audio sink ({} cues), {} attacks flashed on screen",
+        audio.fed, audio.cues, feedback.hits_seen
     );
     println!("  content hash:    {:#018x}", bundle.content_hash());
     println!("pandemonium client — smoke PASS (windowed M3 verification requires a display)");
