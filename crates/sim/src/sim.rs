@@ -17,7 +17,7 @@ use crate::fixture::{ScheduledSpawnDef, SpawnDef, TrivialWorld};
 use crate::hash::hash_state;
 use crate::movement::advance_movement;
 use crate::nav::NavGrid;
-use crate::world::{HealthDef, Lifecycle, PlayerState, World};
+use crate::world::{Lifecycle, PlayerState, World};
 
 /// What one call to [`Sim::step`] produced: the events of that tick (drained from
 /// the buffer — plan §6.3 stage 11 "flush events") and, when the resulting tick
@@ -221,15 +221,16 @@ impl Sim {
 
     /// The read-only presentation copy (plan §6.4): entities in ascending id
     /// order. The client interpolates between successive snapshots (plan §11.1).
+    ///
+    /// Performance: the `hp_fraction_milli` field is computed via a lockstep
+    /// walk over `entities` and the `health` store (both ascending by id),
+    /// avoiding a binary search through the health store per entity. The
+    /// resulting `EntityView` is byte-identical to the per-entity lookup path
+    /// — pinned by the acceptance suite's golden hashes.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             tick: self.tick,
-            entities: self
-                .world
-                .entities
-                .iter()
-                .map(|e| self.entity_view(e.id))
-                .collect(),
+            entities: self.entity_views_lockstep(self.world.entities.iter()),
         }
     }
 
@@ -243,13 +244,12 @@ impl Sim {
     /// function of the same positions + Vision radii the on-demand scan reads.
     pub fn player_view(&self, player: PlayerId) -> PlayerView {
         let state = self.world.player(player);
-        let entities = self
-            .world
-            .entities
-            .iter()
-            .filter(|e| crate::vision::visible_to(&self.fog, &self.world, player, e.id))
-            .map(|e| self.entity_view(e.id))
-            .collect();
+        let entities = self.entity_views_lockstep(
+            self.world
+                .entities
+                .iter()
+                .filter(|e| crate::vision::visible_to(&self.fog, &self.world, player, e.id)),
+        );
         let (resources, population, population_cap) = match state {
             Some(p) => (
                 p.resources
@@ -274,24 +274,46 @@ impl Sim {
         }
     }
 
-    /// One boundary-value projection of an entity (shared by snapshot and view).
-    fn entity_view(&self, id: EntityId) -> EntityView {
-        let entity = self.world.entity(id).expect("id comes from the store");
-        let hp_fraction_milli = match self.world.health_of(id) {
-            Some(HealthDef { hp, max_hp, .. }) if *max_hp > 0 => {
-                ((*hp as i64 * 1000) / (*max_hp as i64)).clamp(0, 1000) as u32
+    /// Builds [`EntityView`]s from an iterator of entities, computing each
+    /// entity's `hp_fraction_milli` in lockstep with the `health` store —
+    /// both sequences are ascending by id (the store invariant), so a single
+    /// forward walk produces O(n + h) instead of n × O(log h). The output
+    /// order matches the input iterator's (entity-ascending by the snapshot
+    /// contract).
+    fn entity_views_lockstep<'a, I>(&self, entities: I) -> Vec<EntityView>
+    where
+        I: Iterator<Item = &'a crate::world::EntityRecord>,
+    {
+        let mut health_iter = self.world.health.iter().peekable();
+        let mut views = Vec::new();
+        for entity in entities {
+            // Advance the health cursor past entries below this entity's id
+            // (the store's ascending invariant makes this safe — once a
+            // health entry's id is below the current entity's, no later
+            // entity will match it either).
+            while health_iter
+                .peek()
+                .is_some_and(|(hid, _)| *hid < entity.id)
+            {
+                health_iter.next();
             }
-            _ => 0,
-        };
-        EntityView {
-            id,
-            owner: entity.owner,
-            kind: entity.kind,
-            pos: entity.pos,
-            facing: entity.facing,
-            hp_fraction_milli,
-            move_state: entity.move_state(),
+            let hp_fraction_milli = match health_iter.peek() {
+                Some((hid, def)) if *hid == entity.id && def.max_hp > 0 => {
+                    ((def.hp as i64 * 1000) / (def.max_hp as i64)).clamp(0, 1000) as u32
+                }
+                _ => 0,
+            };
+            views.push(EntityView {
+                id: entity.id,
+                owner: entity.owner,
+                kind: entity.kind,
+                pos: entity.pos,
+                facing: entity.facing,
+                hp_fraction_milli,
+                move_state: entity.move_state(),
+            });
         }
+        views
     }
 
     /// **The only way state advances** (FD-2). All commands must target
