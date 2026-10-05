@@ -14,6 +14,7 @@ mod feedback;
 mod orders;
 mod render;
 mod text;
+mod ui;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -32,12 +33,13 @@ use pandemonium_engine::{
     RtsCamera,
 };
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, EntityId, EntityView, Event, KindId, MatchSetup,
-    PlayerId, PlayerSetup, Snapshot, Tick, TileFog, Vec2Fx,
+    Command, CommandKind, ControllerKind, EntityId, Event, KindId, MatchSetup, PlayerId,
+    PlayerSetup, PlayerView, Snapshot, TileFog, TilePos, Vec2Fx,
 };
 use render::WgpuRenderer;
 use std::collections::BTreeMap;
 use text::{TextAtlas, UiQuad};
+use ui::{Button, ButtonAction};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -210,6 +212,27 @@ struct App {
     /// the data a death fade needs at the moment a `Died` event arrives
     /// (the event carries only the id).
     last_seen: BTreeMap<EntityId, (glam::Vec3, KindId, PlayerId)>,
+    /// The player's own view as of this frame — the command card's data
+    /// source (queues, own entities for requirement checks, the ledger).
+    latest_view: Option<PlayerView>,
+    /// Active structure placement (§11.3's build placement mode): the
+    /// worker that will build, the structure, and the tile the ghost
+    /// currently hovers (None until the cursor first hits the ground).
+    placement: Option<PlacementState>,
+    /// The bottom bar's clickable regions, rebuilt every frame by the UI
+    /// pass and hit-tested before world clicks.
+    ui_buttons: Vec<Button>,
+}
+
+/// Active structure placement (plan §11.3's build placement mode with a
+/// legality preview).
+struct PlacementState {
+    /// The worker that will receive the Build command.
+    worker: EntityId,
+    /// The structure kind to place.
+    structure: KindId,
+    /// The tile the ghost currently hovers over.
+    ghost_tile: Option<(i32, i32)>,
 }
 
 impl App {
@@ -289,6 +312,9 @@ impl App {
             fog_tick: u64::MAX,
             fog_bytes: Vec::new(),
             last_seen: BTreeMap::new(),
+            latest_view: None,
+            placement: None,
+            ui_buttons: Vec::new(),
         })
     }
 
@@ -324,6 +350,9 @@ impl App {
         self.fog_tick = u64::MAX;
         self.fog_bytes.clear();
         self.last_seen.clear();
+        self.latest_view = None;
+        self.placement = None;
+        self.ui_buttons.clear();
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -424,6 +453,31 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
+        // A single selected producer sets its rally with a right-click (the
+        // §11.4 rally point; buildings cannot move, so the ground context
+        // order means "deliver here", not "go there").
+        if self.selection.len() == 1 {
+            let selected = self.selection[0];
+            let is_producer = self.latest_view.as_ref().is_some_and(|view| {
+                view.production
+                    .iter()
+                    .any(|queue| queue.producer == selected)
+            });
+            if is_producer {
+                let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
+                    return;
+                };
+                let target = MatchHost::world_to_logical(point.x, point.z);
+                self.submit_order(
+                    CommandKind::SetRally {
+                        producer: selected,
+                        target,
+                    },
+                    Some(target),
+                );
+                return;
+            }
+        }
         let snapshot = self.view_snapshot();
         let Some(order) = orders::resolve_context_order(
             &self.camera,
@@ -498,6 +552,53 @@ impl App {
         if index < self.control_groups.len() {
             self.control_groups[index] = self.selection.clone();
         }
+    }
+
+    /// Runs a bottom-bar button press (the input pass hit-tested it). Every
+    /// action funnels through [`App::submit_order`] — the same gate, the
+    /// same refusal cues (FD-2).
+    fn press_button(&mut self, action: ButtonAction) {
+        match action {
+            ButtonAction::Train { producer, unit } => {
+                self.submit_order(CommandKind::Train { producer, unit }, None);
+            }
+            ButtonAction::PlaceStructure { worker, structure } => {
+                self.placement = Some(PlacementState {
+                    worker,
+                    structure,
+                    ghost_tile: None,
+                });
+            }
+            ButtonAction::CancelQueueItem { producer, index } => {
+                self.submit_order(CommandKind::CancelQueueItem { producer, index }, None);
+            }
+        }
+    }
+
+    /// Places the pending structure at the ghost tile (the click half of
+    /// placement mode). The gate is the authority; a wrong guess surfaces
+    /// as the usual refusal cue.
+    fn place_pending_structure(&mut self) {
+        let Some(placement) = &self.placement else {
+            return;
+        };
+        let Some((tile_x, tile_y)) = placement.ghost_tile else {
+            return;
+        };
+        let (worker, structure) = (placement.worker, placement.structure);
+        let at = TilePos {
+            x: tile_x,
+            y: tile_y,
+        };
+        self.submit_order(
+            CommandKind::Build {
+                worker,
+                structure,
+                at,
+            },
+            Some(Vec2Fx::from_ints(at.x, at.y)),
+        );
+        self.placement = None;
     }
 
     /// M8 (plan §11.3): recall control group `index` (0-8). Selection becomes
@@ -659,6 +760,20 @@ impl ApplicationHandler for App {
                         self.camera.pan_world(anchor - current);
                     }
                 }
+                // Placement mode tracks the cursor's ground tile for the
+                // ghost (plan §11.3's placement preview).
+                if self.placement.is_some() {
+                    let Some(window) = &self.window else {
+                        return;
+                    };
+                    let ndc = Self::to_ndc(window, position.x, position.y);
+                    if let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) {
+                        if let Some(placement) = &mut self.placement {
+                            placement.ghost_tile =
+                                Some((point.x.floor() as i32, point.z.floor() as i32));
+                        }
+                    }
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let Some(window) = &self.window else { return };
@@ -666,6 +781,26 @@ impl ApplicationHandler for App {
                 let ndc = Self::to_ndc(window, cursor.0, cursor.1);
                 match (button, state) {
                     (MouseButton::Left, ElementState::Pressed) => {
+                        // Bottom-bar buttons consume the press first (the
+                        // command card is UI, not world).
+                        let (px, py) = cursor;
+                        if let Some(button) = self
+                            .ui_buttons
+                            .iter()
+                            .find(|button| button.contains(px as f32, py as f32))
+                            .copied()
+                        {
+                            if button.enabled {
+                                self.press_button(button.action);
+                            }
+                            return;
+                        }
+                        if self.placement.is_some() {
+                            // Placement mode: the click places (or, on an
+                            // unhovered ghost, waits for a ground tile).
+                            self.place_pending_structure();
+                            return;
+                        }
                         if self.attack_move_armed {
                             // M9.1: the armed attack-move fires at the click,
                             // consumes the press, and disarms — the press
@@ -690,9 +825,12 @@ impl ApplicationHandler for App {
                     }
                     // M9.1 (plan §11.3): the right-click context command —
                     // attack/gather/move resolved from what is under the
-                    // cursor. It also cancels an armed attack-move (any
-                    // other order disarms).
+                    // cursor. It also cancels an armed attack-move and an
+                    // armed placement (any other order disarms).
                     (MouseButton::Right, ElementState::Pressed) => {
+                        if self.placement.take().is_some() {
+                            return; // right-click cancels placement, orders nothing
+                        }
                         self.attack_move_armed = false;
                         self.issue_context_order(ndc);
                     }
@@ -831,10 +969,12 @@ impl ApplicationHandler for App {
                             }
                         }
                         winit::keyboard::KeyCode::Escape if pressed => {
-                            // M9.1: Esc cancels an armed attack-move first;
-                            // with nothing armed it quits.
+                            // M9.1: Esc cancels an armed attack-move first,
+                            // then placement; with nothing armed it quits.
                             if self.attack_move_armed {
                                 self.attack_move_armed = false;
+                            } else if self.placement.take().is_some() {
+                                // placement cancelled
                             } else {
                                 event_loop.exit();
                             }
@@ -998,15 +1138,21 @@ impl App {
         // renders and clicks through what their player may see. The view is
         // pushed at the same cadence the host pushes its full snapshots, and
         // the fog texture refreshes once per sim step, not per frame.
-        let PlayerViewParts {
-            tick,
-            entities,
-            fog,
-        } = PlayerViewParts::of(&self.host, HUMAN);
-        self.view_interp.push(Snapshot { tick, entities });
-        let fog_changed = self.fog_tick != tick as u64;
+        let view = self.host.player_view(HUMAN);
+        let view_tick = view.tick;
+        let ore = view
+            .resources
+            .first()
+            .map(|resource| resource.amount)
+            .unwrap_or(0);
+        self.view_interp.push(Snapshot {
+            tick: view.tick,
+            entities: view.entities.clone(),
+        });
+        let fog_changed = self.fog_tick != view_tick as u64;
         let fog_bytes: Vec<u8> = if fog_changed {
-            fog.iter()
+            view.fog
+                .iter()
                 .map(|tile| match tile {
                     TileFog::Hidden => render::FOG_ALPHA_HIDDEN,
                     TileFog::Explored => render::FOG_ALPHA_EXPLORED,
@@ -1016,6 +1162,7 @@ impl App {
         } else {
             Vec::new()
         };
+        self.latest_view = Some(view);
         let snapshot = self.view_snapshot();
         // Remember where everything visible stands this frame — the death
         // fade's source of last-seen positions (kept after the event loop
@@ -1034,7 +1181,7 @@ impl App {
                 renderer.update_fog(&fog_bytes);
                 self.fog_bytes = fog_bytes;
             }
-            self.fog_tick = tick as u64;
+            self.fog_tick = view_tick as u64;
         }
         let view_projection = self.camera.view_projection();
         let eye = self.camera.eye();
@@ -1111,6 +1258,56 @@ impl App {
                 .as_ref()
                 .map(|(text, _)| text.as_str()),
         }));
+        // The bottom bar (plan §11.4): selection panel, command card, and
+        // queue strip, rebuilt every frame; its buttons are hit-tested in
+        // the input pass before any world click.
+        self.ui_buttons.clear();
+        if let Some(view) = &self.latest_view {
+            let layout = ui::bar_layout(viewport);
+            let built = ui::build_bottom_bar(ui::CardInput {
+                atlas: renderer.atlas(),
+                layout,
+                view_entities: &view.entities,
+                production: &view.production,
+                bundle: &self.bundle,
+                selection: &self.selection,
+                ore,
+            });
+            quads.extend(built.quads);
+            self.ui_buttons = built.buttons;
+            // The placement ghost (plan §11.3's legality preview): a tinted
+            // footprint quad under the cursor — green when the client-side
+            // preview likes it, red when it does not (the gate re-checks).
+            renderer.set_ghost(self.placement.as_ref().and_then(|placement| {
+                let (tile_x, tile_y) = placement.ghost_tile?;
+                let legal = ui::placement_is_likely_legal(
+                    &self.bundle,
+                    &view.entities,
+                    placement.structure,
+                    TilePos {
+                        x: tile_x,
+                        y: tile_y,
+                    },
+                );
+                let (w, h) = self
+                    .bundle
+                    .entities
+                    .get(placement.structure.0 as usize)
+                    .and_then(|def| def.footprint())
+                    .unwrap_or((1, 1));
+                Some(render::PlacementGhost {
+                    center: [
+                        tile_x as f32 + w as f32 * 0.5,
+                        0.0,
+                        tile_y as f32 + h as f32 * 0.5,
+                    ],
+                    extent: [w as f32, h as f32],
+                    legal,
+                })
+            }));
+        }
+        // Everything the overlay pass draws this frame queues together: the
+        // feedback cues, the HUD panels, and the bottom bar.
         renderer.queue_ui(&quads);
         // The death fades: one shrinking, charring instance per active cue,
         // with the progress from the cue's remaining frames.
@@ -1142,26 +1339,6 @@ impl App {
             hud: &hud,
             flashes: &flashes,
         });
-    }
-}
-
-/// The pieces of a [`pandemonium_sim_api::PlayerView`] the fog-filtered
-/// rendering path consumes (a destructuring aid — the view carries more than
-/// the interpolator needs, and the ledger rides in through the HUD).
-struct PlayerViewParts {
-    tick: Tick,
-    entities: Vec<EntityView>,
-    fog: Vec<TileFog>,
-}
-
-impl PlayerViewParts {
-    fn of(host: &MatchHost, player: PlayerId) -> Self {
-        let view = host.player_view(player);
-        Self {
-            tick: view.tick,
-            entities: view.entities,
-            fog: view.fog,
-        }
     }
 }
 

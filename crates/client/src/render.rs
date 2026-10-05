@@ -473,6 +473,9 @@ pub struct WgpuRenderer {
     /// Death-fade cues set by the client each frame (like the UI queue) and
     /// drained into extra, shrinking entity instances by the next render.
     dying_cues: Vec<DyingCue>,
+    /// The active placement ghost (None outside placement mode). Kept until
+    /// replaced — the client sets it every frame it draws.
+    ghost: Option<PlacementGhost>,
 }
 
 impl WgpuRenderer {
@@ -1202,6 +1205,7 @@ impl WgpuRenderer {
             decal_instance_buf,
             decal_instance_capacity,
             dying_cues: Vec::new(),
+            ghost: None,
         })
     }
 
@@ -1274,6 +1278,12 @@ impl WgpuRenderer {
     /// same set-then-drain contract as [`WgpuRenderer::queue_ui`].
     pub fn set_death_cues(&mut self, cues: Vec<DyingCue>) {
         self.dying_cues = cues;
+    }
+
+    /// Sets (or clears) the structure-placement ghost. The client calls
+    /// this every frame while placing; the ghost persists until replaced.
+    pub fn set_ghost(&mut self, ghost: Option<PlacementGhost>) {
+        self.ghost = ghost;
     }
 
     /// Queues UI quads for the *next* [`Renderer::render`] — they are drawn
@@ -1525,6 +1535,19 @@ fn build_rings(
     decals
 }
 
+/// The active structure-placement ghost (plan §11.3's build placement mode
+/// with a legality preview): a footprint-sized quad under the cursor, green
+/// when the client preview likes the spot, red when it does not.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PlacementGhost {
+    /// The footprint's center on the ground plane.
+    pub center: [f32; 3],
+    /// Full extent on the two ground axes (tiles).
+    pub extent: [f32; 2],
+    /// Whether the client-side preview considers the spot legal.
+    pub legal: bool,
+}
+
 /// One dying entity, as the renderer needs it: last ground position, its
 /// kind (the silhouette to shrink), its owner (the team color to char), and
 /// the fade progress in 0.0 (just died) .. 1.0 (gone).
@@ -1685,21 +1708,40 @@ impl Renderer for WgpuRenderer {
             pass.set_vertex_buffer(0, self.terrain_vertex_buf.slice(..));
             pass.set_index_buffer(self.terrain_index_buf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.terrain_index_count, 0, 0..1);
-            // Ground decals: blob shadows under everything, then selection
-            // rings under the selected (both flat on the ground plane).
+            // Ground decals: blob shadows under everything, then the
+            // placement ghost, then selection rings (all flat on the plane).
             let decal_capacity = self.decal_instance_capacity as usize;
             let shadows = build_shadows(frame.snapshot, &self.kind_specs, decal_capacity);
             let shadow_count = shadows.len() as u32;
+            let mut decals = shadows;
+            // The ghost rides above shadows: one quad at the footprint.
+            let ghost_count = if let Some(ghost) = self.ghost {
+                if decals.len() < decal_capacity {
+                    decals.push(DecalInstance {
+                        position: [ghost.center[0], DECAL_LIFT * 1.5, ghost.center[2]],
+                        scale: ghost.extent,
+                        color: if ghost.legal {
+                            [0.30, 1.0, 0.40, 0.30]
+                        } else {
+                            [1.0, 0.30, 0.25, 0.38]
+                        },
+                    });
+                    1u32
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
             let rings = build_rings(
                 frame.snapshot,
                 frame.selection,
                 &self.kind_specs,
-                decal_capacity - shadows.len(),
+                decal_capacity - decals.len(),
             );
             let ring_count = rings.len() as u32;
-            if shadow_count + ring_count > 0 {
-                let mut decals = shadows;
-                decals.extend(rings);
+            decals.extend(rings);
+            if !decals.is_empty() {
                 let bytes = bytemuck::cast_slice(&decals);
                 let capacity_bytes =
                     self.decal_instance_capacity as usize * std::mem::size_of::<DecalInstance>();
@@ -1710,15 +1752,15 @@ impl Renderer for WgpuRenderer {
                 );
                 pass.set_pipeline(&self.decal_pipeline);
                 pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                if shadow_count > 0 {
+                if shadow_count + ghost_count > 0 {
                     pass.set_vertex_buffer(0, self.quad_vertex_buf.slice(..));
-                    pass.draw(0..self.quad_vertex_count, 0..shadow_count);
+                    pass.draw(0..self.quad_vertex_count, 0..(shadow_count + ghost_count));
                 }
                 if ring_count > 0 {
                     pass.set_vertex_buffer(0, self.ring_vertex_buf.slice(..));
                     pass.draw(
                         0..self.ring_vertex_count,
-                        shadow_count..(shadow_count + ring_count),
+                        (shadow_count + ghost_count)..(shadow_count + ghost_count + ring_count),
                     );
                 }
             }
