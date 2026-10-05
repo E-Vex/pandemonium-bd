@@ -470,6 +470,9 @@ pub struct WgpuRenderer {
     ring_vertex_count: u32,
     decal_instance_buf: wgpu::Buffer,
     decal_instance_capacity: u64,
+    /// Death-fade cues set by the client each frame (like the UI queue) and
+    /// drained into extra, shrinking entity instances by the next render.
+    dying_cues: Vec<DyingCue>,
 }
 
 impl WgpuRenderer {
@@ -1198,6 +1201,7 @@ impl WgpuRenderer {
             ring_vertex_count: ring.len() as u32,
             decal_instance_buf,
             decal_instance_capacity,
+            dying_cues: Vec::new(),
         })
     }
 
@@ -1264,6 +1268,12 @@ impl WgpuRenderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    /// Queues the death-fade cues for the next [`Renderer::render`] — the
+    /// same set-then-drain contract as [`WgpuRenderer::queue_ui`].
+    pub fn set_death_cues(&mut self, cues: Vec<DyingCue>) {
+        self.dying_cues = cues;
     }
 
     /// Queues UI quads for the *next* [`Renderer::render`] — they are drawn
@@ -1515,6 +1525,50 @@ fn build_rings(
     decals
 }
 
+/// One dying entity, as the renderer needs it: last ground position, its
+/// kind (the silhouette to shrink), its owner (the team color to char), and
+/// the fade progress in 0.0 (just died) .. 1.0 (gone).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct DyingCue {
+    pub pos: [f32; 3],
+    pub kind: pandemonium_sim_api::KindId,
+    pub owner: pandemonium_sim_api::PlayerId,
+    pub progress: f32,
+}
+
+/// Builds the dying entity's single instance: its silhouette's main mass,
+/// shrinking to a quarter and charring toward soot as `progress` advances.
+fn death_instance(cue: &DyingCue, shape: &KindShape) -> EntityInstance {
+    let shrink = 1.0 - 0.75 * cue.progress.clamp(0.0, 1.0);
+    let base = team_color(cue.owner, false, false);
+    let charred = [
+        base[0] * (1.0 - 0.85 * cue.progress) + 0.10 * cue.progress,
+        base[1] * (1.0 - 0.85 * cue.progress) + 0.08 * cue.progress,
+        base[2] * (1.0 - 0.85 * cue.progress) + 0.08 * cue.progress,
+    ];
+    let (full_scale, y_center) = match shape.kind {
+        ShapeKind::Structure { w, h } => {
+            let height = w.max(h) * 0.35 + 0.5;
+            ([w * 0.94, height, h * 0.94], height * 0.5)
+        }
+        ShapeKind::Unit { body, .. } => ([body[0], body[1], body[2]], body[1] * 0.5),
+        ShapeKind::Node => ([0.62, 0.84, 0.62], 0.42),
+        ShapeKind::Turret => ([1.35, 0.44, 1.35], 0.22),
+    };
+    let scale = [
+        full_scale[0] * shrink,
+        full_scale[1] * shrink,
+        full_scale[2] * shrink,
+    ];
+    EntityInstance {
+        position: [cue.pos[0], y_center * shrink, cue.pos[2]],
+        yaw: 0.0,
+        scale,
+        color: charred,
+        _pad: 0.0,
+    }
+}
+
 impl Renderer for WgpuRenderer {
     fn render(&mut self, frame: Frame<'_>) {
         // Camera uniform.
@@ -1539,13 +1593,26 @@ impl Renderer for WgpuRenderer {
 
         // Entity instances from the interpolated snapshot (ascending id),
         // composed into per-kind silhouettes by the pure instance builder.
-        let instances = build_instances(
+        let mut instances = build_instances(
             frame.snapshot,
             frame.selection,
             frame.flashes,
             &self.kind_specs,
             self.entity_instance_capacity as usize,
         );
+        // Death fades append their shrinking masses (the entity is gone
+        // from the snapshot; only the cue remains, and it drains here).
+        for cue in self.dying_cues.drain(..) {
+            if instances.len() >= self.entity_instance_capacity as usize {
+                break;
+            }
+            let shape = self
+                .kind_specs
+                .get(cue.kind.0 as usize)
+                .copied()
+                .unwrap_or_else(KindShape::fallback);
+            instances.push(death_instance(&cue, &shape));
+        }
         let needed = instances.len() as u64;
         if needed > 0 {
             let bytes = bytemuck::cast_slice(&instances);
@@ -1947,5 +2014,52 @@ mod decal_tests {
         );
         // And the ring is slightly larger than its shadow.
         assert!(silhouette_radius(&unit) + 0.12 > u_radius);
+    }
+}
+
+#[cfg(test)]
+mod death_render_tests {
+    use super::*;
+    use pandemonium_sim_api::{KindId, PlayerId};
+
+    fn cue(progress: f32) -> DyingCue {
+        DyingCue {
+            pos: [5.0, 0.0, 7.0],
+            kind: KindId(0),
+            owner: PlayerId(0),
+            progress,
+        }
+    }
+
+    fn unit_shape() -> KindShape {
+        KindShape {
+            kind: ShapeKind::Unit {
+                body: [0.4, 0.6, 0.4],
+                head: [0.2, 0.2, 0.2],
+            },
+            tint: [1.0; 3],
+        }
+    }
+
+    #[test]
+    fn a_dying_mass_shrinks_and_chars_with_progress() {
+        let fresh = death_instance(&cue(0.0), &unit_shape());
+        let late = death_instance(&cue(1.0), &unit_shape());
+        assert!(
+            late.scale[1] < fresh.scale[1],
+            "the mass shrinks as it dies"
+        );
+        assert!(
+            late.position[1] < fresh.position[1],
+            "it sinks into the ground"
+        );
+        let brightness = |i: &EntityInstance| i.color.iter().sum::<f32>();
+        assert!(
+            brightness(&late) < brightness(&fresh),
+            "it chars toward soot"
+        );
+        // The shrink bottoms out at a quarter (it never inverts).
+        let clamped = death_instance(&cue(2.0), &unit_shape());
+        assert!(clamped.scale[1] > 0.0);
     }
 }

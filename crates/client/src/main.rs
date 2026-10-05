@@ -36,6 +36,7 @@ use pandemonium_sim_api::{
     PlayerId, PlayerSetup, Snapshot, Tick, TileFog, Vec2Fx,
 };
 use render::WgpuRenderer;
+use std::collections::BTreeMap;
 use text::{TextAtlas, UiQuad};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -205,6 +206,10 @@ struct App {
     /// The last fog alpha bytes (row-major, one per tile) — compared against
     /// the incoming view so a new texture upload only happens on change.
     fog_bytes: Vec<u8>,
+    /// Every visible entity's last-seen world position, kind, and owner —
+    /// the data a death fade needs at the moment a `Died` event arrives
+    /// (the event carries only the id).
+    last_seen: BTreeMap<EntityId, (glam::Vec3, KindId, PlayerId)>,
 }
 
 impl App {
@@ -283,6 +288,7 @@ impl App {
             view_interp: Interpolator::new(),
             fog_tick: u64::MAX,
             fog_bytes: Vec::new(),
+            last_seen: BTreeMap::new(),
         })
     }
 
@@ -317,6 +323,7 @@ impl App {
         self.view_interp = Interpolator::new();
         self.fog_tick = u64::MAX;
         self.fog_bytes.clear();
+        self.last_seen.clear();
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -959,22 +966,31 @@ impl App {
         // point and the HUD line with the reason. The human pass found
         // silent rejections read as "the controls don't work"; the client
         // knows where each order was clicked, so the refusal lands there.
+        // Deaths become shrinking, charring cues at the entity's last-seen
+        // spot (the event carries only the id; last_seen has the rest).
         for event in &outcome.events {
-            if let Event::CommandRejected {
-                issuer,
-                seq,
-                reject,
-            } = event
-            {
-                if *issuer == HUMAN
-                    && self
-                        .last_order
-                        .is_some_and(|(last_seq, _)| last_seq == *seq)
-                {
-                    let (_, at) = self.last_order.expect("just checked");
-                    self.feedback
-                        .refuse(at, reject.reason, self.frames_presented);
+            match event {
+                Event::CommandRejected {
+                    issuer,
+                    seq,
+                    reject,
+                } => {
+                    if *issuer == HUMAN
+                        && self
+                            .last_order
+                            .is_some_and(|(last_seq, _)| last_seq == *seq)
+                    {
+                        let (_, at) = self.last_order.expect("just checked");
+                        self.feedback
+                            .refuse(at, reject.reason, self.frames_presented);
+                    }
                 }
+                Event::Died { entity } => {
+                    if let Some(&(pos, kind, owner)) = self.last_seen.get(entity) {
+                        self.feedback.death(pos, kind, owner, self.frames_presented);
+                    }
+                }
+                _ => {}
             }
         }
         self.feedback.expire(self.frames_presented);
@@ -1001,6 +1017,15 @@ impl App {
             Vec::new()
         };
         let snapshot = self.view_snapshot();
+        // Remember where everything visible stands this frame — the death
+        // fade's source of last-seen positions (kept after the event loop
+        // so a spawn-and-die-in-one-tick entity still fades where it stood).
+        self.last_seen
+            .retain(|id, _| snapshot.entities.iter().any(|entity| entity.id == *id));
+        for entity in &snapshot.entities {
+            self.last_seen
+                .insert(entity.id, (entity.pos, entity.kind, entity.owner));
+        }
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -1087,6 +1112,22 @@ impl App {
                 .map(|(text, _)| text.as_str()),
         }));
         renderer.queue_ui(&quads);
+        // The death fades: one shrinking, charring instance per active cue,
+        // with the progress from the cue's remaining frames.
+        renderer.set_death_cues(
+            self.feedback
+                .active_deaths()
+                .iter()
+                .map(|cue| render::DyingCue {
+                    pos: [cue.pos.x, 0.0, cue.pos.z],
+                    kind: cue.kind,
+                    owner: cue.owner,
+                    progress: 1.0
+                        - ((cue.expires_at - self.frames_presented.min(cue.expires_at)) as f32
+                            / feedback::DEATH_FRAMES as f32),
+                })
+                .collect(),
+        );
         let flashes: Vec<EntityId> = snapshot
             .entities
             .iter()

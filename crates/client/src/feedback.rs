@@ -13,7 +13,7 @@
 
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_engine::{logical_to_world, RenderSnapshot, RtsCamera};
-use pandemonium_sim_api::{EntityId, Event, RejectReason, Vec2Fx};
+use pandemonium_sim_api::{EntityId, Event, KindId, PlayerId, RejectReason, Vec2Fx};
 
 /// How many presented frames a hit flash lasts (a third of a second at the
 /// client's frame rate).
@@ -26,6 +26,27 @@ pub const PING_FRAMES: u64 = 45;
 /// How many presented frames a refusal cue lasts (a second — long enough
 /// to read the HUD line, short enough to not nag).
 pub const REFUSAL_FRAMES: u64 = 60;
+
+/// How many presented frames a death fade lasts (a bit under half a second:
+/// long enough to read as "that unit is gone", short enough to not clutter
+/// a battle where deaths come in batches).
+pub const DEATH_FRAMES: u64 = 14;
+
+/// One dying entity's presentation cue: where it stood, what it was, and
+/// the frame its fade completes at. The renderer shrinks and chars it over
+/// the fade window — the entity is already gone from the simulation, so
+/// this is purely the "death has weight" cue (plan §11.5).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct DeathCue {
+    /// Last world position (ground plane).
+    pub pos: glam::Vec3,
+    /// Which kind it was (the silhouette to shrink).
+    pub kind: KindId,
+    /// Owning slot (the team color to char).
+    pub owner: PlayerId,
+    /// The frame the fade completes at.
+    pub expires_at: u64,
+}
 
 /// The event-driven feedback state: which entities were hit recently, where
 /// commands were acknowledged recently, and how much feedback has flowed
@@ -50,6 +71,10 @@ pub struct FeedbackState {
     /// Total refused orders seen (the smoke summary's evidence — a silent
     /// refusal reads as "I can't command my army", so they now count).
     pub refusals_seen: u32,
+    /// Entities that died recently, with their last-seen position and kind.
+    deaths: Vec<DeathCue>,
+    /// Total deaths seen (the smoke summary's evidence).
+    pub deaths_seen: u32,
 }
 
 impl FeedbackState {
@@ -87,12 +112,32 @@ impl FeedbackState {
         self.refusals_seen += 1;
     }
 
+    /// Records a death: the dying entity's last-seen position and kind
+    /// become a shrinking, charring cue (plan §11.5's death fade). The
+    /// caller resolves the last-seen data from its own snapshot history —
+    /// the `Died` event itself carries only the id.
+    pub fn death(&mut self, pos: glam::Vec3, kind: KindId, owner: PlayerId, frame: u64) {
+        self.deaths.push(DeathCue {
+            pos,
+            kind,
+            owner,
+            expires_at: frame + DEATH_FRAMES,
+        });
+        self.deaths_seen += 1;
+    }
+
+    /// The active death fades, oldest first.
+    pub fn active_deaths(&self) -> &[DeathCue] {
+        &self.deaths
+    }
+
     /// Drops expired flashes, pings, and refusals. Called once per
     /// presented frame.
     pub fn expire(&mut self, frame: u64) {
         self.flashes.retain(|(_, expires_at)| *expires_at > frame);
         self.pings.retain(|(_, expires_at)| *expires_at > frame);
         self.refusals.retain(|(_, expires_at)| *expires_at > frame);
+        self.deaths.retain(|cue| cue.expires_at > frame);
         if self
             .refusal_notice
             .as_ref()
@@ -486,5 +531,37 @@ mod tests {
             "they can't do that"
         );
         assert_eq!(rejection_text(RejectReason::UnknownEntity), "no such unit");
+    }
+}
+
+#[cfg(test)]
+mod death_tests {
+    use super::*;
+    use pandemonium_sim_api::PlayerId;
+
+    #[test]
+    fn a_death_cue_fades_and_expires() {
+        let mut feedback = FeedbackState::default();
+        feedback.death(glam::Vec3::new(3.0, 0.0, 4.0), KindId(1), PlayerId(0), 100);
+        assert_eq!(feedback.deaths_seen, 1);
+        let cue = feedback.active_deaths()[0];
+        assert_eq!(cue.pos, glam::Vec3::new(3.0, 0.0, 4.0));
+        assert_eq!(cue.expires_at, 100 + DEATH_FRAMES);
+        // Still alive mid-fade, gone after the window.
+        feedback.expire(100 + DEATH_FRAMES - 1);
+        assert_eq!(feedback.active_deaths().len(), 1);
+        feedback.expire(100 + DEATH_FRAMES);
+        assert!(feedback.active_deaths().is_empty());
+    }
+
+    #[test]
+    fn deaths_survive_the_unrelated_expiry_sweeps() {
+        let mut feedback = FeedbackState::default();
+        feedback.death(glam::Vec3::ZERO, KindId(0), PlayerId(1), 0);
+        // A few hundred frames of unrelated expire calls (pings, refusals).
+        for frame in 0..(DEATH_FRAMES / 2) {
+            feedback.expire(frame);
+        }
+        assert_eq!(feedback.active_deaths().len(), 1, "mid-fade deaths persist");
     }
 }
