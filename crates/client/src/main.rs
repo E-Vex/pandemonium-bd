@@ -863,7 +863,17 @@ impl App {
         let snapshot = self.host.render_snapshot();
         let view_projection = self.camera.view_projection();
         let eye = self.camera.eye();
-        let hud = self.host.hud_state(HUMAN);
+        // The HUD's `state_hash` is only read inside the F3 debug overlay,
+        // so we use the cheap hud_state path every frame and only pay for
+        // the canonical hash when the overlay is actually visible. The
+        // hash is O(n) over the whole world — paying it every frame for a
+        // value nothing else reads is a real waste on the renderer's hot
+        // path.
+        let hud = if self.debug_overlay {
+            self.host.hud_state_with_hash(HUMAN)
+        } else {
+            self.host.hud_state(HUMAN)
+        };
         let outcome = self.host.outcome();
         // M9: the health bars and command pings join the overlay pass
         // (plan §11.2's overlay layer). Projected through the same camera

@@ -236,11 +236,20 @@ impl MatchHost {
     /// resource/population display, §11.6 tick counter + state hash + pause
     /// state). Presentation-only plain values read through the boundary —
     /// never simulation internals.
+    ///
+    /// Performance (M10 prep): `state_hash` is left at zero here — the
+    /// canonical hash is O(n) over the whole world, and the HUD only reads
+    /// it inside the §11.6 debug overlay (which is off by default). The
+    /// client now calls [`Self::hud_state_with_hash`] when the overlay is on,
+    /// and the cheap [`Self::hud_state`] every other frame. The shape of
+    /// [`HudState`] is unchanged; only the always-zero default in the cheap
+    /// path differs. Tests that assert on `state_hash` use the with-hash
+    /// variant explicitly.
     pub fn hud_state(&self, player: PlayerId) -> HudState {
         let view = self.sim.player_view(player);
         HudState {
             tick: self.sim.tick(),
-            state_hash: self.sim.state_hash(),
+            state_hash: 0,
             paused: self.paused,
             resources: view
                 .resources
@@ -250,6 +259,16 @@ impl MatchHost {
             population: view.population,
             population_cap: view.population_cap,
         }
+    }
+
+    /// The full HUD including the canonical `state_hash` (plan §11.6). Use
+    /// this only when the debug overlay is visible — the hash is O(n) over
+    /// the world and recomputing it every frame wastes the per-tick
+    /// checkpoint the simulation already pays for.
+    pub fn hud_state_with_hash(&self, player: PlayerId) -> HudState {
+        let mut hud = self.hud_state(player);
+        hud.state_hash = self.sim.state_hash();
+        hud
     }
 
     /// The interpolated presentation snapshot for this display frame
@@ -494,16 +513,21 @@ mod tests {
         let mut host = MatchHost::new(&world(), setup());
         host.set_paused(true);
         host.step_once();
+        // The cheap hud_state path leaves state_hash at zero (the debug
+        // overlay reads it lazily — see hud_state_with_hash).
         let hud = host.hud_state(PlayerId(0));
         assert_eq!(hud.tick, 1);
         assert!(hud.paused);
+        assert_eq!(hud.state_hash, 0, "the cheap path skips the hash");
         assert_eq!(
             hud.resources,
             vec![(pandemonium_sim_api::ResourceId(0), 200)]
         );
         assert_eq!(hud.population, 0); // economy systems arrive in M5
         assert_eq!(hud.population_cap, 0);
-        assert_eq!(hud.state_hash, host.state_hash());
+        // The with-hash variant carries the canonical hash.
+        let hud_full = host.hud_state_with_hash(PlayerId(0));
+        assert_eq!(hud_full.state_hash, host.state_hash());
         // A slot outside the match gets the empty ledger, not a panic.
         let empty = host.hud_state(PlayerId(9));
         assert!(empty.resources.is_empty());
