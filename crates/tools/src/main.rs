@@ -6,7 +6,8 @@
 //! M7 makes `headless` drive real content with AI controllers (`--p1 ai --p2
 //! ai`, plan §12's own shape) and teaches `replay-verify` to resolve either
 //! world by content identity. The remaining subcommands arrive with their
-//! milestones (soak in nightly CI, bench in M10).
+//! milestones (soak lands as M10 prep — `soak` runs N seeded AI-vs-AI matches
+//! in one process for the A7 acceptance gate; bench in M10).
 
 use std::path::PathBuf;
 
@@ -16,11 +17,13 @@ use pandemonium_sim_api::PlayerId;
 
 mod ai_match;
 mod demo;
+mod soak;
 mod validate_content;
 mod verify;
 
 use ai_match::{load_content, resolve_replay_world, run_ai_match, Slot};
 use demo::record_replay;
+use soak::{print_report, run_soak, SoakCli};
 use validate_content::validate_content;
 use verify::{verify_replay, Verification};
 
@@ -72,6 +75,11 @@ enum Command {
         #[arg(default_value = "content")]
         path: PathBuf,
     },
+    /// Run many seeded AI-vs-AI matches and report win/stuck/crash telemetry
+    /// (M10 prep, A7 acceptance). Sequential — nightly CI that wants
+    /// parallelism spawns N `headless --seed N --p1 ai --p2 ai`
+    /// subprocesses.
+    Soak(SoakCli),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -200,6 +208,19 @@ fn main() -> anyhow::Result<()> {
         }
         Command::ContentValidate { path } => {
             validate_content(&path)?;
+        }
+        Command::Soak(cli) => {
+            let report = run_soak(&cli)?;
+            print_report(&report);
+            // A7's "no stuck matches" gate: a non-zero `unresolved` count
+            // at this scale is a finding worth surfacing as a non-zero exit
+            // (the run still completes — the report is the evidence).
+            if report.crashed > 0 {
+                bail!(
+                    "soak reported {} crashed match(es) — A7 crash signal",
+                    report.crashed
+                );
+            }
         }
     }
     Ok(())
