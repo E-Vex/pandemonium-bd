@@ -1,0 +1,28 @@
+name: audit
+
+# Security audit of every crate in Cargo.lock. Read-only over the lockfile:
+# bumps nothing, changes no behavior, moves no goldens. The project's
+# dependency allow-list (plan §3.2) is strict — no rand/getrandom/ECS/game-
+# engine crates — but transitive vulnerabilities in serde/ron/wgpu/…
+# would otherwise go undetected. This job is the alarm, not the fix.
+
+on:
+  push:
+    paths:
+      - Cargo.lock
+      - .github/workflows/audit.yml
+  schedule:
+    # nightly at 06:00 UTC — catches advisories filed between pushes
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Cargo.lock for known vulnerabilities
+        run: cargo audit --deny warnings
