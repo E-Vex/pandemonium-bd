@@ -1,9 +1,9 @@
 # Pandemonium — Architecture
 
-Status: milestone M8 complete (match rules & full loop); M9 (Alpha content &
-feel pass) is next. The authoritative specification is
-[`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law, §5 determinism
-rules, §10 content.
+Status: milestone M9.1 complete (input hotfix on top of M9's Alpha content &
+feel pass); M10 (Stabilization & declaration) is next. The authoritative
+specification is [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law,
+§5 determinism rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
 shape of the system changes, not for every feature. For current build status and what
 exists versus what is pending, see [`AI-Handoff.md`](../AI-Handoff.md).
@@ -373,6 +373,13 @@ completion and determinism, the golden hash, and the log-alone replay;
 `MatchEnded` fires on resignation and surfaces through the host's outcome;
 A15 restart cleanliness (two fresh hosts, same seed → identical hashes; with
 AI controllers → identical logs too); stage 10 is hash-neutral (the M7
-golden holds with match rules active). CI (`.github/workflows/ci.yml`) runs
-the whole gate on Linux/Windows/macOS in dev and release, plus the replay
-round-trip.
+golden holds with match rules active). **`tests/alpha_loop.rs` (M9) carries
+the Alpha-loop exit suite** — AI-vs-AI matches resolve inside the
+fifteen-minute budget across seeds (9.1k–23.3k ticks over a 32-seed sweep),
+end-to-end resolution is deterministic (same seed → same winner, end tick,
+log, and final hash), and the windowed host's vs-AI loop closes naturally
+(an idle human's base falls to the AI; `outcome()` surfaces through the
+end-screen boundary). CI (`.github/workflows/ci.yml`) runs the whole gate on
+Linux/Windows/macOS in dev and release, plus the replay round-trip; a
+separate `.github/workflows/audit.yml` runs `cargo audit` over `Cargo.lock`
+on every lockfile change and nightly.
