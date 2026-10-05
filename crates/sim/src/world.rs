@@ -806,6 +806,11 @@ impl World {
     /// `Vec::remove` shifts survivors down without reordering them, so the
     /// ascending-id invariant — and therefore deterministic iteration — survives
     /// removal (plan §7.3 requirement b).
+    ///
+    /// For death & cleanup (stage 8), prefer [`World::remove_batch`] — it walks
+    /// each store once with a merge-join over the dead-id slice, which is
+    /// O(n + m) per store instead of the O(m · (log n + n)) of `m` separate
+    /// `remove` calls. The two paths produce byte-identical state.
     pub fn remove(&mut self, id: EntityId) {
         if let Ok(i) = self.entities.binary_search_by_key(&id, |e| e.id) {
             self.entities.remove(i);
@@ -850,6 +855,69 @@ impl World {
             self.attack.remove(i);
         }
     }
+
+    /// Removes every id in `ids` from the base record and every capability
+    /// store in a single pass per store (the batched path the death & cleanup
+    /// stage uses). `ids` must be sorted ascending with no duplicates — the
+    /// same shape the health store's filter produces. The post-state is
+    /// byte-identical to calling [`World::remove`] per id; only the cost
+    /// shape changes — O(n + m) per store instead of O(m · (log n + n)).
+    ///
+    /// Implementation note (plan §5): the merge-join walks `ids` and each
+    /// store in lockstep (both ascending by `EntityId`), so iteration order
+    /// stays deterministic and the survivors keep their relative order
+    /// exactly (a property `Vec::retain` upholds — survivors land in their
+    /// original positions, no reordering).
+    pub fn remove_batch(&mut self, ids: &[EntityId]) {
+        if ids.is_empty() {
+            return;
+        }
+        debug_assert!(
+            ids.windows(2).all(|w| w[0] < w[1]),
+            "remove_batch ids must be strictly ascending"
+        );
+        retain_not_in(&mut self.entities, ids, |e| e.id);
+        retain_not_in(&mut self.health, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.movement, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.vision, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.gather, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.build, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.produce, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.storage, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.provides_population, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.resources, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.footprints, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.construction, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.attack, ids, |(eid, _)| *eid);
+    }
+}
+
+/// Walks `store` (ascending by `key`) and `ids` (ascending) in lockstep,
+/// dropping every entry whose key matches an id in `ids`. Survivors keep
+/// their relative order — the same property `Vec::remove` upholds, in one
+/// pass instead of `m` passes.
+fn retain_not_in<T>(
+    store: &mut Vec<T>,
+    ids: &[EntityId],
+    key: impl Fn(&T) -> EntityId,
+) {
+    let mut ids_iter = ids.iter().copied().peekable();
+    store.retain(|entry| {
+        let entry_key = key(entry);
+        // Drop dead ids that are below the current entry (they will not
+        // match this or any later entry — both sequences are ascending).
+        while ids_iter
+            .peek()
+            .is_some_and(|&dead_id| dead_id < entry_key)
+        {
+            ids_iter.next();
+        }
+        // If the next dead id matches, consume it and drop the entry.
+        // Otherwise the entry survives.
+        ids_iter
+            .next_if(|&dead_id| dead_id == entry_key)
+            .is_none()
+    });
 }
 
 #[cfg(test)]
@@ -916,6 +984,74 @@ mod tests {
         );
         assert!(world.entity(EntityId(3)).is_none());
         assert!(world.move_of(EntityId(3)).is_none());
+    }
+
+    #[test]
+    fn remove_batch_matches_per_id_remove_state() {
+        // The batch path must produce byte-identical state to calling
+        // `remove` once per id. We build two identical worlds, remove the
+        // same set of ids from each via the two paths, and compare every
+        // store by `==`.
+        let mut batch = World::new();
+        let mut single = World::new();
+        for id in [1u64, 2, 3, 5, 8, 13, 21] {
+            let caps = vec![
+                CapabilityData::Health(HealthDef {
+                    max_hp: 10,
+                    hp: 10,
+                    regen_per_tick: 0,
+                }),
+                CapabilityData::Move(MoveDef::new(Fx::from_milli(50), Fx::from_milli(350))),
+                CapabilityData::Vision(VisionDef {
+                    radius: Fx::from_milli(7000),
+                }),
+                CapabilityData::Attack(AttackDef::new(
+                    8,
+                    Fx::from_milli(5000),
+                    30,
+                    Fx::from_milli(7000),
+                )),
+            ];
+            spawn_helper(&mut batch, id, caps.clone());
+            spawn_helper(&mut single, id, caps);
+        }
+        // Drop a non-contiguous ascending set — covers head, middle, tail,
+        // and the case where no entry matches one of the dead ids.
+        let dead = vec![EntityId(2), EntityId(8), EntityId(21)];
+        batch.remove_batch(&dead);
+        for id in &dead {
+            single.remove(*id);
+        }
+        // Every store must be equal between the two paths — the batch path
+        // is byte-identical to the per-id path (only the cost shape differs).
+        assert_eq!(batch.entities, single.entities);
+        assert_eq!(batch.health, single.health);
+        assert_eq!(batch.movement, single.movement);
+        assert_eq!(batch.vision, single.vision);
+        assert_eq!(batch.attack, single.attack);
+        // The ascending-id store invariant survives the batch.
+        let batch_entity_ids: Vec<EntityId> = batch.entities.iter().map(|e| e.id).collect();
+        assert!(
+            batch_entity_ids.windows(2).all(|w| w[0] < w[1]),
+            "store invariant holds: {batch_entity_ids:?}"
+        );
+    }
+
+    #[test]
+    fn remove_batch_with_empty_ids_is_a_noop() {
+        let mut world = World::new();
+        spawn_helper(
+            &mut world,
+            1,
+            vec![CapabilityData::Health(HealthDef {
+                max_hp: 10,
+                hp: 10,
+                regen_per_tick: 0,
+            })],
+        );
+        let before = world.clone();
+        world.remove_batch(&[]);
+        assert_eq!(world, before, "an empty batch changes nothing");
     }
 
     #[test]

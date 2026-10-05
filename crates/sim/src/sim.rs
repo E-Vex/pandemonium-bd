@@ -479,6 +479,13 @@ impl Sim {
     /// the allocator never looks back, so ids are never reused. Structures
     /// release their footprint tiles on the way out, so the ground reopens,
     /// and the population usage and cap settle again after the removals.
+    ///
+    /// Performance: the dead are removed in one batched pass per store
+    /// ([`crate::world::World::remove_batch`]) rather than `m` separate
+    /// `World::remove` calls. The post-state is byte-identical (the same
+    /// survivors, in the same order) — only the cost shape changes. Footprint
+    /// release happens per-entity before the batched removal because it reads
+    /// the entity's position and footprint (still in the world at that point).
     fn advance_health_and_cleanup(&mut self) {
         for (_, def) in &mut self.world.health {
             let max = def.max_hp.max(0);
@@ -493,16 +500,17 @@ impl Sim {
             .collect();
         // The dead list (ascending id — the health store's invariant) is what
         // `clear_dead_targets` will match against attacker slots, so clone it
-        // before the removal loop consumes it.
+        // before the removal pass consumes it.
         let dead_ids = dead.clone();
-        for id in dead {
-            if let Some(entity) = self.world.entity_mut(id) {
+        for id in &dead {
+            if let Some(entity) = self.world.entity_mut(*id) {
                 entity.lifecycle = Lifecycle::Dead;
             }
-            self.release_footprint(id);
-            self.world.remove(id);
-            self.events.push(Event::Died { entity: id });
+            self.release_footprint(*id);
+            self.events.push(Event::Died { entity: *id });
         }
+        // One batched sweep per store — O(n + m) instead of m · O(log n + n).
+        self.world.remove_batch(&dead_ids);
         // After removal, drop any attacker target slots pointing at the dead
         // (the dead id is never reused, so the slot would otherwise dangle
         // forever). Ascending attacker-id order (combat.rs's contract).
