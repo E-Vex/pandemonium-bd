@@ -567,44 +567,41 @@ fn capability_template(
 /// row-major, 1 passable and 0 blocked (plan §9.1.1). The grid's shape is
 /// already validated against the terrain classes (loader guarantees).
 fn map_passability(map: &defs::MapDef) -> Vec<u8> {
-    let class_of: BTreeMap<char, &defs::TerrainClass> = map
-        .terrain
-        .iter()
-        .map(|class| (class.code, class))
-        .collect();
-    let mut passability = Vec::with_capacity((map.width as u64 * map.height as u64) as usize);
-    for row in &map.grid {
-        for code in row.chars() {
-            let passable = class_of
-                .get(&code)
-                .map(|class| class.passable)
-                .unwrap_or(false); // unknown codes never validate; fail closed
-            passability.push(u8::from(passable));
-        }
-    }
-    passability
+    map_flag(map, |class| class.passable)
 }
 
 /// The map's terrain as the simulation's buildability grid: one byte per tile,
 /// row-major, 1 buildable and 0 not — the Build command's placement input
 /// (plan §10.5). Mirrors [`map_passability`].
 fn map_buildability(map: &defs::MapDef) -> Vec<u8> {
+    map_flag(map, |class| class.buildable)
+}
+
+/// The shared body of [`map_passability`] and [`map_buildability`]: walks the
+/// map grid row by row, looks each tile's terrain class up by its character
+/// code, and emits `1`/`0` per tile per the `pick` predicate. Unknown codes
+/// fail closed (the loader guarantees codes are known, so an unknown here is a
+/// schema bug, not a gameplay event). The output vector's length is
+/// `width * height` in tile units; the `u64` cast guards against the
+/// theoretical u32 overflow on a 65k×65k map (no Alpha map is anywhere near
+/// that).
+fn map_flag(map: &defs::MapDef, pick: impl Fn(&defs::TerrainClass) -> bool) -> Vec<u8> {
     let class_of: BTreeMap<char, &defs::TerrainClass> = map
         .terrain
         .iter()
         .map(|class| (class.code, class))
         .collect();
-    let mut buildability = Vec::with_capacity((map.width as u64 * map.height as u64) as usize);
+    let mut flags = Vec::with_capacity((map.width as u64 * map.height as u64) as usize);
     for row in &map.grid {
         for code in row.chars() {
-            let buildable = class_of
+            let on = class_of
                 .get(&code)
-                .map(|class| class.buildable)
+                .map(|class| pick(class))
                 .unwrap_or(false); // unknown codes never validate; fail closed
-            buildability.push(u8::from(buildable));
+            flags.push(u8::from(on));
         }
     }
-    buildability
+    flags
 }
 
 // ---------------------------------------------------------------------------
