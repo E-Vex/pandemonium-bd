@@ -243,6 +243,70 @@ pub const FOG_ALPHA_VISIBLE: u8 = 0;
 pub const FOG_ALPHA_EXPLORED: u8 = 130;
 pub const FOG_ALPHA_HIDDEN: u8 = 235;
 
+/// The ground decal pass: instanced, alpha-blended quads laid flat on the
+/// ground plane — blob shadows under everything, selection rings under the
+/// selected. Depth-tested with writes off and a hair of lift so the decals
+/// ride over the terrain and fog without z-fighting.
+const DECAL_SHADER_SRC: &str = r#"
+struct CameraUniform { view_projection: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> camera: CameraUniform;
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec4<f32> };
+
+@vertex fn vs_main(
+    @location(0) corner: vec2<f32>,
+    @location(1) instance_position: vec3<f32>,
+    @location(2) instance_scale: vec2<f32>,
+    @location(3) instance_color: vec4<f32>,
+) -> VsOut {
+    var out: VsOut;
+    let world = vec3<f32>(corner.x * instance_scale.x, 0.0, corner.y * instance_scale.y) + instance_position;
+    out.clip = camera.view_projection * vec4<f32>(world, 1.0);
+    out.color = instance_color;
+    return out;
+}
+
+@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#;
+
+/// One ground decal instance: center (y = the lift above the terrain),
+/// extent on the two ground axes, and a premultiplied-alpha-friendly RGBA.
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct DecalInstance {
+    position: [f32; 3],
+    scale: [f32; 2],
+    color: [f32; 4],
+}
+
+/// The unit quad's corners in the XZ plane (two triangles), extent ±0.5.
+fn quad_vertices() -> Vec<[f32; 2]> {
+    let corners = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
+    let (a, b, c, d) = (corners[0], corners[1], corners[2], corners[3]);
+    vec![a, b, c, a, c, d]
+}
+
+/// The unit ring (annulus) in the XZ plane: 24 segments between the inner
+/// and outer radius. Instanced with the same decal pipeline, so the
+/// selection ring is a ground-projected ellipse like a shadow, not a
+/// screen-space bracket.
+fn ring_vertices(segments: usize, inner: f32, outer: f32) -> Vec<[f32; 2]> {
+    let mut vertices = Vec::with_capacity(segments * 6);
+    let point = |angle: f32, radius: f32| [radius * angle.cos(), radius * angle.sin()];
+    for segment in 0..segments {
+        let a0 = (segment as f32) / segments as f32 * std::f32::consts::TAU;
+        let a1 = ((segment + 1) as f32) / segments as f32 * std::f32::consts::TAU;
+        let i0 = point(a0, inner);
+        let i1 = point(a1, inner);
+        let o0 = point(a0, outer);
+        let o1 = point(a1, outer);
+        vertices.extend_from_slice(&[i0, o0, o1, i0, o1, i1]);
+    }
+    vertices
+}
+
 /// One cube vertex: corner position and its face normal (24 bytes).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -399,6 +463,13 @@ pub struct WgpuRenderer {
     /// Per-kind silhouette specs (index = KindId), derived from content by
     /// the client and handed to the renderer once at startup.
     kind_specs: Vec<KindShape>,
+    decal_pipeline: wgpu::RenderPipeline,
+    quad_vertex_buf: wgpu::Buffer,
+    quad_vertex_count: u32,
+    ring_vertex_buf: wgpu::Buffer,
+    ring_vertex_count: u32,
+    decal_instance_buf: wgpu::Buffer,
+    decal_instance_capacity: u64,
 }
 
 impl WgpuRenderer {
@@ -995,6 +1066,99 @@ impl WgpuRenderer {
             cache: None,
         });
 
+        // The ground decal pass: one pipeline, two geometry streams (flat
+        // quad for shadows, annulus for selection rings), one shared
+        // instance buffer drawn in two instance ranges.
+        let decal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("decal shader"),
+            source: wgpu::ShaderSource::Wgsl(DECAL_SHADER_SRC.into()),
+        });
+        let decal_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("decal pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &decal_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: 8,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        }],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<DecalInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 12,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 20,
+                                shader_location: 3,
+                            },
+                        ],
+                    },
+                ],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &decal_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let quad = quad_vertices();
+        let quad_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("decal quad"),
+            contents: bytemuck::cast_slice(&quad),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ring = ring_vertices(24, 0.80, 0.95);
+        let ring_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("decal ring"),
+            contents: bytemuck::cast_slice(&ring),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let decal_instance_capacity = 1024u64;
+        let decal_instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("decal instances"),
+            size: decal_instance_capacity * std::mem::size_of::<DecalInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
             _window: window,
             surface,
@@ -1027,6 +1191,13 @@ impl WgpuRenderer {
             fog_texture_size,
             fog_map_size: (fog_map_size[0], fog_map_size[1]),
             kind_specs,
+            decal_pipeline,
+            quad_vertex_buf,
+            quad_vertex_count: quad.len() as u32,
+            ring_vertex_buf,
+            ring_vertex_count: ring.len() as u32,
+            decal_instance_buf,
+            decal_instance_capacity,
         })
     }
 
@@ -1268,6 +1439,82 @@ fn build_instances(
     instances
 }
 
+/// The ground lift shared by every decal — enough to clear terrain/fog
+/// rasterization noise, small enough to look glued to the ground.
+const DECAL_LIFT: f32 = 0.02;
+
+/// The shadow blob's radius for one kind (in tiles) — slightly wider than
+/// the silhouette's widest mass, so the object visibly "sits" in it.
+fn silhouette_radius(shape: &KindShape) -> f32 {
+    match shape.kind {
+        ShapeKind::Structure { w, h } => w.max(h) * 0.55,
+        ShapeKind::Unit { body, .. } => body[0] * 0.95,
+        ShapeKind::Node => 0.68,
+        ShapeKind::Turret => 0.80,
+    }
+}
+
+/// Builds the shadow blob stream: one dark ellipse under every entity.
+fn build_shadows(
+    snapshot: &pandemonium_engine::RenderSnapshot,
+    kind_specs: &[KindShape],
+    capacity: usize,
+) -> Vec<DecalInstance> {
+    let mut decals = Vec::with_capacity(snapshot.entities.len());
+    for entity in &snapshot.entities {
+        if decals.len() >= capacity {
+            break;
+        }
+        let shape = kind_specs
+            .get(entity.kind.0 as usize)
+            .copied()
+            .unwrap_or_else(KindShape::fallback);
+        let radius = silhouette_radius(&shape);
+        decals.push(DecalInstance {
+            position: [entity.pos.x, DECAL_LIFT, entity.pos.z],
+            scale: [radius * 2.0, radius * 2.0],
+            color: [0.0, 0.0, 0.0, 0.32],
+        });
+    }
+    decals
+}
+
+/// The selection ring color (own-team green — Generals convention).
+const RING_COLOR: [f32; 4] = [0.35, 1.0, 0.45, 0.85];
+
+/// Builds the selection ring stream: one ground ellipse around every
+/// selected entity, sized to its silhouette.
+fn build_rings(
+    snapshot: &pandemonium_engine::RenderSnapshot,
+    selection: &[pandemonium_sim_api::EntityId],
+    kind_specs: &[KindShape],
+    capacity: usize,
+) -> Vec<DecalInstance> {
+    let mut decals = Vec::with_capacity(selection.len());
+    if decals.len() >= capacity {
+        return decals;
+    }
+    for entity in &snapshot.entities {
+        if !selection.contains(&entity.id) {
+            continue;
+        }
+        if decals.len() >= capacity {
+            break;
+        }
+        let shape = kind_specs
+            .get(entity.kind.0 as usize)
+            .copied()
+            .unwrap_or_else(KindShape::fallback);
+        let radius = silhouette_radius(&shape) + 0.12;
+        decals.push(DecalInstance {
+            position: [entity.pos.x, DECAL_LIFT * 2.0, entity.pos.z],
+            scale: [radius * 2.0, radius * 2.0],
+            color: RING_COLOR,
+        });
+    }
+    decals
+}
+
 impl Renderer for WgpuRenderer {
     fn render(&mut self, frame: Frame<'_>) {
         // Camera uniform.
@@ -1371,6 +1618,43 @@ impl Renderer for WgpuRenderer {
             pass.set_vertex_buffer(0, self.terrain_vertex_buf.slice(..));
             pass.set_index_buffer(self.terrain_index_buf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.terrain_index_count, 0, 0..1);
+            // Ground decals: blob shadows under everything, then selection
+            // rings under the selected (both flat on the ground plane).
+            let decal_capacity = self.decal_instance_capacity as usize;
+            let shadows = build_shadows(frame.snapshot, &self.kind_specs, decal_capacity);
+            let shadow_count = shadows.len() as u32;
+            let rings = build_rings(
+                frame.snapshot,
+                frame.selection,
+                &self.kind_specs,
+                decal_capacity - shadows.len(),
+            );
+            let ring_count = rings.len() as u32;
+            if shadow_count + ring_count > 0 {
+                let mut decals = shadows;
+                decals.extend(rings);
+                let bytes = bytemuck::cast_slice(&decals);
+                let capacity_bytes =
+                    self.decal_instance_capacity as usize * std::mem::size_of::<DecalInstance>();
+                self.queue.write_buffer(
+                    &self.decal_instance_buf,
+                    0,
+                    &bytes[..bytes.len().min(capacity_bytes)],
+                );
+                pass.set_pipeline(&self.decal_pipeline);
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                if shadow_count > 0 {
+                    pass.set_vertex_buffer(0, self.quad_vertex_buf.slice(..));
+                    pass.draw(0..self.quad_vertex_count, 0..shadow_count);
+                }
+                if ring_count > 0 {
+                    pass.set_vertex_buffer(0, self.ring_vertex_buf.slice(..));
+                    pass.draw(
+                        0..self.ring_vertex_count,
+                        shadow_count..(shadow_count + ring_count),
+                    );
+                }
+            }
             pass.set_pipeline(&self.entity_pipeline);
             pass.set_vertex_buffer(0, self.entity_vertex_buf.slice(..));
             pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));
@@ -1587,5 +1871,81 @@ mod silhouette_tests {
         };
         let instances = build_instances(&snapshot, &[], &[], &[], 64);
         assert_eq!(instances.len(), 2, "the fallback silhouette still renders");
+    }
+}
+
+#[cfg(test)]
+mod decal_tests {
+    use super::*;
+    use glam::Vec3;
+    use pandemonium_engine::RenderEntity;
+    use pandemonium_sim_api::{EntityId, KindId, MoveState, PlayerId};
+
+    fn snapshot_with(kinds: &[(u64, u32)]) -> pandemonium_engine::RenderSnapshot {
+        pandemonium_engine::RenderSnapshot {
+            tick: 0,
+            entities: kinds
+                .iter()
+                .map(|&(id, kind)| RenderEntity {
+                    id: EntityId(id),
+                    owner: PlayerId(0),
+                    kind: KindId(kind),
+                    pos: Vec3::new(id as f32, 0.0, 0.0),
+                    facing: Vec3::ZERO,
+                    hp_fraction_milli: 1000,
+                    move_state: MoveState::Idle,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn every_entity_gets_exactly_one_shadow() {
+        let snapshot = snapshot_with(&[(1, 0), (2, 0), (3, 0)]);
+        let shadows = build_shadows(&snapshot, &[], 64);
+        assert_eq!(shadows.len(), 3);
+        for (index, shadow) in shadows.iter().enumerate() {
+            assert_eq!(shadow.position[1], DECAL_LIFT, "shadows hug the ground");
+            assert!(shadow.scale[0] > 0.0 && shadow.scale[1] > 0.0);
+            assert_eq!(shadow.color[3], 0.32, "uniform shadow opacity");
+            assert_eq!(shadow.position[0], (index + 1) as f32, "under its entity");
+        }
+    }
+
+    #[test]
+    fn rings_land_only_under_selected_entities_and_read_green() {
+        let snapshot = snapshot_with(&[(1, 0), (2, 0)]);
+        let selection = [EntityId(2)];
+        let rings = build_rings(&snapshot, &selection, &[], 64);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].position[0], 2.0, "under the selected entity");
+        assert_eq!(rings[0].color, RING_COLOR);
+        // The ring rides a hair above the shadow plane.
+        assert!(rings[0].position[1] > DECAL_LIFT);
+        let empty = build_rings(&snapshot, &[], &[], 64);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn bigger_kinds_cast_bigger_shadows() {
+        let structure = KindShape {
+            kind: ShapeKind::Structure { w: 4.0, h: 4.0 },
+            tint: [1.0; 3],
+        };
+        let unit = KindShape {
+            kind: ShapeKind::Unit {
+                body: [0.4, 0.6, 0.4],
+                head: [0.2, 0.2, 0.2],
+            },
+            tint: [1.0; 3],
+        };
+        let s_radius = silhouette_radius(&structure);
+        let u_radius = silhouette_radius(&unit);
+        assert!(
+            s_radius > u_radius,
+            "a command center shadows more than a worker"
+        );
+        // And the ring is slightly larger than its shadow.
+        assert!(silhouette_radius(&unit) + 0.12 > u_radius);
     }
 }
