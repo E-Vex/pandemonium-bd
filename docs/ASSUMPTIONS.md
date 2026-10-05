@@ -693,3 +693,49 @@ confirms or rejects it.
   The M9.1 rationale: the plan's gate refuses illegal orders by
   design, and dropping those events on the floor read, to the first
   human player, as "the controls don't work".
+
+- **A-081 (§9.6, §6.4, M10).** `PlayerView` grew two fields: the player's own
+  per-tile fog row (`TileFog`, row-major in the map's tile order) and the
+  player's own production queues (producer, items with per-item
+  `progress_milli`, rally). Rationale: the boundary is "what that player may
+  know", and a player knows their own fog state and their own queues; the
+  presentation needs both (the fog decal + minimap, the §11.4 queue display),
+  and parity holds structurally because both fields flow through the same
+  view the AI reads — the AI need not use them. The fog row mirrors derived
+  state (A-059) and is hashed nowhere; the state hash and every golden pin
+  are unchanged.
+
+- **A-082 (§11.2, M10).** The fog visualization is a terrain-geometry decal
+  sampling a per-tile alpha texture (hidden 235/255, explored 130/255,
+  visible 0) with linear sampling for soft edges. The same geometry gives the
+  same depth values, so the fog hugs the hills without z-fighting. The alpha
+  constants are readability judgments the human pass may retune.
+
+- **A-083 (§11.3, M10).** The build-placement ghost's legality preview is a
+  client-side approximation: bounds, buildable terrain, and static bodies the
+  player can see — it does not check movers standing in the footprint (the
+  sim's check does). The gate is the authority; a wrong guess surfaces as the
+  standard refusal cue. Logged as DEBT-012.
+
+- **A-084 (§11.4, M10).** The command card's train buttons dim when the
+  player cannot afford the kind or a requirement kind is not among their
+  visible entities. "Requirement visible" is an approximation (a
+  still-under-construction requirement passes); the gate re-checks
+  everything. Logged as DEBT-012.
+
+- **A-085 (§11.4, M10).** The minimap composites its texture on the CPU each
+  frame from sanctioned data (the terrain mesh's own palette, the PlayerView
+  fog row, and the fog-filtered snapshot's entities), sized one texel per
+  tile. The viewport indicator derives the frustum's ground footprint
+  analytically from the camera (RtsCamera::ground_footprint_corners) with the
+  shallow-pitch top-ray angle clamped so corners stay finite; the indicator
+  clamps to the map, which reads honestly at pitches where the real frustum
+  leaves the ground.
+
+- **A-086 (§13 A7, M10).** "Stuck" is the plan's own threshold — 20 minutes
+  of game time = 36000 ticks at 30 Hz — not the soak tool's original 18000
+  default. The M9 sweep measured legitimate matches resolving as late as
+  tick ~23300, so the smaller budget miscounted long-but-legal matches as
+  stuck (an evidence run showed 4 of 32 "unresolved" that all resolve by
+  36000). The default is now 36000 and the report's end-tick telemetry reads
+  the tick `MatchEnded` fired.

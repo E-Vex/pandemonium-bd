@@ -12,7 +12,7 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 [![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
 ![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
-![stage](https://img.shields.io/badge/stage-M9.1_input_hotfix_done-9E6A03?labelColor=21262D)
+![stage](https://img.shields.io/badge/stage-M10_alpha_declared_(A14_playtest_pending)-9E6A03?labelColor=21262D)
 ![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
 
 <picture>
@@ -153,14 +153,25 @@ At M8 all eleven stages went live; M9 fixed the one behavior bug the live loop e
 
 ## Current status
 
-**Milestones M0 through M9 are complete, plus the M9.1 hotfix: the first human
-playtest (DEBT-008) found the input layer mirrored and half-missing, and M9.1
-fixed it — corrected WASD/pan axes, mouse panning (edge + middle-drag +
-zoom-toward-cursor), right-click context orders (attack/gather/move), armed
-attack-move, key-repeat guards, rejection feedback, selection brackets, and
-an opening camera framed on the player's base. M10 (Stabilization &
-declaration) is next.** The live status board is
-[`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated as a bug.
+**Milestones M0 through M10 are complete: the Alpha is declared.** The
+acceptance sweep lives in
+[`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md) — thirteen of the
+fifteen criteria pass with automated evidence (the pinned golden hashes are
+unchanged through every improvement below), and one (A14, the human playtest
+bar) is recorded as an honest finding: only humans can answer it.
+
+M10 opened with a review-driven playability and visual pass — the first human
+playtest's verdict ("not playable yet; the visuals are very weak") taken
+seriously as a work order. The windowed client gained the missing economy
+half (a command card: train from producers, build structures through a
+placement ghost with a legality preview, cancel queued items, set rally
+points), fog-of-war rendering through the player's own view, a minimap with
+fog, entity dots, a viewport indicator, click-to-move-camera and orders,
+directional lighting, shaded terrain, per-kind silhouettes, blob shadows,
+ground selection rings, and death fades. All of it is client/engine
+presentation: the simulation's golden hashes never moved. The live status
+board is [`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated
+as a bug.
 
 Built and verified through M9:
 
@@ -237,10 +248,8 @@ Built and verified through M9:
 
 Not built yet — on purpose, in milestone order:
 
-- M10 (Stabilization & declaration): the full A1–A15 acceptance sweep, the
-  1000-match nightly soak, benchmark baselines, and the written Alpha
-  declaration. The human visual pass of DEBT-008 rides it (the machine half
-  is green through M9).
+- The A14 human playtest (≥ 5 testers, `docs/PLAYTEST.md`) — the one open
+  finding in the Alpha declaration; only humans can close it.
 - No multiplayer: the hooks are designed in (`Command.tick`, hashed checkpoints
   for desync detection), the netcode is not.
 
@@ -353,7 +362,7 @@ one question and refuses to move on until it is answered.
 | **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time | ✔ **Complete** |
 | **M8** — Match rules *(P5: do all systems work together?)* | Stage 10 defeat/victory/resignation evaluation, `MatchEnded` event (idempotent), `MatchHost` AI hosting + command log + outcome, windowed client end screen + restart (R) + control groups + Stop/AttackMove hotkeys | A15 restart cleanliness (two fresh hosts, same seed → identical hashes; with AI → identical logs too); stage 10 is hash-neutral (M7 golden holds) | ✔ **Complete** |
 | **M9** — Alpha content & feel *(the Alpha starts feeling like a game)* | Chase-order pop fix (the frozen-army bug), wave machine re-march cadence + CC focus + waves of ten (matches resolve in 5–13 min across a 32-seed sweep), hit flashes, health bars, command pings, `AudioSink` + placeholder cues | AI-vs-AI resolves inside the 15-minute budget across seeds, deterministically; the vs-AI loop closes on the windowed host (`tests/alpha_loop.rs`) | ✔ **Complete** |
-| **M10** — Stabilization & declaration | Full acceptance suite A1–A15, nightly soak, benchmark baselines | Every criterion verified with evidence, in writing | ⬜ Pending |
+| **M10** — Stabilization & declaration | Full acceptance suite A1–A15, nightly soak, benchmark baselines, the command card + visual pass | 13 criteria pass with evidence (`docs/ALPHA_DECLARATION.md`); A14 recorded as a finding pending the human playtest | ✔ **Complete** (A14 pending) |
 
 Beyond the Alpha, the expansion sequence is already audited against the
 architecture: new unit, new building, new map, stat rebalance, second faction —
