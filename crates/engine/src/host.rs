@@ -606,16 +606,13 @@ mod tests {
         for _ in 0..62 {
             let frame = Duration::from_millis(16);
             let oa = a.advance(frame);
-            let _ = b.advance(frame);
+            let ob = b.advance(frame);
             // Same tick, same hash after every step.
             assert_eq!(a.tick(), b.tick());
             assert_eq!(a.state_hash(), b.state_hash());
-            // Same checkpoint trail.
-            assert_eq!(oa.hashes.len(), oa.hashes.len());
-            for (ha, _) in &oa.hashes {
-                // Re-derive b's hash at the same tick — they must match.
-                let _ = ha; // already asserted via state_hash above
-            }
+            // Same checkpoint trail — every checkpoint tick and its hash
+            // match between the two hosts.
+            assert_eq!(oa.hashes, ob.hashes, "the checkpoint trails must match");
         }
         assert_eq!(a.state_hash(), b.state_hash());
     }
