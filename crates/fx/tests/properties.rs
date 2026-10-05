@@ -155,4 +155,98 @@ proptest! {
         h.write_bytes(r);
         prop_assert_eq!(h.finish(), fnv1a64(&b));
     }
+
+    /// Every integer-write method matches the canonical little-endian byte
+    /// encoding (plan §5.10) — the property the state hash (sim/src/hash.rs)
+    /// and the replay codec (replay/src/bytes.rs) both depend on. The unit
+    /// tests cover u32 and i64; this pins the remaining four integer writes.
+    #[test]
+    fn hash_integer_writes_match_le_bytes(
+        n8 in proptest::num::u8::ANY,
+        n16 in proptest::num::u16::ANY,
+        n32 in proptest::num::u32::ANY,
+        n64 in proptest::num::u64::ANY,
+        i32v in proptest::num::i32::ANY,
+        i64v in proptest::num::i64::ANY,
+    ) {
+        // u8
+        let mut h = Fnv1a64::new();
+        h.write_u8(n8);
+        let direct = h.finish();
+        let mut h = Fnv1a64::new();
+        h.write_bytes(&n8.to_le_bytes()[..]);
+        prop_assert_eq!(direct, h.finish());
+
+        // u16
+        let mut h = Fnv1a64::new();
+        h.write_u16(n16);
+        let direct = h.finish();
+        let mut h = Fnv1a64::new();
+        h.write_bytes(&n16.to_le_bytes()[..]);
+        prop_assert_eq!(direct, h.finish());
+
+        // u32
+        let mut h = Fnv1a64::new();
+        h.write_u32(n32);
+        let direct = h.finish();
+        let mut h = Fnv1a64::new();
+        h.write_bytes(&n32.to_le_bytes()[..]);
+        prop_assert_eq!(direct, h.finish());
+
+        // u64
+        let mut h = Fnv1a64::new();
+        h.write_u64(n64);
+        let direct = h.finish();
+        let mut h = Fnv1a64::new();
+        h.write_bytes(&n64.to_le_bytes()[..]);
+        prop_assert_eq!(direct, h.finish());
+
+        // i32
+        let mut h = Fnv1a64::new();
+        h.write_i32(i32v);
+        let direct = h.finish();
+        let mut h = Fnv1a64::new();
+        h.write_bytes(&i32v.to_le_bytes()[..]);
+        prop_assert_eq!(direct, h.finish());
+
+        // i64
+        let mut h = Fnv1a64::new();
+        h.write_i64(i64v);
+        let direct = h.finish();
+        let mut h = Fnv1a64::new();
+        h.write_bytes(&i64v.to_le_bytes()[..]);
+        prop_assert_eq!(direct, h.finish());
+    }
+
+    /// abs() is non-negative for every input (saturating i32::MIN -> Fx::MAX),
+    /// and idempotent: abs(abs(x)) == abs(x).
+    #[test]
+    fn abs_is_non_negative_and_idempotent(x in proptest::num::i32::ANY) {
+        let fx = Fx::from_raw(x);
+        let a = fx.abs();
+        prop_assert!(a >= Fx::ZERO || a == Fx::MAX); // MIN maps to MAX
+        prop_assert_eq!(a.abs(), a);
+    }
+
+    /// square() == mul(self) for every input — pins the delegation so a
+    /// future "optimized" square path cannot silently diverge from mul.
+    #[test]
+    fn square_equals_mul_self(x in proptest::num::i32::ANY) {
+        let fx = Fx::from_raw(x);
+        prop_assert_eq!(fx.square(), fx.mul(fx));
+    }
+
+    /// Vec2Fx::dist(a, b) == (a - b).len() for arbitrary inputs in the
+    /// non-saturating range. The docstring on `dist` claims this equivalence
+    /// (component subtraction saturates the same way), but the only unit
+    /// test covers a == ZERO. This pins it for arbitrary a, b.
+    #[test]
+    fn vec_dist_matches_subtraction_then_length(
+        ax in -(1 << 20)..(1 << 20), ay in -(1 << 20)..(1 << 20),
+        bx in -(1 << 20)..(1 << 20), by in -(1 << 20)..(1 << 20),
+    ) {
+        let a = Vec2Fx::new(Fx::from_raw(ax), Fx::from_raw(ay));
+        let b = Vec2Fx::new(Fx::from_raw(bx), Fx::from_raw(by));
+        prop_assert_eq!(Vec2Fx::dist(a, b), (a - b).len());
+    }
 }
