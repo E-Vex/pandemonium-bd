@@ -1,7 +1,7 @@
 //! Terrain mesh generation (plan §11.2 as amended by ADR-0001): the map grid +
 //! the display-only heightmap become the vertex/index data the wgpu renderer
 //! draws — one quad per tile, vertically displaced by the heightmap, colored by
-//! terrain class.
+//! terrain class, with a per-quad normal so the fragment pass can shade it.
 //!
 //! Pure data in, pure data out: this module knows nothing about wgpu, so the
 //! mesh shape is unit-testable on headless CI (plan §11.2's Renderer-trait
@@ -11,34 +11,75 @@
 
 use pandemonium_content::MapDef;
 
-/// One terrain vertex: position (world units, Y up) and placeholder color.
+/// One terrain vertex: position (world units, Y up), albedo color, and the
+/// quad's shading normal.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct TerrainVertex {
     /// Position in ground-plane world space (tile corners at integer x/z,
     /// height from the heightmap).
     pub position: [f32; 3],
-    /// Placeholder color (RGB), chosen by terrain class.
+    /// Albedo color (RGB), chosen by terrain class with per-tile variation.
     pub color: [f32; 3],
+    /// Face normal (flat shading — one normal per tile quad).
+    pub normal: [f32; 3],
 }
 
 /// The generated terrain: a triangle list with per-tile quad vertices.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct TerrainMesh {
     /// Four vertices per tile (flat shading — no corner sharing, so per-tile
-    /// colors stay trivial).
+    /// colors and normals stay trivial).
     pub vertices: Vec<TerrainVertex>,
     /// Six indices per tile (two triangles).
     pub indices: Vec<u32>,
 }
 
-/// Placeholder palette by terrain class: passable ground reads as grass,
-/// blocked terrain as rock. Placeholder art only (plan §0).
-fn class_color(passable: bool) -> [f32; 3] {
-    if passable {
-        [0.34, 0.49, 0.29]
+/// The sun the whole scene is lit by (shaders share this direction). Tilted
+/// enough to model volume, shallow enough that south faces stay readable.
+pub const SUN_DIRECTION: [f32; 3] = [0.45, 0.85, 0.30];
+
+/// Per-tile deterministic variation in `0.0..=1.0` from the tile's
+/// coordinates — a coordinate hash, not an RNG: the same map always shades
+/// the same way, on every machine, in every run.
+fn tile_variation(x: u32, y: u32) -> f32 {
+    let hash = x
+        .wrapping_mul(7_385_609)
+        .wrapping_add(y.wrapping_mul(19_349_663));
+    ((hash >> 9) & 0xFF) as f32 / 255.0
+}
+
+/// Terrain albedo by class with per-tile variation: passable ground reads as
+/// dry steppe grass with hue/brightness jitter; blocked terrain as gray-brown
+/// rock. Placeholder-plus (plan §0): flat colors, but shaded ones.
+fn class_color(passable: bool, variation: f32, height: f32) -> [f32; 3] {
+    // ±0.045 of jitter around the class base, plus a subtle two-tile checker
+    // so flat areas keep a readable grain.
+    let jitter = (variation - 0.5) * 0.09;
+    let checker = if ((variation * 255.0) as u32).is_multiple_of(2) {
+        0.015
     } else {
-        [0.46, 0.43, 0.40]
+        -0.015
+    };
+    let mut color = if passable {
+        // Dry grass base, jittered toward either lusher or drier.
+        let dryness = variation;
+        [
+            0.33 + 0.10 * dryness + jitter,
+            0.47 + 0.03 * dryness + jitter,
+            0.27 - 0.05 * dryness + jitter,
+        ]
+    } else {
+        // Rock: gray-brown, jittered brightness.
+        [0.41 + jitter, 0.38 + jitter, 0.35 + jitter]
+    };
+    // Hills pick up a rocky tint with height (the heightmap is display-only,
+    // so this is pure presentation math).
+    let rocky = (height / 3.0).clamp(0.0, 0.4);
+    for channel in &mut color {
+        *channel = *channel * (1.0 - rocky) + 0.38 * rocky;
+        *channel = (*channel + checker).clamp(0.0, 1.0);
     }
+    color
 }
 
 /// Builds the terrain mesh for a map. `height_scale` converts heightmap units
@@ -60,13 +101,39 @@ pub fn terrain_mesh(map: &MapDef, height_scale: f32) -> TerrainMesh {
         .reserve((map.width as usize) * (map.height as usize) * 6);
     for y in 0..map.height {
         for x in 0..map.width {
-            let color = class_color(map.passable(x as i32, y as i32));
-            let base = mesh.vertices.len() as u32;
+            let variation = tile_variation(x, y);
+            let tile_height =
+                (height(x, y) + height(x + 1, y) + height(x, y + 1) + height(x + 1, y + 1)) * 0.25;
+            let color = class_color(map.passable(x as i32, y as i32), variation, tile_height);
             // Corners: a=(x,y) b=(x+1,y) c=(x,y+1) d=(x+1,y+1), Y up.
-            for (cx, cy) in [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)] {
+            let corner = |cx: u32, cy: u32| [cx as f32, height(cx, cy), cy as f32];
+            let a = corner(x, y);
+            let b = corner(x + 1, y);
+            let c = corner(x, y + 1);
+            let d = corner(x + 1, y + 1);
+            // The quad's face normal from its first triangle's edges, flipped
+            // to point up (the winding below may face either way in cross
+            // order; terrain shading wants the sky-facing side).
+            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let mut normal = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            if normal[1] < 0.0 {
+                normal = [-normal[0], -normal[1], -normal[2]];
+            }
+            let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
+                .sqrt()
+                .max(1e-6);
+            let normal = [normal[0] / length, normal[1] / length, normal[2] / length];
+            let base = mesh.vertices.len() as u32;
+            for position in [a, b, c, d] {
                 mesh.vertices.push(TerrainVertex {
-                    position: [cx as f32, height(cx, cy), cy as f32],
+                    position,
                     color,
+                    normal,
                 });
             }
             // Two triangles per tile (culling is disabled in the pipeline, so
@@ -140,15 +207,23 @@ mod tests {
         assert_eq!(mesh.indices.len(), 3 * 2 * 6);
         // Every vertex of a heightmap-less map sits on the plane.
         assert!(mesh.vertices.iter().all(|v| v.position[1] == 0.0));
-        // Tile (0,0) is rock: its four vertices carry the rock color.
-        let rock = class_color(false);
+        // Tile (0,0) is rock: its four vertices carry a rock-class albedo —
+        // darker than ground and less green.
+        let rock = mesh.vertices[0].color;
+        let ground = mesh.vertices[4].color;
         assert!(
-            mesh.vertices[0..4].iter().all(|v| v.color == rock),
-            "the (0,0) quad is colored by its impassable terrain class"
+            rock[0] < 0.5 && rock[1] < 0.5,
+            "rock reads as muted gray-brown"
         );
-        // The next tile is ground-colored.
-        let ground = class_color(true);
-        assert!(mesh.vertices[4..8].iter().all(|v| v.color == ground));
+        assert!(
+            ground[1] > ground[2] && ground[1] > rock[1] + 0.04,
+            "ground reads as grass (green-dominant, greener than rock)"
+        );
+        // Every vertex of the flat map faces the sky.
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|v| (v.normal[1] - 1.0).abs() < 1e-4));
     }
 
     #[test]
@@ -167,5 +242,34 @@ mod tests {
         assert_eq!(mesh.vertices[3].position[1], 0.0, "corner (1,1) is flat");
         // Tile (1,1)'s quad starts at vertex index 12 (three tiles earlier).
         assert_eq!(mesh.vertices[12].position[1], 0.0);
+    }
+
+    #[test]
+    fn a_ramped_heightmap_tilts_the_quad_normal() {
+        let mut map = flat_map(2, 1);
+        // A pure east-facing ramp: height rises along x only.
+        map.heightmap = Some(pandemonium_content::Heightmap {
+            rows: vec![vec![0, 100], vec![0, 100]],
+        });
+        let mesh = terrain_mesh(&map, 0.02);
+        let normal = mesh.vertices[0].normal;
+        // The ramp climbs along +x, so the surface tilts toward -x while
+        // staying unit-length and sky-facing.
+        assert!(normal[1] > 0.0, "the normal faces the sky");
+        assert!(normal[0] < 0.0, "an east-facing ramp tilts toward -x");
+        let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        assert!((length - 1.0).abs() < 1e-4, "the normal is unit length");
+    }
+
+    #[test]
+    fn tile_variation_is_deterministic_and_bounded() {
+        let a = tile_variation(7, 9);
+        assert_eq!(a, tile_variation(7, 9), "same tile, same shade");
+        for x in 0..16u32 {
+            for y in 0..16u32 {
+                let value = tile_variation(x, y);
+                assert!((0.0..=1.0).contains(&value), "variation stays in range");
+            }
+        }
     }
 }

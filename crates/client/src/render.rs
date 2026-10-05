@@ -24,30 +24,87 @@ struct CameraUniform {
     view_projection: [[f32; 4]; 4],
 }
 
-/// One entity instance: where the placeholder box sits and its color.
+/// One entity instance: a rotated, non-uniformly-scaled colored box (40
+/// bytes). One *entity* renders as one or more instances — its silhouette
+/// (per [`KindShape`]) is composed from boxes on the CPU side.
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 struct EntityInstance {
-    /// Instance center (the box's bottom sits on the ground).
+    /// Instance center (the box's bottom sits at this height).
     position: [f32; 3],
-    /// Box half-extent in tiles.
-    half_extent: f32,
+    /// Yaw rotation around Y (units face their movement direction).
+    yaw: f32,
+    /// Full extent on each axis (not half — scales read in tile units).
+    scale: [f32; 3],
     /// Placeholder color (team color, brighter when selected).
     color: [f32; 3],
-    /// Padding to 16-byte multiples (keep buffers aligned).
-    _pad: [f32; 3],
+    /// Padding to a 40-byte stride (keeps vec3 attributes 4-byte aligned).
+    _pad: f32,
+}
+
+/// What each kind renders as. The client derives one per kind from the
+/// content's capability composition (capability-shaped, never name-matched —
+/// the same law the engine's plan resolution follows).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ShapeKind {
+    /// A static structure: a footprint-sized slab plus a lighter roof block.
+    Structure {
+        /// Footprint width in tiles.
+        w: f32,
+        /// Footprint depth in tiles.
+        h: f32,
+    },
+    /// A moving unit: a body box plus a darker head block, facing its
+    /// movement direction.
+    Unit {
+        /// Body extent (x, y, z) in tiles.
+        body: [f32; 3],
+        /// Head extent (x, y, z) in tiles.
+        head: [f32; 3],
+    },
+    /// A resource node: a cluster of two tilted amber blocks.
+    Node,
+    /// A turret: a low slab plus a thin raised barrel.
+    Turret,
+}
+
+/// One kind's presentation spec: the silhouette plus a per-kind tint applied
+/// over the team color (so kinds read apart while teams stay obvious).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct KindShape {
+    /// The silhouette this kind renders as.
+    pub kind: ShapeKind,
+    /// Per-kind tint (RGB, multiplied over the team color; 1.0 = neutral).
+    pub tint: [f32; 3],
+}
+
+impl KindShape {
+    /// The default silhouette for a kind with unknown content: a plain unit
+    /// box with a neutral tint (defensive — never used with real content).
+    pub fn fallback() -> Self {
+        Self {
+            kind: ShapeKind::Unit {
+                body: [0.4, 0.62, 0.4],
+                head: [0.24, 0.22, 0.24],
+            },
+            tint: [1.0, 1.0, 1.0],
+        }
+    }
 }
 
 const TERRAIN_SHADER: &str = r#"
 struct CameraUniform { view_projection: mat4x4<f32> };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
+const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
+
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32> };
 
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) color: vec3<f32>) -> VsOut {
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) color: vec3<f32>, @location(2) normal: vec3<f32>) -> VsOut {
     var out: VsOut;
     out.clip = camera.view_projection * vec4<f32>(position, 1.0);
-    out.color = color;
+    let light = 0.52 + 0.48 * max(dot(normalize(normal), normalize(SUN)), 0.0);
+    out.color = color * light;
     return out;
 }
 
@@ -60,18 +117,27 @@ const ENTITY_SHADER_SRC: &str = r#"
 struct CameraUniform { view_projection: mat4x4<f32> };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
+const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
+
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32> };
 
 @vertex fn vs_main(
     @location(0) corner: vec3<f32>,
     @location(1) instance_position: vec3<f32>,
-    @location(2) instance_half_extent: f32,
-    @location(3) instance_color: vec3<f32>,
+    @location(2) instance_yaw: f32,
+    @location(3) instance_scale: vec3<f32>,
+    @location(4) instance_color: vec3<f32>,
+    @location(5) normal: vec3<f32>,
 ) -> VsOut {
     var out: VsOut;
-    let world = corner * instance_half_extent + instance_position;
+    let c = cos(instance_yaw);
+    let s = sin(instance_yaw);
+    let rot = mat3x3<f32>(vec3<f32>(c, 0.0, -s), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(s, 0.0, c));
+    let world = rot * (corner * instance_scale) + instance_position;
+    let n = rot * normalize(normal);
+    let light = 0.42 + 0.58 * max(dot(n, normalize(SUN)), 0.0);
     out.clip = camera.view_projection * vec4<f32>(world, 1.0);
-    out.color = instance_color;
+    out.color = instance_color * light;
     return out;
 }
 
@@ -148,6 +214,17 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
 struct GpuTerrainVertex {
     position: [f32; 3],
     color: [f32; 3],
+    normal: [f32; 3],
+}
+
+impl From<TerrainVertex> for GpuTerrainVertex {
+    fn from(vertex: TerrainVertex) -> Self {
+        Self {
+            position: vertex.position,
+            color: vertex.color,
+            normal: vertex.normal,
+        }
+    }
 }
 
 /// The fog pass's uniform: the camera's view-projection plus the map extent
@@ -166,18 +243,17 @@ pub const FOG_ALPHA_VISIBLE: u8 = 0;
 pub const FOG_ALPHA_EXPLORED: u8 = 130;
 pub const FOG_ALPHA_HIDDEN: u8 = 235;
 
-impl From<TerrainVertex> for GpuTerrainVertex {
-    fn from(vertex: TerrainVertex) -> Self {
-        Self {
-            position: vertex.position,
-            color: vertex.color,
-        }
-    }
+/// One cube vertex: corner position and its face normal (24 bytes).
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct CubeVertex {
+    corner: [f32; 3],
+    normal: [f32; 3],
 }
 
-/// The unit cube's 36 corner vertices (12 triangles), centered at the origin,
-/// half-extent 0.5 on each axis.
-fn cube_corners() -> Vec<[f32; 3]> {
+/// The unit cube's 36 vertices (12 triangles, per-face normals), centered at
+/// the origin, half-extent 0.5 on each axis.
+fn cube_vertices() -> Vec<CubeVertex> {
     const FACES: [[usize; 4]; 6] = [
         [0, 1, 2, 3], // -Z
         [5, 4, 7, 6], // +Z
@@ -185,6 +261,14 @@ fn cube_corners() -> Vec<[f32; 3]> {
         [1, 5, 6, 2], // +X
         [4, 5, 1, 0], // -Y
         [3, 2, 6, 7], // +Y
+    ];
+    const NORMALS: [[f32; 3]; 6] = [
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0],
     ];
     let corners = [
         [-0.5, -0.5, -0.5],
@@ -197,15 +281,20 @@ fn cube_corners() -> Vec<[f32; 3]> {
         [-0.5, 0.5, 0.5],
     ];
     let mut vertices = Vec::with_capacity(36);
-    for face in FACES {
-        let quad = [
-            corners[face[0]],
-            corners[face[1]],
-            corners[face[2]],
-            corners[face[3]],
+    for (face, quad) in FACES.iter().enumerate() {
+        let corners = [
+            corners[quad[0]],
+            corners[quad[1]],
+            corners[quad[2]],
+            corners[quad[3]],
         ];
-        for corner in [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]] {
-            vertices.push(corner);
+        for corner in [
+            corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
+        ] {
+            vertices.push(CubeVertex {
+                corner,
+                normal: NORMALS[face],
+            });
         }
     }
     vertices
@@ -307,14 +396,19 @@ pub struct WgpuRenderer {
     fog_texture: wgpu::Texture,
     fog_texture_size: (u32, u32),
     fog_map_size: (f32, f32),
+    /// Per-kind silhouette specs (index = KindId), derived from content by
+    /// the client and handed to the renderer once at startup.
+    kind_specs: Vec<KindShape>,
 }
 
 impl WgpuRenderer {
     /// Creates the renderer for a window: device, queues, pipelines, and the
-    /// static terrain buffers.
+    /// static terrain buffers. `kind_specs` maps each content kind id to its
+    /// silhouette (the client derives them from the loaded bundle).
     pub fn new(
         window: std::sync::Arc<winit::window::Window>,
         terrain: &TerrainMesh,
+        kind_specs: Vec<KindShape>,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance
@@ -398,7 +492,7 @@ impl WgpuRenderer {
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                    array_stride: std::mem::size_of::<GpuTerrainVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute {
@@ -410,6 +504,11 @@ impl WgpuRenderer {
                             format: wgpu::VertexFormat::Float32x3,
                             offset: 12,
                             shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 24,
+                            shader_location: 2,
                         },
                     ],
                 }],
@@ -472,13 +571,20 @@ impl WgpuRenderer {
                 compilation_options: Default::default(),
                 buffers: &[
                     wgpu::VertexBufferLayout {
-                        array_stride: 12,
+                        array_stride: std::mem::size_of::<CubeVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        }],
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 12,
+                                shader_location: 5,
+                            },
+                        ],
                     },
                     wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<EntityInstance>() as u64,
@@ -498,6 +604,11 @@ impl WgpuRenderer {
                                 format: wgpu::VertexFormat::Float32x3,
                                 offset: 16,
                                 shader_location: 3,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 28,
+                                shader_location: 4,
                             },
                         ],
                     },
@@ -530,13 +641,13 @@ impl WgpuRenderer {
             cache: None,
         });
 
-        let corners = cube_corners();
+        let cube = cube_vertices();
         let entity_vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("entity cube"),
-            contents: bytemuck::cast_slice(&corners),
+            contents: bytemuck::cast_slice(&cube),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let entity_instance_capacity = 512u64;
+        let entity_instance_capacity = 1024u64;
         let entity_instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("entity instances"),
             size: entity_instance_capacity * std::mem::size_of::<EntityInstance>() as u64,
@@ -915,6 +1026,7 @@ impl WgpuRenderer {
             fog_texture,
             fog_texture_size,
             fog_map_size: (fog_map_size[0], fog_map_size[1]),
+            kind_specs,
         })
     }
 
@@ -1006,6 +1118,156 @@ impl WgpuRenderer {
     }
 }
 
+/// The neutral ore color (resource nodes belong to no team).
+const ORE_COLOR: [f32; 3] = [0.85, 0.66, 0.20];
+
+/// Builds one entity's instances — the silhouette pass (pure geometry, so it
+/// is unit-testable without a GPU). `yaw` comes from the entity's facing,
+/// `moving` slightly squats units while they walk, and selection/hit feedback
+/// brighten the whole silhouette.
+fn build_entity_instances(
+    entity: &pandemonium_engine::RenderEntity,
+    shape: &KindShape,
+    selected: bool,
+    flashing: bool,
+    out: &mut Vec<EntityInstance>,
+) {
+    let base = team_color(entity.owner, selected, flashing);
+    let tint = shape.tint;
+    let mix = |color: [f32; 3], other: [f32; 3], t: f32| -> [f32; 3] {
+        [
+            color[0] * (1.0 - t) + other[0] * t,
+            color[1] * (1.0 - t) + other[1] * t,
+            color[2] * (1.0 - t) + other[2] * t,
+        ]
+    };
+    let x = entity.pos.x;
+    let z = entity.pos.z;
+    let yaw = if entity.facing.length_squared() > 0.25 {
+        entity.facing.z.atan2(entity.facing.x)
+    } else {
+        0.0
+    };
+    let push =
+        |out: &mut Vec<EntityInstance>, y: f32, scale: [f32; 3], yaw: f32, color: [f32; 3]| {
+            out.push(EntityInstance {
+                position: [x, y, z],
+                yaw,
+                scale,
+                color,
+                _pad: 0.0,
+            });
+        };
+    match shape.kind {
+        ShapeKind::Structure { w, h } => {
+            // A footprint slab plus a lighter, slightly inset roof block.
+            // Height scales with the footprint so bigger buildings read
+            // bigger; every slab sits flush on the ground.
+            let height = w.max(h) * 0.35 + 0.5;
+            let wall = mix(base, [0.35, 0.35, 0.38], 0.25);
+            let roof = mix(base, [0.95, 0.95, 1.0], 0.35);
+            push(out, height * 0.5, [w * 0.94, height, h * 0.94], 0.0, wall);
+            push(
+                out,
+                height + height * 0.22,
+                [w * 0.62, height * 0.45, h * 0.62],
+                0.0,
+                roof,
+            );
+        }
+        ShapeKind::Unit { body, head } => {
+            // A squatting unit is a moving unit (the M3..M9 half-extent cue,
+            // kept and carried into the silhouette). The yaw turns the body
+            // toward its facing; the head rides on top, unrotated colors
+            // slightly darker so it reads as a separate mass.
+            let squat = if entity.move_state == MoveState::Moving {
+                0.85
+            } else {
+                1.0
+            };
+            let body_color = mix(base, tint, 0.35);
+            let head_color = mix(base, [0.1, 0.1, 0.12], 0.35);
+            let body_y = body[1] * squat * 0.5;
+            push(
+                out,
+                body_y,
+                [body[0], body[1] * squat, body[2]],
+                yaw,
+                body_color,
+            );
+            push(out, body[1] * squat + head[1] * 0.5, head, yaw, head_color);
+        }
+        ShapeKind::Node => {
+            // A crystal cluster: two rotated blocks, the second offset and
+            // leaning, both amber regardless of the (neutral) owner.
+            let sparkle = match entity.id.0 % 4 {
+                0 => 1.06,
+                1 => 0.97,
+                2 => 1.03,
+                _ => 0.94,
+            };
+            push(
+                out,
+                0.42,
+                [0.62 * sparkle, 0.84, 0.62 * sparkle],
+                0.78,
+                ORE_COLOR,
+            );
+            push(
+                out,
+                0.72,
+                [0.40, 0.60, 0.40],
+                -0.52,
+                mix(ORE_COLOR, [1.0, 1.0, 0.85], 0.25),
+            );
+        }
+        ShapeKind::Turret => {
+            // A low octagonal-feel slab plus a raised thin barrel pointing
+            // at the entity's (idle-zero) facing — east by convention.
+            let wall = mix(base, [0.30, 0.30, 0.33], 0.30);
+            push(out, 0.22, [1.35, 0.44, 1.35], 0.0, wall);
+            push(
+                out,
+                0.62,
+                [0.85, 0.36, 0.30],
+                yaw,
+                mix(base, [1.0, 1.0, 1.0], 0.2),
+            );
+        }
+    }
+}
+
+/// Builds the whole frame's instance stream (ascending entity order — the
+/// snapshot's contract) under the instance buffer's capacity.
+fn build_instances(
+    snapshot: &pandemonium_engine::RenderSnapshot,
+    selection: &[pandemonium_sim_api::EntityId],
+    flashes: &[pandemonium_sim_api::EntityId],
+    kind_specs: &[KindShape],
+    capacity: usize,
+) -> Vec<EntityInstance> {
+    let mut instances = Vec::with_capacity(snapshot.entities.len() * 2);
+    for entity in &snapshot.entities {
+        if instances.len() >= capacity {
+            break; // an over-full frame clips its tail, never panics
+        }
+        let shape = kind_specs
+            .get(entity.kind.0 as usize)
+            .copied()
+            .unwrap_or_else(KindShape::fallback);
+        let selected = selection.contains(&entity.id);
+        let flashing = flashes.contains(&entity.id);
+        let before = instances.len();
+        build_entity_instances(entity, &shape, selected, flashing, &mut instances);
+        // A single entity's silhouette always fits whole: trim back to the
+        // capacity boundary if its last block overflowed.
+        if instances.len() > capacity {
+            instances.truncate(before);
+        }
+    }
+    instances
+}
+
 impl Renderer for WgpuRenderer {
     fn render(&mut self, frame: Frame<'_>) {
         // Camera uniform.
@@ -1028,25 +1290,15 @@ impl Renderer for WgpuRenderer {
             }),
         );
 
-        // Entity instances from the interpolated snapshot (ascending id).
-        let selection: &[pandemonium_sim_api::EntityId] = frame.selection;
-        let instances: Vec<EntityInstance> = frame
-            .snapshot
-            .entities
-            .iter()
-            .map(|entity| {
-                let selected = selection.contains(&entity.id);
-                let flashing = frame.flashes.contains(&entity.id);
-                let moving = entity.move_state == MoveState::Moving;
-                let half_extent = if moving { 0.28 } else { 0.34 };
-                EntityInstance {
-                    position: [entity.pos.x, entity.pos.y + half_extent, entity.pos.z],
-                    half_extent,
-                    color: team_color(entity.owner, selected, flashing),
-                    _pad: [0.0; 3],
-                }
-            })
-            .collect();
+        // Entity instances from the interpolated snapshot (ascending id),
+        // composed into per-kind silhouettes by the pure instance builder.
+        let instances = build_instances(
+            frame.snapshot,
+            frame.selection,
+            frame.flashes,
+            &self.kind_specs,
+            self.entity_instance_capacity as usize,
+        );
         let needed = instances.len() as u64;
         if needed > 0 {
             let bytes = bytemuck::cast_slice(&instances);
@@ -1165,5 +1417,175 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod silhouette_tests {
+    use super::*;
+    use glam::Vec3;
+    use pandemonium_engine::RenderEntity;
+    use pandemonium_sim_api::{EntityId, KindId, MoveState, PlayerId};
+
+    fn entity(id: u64, kind: u32, owner: PlayerId, moving: MoveState) -> RenderEntity {
+        RenderEntity {
+            id: EntityId(id),
+            owner,
+            kind: KindId(kind),
+            pos: Vec3::new(5.0, 0.0, 7.0),
+            facing: Vec3::ZERO,
+            hp_fraction_milli: 1000,
+            move_state: moving,
+        }
+    }
+
+    fn unit_shape() -> KindShape {
+        KindShape {
+            kind: ShapeKind::Unit {
+                body: [0.4, 0.6, 0.4],
+                head: [0.2, 0.2, 0.2],
+            },
+            tint: [1.0, 1.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn a_structure_is_a_slab_plus_a_roof_sized_to_its_footprint() {
+        let shape = KindShape {
+            kind: ShapeKind::Structure { w: 4.0, h: 3.0 },
+            tint: [1.0; 3],
+        };
+        let mut out = Vec::new();
+        build_entity_instances(
+            &entity(1, 0, PlayerId(0), MoveState::Idle),
+            &shape,
+            false,
+            false,
+            &mut out,
+        );
+        assert_eq!(out.len(), 2, "slab + roof");
+        let slab = &out[0];
+        assert!(
+            (slab.scale[0] - 4.0 * 0.94).abs() < 1e-4,
+            "slab spans the footprint width"
+        );
+        assert!(
+            (slab.scale[2] - 3.0 * 0.94).abs() < 1e-4,
+            "slab spans the footprint depth"
+        );
+        // The slab sits flush on the ground (center at half its height).
+        assert!((slab.position[1] - slab.scale[1] * 0.5).abs() < 1e-4);
+        // The roof rides above the slab.
+        assert!(out[1].position[1] > slab.position[1] + slab.scale[1] * 0.5);
+        // Structures never rotate (footprints are axis-aligned).
+        assert_eq!(slab.yaw, 0.0);
+    }
+
+    #[test]
+    fn a_unit_is_a_body_plus_a_head_and_faces_its_direction() {
+        let mut e = entity(1, 0, PlayerId(0), MoveState::Idle);
+        e.facing = Vec3::new(1.0, 0.0, 0.0); // east
+        let mut out = Vec::new();
+        build_entity_instances(&e, &unit_shape(), false, false, &mut out);
+        assert_eq!(out.len(), 2, "body + head");
+        let yaw = out[0].yaw;
+        assert!(
+            (yaw - 0.0).abs() < 1e-4 || (yaw.abs() - std::f32::consts::PI).abs() < 1e-4,
+            "an east-facing yaw lands on the +x/-x axis, got {yaw}"
+        );
+        // A moving unit squats: its body is shorter than the idle one.
+        let mut moving = entity(1, 0, PlayerId(0), MoveState::Moving);
+        moving.facing = Vec3::new(1.0, 0.0, 0.0);
+        let mut out2 = Vec::new();
+        build_entity_instances(&moving, &unit_shape(), false, false, &mut out2);
+        assert!(out2[0].scale[1] < out[0].scale[1], "moving squats the body");
+        // The head rides on top of the (squatting) body.
+        assert!(out2[1].position[1] > out2[0].position[1]);
+    }
+
+    #[test]
+    fn an_ore_node_is_amber_regardless_of_owner() {
+        let shape = KindShape {
+            kind: ShapeKind::Node,
+            tint: [1.0; 3],
+        };
+        let mut out = Vec::new();
+        build_entity_instances(
+            &entity(1, 4, PlayerId(1), MoveState::Idle),
+            &shape,
+            false,
+            false,
+            &mut out,
+        );
+        assert_eq!(out.len(), 2, "crystal cluster");
+        for instance in &out {
+            assert!(
+                (instance.color[0] - ORE_COLOR[0]).abs() < 0.12
+                    && instance.color[0] > instance.color[2],
+                "the node reads amber, not team red"
+            );
+        }
+    }
+
+    #[test]
+    fn selection_brightens_and_flashing_brightens_more() {
+        let mut plain = Vec::new();
+        build_entity_instances(
+            &entity(1, 0, PlayerId(0), MoveState::Idle),
+            &unit_shape(),
+            false,
+            false,
+            &mut plain,
+        );
+        let mut selected = Vec::new();
+        build_entity_instances(
+            &entity(1, 0, PlayerId(0), MoveState::Idle),
+            &unit_shape(),
+            true,
+            false,
+            &mut selected,
+        );
+        let mut flashing = Vec::new();
+        build_entity_instances(
+            &entity(1, 0, PlayerId(0), MoveState::Idle),
+            &unit_shape(),
+            false,
+            true,
+            &mut flashing,
+        );
+        let brightness = |instances: &[EntityInstance]| instances[0].color.iter().sum::<f32>();
+        assert!(
+            brightness(&selected) > brightness(&plain),
+            "selection brightens"
+        );
+        assert!(brightness(&flashing) > brightness(&plain), "a hit flashes");
+    }
+
+    #[test]
+    fn the_stream_respects_the_instance_capacity_whole_silhouettes_only() {
+        let snapshot_entities: Vec<RenderEntity> = (1..=4)
+            .map(|id| entity(id, 0, PlayerId(0), MoveState::Idle))
+            .collect();
+        let snapshot = pandemonium_engine::RenderSnapshot {
+            tick: 0,
+            entities: snapshot_entities,
+        };
+        // Room for exactly three entities' silhouettes (2 instances each) —
+        // the fourth is dropped whole, never half-drawn.
+        let instances = build_instances(&snapshot, &[], &[], &[], 6);
+        assert_eq!(instances.len(), 6);
+        assert!(instances
+            .iter()
+            .all(|i| i.position[0] == 5.0 && i.position[2] == 7.0));
+    }
+
+    #[test]
+    fn unknown_kinds_fall_back_to_a_plain_unit() {
+        let snapshot = pandemonium_engine::RenderSnapshot {
+            tick: 0,
+            entities: vec![entity(1, 99, PlayerId(0), MoveState::Idle)],
+        };
+        let instances = build_instances(&snapshot, &[], &[], &[], 64);
+        assert_eq!(instances.len(), 2, "the fallback silhouette still renders");
     }
 }

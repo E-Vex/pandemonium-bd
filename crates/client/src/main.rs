@@ -541,6 +541,48 @@ fn digit_to_group_index(code: winit::keyboard::KeyCode) -> usize {
     }
 }
 
+/// Derives one silhouette per kind from the content's capability
+/// composition — the same capability-shaped law the engine's plan resolution
+/// follows (never a name match). Ore nodes (Resource) read as amber
+/// clusters, turrets (Attack + Footprint, no Move) as slabs with barrels,
+/// structures (Footprint) as footprint-sized buildings, movers as body+head
+/// units whose size varies deterministically by kind so infantry kinds read
+/// apart without any content edits.
+fn kind_shapes(bundle: &ContentBundle) -> Vec<render::KindShape> {
+    bundle
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(index, def)| {
+            let has = |name: &str| def.capability(name).is_some();
+            let kind = if has("Resource") {
+                render::ShapeKind::Node
+            } else if has("Attack") && def.footprint().is_some() && !has("Move") {
+                render::ShapeKind::Turret
+            } else if let Some((w, h)) = def.footprint() {
+                render::ShapeKind::Structure {
+                    w: w as f32,
+                    h: h as f32,
+                }
+            } else {
+                // Deterministic per-kind size variation within infantry
+                // proportions (kind index, not a name or an RNG).
+                let wide = 0.36 + ((index + 1) % 3) as f32 * 0.05;
+                let tall = 0.52 + (index % 3) as f32 * 0.07;
+                render::ShapeKind::Unit {
+                    body: [wide, tall, wide],
+                    head: [wide * 0.55, tall * 0.34, wide * 0.55],
+                }
+            };
+            // Structures and nodes tint themselves in build_entity_instances;
+            // units get a mild per-kind cool/warm shift so kinds read apart.
+            let shift = ((index % 3) as f32 - 1.0) * 0.05;
+            let tint = [1.0 + shift, 1.0, 1.0 - shift];
+            render::KindShape { kind, tint }
+        })
+        .collect()
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -554,7 +596,11 @@ impl ApplicationHandler for App {
         self.camera.set_aspect(
             window.inner_size().width as f32 / window.inner_size().height.max(1) as f32,
         );
-        match WgpuRenderer::new(window.clone(), &terrain_mesh_of()) {
+        match WgpuRenderer::new(
+            window.clone(),
+            &terrain_mesh_of(),
+            kind_shapes(&self.bundle),
+        ) {
             Ok(renderer) => {
                 self.renderer = Some(renderer);
                 self.window = Some(window);
