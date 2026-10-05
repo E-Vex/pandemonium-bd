@@ -46,9 +46,12 @@ pub struct SoakCli {
     /// prior run already covered.
     #[arg(long, default_value_t = 0)]
     pub seed_base: u64,
-    /// Per-match tick budget. 18000 ticks = 10 minutes of game time at
-    /// 30 Hz (the plan's "stuck match" threshold).
-    #[arg(long, default_value_t = 18_000)]
+    /// Per-match tick budget. Plan §13 A7 calls a match "stuck" past
+    /// 20 minutes of game time — 36000 ticks at 30 Hz — so the budget
+    /// defaults there, not lower: the M9 sweep measured legitimate matches
+    /// resolving as late as tick ~23300, which an 18000 budget would have
+    /// miscounted as stuck.
+    #[arg(long, default_value_t = 36_000)]
     pub ticks: u32,
     /// The content directory to load.
     #[arg(long, default_value = "content")]
@@ -134,12 +137,17 @@ pub fn run_soak(cli: &SoakCli) -> Result<SoakReport> {
         let seed = cli.seed_base + index as u64;
         match run_ai_match(&bundle, seed, cli.ticks, Slot::Ai, Slot::Ai) {
             Ok(match_result) => {
-                let end_tick = match_result
-                    .replay
-                    .checkpoints
-                    .last()
-                    .map(|cp| cp.tick)
-                    .unwrap_or(0);
+                // The match's own end tick when it resolved; the budget when
+                // it ran out (the runner simulates on after MatchEnded, so
+                // the replay's last checkpoint is never the match's end).
+                let end_tick = match_result.summary.ended_tick.unwrap_or(
+                    match_result
+                        .replay
+                        .checkpoints
+                        .last()
+                        .map(|cp| cp.tick)
+                        .unwrap_or(0),
+                );
                 report.total_ticks = report.total_ticks.saturating_add(end_tick);
                 record_outcome(&mut report, &match_result.summary, end_tick);
                 if cli.verbose {
@@ -244,6 +252,7 @@ mod tests {
             attack_hits: vec![3, 3],
             deaths: vec![1, 1],
             winner,
+            ended_tick: None,
         }
     }
 

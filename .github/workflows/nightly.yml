@@ -1,0 +1,69 @@
+name: nightly
+
+# The A7 acceptance gate (plan §12, §13): a nightly soak of seeded AI-vs-AI
+# matches — no panics, no stuck matches, no invariant violations, win-rate
+# telemetry — plus the plan §15 performance budgets in release.
+#
+# The 1000-match count from A7 runs nightly rather than per-push: at Alpha
+# sizes a full sweep takes hours, and CI-per-push is the green gate's job
+# (ci.yml). Crashes fail the workflow (`tools soak` exits non-zero when any
+# match crashes).
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch: {} # manual trigger for on-demand sweeps
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    name: soak (A7, ${{ matrix.matches }} matches)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The smoke tier always runs: cheap crash/stall detection.
+          - matches: 32
+          # The full A7 tier: 1000 seeded matches. Kept in the same matrix so
+          # one nightly run covers both; a run short on minutes can disable
+          # this entry without losing the smoke tier.
+          - matches: 1000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: soak-${{ hashFiles('Cargo.lock') }}
+      - name: Build (release — soak is throughput-bound)
+        run: cargo build --release -p pandemonium-tools
+      - name: Soak (${{ matrix.matches }} AI-vs-AI matches)
+        run: |
+          cargo run --release -p pandemonium-tools -- soak \
+            --matches ${{ matrix.matches }} \
+            --seed-base $(( $(date +%s) / 86400 * 1000 )) \
+            --content content
+
+  bench:
+    name: bench (§15 perf budgets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-${{ hashFiles('Cargo.lock') }}
+      - name: Build (release)
+        run: cargo build --release -p pandemonium-tools
+      - name: Bench (plan §15 budgets: ≤ 1 ms avg, ≤ 4 ms p99, ≥ 1000 t/s)
+        run: cargo run --release -p pandemonium-tools -- bench --ticks 10000 --content content

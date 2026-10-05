@@ -53,6 +53,11 @@ pub struct MatchSummary {
     /// `Some(PlayerId)` once stage 10 fired `MatchEnded`. `Some(NEUTRAL)`
     /// for the mutual-destruction edge case (no survivors).
     pub winner: Option<PlayerId>,
+    /// The tick `MatchEnded` fired (M10 soak telemetry: the report's
+    /// avg/max end tick). `None` while the match is ongoing — the runner
+    /// keeps simulating to its budget after the match resolves, so the
+    /// replay's final checkpoint is NOT the match's end tick.
+    pub ended_tick: Option<u32>,
 }
 
 /// The full outcome of one headless AI match: the replay record (log +
@@ -129,6 +134,7 @@ pub fn run_ai_match(
         attack_hits: vec![0; players.len()],
         deaths: vec![0; players.len()],
         winner: None,
+        ended_tick: None,
     };
     let mut owners: BTreeMap<EntityId, PlayerId> = BTreeMap::new();
     let player_index = |owners: &BTreeMap<EntityId, PlayerId>, id: EntityId| -> Option<usize> {
@@ -183,6 +189,7 @@ pub fn run_ai_match(
                 // crashing", not "the match resolved".
                 Event::MatchEnded { winner } => {
                     summary.winner = Some(*winner);
+                    summary.ended_tick = Some(host.tick());
                 }
                 _ => {}
             }
