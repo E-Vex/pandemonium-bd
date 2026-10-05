@@ -63,9 +63,23 @@ impl Fx {
     /// Converts thousandths (the plan §10.2 authoring unit — e.g. milli-tiles,
     /// milli-tiles per second), rounding toward zero; saturates outside the
     /// representable range.
-    pub fn from_milli(milli: i32) -> Self {
+    ///
+    /// `const` since 1.98: every operation in here (i64 arithmetic and the
+    /// `as i32` cast) is const-evaluable, so callers can build compile-time
+    /// constants like `Fx::from_milli(2400)` for table-driven content stats
+    /// without paying for the conversion at runtime. The clamp is written by
+    /// hand because `i64::clamp` is not yet const-stable (it requires the
+    /// `Ord` trait bound to be const).
+    pub const fn from_milli(milli: i32) -> Self {
         let raw = ((milli as i64) * (FRAC_SCALE as i64)) / 1000;
-        Self(raw.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+        let clamped = if raw > (i32::MAX as i64) {
+            i32::MAX as i64
+        } else if raw < (i32::MIN as i64) {
+            i32::MIN as i64
+        } else {
+            raw
+        };
+        Self(clamped as i32)
     }
 
     /// Largest whole integer not greater than the value (rounds toward negative
@@ -214,6 +228,24 @@ mod tests {
     fn from_int_saturates_outside_the_whole_range() {
         assert_eq!(Fx::from_int(1 << 20), Fx::MAX);
         assert_eq!(Fx::from_int(-(1 << 20)), Fx::MIN);
+    }
+
+    #[test]
+    fn from_milli_is_const_evaluable() {
+        // The const fn compiles in const context — the conversion runs at
+        // compile time, so a `const` item carries the converted raw value.
+        // Pinned against the same value the runtime path produces.
+        const SPEED_2400_MTPS: Fx = Fx::from_milli(2400);
+        const RANGE_5000_MT: Fx = Fx::from_milli(5000);
+        const NEGATIVE: Fx = Fx::from_milli(-1);
+        assert_eq!(SPEED_2400_MTPS, Fx::from_milli(2400));
+        assert_eq!(SPEED_2400_MTPS.raw(), 157_286);
+        assert_eq!(RANGE_5000_MT, Fx::from_int(5));
+        assert_eq!(NEGATIVE.raw(), -65);
+        // Const saturation: an out-of-range input still saturates at
+        // compile time, mirroring the runtime path's contract.
+        const HUGE: Fx = Fx::from_milli(i32::MAX);
+        assert_eq!(HUGE, Fx::MAX);
     }
 
     #[test]
