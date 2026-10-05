@@ -112,6 +112,34 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32>, @
 }
 "#;
 
+/// The fog-of-war pass (plan §11.2's fog visualization): the terrain geometry
+/// drawn a second time, UV-mapped in world space (x/z over the map extent) and
+/// sampling a per-tile fog-alpha texture the client refreshes from its
+/// `PlayerView`. Hidden tiles read nearly opaque, explored tiles half-lit,
+/// visible tiles clear. Same geometry as the terrain means the same depth
+/// values — the pass depth-tests `LessEqual` with writes off, so the fog hugs
+/// the hills without z-fighting.
+const FOG_SHADER_SRC: &str = r#"
+struct FogUniform { view_projection: mat4x4<f32>, map_size: vec2<f32> };
+@group(0) @binding(0) var<uniform> fog_camera: FogUniform;
+@group(0) @binding(1) var fog_sampler: sampler;
+@group(0) @binding(2) var fog_tex: texture_2d<f32>;
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) _color: vec3<f32>) -> VsOut {
+    var out: VsOut;
+    out.clip = fog_camera.view_projection * vec4<f32>(position, 1.0);
+    out.uv = position.xz / fog_camera.map_size;
+    return out;
+}
+
+@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let coverage = textureSample(fog_tex, fog_sampler, in.uv).r;
+    return vec4<f32>(0.012, 0.02, 0.04, coverage);
+}
+"#;
+
 /// The GPU-side copy of a terrain vertex (engine vertices are plain data;
 /// the Pod representation is the renderer's concern, and bytemuck is a
 /// client-only dependency — plan §3.2).
@@ -121,6 +149,22 @@ struct GpuTerrainVertex {
     position: [f32; 3],
     color: [f32; 3],
 }
+
+/// The fog pass's uniform: the camera's view-projection plus the map extent
+/// the world-space UV mapping divides by.
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct FogUniform {
+    view_projection: [[f32; 4]; 4],
+    map_size: [f32; 2],
+    _pad: [f32; 2],
+}
+
+/// Fog alpha per tile, encoded into the R8 texture (0.0 = clear over
+/// visible ground, 1.0 = fully dark over never-seen ground).
+pub const FOG_ALPHA_VISIBLE: u8 = 0;
+pub const FOG_ALPHA_EXPLORED: u8 = 130;
+pub const FOG_ALPHA_HIDDEN: u8 = 235;
 
 impl From<TerrainVertex> for GpuTerrainVertex {
     fn from(vertex: TerrainVertex) -> Self {
@@ -257,6 +301,12 @@ pub struct WgpuRenderer {
     ui_vertex_buf: wgpu::Buffer,
     ui_vertex_capacity: u64,
     pending_ui: Vec<UiQuad>,
+    fog_pipeline: wgpu::RenderPipeline,
+    fog_uniform_buf: wgpu::Buffer,
+    fog_bind_group: wgpu::BindGroup,
+    fog_texture: wgpu::Texture,
+    fog_texture_size: (u32, u32),
+    fog_map_size: (f32, f32),
 }
 
 impl WgpuRenderer {
@@ -676,6 +726,164 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
+        // The fog-of-war pass: one texel per tile of the terrain mesh's
+        // extent, linear sampling for soft fog edges, and its own uniform
+        // carrying the camera plus the map size the world-space UVs divide by.
+        let fog_map_size = terrain
+            .vertices
+            .iter()
+            .fold([0.0f32, 0.0f32], |size, vertex| {
+                [
+                    size[0].max(vertex.position[0]),
+                    size[1].max(vertex.position[2]),
+                ]
+            });
+        let fog_texture_size = (fog_map_size[0] as u32, fog_map_size[1] as u32);
+        let fog_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fog texture"),
+            size: wgpu::Extent3d {
+                width: fog_texture_size.0.max(1),
+                height: fog_texture_size.1.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let fog_texture_view = fog_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let fog_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("fog sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let fog_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("fog uniform"),
+            contents: bytemuck::bytes_of(&FogUniform {
+                view_projection: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                map_size: fog_map_size,
+                _pad: [0.0; 2],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let fog_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fog layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let fog_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fog bind group"),
+            layout: &fog_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: fog_uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&fog_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&fog_texture_view),
+                },
+            ],
+        });
+        let fog_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("fog layout"),
+            bind_group_layouts: &[&fog_layout],
+            push_constant_ranges: &[],
+        });
+        let fog_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("fog shader"),
+            source: wgpu::ShaderSource::Wgsl(FOG_SHADER_SRC.into()),
+        });
+        let fog_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fog pipeline"),
+            layout: Some(&fog_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &fog_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                // The fog pass consumes the terrain mesh's own vertex layout
+                // (position + placeholder color) — same geometry, same depth.
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &fog_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
         Ok(Self {
             _window: window,
             surface,
@@ -701,6 +909,12 @@ impl WgpuRenderer {
             ui_vertex_buf,
             ui_vertex_capacity,
             pending_ui: Vec::new(),
+            fog_pipeline,
+            fog_uniform_buf,
+            fog_bind_group,
+            fog_texture,
+            fog_texture_size,
+            fog_map_size: (fog_map_size[0], fog_map_size[1]),
         })
     }
 
@@ -739,6 +953,36 @@ impl WgpuRenderer {
         &self.atlas
     }
 
+    /// Refreshes the fog texture from one alpha byte per tile (row-major in
+    /// the map's own tile order — the exact encoding of `PlayerView.fog`).
+    /// The client calls this when the sim tick advanced, not every frame.
+    pub fn update_fog(&mut self, fog_alpha: &[u8]) {
+        let (width, height) = self.fog_texture_size;
+        let expected = (width.max(1) as usize) * (height.max(1) as usize);
+        if fog_alpha.len() != expected {
+            return; // mismatched map — keep the old fog rather than panic
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.fog_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            fog_alpha,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width.max(1)),
+                rows_per_image: Some(height.max(1)),
+            },
+            wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
     /// Queues UI quads for the *next* [`Renderer::render`] — they are drawn
     /// after the world, on top of it, and the queue drains with the frame.
     /// Layout coordinates are pixels of the current surface size (`atlas()`
@@ -770,6 +1014,17 @@ impl Renderer for WgpuRenderer {
             0,
             bytemuck::bytes_of(&CameraUniform {
                 view_projection: frame.view_projection.to_cols_array_2d(),
+            }),
+        );
+        // The fog pass shares the camera; it also carries the map size for
+        // the world-space UV mapping.
+        self.queue.write_buffer(
+            &self.fog_uniform_buf,
+            0,
+            bytemuck::bytes_of(&FogUniform {
+                view_projection: frame.view_projection.to_cols_array_2d(),
+                map_size: [self.fog_map_size.0, self.fog_map_size.1],
+                _pad: [0.0; 2],
             }),
         );
 
@@ -857,6 +1112,13 @@ impl Renderer for WgpuRenderer {
             pass.set_vertex_buffer(0, self.terrain_vertex_buf.slice(..));
             pass.set_index_buffer(self.terrain_index_buf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.terrain_index_count, 0, 0..1);
+            // The fog of war over the terrain (same geometry, depth-tested):
+            // hidden tiles go dark, explored tiles half-lit, visible clear.
+            pass.set_pipeline(&self.fog_pipeline);
+            pass.set_bind_group(0, &self.fog_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.terrain_vertex_buf.slice(..));
+            pass.set_index_buffer(self.terrain_index_buf.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.terrain_index_count, 0, 0..1);
             pass.set_pipeline(&self.entity_pipeline);
             pass.set_vertex_buffer(0, self.entity_vertex_buf.slice(..));
             pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));
@@ -874,5 +1136,34 @@ impl Renderer for WgpuRenderer {
         }
         self.queue.submit(Some(encoder.finish()));
         frame_texture.present();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every embedded WGSL module parses (and keeps its expected entry
+    /// points). The GPU path cannot run on a headless CI machine, so the
+    /// shaders are machine-checked to the extent the environment allows —
+    /// a parse error would otherwise only surface as a runtime panic in
+    /// `WgpuRenderer::new` on a machine with a display.
+    #[test]
+    fn every_embedded_shader_parses_with_expected_entry_points() {
+        for (name, source) in [
+            ("terrain", TERRAIN_SHADER),
+            ("entity", ENTITY_SHADER_SRC),
+            ("ui", UI_SHADER_SRC),
+            ("fog", FOG_SHADER_SRC),
+        ] {
+            let module = wgpu::naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|error| panic!("{name} shader does not parse: {error}"));
+            for entry in ["vs_main", "fs_main"] {
+                assert!(
+                    module.entry_points.iter().any(|point| point.name == entry),
+                    "{name} shader lost its {entry} entry point"
+                );
+            }
+        }
     }
 }

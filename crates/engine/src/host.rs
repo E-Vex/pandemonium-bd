@@ -277,6 +277,15 @@ impl MatchHost {
         self.interpolator.render(self.clock.alpha())
     }
 
+    /// The clock's current interpolation fraction (0..=1) — the blend point
+    /// between the previous and current snapshot. The client uses it when it
+    /// interpolates a *view* snapshot itself (the fog-filtered entity set) so
+    /// the fog-of-war rendering lands on exactly the same blend point the
+    /// host's full-snapshot path uses.
+    pub fn alpha(&self) -> f32 {
+        self.clock.alpha()
+    }
+
     /// The latest exact snapshot (no interpolation) — for UI panels that must
     /// not blend (production queues, resources).
     pub fn snapshot(&self) -> Snapshot {

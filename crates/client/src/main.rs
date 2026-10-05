@@ -28,11 +28,12 @@ use pandemonium_engine::audio::{AudioSink, NullAudioSink};
 use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
 use pandemonium_engine::{
-    alpha_controller, alpha_plan, MatchHost, MatchOutcome, NullRenderer, Renderer, RtsCamera,
+    alpha_controller, alpha_plan, Interpolator, MatchHost, MatchOutcome, NullRenderer, Renderer,
+    RtsCamera,
 };
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, EntityId, Event, KindId, MatchSetup, PlayerId,
-    PlayerSetup, Vec2Fx,
+    Command, CommandKind, ControllerKind, EntityId, EntityView, Event, KindId, MatchSetup,
+    PlayerId, PlayerSetup, Snapshot, Tick, TileFog, Vec2Fx,
 };
 use render::WgpuRenderer;
 use text::{TextAtlas, UiQuad};
@@ -192,6 +193,18 @@ struct App {
     /// flashes, command acknowledgment pings, and the counters the smoke
     /// summary reports.
     feedback: FeedbackState,
+    /// The client's own interpolator over the *fog-filtered* view: the human
+    /// sees what the human's player can see (FD-8 from the rendering side).
+    /// The host's own interpolator keeps blending full snapshots for anyone
+    /// who needs them; everything drawn here comes from this one.
+    view_interp: Interpolator,
+    /// The sim tick the fog texture was last refreshed at (fog updates once
+    /// per sim step, not once per presented frame). `u64::MAX` forces the
+    /// first refresh.
+    fog_tick: u64,
+    /// The last fog alpha bytes (row-major, one per tile) — compared against
+    /// the incoming view so a new texture upload only happens on change.
+    fog_bytes: Vec<u8>,
 }
 
 impl App {
@@ -267,6 +280,9 @@ impl App {
             commands_submitted: 0,
             audio: NullAudioSink::new(),
             feedback: FeedbackState::default(),
+            view_interp: Interpolator::new(),
+            fog_tick: u64::MAX,
+            fog_bytes: Vec::new(),
         })
     }
 
@@ -296,6 +312,11 @@ impl App {
         self.control_groups = vec![Vec::new(); CONTROL_GROUP_COUNT];
         self.command_seq = 0;
         self.commands_submitted = 0;
+        // The fog-filtered view restarts with the match: a fresh interpolator
+        // and a forced fog refresh (the new match's fog is mostly hidden).
+        self.view_interp = Interpolator::new();
+        self.fog_tick = u64::MAX;
+        self.fog_bytes.clear();
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -320,6 +341,14 @@ impl App {
         )
     }
 
+    /// The fog-filtered interpolated snapshot for this display frame: the
+    /// same blend point the host's full-snapshot path uses, over the entity
+    /// set the human's player may see. Every drawn pixel and every screen
+    /// query (selection, context orders) reads through this.
+    fn view_snapshot(&self) -> pandemonium_engine::RenderSnapshot {
+        self.view_interp.render(self.host.alpha())
+    }
+
     /// The cursor's current NDC position (M8: used by the AttackMove hotkey,
     /// which fires on key-down without a fresh cursor event). Falls back to
     /// the screen center when the cursor hasn't moved yet.
@@ -336,7 +365,7 @@ impl App {
 
     /// Single-click selection: the nearest own entity to the cursor.
     fn click_select(&mut self, ndc: (f32, f32)) {
-        let snapshot = self.host.render_snapshot();
+        let snapshot = self.view_snapshot();
         let mut best: Option<(f32, EntityId)> = None;
         for entity in &snapshot.entities {
             if entity.owner != HUMAN {
@@ -353,7 +382,7 @@ impl App {
 
     /// Drag-box selection over own entities.
     fn box_select(&mut self, a: (f32, f32), b: (f32, f32)) {
-        let snapshot = self.host.render_snapshot();
+        let snapshot = self.view_snapshot();
         let own: Vec<pandemonium_engine::RenderEntity> = snapshot
             .entities
             .iter()
@@ -388,7 +417,7 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
-        let snapshot = self.host.render_snapshot();
+        let snapshot = self.view_snapshot();
         let Some(order) = orders::resolve_context_order(
             &self.camera,
             &snapshot,
@@ -472,8 +501,7 @@ impl App {
             return;
         }
         let live: std::collections::BTreeSet<EntityId> = self
-            .host
-            .render_snapshot()
+            .view_snapshot()
             .entities
             .iter()
             .map(|entity| entity.id)
@@ -904,10 +932,39 @@ impl App {
             }
         }
         self.feedback.expire(self.frames_presented);
+        // The fog-filtered view (FD-8 from the rendering side): the human
+        // renders and clicks through what their player may see. The view is
+        // pushed at the same cadence the host pushes its full snapshots, and
+        // the fog texture refreshes once per sim step, not per frame.
+        let PlayerViewParts {
+            tick,
+            entities,
+            fog,
+        } = PlayerViewParts::of(&self.host, HUMAN);
+        self.view_interp.push(Snapshot { tick, entities });
+        let fog_changed = self.fog_tick != tick as u64;
+        let fog_bytes: Vec<u8> = if fog_changed {
+            fog.iter()
+                .map(|tile| match tile {
+                    TileFog::Hidden => render::FOG_ALPHA_HIDDEN,
+                    TileFog::Explored => render::FOG_ALPHA_EXPLORED,
+                    TileFog::Visible => render::FOG_ALPHA_VISIBLE,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let snapshot = self.view_snapshot();
         let Some(renderer) = &mut self.renderer else {
             return;
         };
-        let snapshot = self.host.render_snapshot();
+        if fog_changed {
+            if fog_bytes != self.fog_bytes {
+                renderer.update_fog(&fog_bytes);
+                self.fog_bytes = fog_bytes;
+            }
+            self.fog_tick = tick as u64;
+        }
         let view_projection = self.camera.view_projection();
         let eye = self.camera.eye();
         // The HUD's `state_hash` is only read inside the F3 debug overlay,
@@ -998,6 +1055,26 @@ impl App {
             hud: &hud,
             flashes: &flashes,
         });
+    }
+}
+
+/// The pieces of a [`pandemonium_sim_api::PlayerView`] the fog-filtered
+/// rendering path consumes (a destructuring aid — the view carries more than
+/// the interpolator needs, and the ledger rides in through the HUD).
+struct PlayerViewParts {
+    tick: Tick,
+    entities: Vec<EntityView>,
+    fog: Vec<TileFog>,
+}
+
+impl PlayerViewParts {
+    fn of(host: &MatchHost, player: PlayerId) -> Self {
+        let view = host.player_view(player);
+        Self {
+            tick: view.tick,
+            entities: view.entities,
+            fog: view.fog,
+        }
     }
 }
 
