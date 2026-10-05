@@ -62,19 +62,66 @@ pub type Cost = Vec<(ResourceId, i64)>;
 /// headroom for a decisive second wave — the M8 flagship stalled with waves
 /// of six trading forever in low-count attrition cycles that never
 /// accumulated killing power.
+/// The worker count the script grows the economy to before pausing worker
+/// training. Pairs with `BARRACKS_MIN_WORKERS` (the army-commit threshold)
+/// so the economy reaches a self-sustaining throughput before the army
+/// queue opens. See the block comment above for the pacing rationale.
 const WORKER_TARGET: u32 = 10;
+/// The hard cap on the army size — when reached, the script pauses training
+/// until attrition opens a slot. Sized (M9) so a wave of `WAVE_SIZE` plus a
+/// reserve can both fit, leaving headroom for a decisive second wave.
 const ARMY_CAP: u32 = 16;
+/// The number of army units a wave marches with when the full army is ready.
+/// M9's tuning: ten (with the round-robin Guardian/rifleman mix) carries
+/// enough sustained damage to level a defended base in one successful press.
 const WAVE_SIZE: u32 = 10;
+/// The minimum army size that may march — below this, only the
+/// `WAVE_TIMER_TICKS` pressure cadence sends a wave, and even then it is a
+/// harassment poke rather than a committed attack.
 const MIN_WAVE: u32 = 4;
+/// The pressure cadence: if a wave has not marched by this many ticks (80 s
+/// at 30 Hz), the script sends whatever army it has at or above `MIN_WAVE`.
+/// While a live wave is out, the same cadence re-issues the march — a wave
+/// never parks.
 const WAVE_TIMER_TICKS: u32 = 2400;
+/// The number of supply-providing depots the script grows to before pausing
+/// depot construction. Pairs with `DEPOT_HEADROOM_TRIGGER` to keep supply
+/// blocks from stalling the worker and army queues.
 const DEPOT_TARGET: u32 = 3;
+/// When the supply headroom (cap − usage) drops to this many slots, the
+/// script begins the next depot even if `DEPOT_TARGET` has not been reached
+/// — keeps queues flowing instead of stalling on a supply block.
 const DEPOT_HEADROOM_TRIGGER: u32 = 3;
+/// The worker count at or above which the script will commit to building the
+/// first barracks. Below this, the economy cannot sustain both worker
+/// training and army production simultaneously.
 const BARRACKS_MIN_WORKERS: u32 = 6;
+/// Per-producer cooldown between Train commands, in ticks. Prevents the
+/// script from queueing every unit in one frame (which would bankrupt the
+/// ledger and starve other producers).
 const TRAIN_COOLDOWN_TICKS: u32 = 30;
+/// Per-builder cooldown between Build commands, in ticks. Same role as
+/// `TRAIN_COOLDOWN_TICKS` for construction — keeps one worker from
+/// committing to more sites than it can reach in a reasonable window.
 const BUILD_COOLDOWN_TICKS: u32 = 45;
+/// Per-army cooldown between defense dispatches, in ticks. Throttles the
+/// reaction to intrusions so a single raider does not pull the whole army
+/// home and abandon the press.
 const DEFENSE_COOLDOWN_TICKS: u32 = 45;
+/// The radius (in milli-tiles) around the home base that the defense check
+/// scans for sighted enemy units. Sized to cover the worker line and the
+/// depot cluster without reaching the map center (which would over-react
+/// to neutral scouting).
 const DEFENSE_RADIUS_MILLI: i32 = 12000;
+/// When a pending Train/Build order is older than this many ticks, the
+/// script assumes the producer died (or the site was destroyed) and
+/// re-issues. Prevents the bookkeeping from waiting forever on a ghost
+/// pending slot.
 const PENDING_SLACK_TICKS: u32 = 90;
+/// When a Build order's site has not yet appeared in the script's fog view,
+/// allow this many ticks of grace before treating the build as failed.
+/// Covers the latency between the command being accepted and the
+/// structure's footprint becoming visible to the controller's own sight.
 const SITE_SIGHT_GRACE_TICKS: u32 = 2;
 
 /// One player's scripted-opponent configuration: the content- and map-derived
