@@ -791,6 +791,8 @@ mod tests {
             population: pop,
             population_cap: cap,
             entities,
+            fog: Vec::new(),
+            production: Vec::new(),
         }
     }
 
@@ -1396,6 +1398,8 @@ mod tests {
                 entity(2, WORKER, 13, 15, MoveState::Idle),
                 entity(10, NODE, 7, 7, MoveState::Idle),
             ],
+            fog: Vec::new(),
+            production: Vec::new(),
         };
         let commands = think(&mut controller, &view);
         assert!(!commands.is_empty());

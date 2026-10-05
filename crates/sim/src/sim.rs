@@ -8,8 +8,8 @@
 
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
-    Command, EntityId, EntityView, Event, MatchSetup, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
-    ViewResource,
+    Command, EntityId, EntityView, Event, MatchSetup, PlayerId, PlayerView, QueueItemView,
+    QueueView, Snapshot, Tick, TileFog, Vec2Fx, ViewResource,
 };
 
 use crate::command::apply_commands;
@@ -264,6 +264,47 @@ impl Sim {
             ),
             None => (Vec::new(), 0, 0),
         };
+        // The player's fog row and own production queues. A slot that is not
+        // in the match has no fog row and no queues (empty vecs — the same
+        // "absent player gets an empty view" rule the ledger follows).
+        let player_index = self.world.players.iter().position(|p| p.player == player);
+        let fog = player_index
+            .and_then(|index| self.fog.players.get(index))
+            .map(|row| {
+                row.iter()
+                    .map(|tile| match tile {
+                        crate::vision::TileVisibility::Hidden => TileFog::Hidden,
+                        crate::vision::TileVisibility::Explored => TileFog::Explored,
+                        crate::vision::TileVisibility::Visible => TileFog::Visible,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Own producers only, ascending entity id (the produce store's
+        // invariant). Fog hides enemy production exactly as it hides enemy
+        // entities, so "own" is the whole rule — no visibility scan needed.
+        let production = self
+            .world
+            .produce
+            .iter()
+            .filter(|(id, _)| {
+                self.world
+                    .entity(*id)
+                    .is_some_and(|entity| entity.owner == player)
+            })
+            .map(|(id, def)| QueueView {
+                producer: *id,
+                items: def
+                    .queue
+                    .iter()
+                    .map(|item| QueueItemView {
+                        kind: item.producible,
+                        progress_milli: self.queue_item_progress_milli(item),
+                    })
+                    .collect(),
+                rally: def.rally,
+            })
+            .collect();
         PlayerView {
             tick: self.tick,
             player,
@@ -271,7 +312,27 @@ impl Sim {
             population,
             population_cap,
             entities,
+            fog,
+            production,
         }
+    }
+
+    /// One queue item's work as thousandths of its kind's build time (the
+    /// same 0..=1000 integer convention as `hp_fraction_milli`). A kind
+    /// missing from the fixture, or with zero build time, reports 1000 —
+    /// both are degenerate content cases that would otherwise divide by
+    /// zero, and a completed (or free) item reads as done.
+    fn queue_item_progress_milli(&self, item: &crate::world::QueueItem) -> u32 {
+        let build_time = self
+            .fixture
+            .kinds
+            .get(item.producible.0 as usize)
+            .map(|kind| kind.economy.build_time_ticks)
+            .unwrap_or(0);
+        if build_time == 0 {
+            return 1000;
+        }
+        ((item.progress_ticks as i64 * 1000) / build_time as i64).clamp(0, 1000) as u32
     }
 
     /// Builds [`EntityView`]s from an iterator of entities, computing each
@@ -989,5 +1050,93 @@ mod tests {
         let empty = sim.player_view(PlayerId(9));
         assert!(empty.entities.is_empty());
         assert!(empty.resources.is_empty());
+    }
+
+    #[test]
+    fn player_view_exposes_fog_tiles_in_map_order() {
+        let world = trivial_world();
+        let sim = Sim::new(&world, setup());
+        let width = 64usize;
+        let view = sim.player_view(PlayerId(0));
+        assert_eq!(view.fog.len(), width * width, "one entry per tile");
+        let at = |x: usize, y: usize| view.fog[y * width + x];
+        // The tile under the player's own grunt (10,10) is currently visible;
+        // the enemy grunt's corner (50,50) is beyond its 7-tile vision and
+        // has never been seen — Hidden, not merely Explored.
+        assert_eq!(at(10, 10), TileFog::Visible);
+        assert_eq!(at(50, 50), TileFog::Hidden);
+        // The enemy's own view mirrors it: its tile visible, ours hidden.
+        let enemy = sim.player_view(PlayerId(1));
+        assert_eq!(enemy.fog[50 * width + 50], TileFog::Visible);
+        assert_eq!(enemy.fog[10 * width + 10], TileFog::Hidden);
+        // A slot outside the match has no fog row at all.
+        assert!(sim.player_view(PlayerId(9)).fog.is_empty());
+    }
+
+    #[test]
+    fn player_view_exposes_own_production_queues_with_progress() {
+        let mut world = trivial_world();
+        // kind 3 "factory": a producer; kind 4 "slow grunt": its 10-tick product.
+        world.kinds.push(KindTemplate {
+            caps: vec![CapTemplate::Produce {}],
+            economy: KindEconomy::default(),
+        });
+        world.kinds.push(KindTemplate {
+            caps: vec![
+                CapTemplate::Health {
+                    max_hp: 10,
+                    regen_per_tick: 0,
+                },
+                CapTemplate::Move {
+                    speed_milli_tiles_per_s: 2600,
+                    radius_milli_tiles: 350,
+                },
+            ],
+            economy: KindEconomy {
+                cost: Vec::new(),
+                build_time_ticks: 10,
+                population: 0,
+                requires: Vec::new(),
+            },
+        });
+        world.production = vec![(KindId(3), vec![KindId(4)])];
+        world.initial_spawns.push(SpawnDef {
+            owner: PlayerId(0),
+            kind: KindId(3),
+            pos: Vec2Fx::from_ints(12, 10),
+        });
+        let mut sim = Sim::new(&world, setup());
+        let producer = EntityId(3); // after the two initial grunts
+        let output = sim.step(&[Command::new(
+            PlayerId(0),
+            0,
+            1,
+            CommandKind::Train {
+                producer,
+                unit: KindId(4),
+            },
+        )]);
+        assert!(
+            output
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ProductionStarted { .. })),
+            "the train command must be accepted"
+        );
+        let view = sim.player_view(PlayerId(0));
+        assert_eq!(view.production.len(), 1, "the own queue is visible");
+        let queue = &view.production[0];
+        assert_eq!(queue.producer, producer);
+        assert_eq!(queue.items.len(), 1);
+        assert_eq!(queue.items[0].kind, KindId(4));
+        assert!(queue.items[0].progress_milli < 1000, "head in progress");
+        // Progress advances monotonically toward 1000.
+        for _ in 0..4 {
+            sim.step(&[]);
+        }
+        let later = sim.player_view(PlayerId(0)).production[0].items[0].progress_milli;
+        assert!(later > queue.items[0].progress_milli, "progress advanced");
+        // Fog hides enemy production: player 1 owns no producers.
+        assert!(sim.player_view(PlayerId(1)).production.is_empty());
     }
 }

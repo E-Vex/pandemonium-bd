@@ -153,6 +153,47 @@ pub struct ViewResource {
     pub amount: i64,
 }
 
+/// One tile's fog state for the viewing player (plan §9.5's three-state
+/// model). Presentation reads this to draw the fog of war (the map overlay
+/// and the minimap); the AI receives the same field it always had access to
+/// through its own view — parity holds because every issuer sees the same
+/// shape (FD-7, FD-8: fog filters information, it never alters the sim).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TileFog {
+    /// Never seen.
+    Hidden,
+    /// Seen before, not currently visible.
+    Explored,
+    /// Currently inside a friendly vision radius.
+    Visible,
+}
+
+/// One queued production item as the owning player sees it (plan §11.4's
+/// production queue display): which kind, and how far along (thousandths of
+/// the kind's build time — the same integer convention as
+/// [`EntityView::hp_fraction_milli`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct QueueItemView {
+    /// The kind being produced.
+    pub kind: KindId,
+    /// Work completed as thousandths of the kind's build time (0..=1000).
+    pub progress_milli: u32,
+}
+
+/// One producer's queue as the owning player sees it (plan §11.4): the
+/// ordered items (front first) and the rally point. Empty queues are
+/// included — the command card needs to know an entity *is* a producer even
+/// while idle.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct QueueView {
+    /// The producing entity.
+    pub producer: EntityId,
+    /// The queue, front first (only the head progresses).
+    pub items: Vec<QueueItemView>,
+    /// The rally point newly produced units receive, if one is set.
+    pub rally: Option<Vec2Fx>,
+}
+
 /// The fog-filtered view of the match for one player (plan §9.6): the *only* window
 /// an AI controller gets. It contains what that player may know — own ledger and
 /// entities plus entities inside friendly vision radii — never raw simulation
@@ -171,6 +212,15 @@ pub struct PlayerView {
     pub population_cap: u32,
     /// Entities this player can see, ascending by [`EntityId`].
     pub entities: Vec<EntityView>,
+    /// This player's per-tile fog state, row-major in the map's own tile
+    /// order (`index = y * map_width + x`, exactly [`TileFog`] per tile).
+    /// Empty when the player is not in the match. Derived state mirroring
+    /// the fog cache (A-059 — never part of the canonical hash).
+    pub fog: Vec<TileFog>,
+    /// This player's production queues, producers in ascending id order
+    /// (empty when the player is not in the match). Own queues only — fog
+    /// hides enemy production exactly as it hides enemy entities.
+    pub production: Vec<QueueView>,
 }
 
 /// Why the validation gate refused a command (plan §8.2). Every reason is emitted
