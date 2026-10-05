@@ -312,6 +312,30 @@ mod camera_tests {
     }
 
     #[test]
+    fn adjust_pitch_clamps_to_the_supported_range() {
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        // Default pitch is 1.0 — within the (0.25, 1.45) range.
+        assert!((camera.pitch() - 1.0).abs() < 1e-6);
+        // A large positive delta clamps to the upper bound.
+        camera.adjust_pitch(10.0);
+        assert!((camera.pitch() - 1.45).abs() < 1e-6);
+        // A large negative delta clamps to the lower bound.
+        camera.adjust_pitch(-10.0);
+        assert!((camera.pitch() - 0.25).abs() < 1e-6);
+        // Small deltas apply directly.
+        camera.adjust_pitch(0.1);
+        assert!((camera.pitch() - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn yaw_getter_reflects_rotation() {
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        assert!((camera.yaw() - 0.0).abs() < 1e-6);
+        camera.rotate(std::f32::consts::FRAC_PI_2);
+        assert!((camera.yaw() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
     fn picked_ground_points_convert_back_to_logical_positions() {
         let camera = RtsCamera::new(64, 64, 16.0 / 9.0);
         let picked = camera.ground_point(Vec2::ZERO).expect("center on map");

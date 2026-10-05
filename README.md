@@ -288,11 +288,13 @@ cargo run -p pandemonium-client
 cargo run -p pandemonium-client -- --frames 900
 ```
 
-Controls: **WASD / arrows / screen edges / middle-drag** pan the camera, the
-**wheel** zooms toward the cursor, **left-click / drag** selects, **right-click**
-orders (attack an enemy, gather a node with workers, or move over open ground),
-**A** arms attack-move for the next left-click, **S** stops, **1-9** recall
-control groups (**Ctrl+1-9** assigns), **P** pauses, **F3** toggles the debug
+Controls: **WASD / arrows / screen edges / middle-drag** pan the camera,
+**Q / E** rotate it around its target (Generals-style), the **wheel** zooms
+toward the cursor, **Ctrl+wheel** tilts the pitch (Generals-style),
+**left-click / drag** selects, **right-click** orders (attack an enemy,
+gather a node with workers, or move over open ground), **A** arms
+attack-move for the next left-click, **S** stops, **1-9** recall control
+groups (**Ctrl+1-9** assigns), **P** pauses, **F3** toggles the debug
 overlay, **R** restarts after the match ends.
 
 The full verification gate — the same one CI runs:

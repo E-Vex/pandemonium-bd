@@ -58,6 +58,14 @@ const CONTROL_GROUP_COUNT: usize = 9;
 /// display's refresh rate; M9.1: the old fixed per-frame speed made a 144 Hz
 /// monitor pan more than twice as fast as 60 Hz).
 const PAN_TILES_PER_SECOND: f32 = 34.0;
+/// Camera yaw rotation speed in radians per second (Generals-style Q/E
+/// camera rotation). Held keys apply this rate, scaled by the frame
+/// delta, so a full turn takes ~6 s — fast enough to re-orient without
+/// inducing motion sickness.
+const ROTATE_RAD_PER_SEC: f32 = pandemonium_engine::camera::DEFAULT_ROTATE_RAD_PER_SEC;
+/// Pitch adjustment per wheel notch when Ctrl is held (Generals-style
+/// Ctrl+wheel pitch control). ~12 notches cover the full pitch range.
+const PITCH_PER_WHEEL_NOTCH: f32 = pandemonium_engine::camera::DEFAULT_PITCH_PER_WHEEL_NOTCH;
 /// The frame-delta clamp for camera motion — a stall must not teleport the
 /// view when the loop resumes.
 const MAX_PAN_FRAME_SECONDS: f32 = 0.05;
@@ -619,15 +627,24 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // M9.1: wheel up zooms in, and the zoom keeps the cursor's
-                // ground anchor under the cursor (plan §11.3: "zoom toward
-                // the cursor" — the old orbit-only zoom read as the view
-                // sliding away, and the direction was inverted).
+                // Ctrl+wheel adjusts pitch (Generals-style); without Ctrl the
+                // wheel zooms toward the cursor (plan §11.3, M9.1).
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, lines) => lines,
                     MouseScrollDelta::PixelDelta(delta) => delta.y as f32 * 0.05,
                 };
-                if lines != 0.0 {
+                if lines == 0.0 {
+                    return;
+                }
+                if self.modifiers.control_key() {
+                    // Positive wheel = tilt down toward the ground; negative =
+                    // raise toward the horizon. Generals pitch control.
+                    self.camera.adjust_pitch(lines * PITCH_PER_WHEEL_NOTCH);
+                } else {
+                    // M9.1: wheel up zooms in, and the zoom keeps the cursor's
+                    // ground anchor under the cursor (plan §11.3: "zoom toward
+                    // the cursor" — the old orbit-only zoom read as the view
+                    // sliding away, and the direction was inverted).
                     let ndc = self.cursor_ndc();
                     self.camera
                         .zoom_toward(1.0 - lines * 0.1, glam::Vec2::new(ndc.0, ndc.1));
@@ -674,6 +691,24 @@ impl ApplicationHandler for App {
                         winit::keyboard::KeyCode::KeyD => set_key(&mut self.keys, "d", pressed),
                         winit::keyboard::KeyCode::ArrowRight => {
                             set_key(&mut self.keys, "d", pressed)
+                        }
+                        // Generals-style camera rotation: Q orbits left, E
+                        // orbits right. Held keys apply a continuous yaw rate
+                        // scaled by the frame delta (about_to_wait). Both
+                        // keys are also camera-only — they never fire commands
+                        // and they cancel an armed attack-move (so the player
+                        // can re-orient mid-order without losing it).
+                        winit::keyboard::KeyCode::KeyQ => {
+                            set_key(&mut self.keys, "q", pressed);
+                            if pressed {
+                                self.attack_move_armed = false;
+                            }
+                        }
+                        winit::keyboard::KeyCode::KeyE => {
+                            set_key(&mut self.keys, "e", pressed);
+                            if pressed {
+                                self.attack_move_armed = false;
+                            }
                         }
                         // §11.6 debug tooling: overlay toggle, pause, single-step.
                         winit::keyboard::KeyCode::F3 if pressed => {
@@ -790,6 +825,18 @@ impl ApplicationHandler for App {
         }
         if dx != 0.0 || dz != 0.0 {
             self.camera.pan(dx, dz);
+        }
+        // Generals-style camera rotation (Q/E): a continuous yaw rate, scaled
+        // by the frame delta — frame-rate-independent, like the pan above.
+        let mut yaw_delta = 0.0;
+        if self.keys.contains(&Key::Character("q")) {
+            yaw_delta -= ROTATE_RAD_PER_SEC * dt;
+        }
+        if self.keys.contains(&Key::Character("e")) {
+            yaw_delta += ROTATE_RAD_PER_SEC * dt;
+        }
+        if yaw_delta != 0.0 {
+            self.camera.rotate(yaw_delta);
         }
         if let Some(window) = &self.window {
             window.request_redraw();

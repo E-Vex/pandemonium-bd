@@ -25,6 +25,13 @@ const FAR: f32 = 500.0;
 const PITCH_RANGE: (f32, f32) = (0.25, 1.45);
 /// Distance clamp in tiles.
 const DISTANCE_RANGE: (f32, f32) = (8.0, 160.0);
+/// Default yaw rotation speed (radians per second) — Generals-style Q/E
+/// camera rotation: a full turn takes ~6 seconds, fast enough to re-orient
+/// without inducing motion sickness.
+pub const DEFAULT_ROTATE_RAD_PER_SEC: f32 = std::f32::consts::TAU / 6.0;
+/// Default pitch adjustment per wheel notch (radians) — Generals-style
+/// Ctrl+wheel pitch control: ~12 notches cover the full pitch range.
+pub const DEFAULT_PITCH_PER_WHEEL_NOTCH: f32 = (PITCH_RANGE.1 - PITCH_RANGE.0) / 12.0;
 
 /// An orbiting RTS camera over the ground plane.
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +67,29 @@ impl RtsCamera {
     /// The orbit target on the ground plane.
     pub fn target(&self) -> Vec3 {
         self.target
+    }
+
+    /// The current yaw (radians). Q/E rotation adjusts this directly.
+    pub fn yaw(&self) -> f32 {
+        self.yaw
+    }
+
+    /// The current pitch (radians, clamped to `PITCH_RANGE`).
+    pub fn pitch(&self) -> f32 {
+        self.pitch
+    }
+
+    /// The current orbit distance (in tiles, clamped to `DISTANCE_RANGE`).
+    pub fn distance(&self) -> f32 {
+        self.distance
+    }
+
+    /// Adjusts the pitch by `delta` radians, clamped to the supported range
+    /// (Generals-style Ctrl+wheel pitch control). Positive deltas tilt the
+    /// camera down toward the ground; negative deltas raise it toward the
+    /// horizon.
+    pub fn adjust_pitch(&mut self, delta: f32) {
+        self.pitch = (self.pitch + delta).clamp(PITCH_RANGE.0, PITCH_RANGE.1);
     }
 
     /// The camera's world position.
