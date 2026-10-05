@@ -6,8 +6,9 @@
 //! M7 makes `headless` drive real content with AI controllers (`--p1 ai --p2
 //! ai`, plan §12's own shape) and teaches `replay-verify` to resolve either
 //! world by content identity. The remaining subcommands arrive with their
-//! milestones (soak lands as M10 prep — `soak` runs N seeded AI-vs-AI matches
-//! in one process for the A7 acceptance gate; bench in M10).
+//! milestones (`soak` and `bench` land as M10 prep — `soak` runs N seeded
+//! AI-vs-AI matches for A7, `bench` measures per-tick cost against plan §15's
+//! perf budgets).
 
 use std::path::PathBuf;
 
@@ -16,12 +17,14 @@ use clap::{Parser, Subcommand};
 use pandemonium_sim_api::PlayerId;
 
 mod ai_match;
+mod bench;
 mod demo;
 mod soak;
 mod validate_content;
 mod verify;
 
 use ai_match::{load_content, resolve_replay_world, run_ai_match, Slot};
+use bench::{print_report as print_bench_report, run_bench, BenchCli};
 use demo::record_replay;
 use soak::{print_report, run_soak, SoakCli};
 use validate_content::validate_content;
@@ -80,6 +83,10 @@ enum Command {
     /// parallelism spawns N `headless --seed N --p1 ai --p2 ai`
     /// subprocesses.
     Soak(SoakCli),
+    /// Measure per-tick cost on the Alpha content and report against plan
+    /// §15's perf budgets (M10 prep). Samples each tick with `Instant::now`
+    /// (presentation-only telemetry — the sim never sees it, FD-6).
+    Bench(BenchCli),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -221,6 +228,10 @@ fn main() -> anyhow::Result<()> {
                     report.crashed
                 );
             }
+        }
+        Command::Bench(cli) => {
+            let report = run_bench(&cli)?;
+            print_bench_report(&report);
         }
     }
     Ok(())
