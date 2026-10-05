@@ -897,3 +897,175 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
+
+#[test]
+fn add_a_map_is_data_only() {
+    // ---------------------------------------------------------------------
+    // The A4 scaffold (plan §13 A4 — "add-a-map is data-only, same pattern
+    // as A3"): a new map exists purely as a new data file. No engine, sim,
+    // content-loader, or tool source knows it. The commit that lands this
+    // test shows zero diffs under crates/sim/ (the git-diff half of A4);
+    // the runtime half is below.
+    // ---------------------------------------------------------------------
+    let root = copy_content_to_temp("add-a-map");
+
+    // 1. A new map file: 48x48, one rock spine across the middle, two
+    //    starts, one ore node per start, and a small display-only
+    //    heightmap (schema v2 — the ADR-0001 path is data too). The old
+    //    map file is removed because the Alpha bundle loads exactly one
+    //    map (the repo's single-map shape).
+    let width = 48u32;
+    let height = 48u32;
+    let mut grid_rows: Vec<String> = vec![".".repeat(width as usize); height as usize];
+    for row in grid_rows.iter_mut().take(28).skip(20) {
+        row.replace_range(23..24, "#");
+    }
+    let height_rows: Vec<String> = (0..height)
+        .map(|y| {
+            if y == 0 {
+                // One raised plateau tile so the display-only path is exercised.
+                let mut row = vec![0u16; width as usize];
+                row[0] = 40;
+                row.iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                (0..width)
+                    .map(|_| "0".to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        })
+        .collect();
+    let grid_block = grid_rows
+        .iter()
+        .map(|row| format!("        \"{}\",", row))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let heightmap_block = height_rows
+        .iter()
+        .map(|row| format!("            [ {} ],", row))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let map = format!(
+        r##"(
+    schema_version: 2,
+    id: "duel_48",
+    display_name: "Duel 48",
+    width: 48,
+    height: 48,
+    terrain: [
+        ( code: ".", name: "ground", passable: true, buildable: true ),
+        ( code: "#", name: "rock", passable: false, buildable: false ),
+    ],
+    grid: [
+{grid_block}
+    ],
+    starts: [
+        ( player: 0, anchor: ( x: 10, y: 10 ) ),
+        ( player: 1, anchor: ( x: 38, y: 38 ) ),
+    ],
+    ore_nodes: [
+        ( kind: "ore_node", tile: ( x: 6, y: 6 ) ),
+        ( kind: "ore_node", tile: ( x: 44, y: 44 ) ),
+    ],
+    symmetric: false,
+    heightmap: Some((
+        rows: [
+{heightmap_block}
+        ],
+    )),
+)
+"##
+    );
+    std::fs::write(root.join("maps/duel_48.ron"), &map).unwrap();
+    std::fs::remove_file(root.join("maps/crossroads_64.ron")).unwrap();
+
+    // 2. The loader accepts the swapped map with zero code changes, and the
+    //    map identity moves (different data -> different map id).
+    let bundle = ContentBundle::load_dir(&root).expect("the swapped map loads");
+    assert_eq!(bundle.map.id, "duel_48");
+    assert_eq!(bundle.map.width, 48);
+    assert_eq!(bundle.map.height, 48);
+    assert_ne!(
+        bundle.map_id(),
+        {
+            let repo = ContentBundle::load_dir(&repo_content()).unwrap();
+            repo.map_id()
+        },
+        "the new map is a different map"
+    );
+
+    // 3. The simulation receives the new map: the rock spine is impassable,
+    //    the starts and nodes are the new map's, and the heightmap rode
+    //    along as display-only data.
+    let world = bundle.world();
+    assert_eq!(world.passability.len(), (48 * 48) as usize);
+    let spine_index = 24 * 48 + 23; // row 24, column 23
+    assert_eq!(world.passability[spine_index], 0, "the rock spine blocks");
+    let open_index = 10 * 48 + 10;
+    assert_eq!(world.passability[open_index], 1, "the start area is open");
+    let node_tiles: Vec<_> = world
+        .initial_spawns
+        .iter()
+        .filter(|spawn| {
+            spawn.pos == Vec2Fx::from_ints(7, 7) || spawn.pos == Vec2Fx::from_ints(45, 45)
+        })
+        .collect();
+    assert_eq!(node_tiles.len(), 2, "both ore nodes spawn from data");
+    assert!(
+        bundle.map.heightmap.is_some(),
+        "the display-only heightmap loads"
+    );
+    assert_eq!(bundle.map.heightmap.as_ref().unwrap().rows.len(), 48);
+
+    // 4. The simulation runs on it: the starting worker accepts a Move
+    //    across the new map.
+    let mut sim = Sim::new(&world, two_player_setup(7));
+    let snapshot = sim.snapshot();
+    // Move a worker (a mover), not the command center the faction also
+    // starts with.
+    let worker_kind = pandemonium_sim_api::KindId(
+        bundle
+            .entities
+            .iter()
+            .position(|def| def.id == "worker")
+            .expect("worker in content") as u32,
+    );
+    let id = snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.owner == PlayerId(0) && entity.kind == worker_kind)
+        .expect("the player starts with workers on the new map")
+        .id;
+    sim.step(&[Command::new(
+        PlayerId(0),
+        0,
+        1,
+        CommandKind::Move {
+            units: vec![id],
+            target: Vec2Fx::from_ints(16, 16),
+        },
+    )]);
+    let mut ticks = 0;
+    while sim
+        .snapshot()
+        .entities
+        .iter()
+        .any(|entity| entity.id == id && entity.move_state == MoveState::Moving)
+    {
+        sim.step(&[]);
+        ticks += 1;
+        assert!(ticks < 400, "the unit must arrive on the new map");
+    }
+    let final_snapshot = sim.snapshot();
+    let arrived = final_snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.id == id)
+        .unwrap();
+    assert_eq!(arrived.pos, Vec2Fx::from_ints(16, 16));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
