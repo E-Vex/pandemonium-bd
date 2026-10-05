@@ -265,4 +265,73 @@ impl RtsCamera {
             .map(|entity| entity.id)
             .collect()
     }
+
+    /// The view frustum's intersection with the ground plane, as four world
+    /// corners (clockwise from the screen's top-left) — the minimap's
+    /// viewport indicator. Presentation math only.
+    ///
+    /// At shallow pitches the frustum's top-edge rays can point *above* the
+    /// horizon and never meet the plane; the top angle is clamped to a small
+    /// positive one so the corners stay finite, and the caller clamps them
+    /// to the map (the drawn indicator then hugs the map edge, which reads
+    /// honestly at that pitch).
+    pub fn ground_footprint_corners(&self) -> [Vec3; 4] {
+        let height = self.distance * self.pitch.sin();
+        let horizontal = self.distance * self.pitch.cos();
+        let half_fov_y = self.fov_y * 0.5;
+        // Forward extent (screen top): clamped so the ray always lands.
+        let top_angle = (self.pitch - half_fov_y).max(0.08);
+        let forward = height / top_angle.tan() - horizontal;
+        // Back extent (screen bottom): always lands (the angle only grows).
+        let back = height / (self.pitch + half_fov_y).tan() - horizontal;
+        // Horizontal half-extent: tan(half horizontal fov) * horizontal dist.
+        let tan_half_side = half_fov_y.tan() * self.aspect;
+        let side = horizontal * tan_half_side;
+        // The camera's ground basis (the same one pan() uses).
+        let fwd = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
+        let right = Vec3::new(-fwd.z, 0.0, fwd.x);
+        let corner = |side_amount: f32, forward_amount: f32| {
+            self.target + right * side_amount + fwd * forward_amount
+        };
+        [
+            corner(-side, forward),
+            corner(side, forward),
+            corner(side, back),
+            corner(-side, back),
+        ]
+    }
+}
+#[test]
+fn the_ground_footprint_tracks_pitch_and_yaw() {
+    let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+    camera.focus(32.0, 32.0, 20.0);
+    camera.set_pitch(1.2); // steep, near top-down
+    let corners = camera.ground_footprint_corners();
+    // All four corners sit near the target at a steep pitch, and all
+    // are finite.
+    for corner in &corners {
+        assert!(corner.x.is_finite() && corner.z.is_finite());
+        let dx = corner.x - 32.0;
+        let dz = corner.z - 32.0;
+        assert!(
+            (dx * dx + dz * dz).sqrt() < 40.0,
+            "steep view stays near the target"
+        );
+    }
+    // A shallow pitch stretches the footprint toward the horizon.
+    camera.set_pitch(0.35);
+    let shallow = camera.ground_footprint_corners();
+    let extent = |corners: &[Vec3; 4]| {
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+        for corner in corners {
+            min_z = min_z.min(corner.z);
+            max_z = max_z.max(corner.z);
+        }
+        max_z - min_z
+    };
+    assert!(
+        extent(&shallow) > extent(&corners),
+        "a shallow pitch sees more ground"
+    );
 }

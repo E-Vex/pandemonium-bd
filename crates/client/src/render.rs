@@ -307,6 +307,40 @@ fn ring_vertices(segments: usize, inner: f32, outer: f32) -> Vec<[f32; 2]> {
     vertices
 }
 
+/// The minimap pass: a screen-space quad sampling a small map-sized RGBA
+/// texture the client composites (terrain base + fog + entity dots) every
+/// frame. Drawn through the same pixel-space convention as the UI pass.
+const MINIMAP_SHADER_SRC: &str = r#"
+struct ScreenUniform { size: vec2<f32> };
+@group(0) @binding(0) var<uniform> screen: ScreenUniform;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var tex: texture_2d<f32>;
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex fn vs_main(@location(0) pos_uv: vec4<f32>) -> VsOut {
+    var out: VsOut;
+    let ndc = vec2<f32>(
+        pos_uv.x / screen.size.x * 2.0 - 1.0,
+        1.0 - pos_uv.y / screen.size.y * 2.0,
+    );
+    out.clip = vec4<f32>(ndc, 0.0, 1.0);
+    out.uv = pos_uv.zw;
+    return out;
+}
+
+@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(tex, samp, in.uv);
+}
+"#;
+
+/// One minimap quad vertex: pixel position + atlas-free uv (16 bytes).
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct MinimapVertex {
+    pos_uv: [f32; 4],
+}
+
 /// One cube vertex: corner position and its face normal (24 bytes).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -476,6 +510,15 @@ pub struct WgpuRenderer {
     /// The active placement ghost (None outside placement mode). Kept until
     /// replaced — the client sets it every frame it draws.
     ghost: Option<PlacementGhost>,
+    minimap_tex: wgpu::Texture,
+    minimap_bind_group: wgpu::BindGroup,
+    minimap_pipeline: wgpu::RenderPipeline,
+    minimap_vertex_buf: wgpu::Buffer,
+    minimap_rect: Option<[f32; 4]>,
+    /// The baked per-tile terrain base color (RGBA, map-sized row-major).
+    minimap_base: Vec<[u8; 4]>,
+    minimap_scratch: Vec<u8>,
+    minimap_size: (u32, u32),
 }
 
 impl WgpuRenderer {
@@ -1165,6 +1208,158 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
+        // The minimap: one map-sized RGBA texture composited on the CPU
+        // (terrain base baked once; fog and entity dots layered per frame),
+        // one screen-space quad, one tiny pipeline.
+        let minimap_size = (fog_texture_size.0.max(1), fog_texture_size.1.max(1));
+        let minimap_base: Vec<[u8; 4]> = terrain
+            .vertices
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|tile| {
+                let c = tile[0].color;
+                [
+                    (c[0] * 255.0) as u8,
+                    (c[1] * 255.0) as u8,
+                    (c[2] * 255.0) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let minimap_scratch: Vec<u8> = vec![0; (minimap_size.0 * minimap_size.1 * 4) as usize];
+        let minimap_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("minimap texture"),
+            size: wgpu::Extent3d {
+                width: minimap_size.0,
+                height: minimap_size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let minimap_view = minimap_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let minimap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("minimap sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let minimap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("minimap layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let minimap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("minimap bind group"),
+            layout: &minimap_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&minimap_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&minimap_view),
+                },
+            ],
+        });
+        let minimap_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("minimap layout"),
+                bind_group_layouts: &[&minimap_layout],
+                push_constant_ranges: &[],
+            });
+        let minimap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("minimap shader"),
+            source: wgpu::ShaderSource::Wgsl(MINIMAP_SHADER_SRC.into()),
+        });
+        let minimap_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("minimap pipeline"),
+            layout: Some(&minimap_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &minimap_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<MinimapVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &minimap_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let minimap_vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("minimap quad"),
+            size: 6 * std::mem::size_of::<MinimapVertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
             _window: window,
             surface,
@@ -1206,6 +1401,14 @@ impl WgpuRenderer {
             decal_instance_capacity,
             dying_cues: Vec::new(),
             ghost: None,
+            minimap_tex,
+            minimap_bind_group,
+            minimap_pipeline,
+            minimap_vertex_buf,
+            minimap_rect: None,
+            minimap_base,
+            minimap_scratch,
+            minimap_size,
         })
     }
 
@@ -1284,6 +1487,106 @@ impl WgpuRenderer {
     /// this every frame while placing; the ghost persists until replaced.
     pub fn set_ghost(&mut self, ghost: Option<PlacementGhost>) {
         self.ghost = ghost;
+    }
+
+    /// Rebuilds the minimap quad for a panel rectangle (window pixels).
+    /// The screen-size uniform is shared with the UI pass and refreshed in
+    /// `render`, so only the rect matters here.
+    pub fn set_minimap_rect(&mut self, rect: [f32; 4]) {
+        let (x, y, w, h) = (rect[0], rect[1], rect[2], rect[3]);
+        let v = |px: f32, py: f32, u: f32, vv: f32| MinimapVertex {
+            pos_uv: [px, py, u, vv],
+        };
+        let corners = [
+            v(x, y, 0.0, 0.0),
+            v(x + w, y, 1.0, 0.0),
+            v(x + w, y + h, 1.0, 1.0),
+            v(x, y + h, 0.0, 1.0),
+        ];
+        let vertices = [
+            corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
+        ];
+        self.queue
+            .write_buffer(&self.minimap_vertex_buf, 0, bytemuck::cast_slice(&vertices));
+        self.minimap_rect = Some(rect);
+    }
+
+    /// Composites the minimap texture for this frame: terrain base, fog
+    /// darkening (one alpha byte per tile, the PlayerView encoding), then
+    /// entity dots (one per entity, team-tinted) on top.
+    pub fn update_minimap(&mut self, entities: &[pandemonium_engine::RenderEntity], fog: &[u8]) {
+        let (w, h) = self.minimap_size;
+        let tile_count = (w * h) as usize;
+        if self.minimap_base.len() != tile_count {
+            return; // the terrain mesh and the map disagree — skip this frame
+        }
+        let scratch = &mut self.minimap_scratch;
+        for tile in 0..tile_count {
+            let base = self.minimap_base[tile];
+            // Fog dims the terrain: never-seen tiles go near-black, explored
+            // tiles half-dark, visible tiles keep their color.
+            let shade = match fog.get(tile) {
+                Some(&FOG_ALPHA_VISIBLE) => 1.0,
+                Some(&FOG_ALPHA_EXPLORED) => 0.55,
+                Some(&FOG_ALPHA_HIDDEN) => 0.22,
+                _ => 1.0, // no fog row yet — show the terrain
+            };
+            let offset = tile * 4;
+            scratch[offset] = (base[0] as f32 * shade) as u8;
+            scratch[offset + 1] = (base[1] as f32 * shade) as u8;
+            scratch[offset + 2] = (base[2] as f32 * shade) as u8;
+            scratch[offset + 3] = 255;
+        }
+        // Entity dots: one tile dot per entity, brighter than any terrain.
+        for entity in entities {
+            let tx = entity.pos.x.floor();
+            let ty = entity.pos.z.floor();
+            if tx < 0.0 || ty < 0.0 || tx >= w as f32 || ty >= h as f32 {
+                continue;
+            }
+            let dot = match entity.owner {
+                pandemonium_sim_api::PlayerId(0) => [90.0, 150.0, 255.0],
+                pandemonium_sim_api::PlayerId(1) => [255.0, 95.0, 80.0],
+                _ => [235.0, 190.0, 70.0],
+            };
+            let offset = ((ty as u32 * w + tx as u32) as usize) * 4;
+            scratch[offset] = dot[0] as u8;
+            scratch[offset + 1] = dot[1] as u8;
+            scratch[offset + 2] = dot[2] as u8;
+            scratch[offset + 3] = 255;
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.minimap_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &self.minimap_scratch,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// Whether a window-pixel point lands in the minimap panel (the
+    /// client's click routing) — plus the world point it selects.
+    pub fn minimap_hit(&self, px: f32, py: f32) -> Option<(f32, f32)> {
+        let rect = self.minimap_rect?;
+        if px < rect[0] || py < rect[1] || px > rect[0] + rect[2] || py > rect[1] + rect[3] {
+            return None;
+        }
+        let (w, h) = self.minimap_size;
+        let world_x = (px - rect[0]) / rect[2] * w as f32;
+        let world_z = (py - rect[1]) / rect[3] * h as f32;
+        Some((world_x, world_z))
     }
 
     /// Queues UI quads for the *next* [`Renderer::render`] — they are drawn
@@ -1768,6 +2071,16 @@ impl Renderer for WgpuRenderer {
             pass.set_vertex_buffer(0, self.entity_vertex_buf.slice(..));
             pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));
             pass.draw(0..36, 0..needed.min(self.entity_instance_capacity) as u32);
+            // The minimap rides over the world but under the HUD quads (the
+            // viewport indicator and panel border draw in the UI pass on
+            // top of it): it rebinds group(0) to its own layout, like the
+            // UI pass does.
+            if self.minimap_rect.is_some() {
+                pass.set_pipeline(&self.minimap_pipeline);
+                pass.set_bind_group(0, &self.minimap_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.minimap_vertex_buf.slice(..));
+                pass.draw(0..6, 0..1);
+            }
             // The HUD/debug overlay goes on top of everything.
             if ui_vertex_count > 0 {
                 pass.set_pipeline(&self.ui_pipeline);

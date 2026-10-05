@@ -795,6 +795,17 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
+                        // A minimap click moves the camera (plan §11.4's
+                        // click-to-move-camera).
+                        let minimap_hit = self
+                            .renderer
+                            .as_ref()
+                            .and_then(|renderer| renderer.minimap_hit(px as f32, py as f32));
+                        if let Some((world_x, world_z)) = minimap_hit {
+                            let distance = self.camera.distance();
+                            self.camera.focus(world_x, world_z, distance);
+                            return;
+                        }
                         if self.placement.is_some() {
                             // Placement mode: the click places (or, on an
                             // unhovered ghost, waits for a ground tile).
@@ -832,6 +843,35 @@ impl ApplicationHandler for App {
                             return; // right-click cancels placement, orders nothing
                         }
                         self.attack_move_armed = false;
+                        // A minimap right-click orders at the mapped ground
+                        // point (armed attack-move included).
+                        let minimap_hit = self.renderer.as_ref().and_then(|renderer| {
+                            renderer.minimap_hit(cursor.0 as f32, cursor.1 as f32)
+                        });
+                        if let Some((world_x, world_z)) = minimap_hit {
+                            if !self.selection.is_empty() {
+                                let target = MatchHost::world_to_logical(world_x, world_z);
+                                if self.attack_move_armed {
+                                    self.attack_move_armed = false;
+                                    self.submit_order(
+                                        CommandKind::AttackMove {
+                                            units: self.selection.clone(),
+                                            target,
+                                        },
+                                        Some(target),
+                                    );
+                                } else {
+                                    self.submit_order(
+                                        CommandKind::Move {
+                                            units: self.selection.clone(),
+                                            target,
+                                        },
+                                        Some(target),
+                                    );
+                                }
+                            }
+                            return;
+                        }
                         self.issue_context_order(ndc);
                     }
                     // M9.1: middle-drag panning grabs the ground on press.
@@ -1275,6 +1315,22 @@ impl App {
             });
             quads.extend(built.quads);
             self.ui_buttons = built.buttons;
+            // The minimap: composite this frame's texture, size the quad,
+            // and draw the border + camera viewport indicator on top (UI
+            // quads land over the minimap pass).
+            renderer.set_minimap_rect(layout.minimap);
+            renderer.update_minimap(&snapshot.entities, &self.fog_bytes);
+            quads.extend(panel_border(
+                renderer.atlas(),
+                layout.minimap,
+                [0.85, 0.88, 0.92, 0.5],
+            ));
+            quads.extend(minimap_viewport_quads(
+                renderer.atlas(),
+                &self.camera,
+                (self.bundle.map.width as f32, self.bundle.map.height as f32),
+                layout.minimap,
+            ));
             // The placement ghost (plan §11.3's legality preview): a tinted
             // footprint quad under the cursor — green when the client-side
             // preview likes it, red when it does not (the gate re-checks).
@@ -1340,6 +1396,61 @@ impl App {
             flashes: &flashes,
         });
     }
+}
+
+/// Draws a thin rectangular border around a panel rect (UI quads).
+fn panel_border(atlas: &TextAtlas, rect: [f32; 4], color: [f32; 4]) -> Vec<UiQuad> {
+    const T: f32 = 1.5;
+    let [x, y, w, h] = rect;
+    let mut quads = vec![
+        atlas.solid_rect(x - T, y - T, w + 2.0 * T, T, color),
+        atlas.solid_rect(x - T, y + h, w + 2.0 * T, T, color),
+        atlas.solid_rect(x - T, y, T, h, color),
+        atlas.solid_rect(x + w, y, T, h, color),
+    ];
+    quads.shrink_to_fit();
+    quads
+}
+
+/// The camera's viewport indicator on the minimap: the view frustum's
+/// ground footprint (clamped to the map) drawn as a dotted outline. Dots
+/// rather than a stroked rect keep the quads axis-aligned (the footprint
+/// rotates with the camera's yaw).
+fn minimap_viewport_quads(
+    atlas: &TextAtlas,
+    camera: &RtsCamera,
+    map: (f32, f32),
+    rect: [f32; 4],
+) -> Vec<UiQuad> {
+    const DOT: f32 = 2.0;
+    const STEP_PX: f32 = 6.0;
+    let to_px = |p: glam::Vec3| -> (f32, f32) {
+        let x = (p.x.clamp(0.0, map.0) / map.0) * rect[2] + rect[0];
+        let y = (p.z.clamp(0.0, map.1) / map.1) * rect[3] + rect[1];
+        (x, y)
+    };
+    let corners = camera.ground_footprint_corners();
+    let pts: Vec<(f32, f32)> = corners.iter().map(|p| to_px(*p)).collect();
+    let mut quads = Vec::new();
+    for index in 0..4 {
+        let (x0, y0) = pts[index];
+        let (x1, y1) = pts[(index + 1) % 4];
+        let length = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        let steps = (length / STEP_PX).ceil().max(1.0) as usize;
+        for step in 0..=steps {
+            let t = step as f32 / steps as f32;
+            let x = x0 + (x1 - x0) * t;
+            let y = y0 + (y1 - y0) * t;
+            quads.push(atlas.solid_rect(
+                x - DOT * 0.5,
+                y - DOT * 0.5,
+                DOT,
+                DOT,
+                [1.0, 1.0, 1.0, 0.85],
+            ));
+        }
+    }
+    quads
 }
 
 /// The inputs to [`overlay_quads`] for one frame (M8: gathered into a struct
