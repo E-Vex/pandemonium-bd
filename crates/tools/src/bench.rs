@@ -185,12 +185,19 @@ fn aggregates(samples: Vec<Sample>, wall: Duration, end_entities: usize) -> Benc
 pub fn print_report(report: &BenchReport) {
     println!("pandemonium bench — per-tick cost (plan §15 baselines)");
     println!("  ticks sampled:  {}", report.ticks);
-    println!("  end entities:   {} (plan §15 Alpha budget: ≤ 200)", report.end_entities);
+    println!(
+        "  end entities:   {} (plan §15 Alpha budget: ≤ 200)",
+        report.end_entities
+    );
     println!(
         "  avg tick:        {:.1} µs  ({:.2} ms)  — {} plan §15 (≤ 1 ms avg)",
         report.avg_us,
         report.avg_us / 1000.0,
-        if report.meets_alpha_avg_budget() { "MEETS" } else { "MISSES" },
+        if report.meets_alpha_avg_budget() {
+            "MEETS"
+        } else {
+            "MISSES"
+        },
     );
     println!(
         "  p50 tick:        {:.1} µs  ({:.2} ms)",
@@ -206,7 +213,11 @@ pub fn print_report(report: &BenchReport) {
         "  p99 tick:        {:.1} µs  ({:.2} ms)  — {} plan §15 (≤ 4 ms p99)",
         report.p99_us,
         report.p99_us / 1000.0,
-        if report.meets_alpha_p99_budget() { "MEETS" } else { "MISSES" },
+        if report.meets_alpha_p99_budget() {
+            "MEETS"
+        } else {
+            "MISSES"
+        },
     );
     println!(
         "  max tick:        {} µs  ({:.2} ms)",
@@ -259,7 +270,11 @@ mod tests {
             "avg = {}",
             report.avg_us
         );
-        assert!((report.p50_us - 100.0).abs() < 1e-3, "p50 stays at 100: {}", report.p50_us);
+        assert!(
+            (report.p50_us - 100.0).abs() < 1e-3,
+            "p50 stays at 100: {}",
+            report.p50_us
+        );
         assert!(
             (report.p99_us - 10_000.0).abs() < 1e-3,
             "p99 captures the spike: {}",

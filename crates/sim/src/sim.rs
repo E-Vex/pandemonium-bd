@@ -291,10 +291,7 @@ impl Sim {
             // (the store's ascending invariant makes this safe — once a
             // health entry's id is below the current entity's, no later
             // entity will match it either).
-            while health_iter
-                .peek()
-                .is_some_and(|(hid, _)| *hid < entity.id)
-            {
+            while health_iter.peek().is_some_and(|(hid, _)| *hid < entity.id) {
                 health_iter.next();
             }
             let hp_fraction_milli = match health_iter.peek() {

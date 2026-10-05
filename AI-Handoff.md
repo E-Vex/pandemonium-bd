@@ -180,6 +180,98 @@ game (M3's windowed path machine-verified; the human visual pass stays
 open as DEBT-008's narrowed scope); M10 (stabilization & declaration)
 remains, in strict order.
 
+## 6.5 M10 prep — pre-milestone improvements (review pass)
+
+Before M10 starts, a review pass tightened the code's hot paths and added
+the M10 scaffolding the plan calls for. All changes preserve the golden
+hashes (no observable behavior change in the sim or replays); every commit
+runs the green gate (fmt, clippy `-D warnings`, the full test suite in
+both profiles). One logical change per commit, on `master`.
+
+**Performance (no semantic change)**
+
+- `perf(sim): batch entity removal in death & cleanup` — stage 8 removed
+  one entity at a time, each call doing up to 13 binary searches + 13
+  `Vec::remove` shifts across the capability stores. New
+  `World::remove_batch(ids: &[EntityId])` does a single merge-join sweep
+  per store (both `ids` and the stores are ascending by id), reducing
+  the cost from `O(m · (log n + n))` to `O(n + m)` per store. The
+  post-state is byte-identical to the per-id path — pinned by a new
+  test that builds two identical worlds, removes the same non-contiguous
+  id set via each path, and asserts every store compares equal.
+- `perf(sim): lockstep entity_view with health store in snapshot/player_view`
+  — `Sim::snapshot` and `Sim::player_view` both projected each entity
+  through `entity_view(id)`, which binary-searched the health store per
+  entity for `hp_fraction_milli`. New `entity_views_lockstep` walks the
+  entity stream and the health store in tandem (both ascending), turning
+  the per-entity lookup into an O(n + h) lockstep walk. Output is
+  byte-identical; the per-id `entity_view` helper is removed (it was an
+  internal implementation detail with no remaining callers).
+- `perf(engine): skip state_hash in HUD when debug overlay hidden` —
+  `MatchHost::hud_state` used to call `Sim::state_hash()` every frame,
+  even though the resulting value is only read inside the F3 debug
+  overlay. The cheap path now leaves `state_hash` at zero; the new
+  `hud_state_with_hash` variant is called by the client only when the
+  overlay is visible. The `HudState` struct shape is unchanged; only
+  the always-zero default in the cheap path differs.
+- `perf(fx): make Fx::from_milli a const fn` — the conversion can run
+  at compile time now (every op is const-evaluable in stable Rust 1.98
+  once the clamp is hand-written, since `i64::clamp` is not yet
+  const-stable). Callers can build `const` lookup tables for content
+  stats without runtime cost.
+
+**Generals: Zero Hour-style feel**
+
+- `feat(client): camera rotation (Q/E) and pitch (Ctrl+wheel)` — the
+  camera already had `rotate()` and `set_pitch()` methods but no input
+  bindings. Q/E orbit the camera around its target (continuous, scaled
+  by the frame delta — frame-rate-independent, like the WASD pan);
+  Ctrl+wheel tilts the pitch up/down (clamped to the supported range).
+  Cancels an armed attack-move so the player can re-orient mid-order.
+  Adds supporting getters on `RtsCamera` (`pitch`, `yaw`, `distance`)
+  and an `adjust_pitch(delta)` helper. README controls updated.
+
+**M10 scaffolding (the plan's own deliverables)**
+
+- `feat(tools): add soak subcommand for M10 prep (A7 acceptance gate)` —
+  plan §12 calls for `tools soak --matches N` to run many seeded
+  AI-vs-AI matches with crash/stall detection and win-rate telemetry.
+  This is the sequential single-process version: nightly CI that wants
+  parallelism spawns N `headless --seed N --p1 ai --p2 ai` subprocesses.
+  Reports resolved/mutual-destruction/unresolved/crashed counts, per-player
+  wins, avg/max end tick, resolution rate (A7 wants 100%), and
+  ticks/second throughput. Exits non-zero only when a match crashed.
+- `feat(tools): add bench subcommand for M10 perf baselines (plan §15)` —
+  plan §12 calls for `tools bench` to measure tick cost against plan §15's
+  perf budgets (≤ 1 ms avg, ≤ 4 ms p99, ≥ 1000 t/s on Alpha-size). This
+  harness samples each tick's wall-clock duration with `Instant::now`
+  (presentation-only telemetry — `tools` is exempt from the determinism
+  source bans) and reports avg / p50 / p95 / p99 / max + throughput
+  against the plan's thresholds. Sample dev-profile run on this commit:
+  0.40 ms avg, 0.47 ms p99, 2512 t/s — all three budgets met.
+
+**What M10 still owes**
+
+- The full A1–A15 acceptance sweep with pinned evidence in
+  `docs/ALPHA_DECLARATION.md` (plan §14).
+- A 1000-match nightly soak run via `tools soak --matches 1000` (the
+  A7 acceptance gate). Sequential for now; the parallel subprocess
+  version is a CI-script follow-up.
+- The release-profile perf baselines (plan §15) recorded via
+  `tools bench --ticks 10000` against the real Alpha content with AI
+  controllers.
+- The DEBT-008 human re-verification of the M9.1 build (the only
+  remaining open debt row).
+
+**Verification**
+
+- 352 dev tests green; clippy `-D warnings` clean; fmt check clean.
+- Golden hashes unchanged: `tests/determinism.rs`, `tests/combat.rs`,
+  `tests/economy.rs`, `tests/movement.rs`, `tests/alpha_loop.rs`,
+  `tests/content_pipeline.rs`, `tests/vision.rs`, `tests/ai.rs`,
+  `tests/match_rules.rs`, the `tools` golden, and the `engine` host
+  tests all green at their pinned hashes.
+
 ## 7. Milestone inventory — what exists today, concretely
 
 **Workspace & guardrails**

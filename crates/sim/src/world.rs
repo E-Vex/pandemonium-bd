@@ -896,27 +896,18 @@ impl World {
 /// dropping every entry whose key matches an id in `ids`. Survivors keep
 /// their relative order — the same property `Vec::remove` upholds, in one
 /// pass instead of `m` passes.
-fn retain_not_in<T>(
-    store: &mut Vec<T>,
-    ids: &[EntityId],
-    key: impl Fn(&T) -> EntityId,
-) {
+fn retain_not_in<T>(store: &mut Vec<T>, ids: &[EntityId], key: impl Fn(&T) -> EntityId) {
     let mut ids_iter = ids.iter().copied().peekable();
     store.retain(|entry| {
         let entry_key = key(entry);
         // Drop dead ids that are below the current entry (they will not
         // match this or any later entry — both sequences are ascending).
-        while ids_iter
-            .peek()
-            .is_some_and(|&dead_id| dead_id < entry_key)
-        {
+        while ids_iter.peek().is_some_and(|&dead_id| dead_id < entry_key) {
             ids_iter.next();
         }
         // If the next dead id matches, consume it and drop the entry.
         // Otherwise the entry survives.
-        ids_iter
-            .next_if(|&dead_id| dead_id == entry_key)
-            .is_none()
+        ids_iter.next_if(|&dead_id| dead_id == entry_key).is_none()
     });
 }
 

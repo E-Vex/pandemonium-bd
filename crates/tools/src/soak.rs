@@ -209,7 +209,10 @@ pub fn print_report(report: &SoakReport) {
         report.wins.get(1).copied().unwrap_or(0),
     );
     println!("  mutual destruct:{}", report.mutual_destruction);
-    println!("  unresolved:     {} (ran the tick budget; A7 stuck signal)", report.unresolved);
+    println!(
+        "  unresolved:     {} (ran the tick budget; A7 stuck signal)",
+        report.unresolved
+    );
     println!("  crashed:        {} (A7 crash signal)", report.crashed);
     println!(
         "  end tick:       avg {:.0}, max {} (resolved matches only)",
