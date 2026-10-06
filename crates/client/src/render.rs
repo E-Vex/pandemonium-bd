@@ -2055,6 +2055,11 @@ impl Renderer for WgpuRenderer {
                 );
                 pass.set_pipeline(&self.decal_pipeline);
                 pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                // Slot 1 carries the per-instance data for both decal draws
+                // (quads and rings share one instance buffer): without this
+                // binding the pass draws with the pipeline's instance slot
+                // unset and wgpu's validation rejects the very first draw.
+                pass.set_vertex_buffer(1, self.decal_instance_buf.slice(..));
                 if shadow_count + ghost_count > 0 {
                     pass.set_vertex_buffer(0, self.quad_vertex_buf.slice(..));
                     pass.draw(0..self.quad_vertex_count, 0..(shadow_count + ghost_count));
@@ -2122,6 +2127,54 @@ mod tests {
                     "{name} shader lost its {entry} entry point"
                 );
             }
+        }
+    }
+
+    /// The instanced pipelines (decal + entity) draw with two vertex buffer
+    /// slots: slot 0 geometry, slot 1 per-instance data. wgpu validates slot
+    /// bindings at draw time, so a pipeline left with its instance slot unset
+    /// is a first-frame GPU validation panic — the render pass only runs on a
+    /// machine with a display, so CPU-side tests cannot reach it. As far as
+    /// this environment allows (the same bargain as the shader-parse test
+    /// above), the draw state is machine-checked: each instanced pipeline
+    /// must bind its instance buffer to slot 1 between its `set_pipeline`
+    /// and its first `draw`. `queue.write_buffer` alone does not bind.
+    #[test]
+    fn every_instanced_pipeline_binds_its_instance_slot_before_drawing() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/render.rs"))
+            .expect("render.rs sits at the crate's src/");
+        // Scan only the rendering code — everything before the first test
+        // module, with line comments stripped — so this test's own literals
+        // and a commented-out binding cannot satisfy the law.
+        let cut = source.find("#[cfg(test)]").expect("a test module exists");
+        let code = source[..cut]
+            .lines()
+            .map(|line| &line[..line.find("//").unwrap_or(line.len())])
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (pipeline, slot1) in [
+            (
+                "pass.set_pipeline(&self.decal_pipeline);",
+                "pass.set_vertex_buffer(1, self.decal_instance_buf.slice(..));",
+            ),
+            (
+                "pass.set_pipeline(&self.entity_pipeline);",
+                "pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));",
+            ),
+        ] {
+            let set_pipeline = code
+                .find(pipeline)
+                .unwrap_or_else(|| panic!("the {pipeline} call disappeared from render_frame"));
+            let bind = code[set_pipeline..].find(slot1).unwrap_or_else(|| {
+                panic!("{pipeline} draws without its instance buffer bound to slot 1")
+            });
+            let draw = code[set_pipeline..]
+                .find("pass.draw(")
+                .unwrap_or_else(|| panic!("{pipeline} never draws"));
+            assert!(
+                bind < draw,
+                "{pipeline} draws before binding its instance buffer to slot 1"
+            );
         }
     }
 }
