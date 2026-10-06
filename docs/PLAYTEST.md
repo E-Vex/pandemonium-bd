@@ -150,7 +150,7 @@ tester.
 
 | Tester | Date | OS | Build commit | Loop completed (unaided?) | Spectator verdict | Probes (placement / audio / feel) | Incidents (seed + tick + dump filenames) |
 |---|---|---|---|---|---|---|---|
-| | | | | | | | |
+| owner (playtest-1) | 2026-10 (post-M10.1) | desktop, real display | bdf1266 | **no** — controls unusable (finding #1, detail below) | not reached | feel: the four findings below | none filed (findings went to `docs/PLAN-M10.2.md` instead) |
 | | | | | | | | |
 | | | | | | | | |
 | | | | | | | | |
@@ -158,3 +158,56 @@ tester.
 
 Five rows, ready to fill. A failed tester is a finding — record them anyway;
 they are often the most valuable row in the table.
+
+### Result #1 in detail — the owner's playtest-1 (M10.2's source)
+
+The first human pass over the windowed client after M10.1. The formal A14
+loop (section 3) was not completed — the controls got in the way first. Four
+findings, in the owner's priority order (the full specification is
+`docs/PLAN-M10.2.md`):
+
+1. **Controls** — not Generals ZH: no right-drag map scroll, edge scroll
+   reads as broken (only the very last pixel row triggers it), the button
+   semantics are unclear (the owner reported "unit movement happens with the
+   LEFT button").
+2. **Visual legibility** — at a glance you cannot tell what anything is
+   (silhouettes, team identification, minimap, ground contrast).
+3. **Menu and settings** — the game drops straight into a match; no menu,
+   no settings, no pause menu.
+4. **Audio** — no sound at all (DEBT-011, expected at this stage).
+
+#### The controls audit (PLAN-M10.2 §1.1 — what the code actually did)
+
+Audit of `crates/client/src/main.rs` + `orders.rs` at the base commit
+(bdf1266), pre-M10.2:
+
+| Input | Behavior in code |
+|---|---|
+| Left press | UI button hit-test first (train / build placement / queue cancel), then minimap click-to-focus, then placement confirm, then armed-A attack-move fires, else starts a selection drag |
+| Left release | Drag beyond `CLICK_SLOP` (0.01 NDC) = box select; otherwise single-click select (own entities within 0.05 NDC; empty ground **clears** the selection) |
+| Right press | Cancels placement, disarms armed-A, then: minimap right-click orders Move at the mapped point, else the context order (rally point for a selected producer / Attack on an enemy / Gather on a node with workers / Move on ground) |
+| Right drag | Nothing (no right-drag camera scroll exists) |
+| Middle drag | Pan (grab-the-ground) |
+| Wheel | Zoom toward cursor; Ctrl+wheel = pitch |
+| W/A/S/D + arrows | Pan (A also arms attack-move; S also stops) |
+| Q / E | Rotate |
+| 1–9 / Ctrl+1–9 | Recall / assign control groups (no double-tap centering) |
+| P, `.`, F3, F8 | Pause, single-step, debug overlay, bug report |
+| R / Esc | Restart after the match ends / cancel armed order or placement, else quit |
+| Edge scroll | 24 px binary full-speed zone on all four edges (focused windows only) |
+
+**Audit verdict on "movement happens with the LEFT button":** false for a
+plain left-click in the current code — since M9.1, context orders
+(Move/Attack/Gather/rally) issue on the **right** button only
+(`orders::resolve_context_order`). What the owner can have hit with the left
+button: the armed-**A** attack-move (fires on left-click), the bottom-bar
+buttons, and the placement confirm — all three are order-issuing left clicks.
+The plan's rule (left = select only) is therefore *almost* already law; the
+audit additionally found one real inconsistency: on right-press the code
+disarms armed-A **before** the minimap right-click branch checks it, so the
+armed minimap attack-move path is dead code — M10.2 §1 reworks the whole
+right-button path as a state machine and removes the dead branch.
+
+The re-test for this row: after M10.2 Phase 1, the owner replays the loop
+with the updated controls card (section 2) — the row above is then updated
+or a second row is added for the re-test pass.
