@@ -256,6 +256,41 @@ pub fn group_center(entities: &[RenderEntity], group: &[EntityId]) -> Option<(f3
     (count > 0).then(|| (sum.0 / count as f32, sum.1 / count as f32))
 }
 
+/// What Escape does first (PLAN §1.3: "Escape cancels an armed command or
+/// clears the selection"): the cancellation ladder, one rung at a time per
+/// press — armed command, placement, selection, quit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EscapeAction {
+    /// An armed attack-move was pending — cancel it.
+    CancelArmed,
+    /// A structure placement was pending — cancel it.
+    CancelPlacement,
+    /// Something is selected — clear the selection.
+    ClearSelection,
+    /// Nothing armed, placing, or selected — quit the application.
+    Quit,
+}
+
+/// Resolves one Escape press to its next action, in ladder order.
+pub fn escape_action(armed: bool, placing: bool, selection_nonempty: bool) -> EscapeAction {
+    if armed {
+        EscapeAction::CancelArmed
+    } else if placing {
+        EscapeAction::CancelPlacement
+    } else if selection_nonempty {
+        EscapeAction::ClearSelection
+    } else {
+        EscapeAction::Quit
+    }
+}
+
+/// Space's jump target (PLAN §1.3: "jump to the last event or base"): the
+/// last event's ground position when one is known, else the player's start
+/// anchor. The caller decides which event class it tracks.
+pub fn jump_target(last_event: Option<(f32, f32)>, start_anchor: (f32, f32)) -> (f32, f32) {
+    last_event.unwrap_or(start_anchor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +565,26 @@ mod tests {
         // A fully dead group centers nowhere.
         assert_eq!(group_center(&entities, &[EntityId(77)]), None);
         assert_eq!(group_center(&entities, &[]), None);
+    }
+
+    #[test]
+    fn escape_climbs_the_ladder_one_rung_per_press() {
+        assert_eq!(escape_action(true, true, true), EscapeAction::CancelArmed);
+        assert_eq!(
+            escape_action(false, true, true),
+            EscapeAction::CancelPlacement
+        );
+        assert_eq!(
+            escape_action(false, false, true),
+            EscapeAction::ClearSelection
+        );
+        assert_eq!(escape_action(false, false, false), EscapeAction::Quit);
+    }
+
+    #[test]
+    fn jump_target_prefers_the_last_event_else_the_base() {
+        assert_eq!(jump_target(None, (10.0, 20.0)), (10.0, 20.0));
+        assert_eq!(jump_target(Some((33.0, 44.0)), (10.0, 20.0)), (33.0, 44.0));
     }
 
     // ---- direction pinning: middle-drag rotate ---------------------------

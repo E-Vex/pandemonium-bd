@@ -208,6 +208,10 @@ struct App {
     /// M10.2 (PLAN §1.3): the last control-group digit press and when it
     /// landed — a double tap recalls the group and centers the camera on it.
     last_digit_press: Option<(usize, Instant)>,
+    /// M10.2 (PLAN §1.3): the last death's ground position (the Space
+    /// jump's preferred target, else the start anchor — "jump to the last
+    /// event or base").
+    last_event_ground: Option<(f32, f32)>,
     /// M10.2 (PLAN §1.2): whether edge scrolling is on (the settings toggle
     /// itself is Phase 3; the flag is wired now so the toggle only flips a
     /// bool then). The band width and depth scaling live in `input.rs`.
@@ -371,6 +375,7 @@ impl App {
             middle_last: None,
             last_left_click: None,
             last_digit_press: None,
+            last_event_ground: None,
             edge_scroll_enabled: true,
             focused: true,
             attack_move_armed: false,
@@ -444,6 +449,7 @@ impl App {
         self.middle_last = None;
         self.last_left_click = None;
         self.last_digit_press = None;
+        self.last_event_ground = None;
         // M10.1: the recording state restarts with the match — the new
         // segment gets its own tick-0 checkpoint and its own end-of-match
         // record write.
@@ -1368,15 +1374,40 @@ impl ApplicationHandler for App {
                             }
                         }
                         winit::keyboard::KeyCode::Escape if pressed => {
-                            // M9.1: Esc cancels an armed attack-move first,
-                            // then placement; with nothing armed it quits.
-                            if self.attack_move_armed {
-                                self.attack_move_armed = false;
-                            } else if self.placement.take().is_some() {
-                                // placement cancelled
-                            } else {
-                                event_loop.exit();
+                            // M10.2 (PLAN §1.3): Escape climbs the ladder
+                            // one rung per press — armed command, then
+                            // placement, then the selection, and only then
+                            // quit (the old code quit on the first press
+                            // whenever nothing was armed; an accidental
+                            // Esc with units selected cost the player
+                            // their window, not just their selection).
+                            match input::escape_action(
+                                self.attack_move_armed,
+                                self.placement.is_some(),
+                                !self.selection.is_empty(),
+                            ) {
+                                input::EscapeAction::CancelArmed => {
+                                    self.attack_move_armed = false;
+                                }
+                                input::EscapeAction::CancelPlacement => {
+                                    self.placement = None;
+                                }
+                                input::EscapeAction::ClearSelection => {
+                                    self.selection.clear();
+                                }
+                                input::EscapeAction::Quit => event_loop.exit(),
                             }
+                        }
+                        // M10.2 (PLAN §1.3, the "only if cheap" extra):
+                        // Space jumps the camera to the last event's
+                        // position (the most recent death — the class of
+                        // event a player most wants to look at), else the
+                        // player's base. The zoom distance is kept.
+                        winit::keyboard::KeyCode::Space if pressed => {
+                            let (x, z) =
+                                input::jump_target(self.last_event_ground, self.start_anchor);
+                            let distance = self.camera.distance();
+                            self.camera.focus(x, z, distance);
                         }
                         _ => {}
                     }
@@ -1541,6 +1572,9 @@ impl App {
                 }
                 Event::Died { entity } => {
                     if let Some(&(pos, kind, owner)) = self.last_seen.get(entity) {
+                        // M10.2 (PLAN §1.3): the most recent death is the
+                        // Space jump's "last event".
+                        self.last_event_ground = Some((pos.x, pos.z));
                         self.feedback.death(pos, kind, owner, self.frames_presented);
                     }
                 }
