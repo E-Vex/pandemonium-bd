@@ -69,14 +69,30 @@ A mid-match dump on demand exists too — F8, section 6.
 
 Copy of the README's controls paragraph, verbatim, plus the F8 bug-report key:
 
-Controls: **WASD / arrows / screen edges / middle-drag** pan the camera,
-**Q / E** rotate it around its target (Generals-style), the **wheel** zooms
-toward the cursor, **Ctrl+wheel** tilts the pitch (Generals-style),
-**left-click / drag** selects, **right-click** orders (attack an enemy,
-gather a node with workers, or move over open ground), **A** arms
-attack-move for the next left-click, **S** stops, **1-9** recall control
-groups (**Ctrl+1-9** assigns), **P** pauses, **F3** toggles the debug
-overlay, **R** restarts after the match ends.
+Controls (Generals: Zero Hour muscle memory):
+
+**Selecting** — **left-click** selects, **left-drag** box-selects; left never
+issues an order, and a click on empty ground does nothing (Esc clears the
+selection). **Shift+click** adds or removes one unit, **shift+drag** adds the
+box's picks, **double-click** selects every visible unit of the same kind.
+
+**Commanding** — **right-click** is the only way to command: on an enemy it
+attacks, on an ore node it gathers (workers), on open ground it moves, and on
+a single selected producer it sets the rally point. A click under 6 px of
+travel orders; **right-drag** beyond that grabs and scrolls the map (the
+release then orders nothing). **A** arms attack-move for the next left-click,
+**S** stops.
+
+**Camera** — **right-drag** scrolls (the main way to move the map),
+**middle-drag** rotates, **WASD / arrows / screen edges** pan (the edge is a
+14 px band whose speed scales with depth), **Q / E** rotate, the **wheel**
+zooms toward the cursor, **Ctrl+wheel** tilts the pitch.
+
+**Groups & jumps** — **1–9** recall control groups, **Ctrl+1–9** assigns,
+double-tapping a digit recalls and centers the camera on the group. **Space**
+jumps to the last death (or your base). **Esc** climbs one rung per press:
+armed command → placement → selection → quit. **P** pauses, **F3** toggles the
+debug overlay, **R** restarts after the match ends.
 
 **[F8] bug report** — press it at (or right after) the moment anything goes
 wrong; it writes two files (section 6).
