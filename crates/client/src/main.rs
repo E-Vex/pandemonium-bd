@@ -11,6 +11,7 @@
 //! of M3 needs a display and is recorded as such (plan §13 honest declaration).
 
 mod feedback;
+mod input;
 mod orders;
 mod render;
 mod report;
@@ -24,6 +25,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use feedback::FeedbackState;
+use input::{RightButton, RightRelease};
 use pandemonium_ai::Controller;
 use pandemonium_content::ContentBundle;
 use pandemonium_engine::audio::{AudioSink, NullAudioSink};
@@ -74,10 +76,6 @@ const PITCH_PER_WHEEL_NOTCH: f32 = pandemonium_engine::camera::DEFAULT_PITCH_PER
 /// The frame-delta clamp for camera motion — a stall must not teleport the
 /// view when the loop resumes.
 const MAX_PAN_FRAME_SECONDS: f32 = 0.05;
-/// How close (in pixels) the cursor must sit to a window border for edge
-/// scrolling (plan §11.3: "pan by edge + keys" — M9.1: the edge half was
-/// missing entirely, so the mouse could not move the camera at all).
-const EDGE_SCROLL_PX: f64 = 24.0;
 /// The opening camera distance from the player's start anchor (M9.1: the
 /// old map-center default at 58 tiles out rendered the starting force as
 /// specks — "nothing appears on the screen").
@@ -188,9 +186,26 @@ struct App {
     keys: BTreeSet<Key<&'static str>>,
     /// M8: the current keyboard modifiers (Ctrl for control-group assignment).
     modifiers: ModifiersState,
-    /// M9.1: the middle-drag pan anchor — the ground point grabbed when the
-    /// middle button went down (None when not dragging).
-    middle_anchor: Option<glam::Vec3>,
+    /// M10.2 (PLAN §1.2): the right button's disambiguation state — a
+    /// press-and-release under [`input::RIGHT_DRAG_COMMAND_MAX_PX`] is the
+    /// command click; travel beyond it is the Generals-style grab-and-drag
+    /// map scroll (and the release then orders nothing).
+    right_button: RightButton,
+    /// M10.2 (PLAN §1.2): the ground point grabbed at the right-button
+    /// press — the anchor the drag keeps under the cursor while scrolling.
+    right_anchor: Option<glam::Vec3>,
+    /// M10.2: whether attack-move was armed when the right button went
+    /// down (the minimap right-click honors it as an attack-move order; a
+    /// world right-click disarms and issues the context order).
+    right_press_armed: bool,
+    /// M10.2 (PLAN §1.2): the middle button's last cursor position while
+    /// held — horizontal travel rotates the camera (Generals-style
+    /// middle-drag rotate; it panned before this pass).
+    middle_last: Option<(f64, f64)>,
+    /// M10.2 (PLAN §1.2): whether edge scrolling is on (the settings toggle
+    /// itself is Phase 3; the flag is wired now so the toggle only flips a
+    /// bool then). The band width and depth scaling live in `input.rs`.
+    edge_scroll_enabled: bool,
     /// M9.1: whether the window has keyboard focus (edge scrolling runs
     /// focused only, so an unfocused game never steals the desktop).
     focused: bool,
@@ -344,7 +359,11 @@ impl App {
             drag_current: None,
             keys: BTreeSet::new(),
             modifiers: ModifiersState::empty(),
-            middle_anchor: None,
+            right_button: RightButton::new(),
+            right_anchor: None,
+            right_press_armed: false,
+            middle_last: None,
+            edge_scroll_enabled: true,
             focused: true,
             attack_move_armed: false,
             last_order: None,
@@ -408,6 +427,12 @@ impl App {
         self.latest_view = None;
         self.placement = None;
         self.ui_buttons.clear();
+        // M10.2: the input-layer additions reset with the match — the right
+        // button's gesture state and the middle-drag rotate anchor.
+        self.right_button = RightButton::new();
+        self.right_anchor = None;
+        self.right_press_armed = false;
+        self.middle_last = None;
         // M10.1: the recording state restarts with the match — the new
         // segment gets its own tick-0 checkpoint and its own end-of-match
         // record write.
@@ -918,16 +943,45 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let _ = self.drag_current.insert((position.x, position.y));
-                // M9.1: middle-drag panning — the grabbed ground point
-                // follows the cursor ("grab the ground and pull").
-                if let Some(anchor) = self.middle_anchor {
-                    let Some(window) = &self.window else {
-                        return;
-                    };
-                    let ndc = Self::to_ndc(window, position.x, position.y);
-                    if let Some(current) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) {
-                        self.camera.pan_world(anchor - current);
+                // M10.2 (PLAN §1.2): right-drag map scrolling — once the
+                // right button's gesture crosses the command threshold, the
+                // ground point grabbed at the press follows the cursor
+                // ("grab the ground and pull", Generals ZH style). The same
+                // anchor math the old middle-drag pan used; the release of
+                // a scrolled gesture issues no command.
+                if self.right_button.moved((position.x, position.y)) {
+                    // The crossing event: grab the ground under the press
+                    // if it was not grabbed yet (a press with no ground
+                    // under it grabs at the first crossing instead).
+                    if self.right_anchor.is_none() {
+                        let ndc = Self::to_ndc(
+                            self.window.as_ref().expect("window exists in CursorMoved"),
+                            position.x,
+                            position.y,
+                        );
+                        self.right_anchor = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1));
                     }
+                }
+                if self.right_button.is_dragging() {
+                    if let Some(anchor) = self.right_anchor {
+                        let Some(window) = &self.window else {
+                            return;
+                        };
+                        let ndc = Self::to_ndc(window, position.x, position.y);
+                        if let Some(current) =
+                            self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1))
+                        {
+                            self.camera.pan_world(anchor - current);
+                        }
+                    }
+                }
+                // M10.2 (PLAN §1.2): middle-drag rotates the camera
+                // (Generals does this — it panned before). Horizontal
+                // travel orbits the view; vertical travel is inert.
+                if let Some((last_x, _)) = self.middle_last {
+                    let dx = (position.x - last_x) as f32;
+                    self.camera.rotate(input::MIDDLE_DRAG_RAD_PER_PX * dx);
+                    self.middle_last = Some((position.x, position.y));
                 }
                 // Placement mode tracks the cursor's ground tile for the
                 // ghost (plan §11.3's placement preview).
@@ -1003,53 +1057,98 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // M9.1 (plan §11.3): the right-click context command —
-                    // attack/gather/move resolved from what is under the
-                    // cursor. It also cancels an armed attack-move and an
-                    // armed placement (any other order disarms).
+                    // M10.2 (PLAN §1.2): the right button is the command
+                    // button *and*, held and dragged past the threshold,
+                    // the map-scroll grab (Generals ZH style). The press
+                    // only records; the RELEASE decides — press-to-release
+                    // travel under `input::RIGHT_DRAG_COMMAND_MAX_PX` is
+                    // the context command, beyond it the drag has already
+                    // scrolled and the release orders nothing.
                     (MouseButton::Right, ElementState::Pressed) => {
                         if self.placement.take().is_some() {
-                            return; // right-click cancels placement, orders nothing
-                        }
-                        self.attack_move_armed = false;
-                        // A minimap right-click orders at the mapped ground
-                        // point (armed attack-move included).
-                        let minimap_hit = self.renderer.as_ref().and_then(|renderer| {
-                            renderer.minimap_hit(cursor.0 as f32, cursor.1 as f32)
-                        });
-                        if let Some((world_x, world_z)) = minimap_hit {
-                            if !self.selection.is_empty() {
-                                let target = MatchHost::world_to_logical(world_x, world_z);
-                                if self.attack_move_armed {
-                                    self.attack_move_armed = false;
-                                    self.submit_order(
-                                        CommandKind::AttackMove {
-                                            units: self.selection.clone(),
-                                            target,
-                                        },
-                                        Some(target),
-                                    );
-                                } else {
-                                    self.submit_order(
-                                        CommandKind::Move {
-                                            units: self.selection.clone(),
-                                            target,
-                                        },
-                                        Some(target),
-                                    );
-                                }
-                            }
+                            // Right-click cancels placement and orders
+                            // nothing: the whole gesture is consumed (the
+                            // machine stays Idle, so the release is a
+                            // no-op too).
+                            self.attack_move_armed = false;
                             return;
                         }
-                        self.issue_context_order(ndc);
+                        // Capture whether attack-move was armed at the
+                        // press: the minimap release honors it as an
+                        // attack-move order (the old dead branch the §1.1
+                        // audit found — the disarm used to precede the
+                        // check), a world release disarms.
+                        self.right_press_armed = self.attack_move_armed;
+                        self.attack_move_armed = false;
+                        self.right_button.press(cursor);
+                        // Grab the ground under the press for the
+                        // potential drag (None above the horizon; the
+                        // crossing event re-grabs).
+                        self.right_anchor = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1));
                     }
-                    // M9.1: middle-drag panning grabs the ground on press.
+                    (MouseButton::Right, ElementState::Released) => {
+                        // The release decides what the gesture was. A
+                        // camera drag (or a swallowed press) orders nothing.
+                        self.right_anchor = None;
+                        let armed_at_press = self.right_press_armed;
+                        self.right_press_armed = false;
+                        match self.right_button.release(cursor) {
+                            Some(RightRelease::Command) => {
+                                // UI buttons swallow the right-click
+                                // (right-clicking the command card is not
+                                // a world order).
+                                if self
+                                    .ui_buttons
+                                    .iter()
+                                    .any(|button| button.contains(cursor.0 as f32, cursor.1 as f32))
+                                {
+                                    return;
+                                }
+                                // A minimap right-click orders at the
+                                // mapped ground point (attack-move when
+                                // the gesture began armed).
+                                let minimap_hit = self.renderer.as_ref().and_then(|renderer| {
+                                    renderer.minimap_hit(cursor.0 as f32, cursor.1 as f32)
+                                });
+                                if let Some((world_x, world_z)) = minimap_hit {
+                                    if !self.selection.is_empty() {
+                                        let target = MatchHost::world_to_logical(world_x, world_z);
+                                        if armed_at_press {
+                                            self.submit_order(
+                                                CommandKind::AttackMove {
+                                                    units: self.selection.clone(),
+                                                    target,
+                                                },
+                                                Some(target),
+                                            );
+                                        } else {
+                                            self.submit_order(
+                                                CommandKind::Move {
+                                                    units: self.selection.clone(),
+                                                    target,
+                                                },
+                                                Some(target),
+                                            );
+                                        }
+                                    }
+                                    return;
+                                }
+                                self.issue_context_order(ndc);
+                            }
+                            Some(RightRelease::Scroll) | None => {
+                                // The drag already scrolled; order nothing.
+                            }
+                        }
+                    }
+                    // M10.2 (PLAN §1.2): middle-drag rotates the camera
+                    // (Generals does this — it panned before this pass).
+                    // The press only anchors the cursor; CursorMoved turns
+                    // horizontal travel into yaw.
                     (MouseButton::Middle, ElementState::Pressed) => {
-                        self.middle_anchor =
-                            self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1));
+                        self.middle_last = Some(cursor);
                     }
                     (MouseButton::Middle, ElementState::Released) => {
-                        self.middle_anchor = None;
+                        self.middle_last = None;
                     }
                     _ => {}
                 }
@@ -1245,27 +1344,24 @@ impl ApplicationHandler for App {
         if self.keys.contains(&Key::Character("d")) {
             dx += pan;
         }
-        // M9.1 (plan §11.3: "pan by edge + keys"): a cursor resting on a
-        // window border pans toward that border, corners combine. Focused
-        // windows only — an unfocused game never scrolls the desktop.
-        if self.focused {
+        // M10.2 (PLAN §1.2): edge scrolling — a depth-scaled band instead
+        // of the old binary zone. The cursor at the window edge scrolls at
+        // full speed, halfway into the `input::EDGE_SCROLL_BAND_PX` band at
+        // half speed, and the interior not at all; all four edges work and
+        // corners combine (the vector carries both axes). Focused windows
+        // only — an unfocused game never scrolls the desktop. The band is
+        // toggleable (`edge_scroll_enabled`); the settings screen that
+        // flips it is Phase 3.
+        if self.focused && self.edge_scroll_enabled {
             if let (Some(window), Some((mx, my))) = (&self.window, self.drag_current) {
                 let size = window.inner_size();
                 if size.width > 0 && size.height > 0 {
-                    let (width, height) = (size.width as f64, size.height as f64);
-                    let margin = EDGE_SCROLL_PX;
-                    if mx < margin {
-                        dx -= pan;
-                    }
-                    if mx > width - margin {
-                        dx += pan;
-                    }
-                    if my < margin {
-                        dz += pan;
-                    }
-                    if my > height - margin {
-                        dz -= pan;
-                    }
+                    let (scale_x, scale_z) = input::edge_scroll_vector(
+                        (mx, my),
+                        (size.width as f64, size.height as f64),
+                    );
+                    dx += pan * scale_x;
+                    dz += pan * scale_z;
                 }
             }
         }
