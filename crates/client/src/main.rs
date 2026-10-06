@@ -202,6 +202,9 @@ struct App {
     /// held — horizontal travel rotates the camera (Generals-style
     /// middle-drag rotate; it panned before this pass).
     middle_last: Option<(f64, f64)>,
+    /// M10.2 (PLAN §1.3): when the last left *click* (not drag) landed —
+    /// the double-click window's clock for same-kind select-all.
+    last_left_click: Option<Instant>,
     /// M10.2 (PLAN §1.2): whether edge scrolling is on (the settings toggle
     /// itself is Phase 3; the flag is wired now so the toggle only flips a
     /// bool then). The band width and depth scaling live in `input.rs`.
@@ -363,6 +366,7 @@ impl App {
             right_anchor: None,
             right_press_armed: false,
             middle_last: None,
+            last_left_click: None,
             edge_scroll_enabled: true,
             focused: true,
             attack_move_armed: false,
@@ -428,11 +432,13 @@ impl App {
         self.placement = None;
         self.ui_buttons.clear();
         // M10.2: the input-layer additions reset with the match — the right
-        // button's gesture state and the middle-drag rotate anchor.
+        // button's gesture state, the middle-drag rotate anchor, and the
+        // double-click clock.
         self.right_button = RightButton::new();
         self.right_anchor = None;
         self.right_press_armed = false;
         self.middle_last = None;
+        self.last_left_click = None;
         // M10.1: the recording state restarts with the match — the new
         // segment gets its own tick-0 checkpoint and its own end-of-match
         // record write.
@@ -593,8 +599,12 @@ impl App {
         Self::to_ndc(window, x, y)
     }
 
-    /// Single-click selection: the nearest own entity to the cursor.
-    fn click_select(&mut self, ndc: (f32, f32)) {
+    /// The pick under a single left click: the nearest own entity to the
+    /// cursor within the pick radius (`None` on empty ground). M10.2
+    /// (PLAN §1.1): what the *click then does* is the release handler's
+    /// decision — select, shift-toggle, or double-click expand — this only
+    /// answers "what is under the cursor".
+    fn pick_own_entity(&self, ndc: (f32, f32)) -> Option<EntityId> {
         let snapshot = self.view_snapshot();
         let mut best: Option<(f32, EntityId)> = None;
         for entity in &snapshot.entities {
@@ -607,11 +617,12 @@ impl App {
                 best = Some((distance, entity.id));
             }
         }
-        self.selection = best.map(|(_, id)| vec![id]).unwrap_or_default();
+        best.map(|(_, id)| id)
     }
 
-    /// Drag-box selection over own entities.
-    fn box_select(&mut self, a: (f32, f32), b: (f32, f32)) {
+    /// The ids inside a drag box over own entities (M10.2: the pure pick —
+    /// shift-union vs replace is the release handler's decision).
+    fn box_pick(&self, a: (f32, f32), b: (f32, f32)) -> Vec<EntityId> {
         let snapshot = self.view_snapshot();
         let own: Vec<pandemonium_engine::RenderEntity> = snapshot
             .entities
@@ -619,9 +630,8 @@ impl App {
             .filter(|entity| entity.owner == HUMAN)
             .copied()
             .collect();
-        self.selection =
-            self.camera
-                .box_select(&own, glam::Vec2::new(a.0, a.1), glam::Vec2::new(b.0, b.1));
+        self.camera
+            .box_select(&own, glam::Vec2::new(a.0, a.1), glam::Vec2::new(b.0, b.1))
     }
 
     /// The one place orders enter the host: stamps the seq, pings the
@@ -1050,10 +1060,54 @@ impl ApplicationHandler for App {
                             let start_ndc = Self::to_ndc(window, start.0, start.1);
                             let dragged = (start_ndc.0 - ndc.0).abs() > CLICK_SLOP
                                 || (start_ndc.1 - ndc.1).abs() > CLICK_SLOP;
+                            let shift = self.modifiers.shift_key();
                             if dragged {
-                                self.box_select(start_ndc, ndc);
+                                // Box select (M10.2 PLAN §1.3: shift+box
+                                // ADDS to the selection instead of
+                                // replacing it).
+                                let picked = self.box_pick(start_ndc, ndc);
+                                self.selection = if shift {
+                                    input::union_selection(&self.selection, &picked)
+                                } else {
+                                    picked
+                                };
                             } else {
-                                self.click_select(ndc);
+                                // A click. M10.2 (PLAN §1.3): a double click
+                                // (two clicks inside the window) selects
+                                // all visible units of the same kind.
+                                let now = Instant::now();
+                                let double = self.last_left_click.is_some_and(|then| {
+                                    input::is_double_click(
+                                        now.duration_since(then).as_millis() as u64
+                                    )
+                                });
+                                self.last_left_click = Some(now);
+                                if let Some(picked) = self.pick_own_entity(ndc) {
+                                    if double {
+                                        let same_kind = input::same_kind_selection(
+                                            &self.view_snapshot().entities,
+                                            picked,
+                                        )
+                                        .unwrap_or_default();
+                                        self.selection = if shift {
+                                            input::union_selection(&self.selection, &same_kind)
+                                        } else {
+                                            same_kind
+                                        };
+                                    } else if shift {
+                                        // Shift+click toggles membership.
+                                        self.selection =
+                                            input::shift_click_selection(&self.selection, picked);
+                                    } else {
+                                        self.selection = vec![picked];
+                                    }
+                                }
+                                // else: a click on empty ground. PLAN §1.1:
+                                // "Click on empty ground with a selection
+                                // and nothing else = nothing happens" —
+                                // never an order (left never orders), and
+                                // not even a deselect; Escape clears the
+                                // selection.
                             }
                         }
                     }

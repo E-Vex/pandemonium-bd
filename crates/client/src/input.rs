@@ -15,6 +15,9 @@
 //! lesson: presentation direction is invisible to the golden hashes, so
 //! only tests can keep it honest).
 
+use pandemonium_engine::RenderEntity;
+use pandemonium_sim_api::EntityId;
+
 /// How far (in pixels) the cursor may travel between a right-button press
 /// and its release for the gesture to count as a command click rather than
 /// a camera drag (PLAN §1.2: "less than about 6 pixels of movement =
@@ -168,10 +171,68 @@ pub fn edge_scroll_vector(cursor: (f64, f64), window: (f64, f64)) -> (f32, f32) 
     (x, z)
 }
 
+/// How long (in milliseconds) two left clicks may sit apart and still count
+/// as one double click (the same-kind select-all of PLAN §1.3). Generals
+/// uses a similar few-hundred-millisecond window; long enough for a
+/// deliberate double press, short enough that two unrelated clicks never
+/// combine.
+pub const DOUBLE_CLICK_MS: u64 = 350;
+
+/// Whether two clicks `elapsed_ms` apart count as one double click
+/// ([`DOUBLE_CLICK_MS`] is the window).
+pub fn is_double_click(elapsed_ms: u64) -> bool {
+    elapsed_ms <= DOUBLE_CLICK_MS
+}
+
+/// Shift+click on a picked entity (PLAN §1.3: "Shift+click adds or removes
+/// from the selection"): the picked id toggles — absent it is appended,
+/// present it is removed. Order is otherwise preserved.
+pub fn shift_click_selection(current: &[EntityId], picked: EntityId) -> Vec<EntityId> {
+    let mut next = current.to_vec();
+    if let Some(index) = next.iter().position(|id| *id == picked) {
+        next.remove(index);
+    } else {
+        next.push(picked);
+    }
+    next
+}
+
+/// Shift+box selection (PLAN §1.3: "shift+box adds"): the box's picked ids
+/// join the current selection, keeping the current order first and the box's
+/// ascending snapshot order after; ids already selected are not duplicated.
+pub fn union_selection(current: &[EntityId], picked: &[EntityId]) -> Vec<EntityId> {
+    let mut next = current.to_vec();
+    for id in picked {
+        if !next.contains(id) {
+            next.push(*id);
+        }
+    }
+    next
+}
+
+/// Double-click on a picked entity (PLAN §1.3: "selects all visible units
+/// of the same kind"): every snapshot entity of the clicked entity's kind
+/// owned by the same player, in snapshot order. The snapshot the caller
+/// passes is the fog-filtered view, so "visible" is already the truth.
+/// `None` when the clicked entity is not in the snapshot (nothing to
+/// expand).
+pub fn same_kind_selection(entities: &[RenderEntity], clicked: EntityId) -> Option<Vec<EntityId>> {
+    let clicked = entities.iter().find(|entity| entity.id == clicked)?;
+    let (owner, kind) = (clicked.owner, clicked.kind);
+    Some(
+        entities
+            .iter()
+            .filter(|entity| entity.owner == owner && entity.kind == kind)
+            .map(|entity| entity.id)
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pandemonium_engine::RtsCamera;
+    use pandemonium_sim_api::{KindId, MoveState, PlayerId};
 
     // ---- right-button state machine -------------------------------------
 
@@ -344,6 +405,81 @@ mod tests {
             before,
             after
         );
+    }
+
+    // ---- selection parity -------------------------------------------------
+
+    fn entity(id: u64, owner: PlayerId, kind: KindId) -> RenderEntity {
+        RenderEntity {
+            id: EntityId(id),
+            owner,
+            kind,
+            pos: glam::Vec3::new(id as f32, 0.0, 100.0 - id as f32),
+            facing: glam::Vec3::ZERO,
+            hp_fraction_milli: 1000,
+            move_state: MoveState::Idle,
+        }
+    }
+
+    #[test]
+    fn shift_click_toggles_membership() {
+        let current = vec![EntityId(1), EntityId(2)];
+        // Absent: appended.
+        assert_eq!(
+            shift_click_selection(&current, EntityId(3)),
+            vec![EntityId(1), EntityId(2), EntityId(3)]
+        );
+        // Present: removed.
+        assert_eq!(
+            shift_click_selection(&current, EntityId(1)),
+            vec![EntityId(2)]
+        );
+        // An empty selection takes the pick.
+        assert_eq!(shift_click_selection(&[], EntityId(3)), vec![EntityId(3)]);
+    }
+
+    #[test]
+    fn shift_box_unions_without_duplicates() {
+        let current = vec![EntityId(1), EntityId(2)];
+        let picked = vec![EntityId(2), EntityId(4), EntityId(3)];
+        assert_eq!(
+            union_selection(&current, &picked),
+            vec![EntityId(1), EntityId(2), EntityId(4), EntityId(3)]
+        );
+        assert_eq!(union_selection(&[], &picked), picked);
+        assert!(!union_selection(&current, &[]).is_empty());
+    }
+
+    #[test]
+    fn double_click_expands_to_all_visible_same_kind_same_owner() {
+        let own = PlayerId(0);
+        let other = PlayerId(1);
+        let entities = vec![
+            entity(1, own, KindId(2)),
+            entity(2, own, KindId(2)),
+            entity(3, other, KindId(2)), // enemy same kind: never joined
+            entity(4, own, KindId(5)),   // own other kind
+            entity(5, own, KindId(2)),
+        ];
+        assert_eq!(
+            same_kind_selection(&entities, EntityId(2)),
+            Some(vec![EntityId(1), EntityId(2), EntityId(5)])
+        );
+        // The enemy's double-click (were it clickable) expands to its own
+        // side's kind members only.
+        assert_eq!(
+            same_kind_selection(&entities, EntityId(3)),
+            Some(vec![EntityId(3)])
+        );
+        // An id outside the snapshot expands to nothing.
+        assert_eq!(same_kind_selection(&entities, EntityId(99)), None);
+    }
+
+    #[test]
+    fn the_double_click_window_is_a_few_hundred_ms() {
+        assert!(is_double_click(0));
+        assert!(is_double_click(DOUBLE_CLICK_MS));
+        assert!(!is_double_click(DOUBLE_CLICK_MS + 1));
     }
 
     // ---- direction pinning: middle-drag rotate ---------------------------
