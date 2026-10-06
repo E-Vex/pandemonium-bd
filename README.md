@@ -177,7 +177,8 @@ Built and verified through M9:
 
 - **`fx`** — Q16.16 fixed-point math with 64-bit intermediates, round-toward-zero
   and saturating contracts (identical in debug and release), exact integer square
-  root over the full u64 range, PCG32 RNG with canonical seeding, FNV-1a 64-bit
+  root over the full u64 range, PCG32 RNG with canonical seeding, xxHash64 as
+  the canonical hasher
   hashing — all property-tested.
 - **`sim`** — the tick pipeline (all 11 stages live, including M8's match rules);
   entity and capability stores kept in ascending-ID order by construction
@@ -258,7 +259,7 @@ Not built yet — on purpose, in milestone order:
 ```text
 pandemonium-bd/
 ├─ crates/
-│  ├─ fx/         fixed-point math (Fx, Vec2Fx, isqrt), PCG32 RNG, FNV-1a hasher
+│  ├─ fx/         fixed-point math (Fx, Vec2Fx, isqrt), PCG32 RNG, xxHash64 hasher
 │  ├─ sim_api/    boundary vocabulary: Command, Event, Snapshot, PlayerView, Reject
 │  ├─ sim/        the simulation: tick pipeline, stores, command gate, state hash
 │  ├─ content/    RON schema, versioned loaders, validators, ContentBundle

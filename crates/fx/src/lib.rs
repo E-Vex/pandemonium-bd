@@ -10,7 +10,8 @@
 //! - `Vec2Fx`: 2D fixed-point vector (tile units).
 //! - `isqrt`: exact integer square root.
 //! - `Rng`: PCG32 deterministic random generator.
-//! - `Fnv1a64`: FNV-1a 64-bit canonical hasher.
+//! - `XxHash64`: xxHash64 — the canonical hasher (since M10.1, DEBT-001).
+//! - `Fnv1a64`: FNV-1a 64-bit — the replay file checksum.
 
 #![forbid(unsafe_code)]
 #![deny(
@@ -27,7 +28,7 @@ mod sqrt;
 mod vec;
 
 pub use fixed::{Fx, FRAC_BITS, FRAC_SCALE};
-pub use hash::{fnv1a64, Fnv1a64};
+pub use hash::{fnv1a64, xxhash64, xxhash64_seeded, Fnv1a64, XxHash64};
 pub use rng::Rng;
 pub use sqrt::isqrt;
 pub use vec::Vec2Fx;

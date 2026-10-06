@@ -1,7 +1,7 @@
 //! Property tests for the fx crate (plan §6.1): conversion round-trips, arithmetic
 //! laws where they are expected to hold, and no panics on extremes.
 
-use pandemonium_fx::{fnv1a64, isqrt, Fnv1a64, Fx, Rng, Vec2Fx};
+use pandemonium_fx::{fnv1a64, isqrt, xxhash64, Fnv1a64, Fx, Rng, Vec2Fx, XxHash64};
 use proptest::prelude::*;
 
 proptest! {
@@ -154,6 +154,23 @@ proptest! {
         h.write_bytes(l);
         h.write_bytes(r);
         prop_assert_eq!(h.finish(), fnv1a64(&b));
+    }
+
+    /// The canonical hasher's streaming state equals its one-shot digest for
+    /// arbitrary bytes and arbitrary two-way chunkings (M10.1, DEBT-001: the
+    /// canonical call sites feed many small writes, so chunking-invariance is
+    /// the load-bearing property).
+    #[test]
+    fn xxhash64_incremental_matches_one_shot(
+        b in proptest::collection::vec(any::<u8>(), 0..256),
+        split in proptest::num::usize::ANY,
+    ) {
+        let split = if b.is_empty() { 0 } else { split % b.len() };
+        let (l, r) = b.split_at(split);
+        let mut h = XxHash64::new();
+        h.write_bytes(l);
+        h.write_bytes(r);
+        prop_assert_eq!(h.finish(), xxhash64(&b));
     }
 
     /// Every integer-write method matches the canonical little-endian byte

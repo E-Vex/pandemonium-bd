@@ -1,5 +1,5 @@
 //! The canonical state hash (plan §6.4): an explicit little-endian byte encoding
-//! of the simulation state, in a fixed field order, through `fx::Fnv1a64` — never
+//! of the simulation state, in a fixed field order, through `fx::XxHash64` — never
 //! `Debug` output, never memory layout.
 //!
 //! What is encoded (the plan's list, minus state that does not exist yet):
@@ -13,7 +13,7 @@
 //! shows up as a golden-hash change in review (tests/determinism.rs) rather than
 //! as a silent value shift.
 
-use pandemonium_fx::{Fnv1a64, Rng};
+use pandemonium_fx::{Rng, XxHash64};
 use pandemonium_sim_api::Tick;
 
 use crate::world::{CapabilityData, Order, World};
@@ -31,7 +31,7 @@ pub(crate) const STATE_ENCODING_VERSION: u32 = 4;
 
 /// Encodes the whole state into the hasher, in canonical order.
 pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u64) -> u64 {
-    let mut h = Fnv1a64::new();
+    let mut h = XxHash64::new();
     h.write_u32(STATE_ENCODING_VERSION);
     h.write_u32(tick);
     let (state, inc) = rng.state_parts();
@@ -170,7 +170,7 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
     h.finish()
 }
 
-fn encode_order(h: &mut Fnv1a64, order: &Order) {
+fn encode_order(h: &mut XxHash64, order: &Order) {
     match order {
         Order::MoveTo { target } => {
             h.write_u8(1);

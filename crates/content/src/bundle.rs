@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use pandemonium_fx::Fnv1a64;
+use pandemonium_fx::XxHash64;
 use pandemonium_sim::TrivialWorld;
 use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
@@ -253,7 +253,7 @@ impl ContentBundle {
         map: defs::MapDef,
     ) -> Self {
         let content_hash = {
-            let mut h = Fnv1a64::new();
+            let mut h = XxHash64::new();
             h.write_u32(CONTENT_ENCODING_VERSION);
             encode_rules(&mut h, &rules);
             encode_entities(&mut h, &entities);
@@ -262,7 +262,7 @@ impl ContentBundle {
             h.finish()
         };
         let map_hash = {
-            let mut h = Fnv1a64::new();
+            let mut h = XxHash64::new();
             h.write_u32(MAP_ID_DOMAIN);
             encode_map(&mut h, &map);
             h.finish()
@@ -285,7 +285,7 @@ impl ContentBundle {
     /// The canonical content identity of this bundle (plan §6.5 `content_hash`):
     /// a hash over every canonical field — rules, entities, factions, and the
     /// whole map including the display-only heightmap — in a fixed
-    /// little-endian order through `fx::Fnv1a64`, never over `Debug` output or
+    /// little-endian order through `fx::XxHash64`, never over `Debug` output or
     /// memory layout (plan §5.10).
     ///
     /// The heightmap participates even though it cannot alter simulation
@@ -606,19 +606,19 @@ fn map_flag(map: &defs::MapDef, pick: impl Fn(&defs::TerrainClass) -> bool) -> V
 
 // ---------------------------------------------------------------------------
 // Canonical encoding (the content hash) — plan §5.10: explicit little-endian
-// byte encoding through fx::Fnv1a64, fixed field order, never Debug output.
+// byte encoding through fx::XxHash64, fixed field order, never Debug output.
 // ---------------------------------------------------------------------------
 
-fn encode_str(h: &mut Fnv1a64, text: &str) {
+fn encode_str(h: &mut XxHash64, text: &str) {
     h.write_u32(text.len() as u32);
     h.write_bytes(text.as_bytes());
 }
 
-fn encode_bool(h: &mut Fnv1a64, value: bool) {
+fn encode_bool(h: &mut XxHash64, value: bool) {
     h.write_u8(u8::from(value));
 }
 
-fn encode_rules(h: &mut Fnv1a64, rules: &defs::RulesDef) {
+fn encode_rules(h: &mut XxHash64, rules: &defs::RulesDef) {
     encode_str(h, &rules.id);
     encode_str(h, &rules.display_name);
     h.write_u32(rules.resources.len() as u32);
@@ -634,7 +634,7 @@ fn encode_rules(h: &mut Fnv1a64, rules: &defs::RulesDef) {
     encode_bool(h, rules.allow_resignation);
 }
 
-fn encode_entities(h: &mut Fnv1a64, entities: &[defs::EntityDef]) {
+fn encode_entities(h: &mut XxHash64, entities: &[defs::EntityDef]) {
     h.write_u32(entities.len() as u32);
     for entity in entities {
         encode_str(h, &entity.id);
@@ -653,7 +653,7 @@ fn encode_entities(h: &mut Fnv1a64, entities: &[defs::EntityDef]) {
     }
 }
 
-fn encode_capability(h: &mut Fnv1a64, cap: &defs::CapabilityDef) {
+fn encode_capability(h: &mut XxHash64, cap: &defs::CapabilityDef) {
     match cap {
         defs::CapabilityDef::Health {
             max_hp,
@@ -723,7 +723,7 @@ fn encode_capability(h: &mut Fnv1a64, cap: &defs::CapabilityDef) {
     }
 }
 
-fn encode_factions(h: &mut Fnv1a64, factions: &[defs::FactionDef]) {
+fn encode_factions(h: &mut XxHash64, factions: &[defs::FactionDef]) {
     h.write_u32(factions.len() as u32);
     for faction in factions {
         encode_str(h, &faction.id);
@@ -749,7 +749,7 @@ fn encode_factions(h: &mut Fnv1a64, factions: &[defs::FactionDef]) {
     }
 }
 
-fn encode_map(h: &mut Fnv1a64, map: &defs::MapDef) {
+fn encode_map(h: &mut XxHash64, map: &defs::MapDef) {
     encode_str(h, &map.id);
     encode_str(h, &map.display_name);
     h.write_u32(map.width);

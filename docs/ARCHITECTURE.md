@@ -12,7 +12,7 @@ exists versus what is pending, see [`AI-Handoff.md`](../AI-Handoff.md).
 
 | Crate | Role (plan §4) | Depends on |
 |-------|----------------|------------|
-| `crates/fx` | Fixed-point math (`Fx`, `Vec2Fx`), integer sqrt, PCG32 RNG, FNV-1a hasher | nothing |
+| `crates/fx` | Fixed-point math (`Fx`, `Vec2Fx`), integer sqrt, PCG32 RNG, xxHash64 canonical hasher (M10.1; FNV-1a kept for the replay checksum) | nothing |
 | `crates/sim_api` | Public vocabulary crossing the sim boundary: ids, commands, events, views | fx |
 | `crates/sim` | World state, entity store, capabilities, tick pipeline, systems, state hash | fx, sim_api |
 | `crates/content` | RON schema, versioned loaders, validators, content bundle + hash | fx, sim, sim_api + serde, ron, thiserror |
@@ -59,7 +59,8 @@ enforcement). See [`ASSUMPTIONS.md`](ASSUMPTIONS.md).
 - All randomness flows from `fx::Rng` (PCG32), seeded from the match seed and owned
   by the simulation state, advanced in a fixed order.
 - State hashing is an explicit canonical little-endian byte encoding through
-  `fx::Fnv1a64` — never `Debug` output or memory layout (plan §6.4).
+  `fx::XxHash64` (since M10.1; FNV-1a before — DEBT-001 repaid) — never `Debug`
+  output or memory layout (plan §6.4).
 
 ## The boundary the whole design hangs on
 
@@ -138,7 +139,7 @@ crates/sim/src/
                shared by the gate and player_view().
   hash.rs      The canonical state hash (plan §6.4): little-endian, fixed field
                order, entity-major with a capability presence bitmask (u16,
-               eleven slots), through fx::Fnv1a64; carries
+               eleven slots), through fx::XxHash64 (xxHash64 since M10.1); carries
                STATE_ENCODING_VERSION = 4 (the economy capability blocks, the
                GatherAt/BuildAt orders, the UnderConstruction lifecycle, the
                Attack capability block + AttackUnit order — M6).
@@ -220,8 +221,9 @@ crates/content/src/
                start over free terrain), and the declared 180-degree symmetry
                check (grid + ore tile multiset + mirrored anchors).
   bundle.rs    ContentTree (everything in a directory) and ContentBundle (one
-               match's content): the canonical content hash and map id (FNV-1a
-               over an explicit little-endian encoding, plan §5.10) and world()
+               match's content): the canonical content hash and map id (xxHash64
+               over an explicit little-endian encoding, plan §5.10; FNV-1a before
+               M10.1) and world()
                — the plain TrivialWorld the simulation receives.
 ```
 

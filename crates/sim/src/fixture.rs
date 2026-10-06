@@ -11,7 +11,7 @@
 //! second, radii in milli-tiles, durations implicitly in ticks; the simulator
 //! converts them to fixed point once, at world construction.
 
-use pandemonium_fx::{Fnv1a64, Fx};
+use pandemonium_fx::{Fx, XxHash64};
 use pandemonium_sim_api::{KindId, PlayerId, ResourceId, Tick, Vec2Fx};
 
 use crate::world::{BuildDef, GatherDef, PopulationDef, ProduceDef, StorageDef, VisionDef};
@@ -80,7 +80,7 @@ impl TrivialWorld {
     /// fixed little-endian order. Replays record it so a replay can be checked
     /// against the world it was recorded on (plan §6.5 `content_hash`).
     pub fn content_hash(&self) -> u64 {
-        let mut h = Fnv1a64::new();
+        let mut h = XxHash64::new();
         h.write_u32(FIXTURE_ENCODING_VERSION);
         h.write_u64(self.map_id);
         h.write_u32(self.width_tiles);
@@ -149,7 +149,7 @@ pub struct KindEconomy {
 
 impl KindEconomy {
     /// Encodes the economy block into the fixture hash.
-    fn encode(&self, h: &mut Fnv1a64) {
+    fn encode(&self, h: &mut XxHash64) {
         h.write_u32(self.cost.len() as u32);
         for (resource, amount) in &self.cost {
             h.write_u32(resource.0);
@@ -264,7 +264,7 @@ pub enum CapTemplate {
 
 impl CapTemplate {
     /// Encodes one template into the fixture hash (fixed tag + fields).
-    fn encode(&self, h: &mut Fnv1a64) {
+    fn encode(&self, h: &mut XxHash64) {
         match self {
             CapTemplate::Health {
                 max_hp,
@@ -435,7 +435,7 @@ pub struct SpawnDef {
 
 impl SpawnDef {
     /// Encodes one spawn into the fixture hash.
-    fn encode(self, h: &mut Fnv1a64) {
+    fn encode(self, h: &mut XxHash64) {
         h.write_u8(self.owner.0);
         h.write_u32(self.kind.0);
         h.write_i32(self.pos.x.raw());

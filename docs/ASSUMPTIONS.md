@@ -739,3 +739,17 @@ confirms or rejects it.
   stuck (an evidence run showed 4 of 32 "unresolved" that all resolve by
   36000). The default is now 36000 and the report's end-tick telemetry reads
   the tick `MatchEnded` fired.
+
+- **A-087 (§6.4/§6.5, DEBT-001, M10.1).** The canonical hasher swapped
+  FNV-1a → xxHash64 (DEBT-001 repaid) without bumping
+  `STATE_ENCODING_VERSION` or the replay `format_version`: the canonical
+  byte encodings (field set, order, little-endian form) are unchanged —
+  only the digest algorithm moved, so an old reader's layout knowledge
+  stays valid. No `*.pdrp` replay files existed anywhere at swap time
+  (verified by search), so nothing in the wild can hold a stale digest.
+  The replay file's trailing *integrity checksum* deliberately remains
+  FNV-1a: it guards the file's bytes (a file-format concern), not the
+  simulation's canonical state, and swapping it would move the format
+  for no acceptance value. The swap is the pass's one hash-moving
+  commit; every subsequent task re-verifies zero golden movement
+  against the new pins.

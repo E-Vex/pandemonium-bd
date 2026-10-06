@@ -1038,10 +1038,15 @@ fn ai_vs_ai_golden_hash_is_pinned() {
     // wave never parks), focuses the sighted enemy command center, and
     // marches waves of ten with an army cap of sixteen — controller
     // decisions are canonical hashed state, so the trail moves again.
-    // Tick 0 is still the untouched 0x6161_3bca_16b8_f00e.
+    // Tick 0 was still the untouched 0x6161_3bca_16b8_f00e.
+    //
+    // M10.1 re-pin (written reason): the canonical hasher moved FNV-1a ->
+    // xxHash64 (DEBT-001 repaid). Every digest moves — including tick 0 —
+    // while the encoded bytes are unchanged (no encoding bump; see
+    // docs/DEBT.md and docs/ASSUMPTIONS.md A-087).
     assert_eq!(run.checkpoints.len(), (FLAGSHIP_TICKS / 30) as usize + 1);
-    assert_eq!(run.checkpoints[0].hash, 0x6161_3bca_16b8_f00e);
-    assert_eq!(run.final_hash, 0x01b3_b60b_741f_03e9);
+    assert_eq!(run.checkpoints[0].hash, 0x71a9_24ad_5799_e4b3);
+    assert_eq!(run.final_hash, 0x6e9a_18bd_7c5f_699f);
     assert_eq!(run.final_hash, run.checkpoints.last().unwrap().hash);
 }
 

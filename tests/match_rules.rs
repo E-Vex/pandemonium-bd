@@ -263,7 +263,9 @@ fn stage_10_does_not_change_the_m7_golden_checkpoint_trail() {
     while host.tick() < 7200 {
         host.advance();
     }
-    assert_eq!(host.state_hash(), 0x01b3_b60b_741f_03e9);
+    // Re-pinned M10.1: canonical hasher FNV-1a -> xxHash64 (DEBT-001 repaid);
+    // encoding unchanged, algorithm moved. See docs/DEBT.md.
+    assert_eq!(host.state_hash(), 0x6e9a_18bd_7c5f_699f);
 }
 
 // ---------------------------------------------------------------------------
