@@ -228,6 +228,34 @@ pub fn same_kind_selection(entities: &[RenderEntity], clicked: EntityId) -> Opti
     )
 }
 
+/// How long (in milliseconds) two presses of the same control-group digit
+/// may sit apart and still count as one double tap (the group-centering
+/// camera jump of PLAN §1.3).
+pub const DOUBLE_TAP_MS: u64 = 350;
+
+/// Whether two presses of the same control-group digit `elapsed_ms` apart
+/// count as one double tap ([`DOUBLE_TAP_MS`] is the window).
+pub fn is_double_tap(elapsed_ms: u64) -> bool {
+    elapsed_ms <= DOUBLE_TAP_MS
+}
+
+/// The ground-plane center (world x, z) of a control group's live members —
+/// the double-tap camera jump's target (PLAN §1.3). Dead or absent ids are
+/// skipped (a stale group reference is harmless); `None` when no member is
+/// in the snapshot.
+pub fn group_center(entities: &[RenderEntity], group: &[EntityId]) -> Option<(f32, f32)> {
+    let mut sum = (0.0f32, 0.0f32);
+    let mut count = 0u32;
+    for id in group {
+        if let Some(entity) = entities.iter().find(|entity| entity.id == *id) {
+            sum.0 += entity.pos.x;
+            sum.1 += entity.pos.z;
+            count += 1;
+        }
+    }
+    (count > 0).then(|| (sum.0 / count as f32, sum.1 / count as f32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +508,28 @@ mod tests {
         assert!(is_double_click(0));
         assert!(is_double_click(DOUBLE_CLICK_MS));
         assert!(!is_double_click(DOUBLE_CLICK_MS + 1));
+    }
+
+    #[test]
+    fn the_double_tap_window_matches_the_double_click_window() {
+        assert!(is_double_tap(0));
+        assert!(is_double_tap(DOUBLE_TAP_MS));
+        assert!(!is_double_tap(DOUBLE_TAP_MS + 1));
+    }
+
+    #[test]
+    fn group_center_averages_live_members_and_skips_the_dead() {
+        let entities = vec![
+            entity(1, PlayerId(0), KindId(2)),
+            entity(2, PlayerId(0), KindId(2)),
+        ];
+        let group = vec![EntityId(1), EntityId(2), EntityId(77)]; // 77 is dead
+        let center = group_center(&entities, &group).expect("live members exist");
+        // entity(1) sits at (1, 99), entity(2) at (2, 98): mean (1.5, 98.5).
+        assert!((center.0 - 1.5).abs() < 1e-4 && (center.1 - 98.5).abs() < 1e-4);
+        // A fully dead group centers nowhere.
+        assert_eq!(group_center(&entities, &[EntityId(77)]), None);
+        assert_eq!(group_center(&entities, &[]), None);
     }
 
     // ---- direction pinning: middle-drag rotate ---------------------------

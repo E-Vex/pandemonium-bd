@@ -205,6 +205,9 @@ struct App {
     /// M10.2 (PLAN §1.3): when the last left *click* (not drag) landed —
     /// the double-click window's clock for same-kind select-all.
     last_left_click: Option<Instant>,
+    /// M10.2 (PLAN §1.3): the last control-group digit press and when it
+    /// landed — a double tap recalls the group and centers the camera on it.
+    last_digit_press: Option<(usize, Instant)>,
     /// M10.2 (PLAN §1.2): whether edge scrolling is on (the settings toggle
     /// itself is Phase 3; the flag is wired now so the toggle only flips a
     /// bool then). The band width and depth scaling live in `input.rs`.
@@ -367,6 +370,7 @@ impl App {
             right_press_armed: false,
             middle_last: None,
             last_left_click: None,
+            last_digit_press: None,
             edge_scroll_enabled: true,
             focused: true,
             attack_move_armed: false,
@@ -439,6 +443,7 @@ impl App {
         self.right_press_armed = false;
         self.middle_last = None;
         self.last_left_click = None;
+        self.last_digit_press = None;
         // M10.1: the recording state restarts with the match — the new
         // segment gets its own tick-0 checkpoint and its own end-of-match
         // record write.
@@ -1308,7 +1313,10 @@ impl ApplicationHandler for App {
                             self.collect_checkpoints(&outcome);
                         }
                         // M8 (plan §11.3): control groups 1-9. Ctrl+digit
-                        // assigns the current selection; digit alone recalls.
+                        // assigns the current selection; digit alone
+                        // recalls. M10.2 (PLAN §1.3): a double tap of the
+                        // same digit within DOUBLE_TAP_MS recalls AND
+                        // centers the camera on the group's live members.
                         // Digit 0 is unused (9 groups, 1-9).
                         winit::keyboard::KeyCode::Digit1
                         | winit::keyboard::KeyCode::Digit2
@@ -1324,8 +1332,31 @@ impl ApplicationHandler for App {
                             let index = digit_to_group_index(code) - 1;
                             if self.modifiers.control_key() {
                                 self.assign_control_group(index);
+                                // An assign breaks the double-tap chain —
+                                // the next double tap must be two recalls.
+                                self.last_digit_press = None;
                             } else {
+                                let now = Instant::now();
+                                let double_tap =
+                                    self.last_digit_press.is_some_and(|(last_index, then)| {
+                                        last_index == index
+                                            && input::is_double_tap(
+                                                now.duration_since(then).as_millis() as u64,
+                                            )
+                                    });
                                 self.recall_control_group(index);
+                                if double_tap {
+                                    // Center the camera on the group's
+                                    // live members (dead ids weigh nothing).
+                                    if let Some((x, z)) = input::group_center(
+                                        &self.view_snapshot().entities,
+                                        &self.control_groups[index],
+                                    ) {
+                                        let distance = self.camera.distance();
+                                        self.camera.focus(x, z, distance);
+                                    }
+                                }
+                                self.last_digit_press = Some((index, now));
                             }
                         }
                         // M8 (plan §9.7, A15): 'R' restarts the match when
