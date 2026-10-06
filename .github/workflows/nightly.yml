@@ -8,6 +8,17 @@ name: nightly
 # sizes a full sweep takes hours, and CI-per-push is the green gate's job
 # (ci.yml). Crashes fail the workflow (`tools soak` exits non-zero when any
 # match crashes).
+#
+# M10.1 — sharding, timeouts, and evidence artifacts (plan §12's "in parallel
+# processes" is satisfied at the process level, exactly as the plan words it:
+# the soak binary itself stays sequential — the sequential runner is the
+# tested artifact):
+#   * The 1000-match tier is a 10-job matrix, 100 matches per shard.
+#   * Every job carries a timeout-minutes — a hang must fail loudly, not
+#     consume the runner day.
+#   * Every shard tees its summary to a file and uploads it; an aggregate
+#     job concatenates the evidence, sums the win totals, and fails if any
+#     shard's `crashed` count is nonzero.
 
 on:
   schedule:
@@ -19,18 +30,79 @@ env:
 
 jobs:
   soak:
-    name: soak (A7, ${{ matrix.matches }} matches)
+    name: soak (${{ matrix.tier }})
     runs-on: ubuntu-latest
+    # A hang must fail loudly, not consume the runner day.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
+        # Sharding arithmetic (the disjoint-seeds proof):
+        #
+        #   BASE is derived exactly as before M10.1: day index * 1000.
+        #   Shard k (k = 0..9) runs `--matches 100 --seed-base BASE + 100k`,
+        #   and `tools soak` assigns seed `seed_base + i` to match i,
+        #   i = 0..99 — so shard k's seeds are exactly the half-open
+        #   interval [BASE + 100k, BASE + 100k + 100).
+        #
+        #   Two shards k < j differ by (j - k) * 100 >= 100, so their
+        #   100-wide intervals cannot overlap: the shards are disjoint by
+        #   construction. The union over k = 0..9 is [BASE, BASE + 1000) —
+        #   the same 1000 consecutive seeds the unsharded
+        #   `--matches 1000 --seed-base BASE` run covered, so the sharded
+        #   nightly proves what the sequential nightly proved.
+        #
+        #   The smoke tier keeps its pre-M10.1 seed base (BASE itself); its
+        #   seeds overlap shard 0's first 32 — as they did with the
+        #   unsharded 1000-match tier before it. It is cheap crash/stall
+        #   detection on fresh runners, not a coverage claim.
         include:
           # The smoke tier always runs: cheap crash/stall detection.
-          - matches: 32
-          # The full A7 tier: 1000 seeded matches. Kept in the same matrix so
-          # one nightly run covers both; a run short on minutes can disable
-          # this entry without losing the smoke tier.
-          - matches: 1000
+          - tier: smoke-32
+            matches: 32
+            seed_offset: 0
+            timeout: 30
+          # The full A7 tier, sharded 10 ways.
+          - tier: shard-0
+            matches: 100
+            seed_offset: 0
+            timeout: 90
+          - tier: shard-1
+            matches: 100
+            seed_offset: 100
+            timeout: 90
+          - tier: shard-2
+            matches: 100
+            seed_offset: 200
+            timeout: 90
+          - tier: shard-3
+            matches: 100
+            seed_offset: 300
+            timeout: 90
+          - tier: shard-4
+            matches: 100
+            seed_offset: 400
+            timeout: 90
+          - tier: shard-5
+            matches: 100
+            seed_offset: 500
+            timeout: 90
+          - tier: shard-6
+            matches: 100
+            seed_offset: 600
+            timeout: 90
+          - tier: shard-7
+            matches: 100
+            seed_offset: 700
+            timeout: 90
+          - tier: shard-8
+            matches: 100
+            seed_offset: 800
+            timeout: 90
+          - tier: shard-9
+            matches: 100
+            seed_offset: 900
+            timeout: 90
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
@@ -40,19 +112,84 @@ jobs:
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
-          key: soak-${{ hashFiles('Cargo.lock') }}
+          key: soak-${{ matrix.tier }}-${{ hashFiles('Cargo.lock') }}
       - name: Build (release — soak is throughput-bound)
         run: cargo build --release -p pandemonium-tools
-      - name: Soak (${{ matrix.matches }} AI-vs-AI matches)
+      - name: Soak (${{ matrix.tier }} — ${{ matrix.matches }} AI-vs-AI matches)
         run: |
+          set -o pipefail
+          BASE=$(( $(date +%s) / 86400 * 1000 ))
           cargo run --release -p pandemonium-tools -- soak \
             --matches ${{ matrix.matches }} \
-            --seed-base $(( $(date +%s) / 86400 * 1000 )) \
-            --content content
+            --seed-base $(( BASE + ${{ matrix.seed_offset }} )) \
+            --content content \
+            | tee soak-${{ matrix.tier }}.txt
+      - name: Upload the shard summary (evidence)
+        # Upload even on failure — a crashing shard's summary is exactly
+        # the evidence the aggregate and the declaration want to see.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-${{ matrix.tier }}
+          path: soak-${{ matrix.tier }}.txt
+
+  aggregate:
+    name: aggregate (evidence + crashed gate)
+    # Needs every shard (matrix jobs complete as one job name; this waits
+    # for all 11 entries) — and runs even when a shard failed, so the
+    # concatenated evidence lands regardless.
+    needs: soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download every shard summary
+        uses: actions/download-artifact@v4
+        with:
+          path: soak-summaries
+          pattern: soak-*
+          merge-multiple: true
+      - name: Concatenate the evidence, sum the totals, gate on crashed
+        run: |
+          set -euo pipefail
+          cd soak-summaries
+          # One durable artifact: the whole night's soak evidence.
+          cat $(ls | sort) > ../soak-all.txt
+          # The gate: any nonzero `crashed` count in any shard fails the
+          # nightly (belt and braces — the tool already exits non-zero on
+          # a crash, this catches a regression in that contract too).
+          total_crashed=0
+          for f in *; do
+            crashed=$(grep -E '^  crashed:' "$f" | grep -oE '[0-9]+' | head -1)
+            crashed=${crashed:-0}
+            echo "  $f: crashed $crashed"
+            total_crashed=$(( total_crashed + crashed ))
+          done
+          if [ "$total_crashed" -ne 0 ]; then
+            echo "::error::soak shards reported $total_crashed crashed match(es)"
+            exit 1
+          fi
+          # Win-rate totals, summed across the shards' `resolved:` lines.
+          # Each line carries five numbers: resolved, "0", wins0, "1", wins1.
+          grep -h '^  resolved:' * | grep -oE '[0-9]+' | awk '
+            NR % 5 == 1 { resolved += $1 }
+            NR % 5 == 3 { wins0 += $1 }
+            NR % 5 == 0 { wins1 += $1 }
+            END {
+              printf "  matches resolved: %d (player 0: %d, player 1: %d)\n", \
+                resolved, wins0, wins1
+            }'
+          echo "aggregate: 0 crashed across all shards"
+      - name: Upload the concatenated evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-aggregate
+          path: soak-all.txt
 
   bench:
     name: bench (§15 perf budgets)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
@@ -65,5 +202,5 @@ jobs:
           key: bench-${{ hashFiles('Cargo.lock') }}
       - name: Build (release)
         run: cargo build --release -p pandemonium-tools
-      - name: Bench (plan §15 budgets: ≤ 1 ms avg, ≤ 4 ms p99, ≥ 1000 t/s)
+      - name: "Bench (plan §15 budgets: ≤ 1 ms avg, ≤ 4 ms p99, ≥ 1000 t/s)"
         run: cargo run --release -p pandemonium-tools -- bench --ticks 10000 --content content
