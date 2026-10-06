@@ -128,7 +128,17 @@ injection drag-box-selected the 5 start entities, submitted 2 commands
 (a right-click context Move and an armed-'A' attack-move), and kept
 the loop healthy through pan keys, wheel zoom, and middle-drag —
 "windowed smoke: 900 frames presented, 2 commands submitted,
-selection 5, match ongoing". On a headless
+selection 5, match ongoing". The M10.2 Phase 1 verification (same recipe,
+python-xlib's XTEST instead of libXtst — this environment has neither
+libXtst nor xdotool): a 1500-frame run box-selected the start force,
+double-clicked, assigned/recalled/double-tapped control group 1, submitted
+EXACTLY ONE command from two right-button gestures (the short click ordered
+the context Move; the 130-px drag scrolled and its release ordered nothing —
+the threshold machine's contract), middle-drag-rotated, Escape-cleared,
+Space-jumped, and shift-clicked — "windowed smoke: 1500 frames presented,
+tick 585, 1 commands submitted, selection 1, match ongoing" (selection 1 =
+the double-click had collapsed the selection to the CC before the group
+assign; the recall restored exactly the group). On a headless
 machine the windowed path is verified on Xvfb + llvmpipe per DEBT-008
 (selection + Move commands provably work; the M8 additions — end screen,
 restart, control groups, Stop/AttackMove — are compiled and clippy-clean
@@ -940,6 +950,15 @@ existing `ai_host` seam.
   lets the windowed client run a FULL vs-AI match to resolution —
   the summary prints the outcome. `xvfb-run` itself is broken here
   (no xauth): start `Xvfb :99` directly and set `DISPLAY=:99`.
+  M10.2 additions (a bare-bones Debian 13 without root access):
+  `libxkbcommon-x11.so` + `libxcb-xkb.so.1` also needed extracting into
+  the userland dir (apt-get download + dpkg-deb -x, then unversioned
+  symlinks — without them the client panics inside xkbcommon-dl);
+  `XDG_RUNTIME_DIR` must point somewhere writable to quiet the Wayland
+  probe; and XTEST injection works through python-xlib
+  (`display.xtest_fake_input`, motion via a MotionNotify request with
+  root-absolute x/y) when libXtst/xdotool cannot be installed — set
+  keyboard focus with `window.set_input_focus` since no WM runs.
 
 - **The right button is a state machine now (M10.2), not a press handler**:
   `input.rs`'s `RightButton` decides command-vs-drag by press→release travel
