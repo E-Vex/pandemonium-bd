@@ -791,3 +791,89 @@ confirms or rejects it.
   exactly as they overlapped the unsharded tier before it. The optional
   `--json` summary flag was skipped: the tee'd text summary is the
   evidence, and the flag was explicitly allowed to be dropped.
+
+- **A-091 (PLAN-M10.2 §1.1, M10.2).** The plan's "Click on empty ground with
+  a selection and nothing else = nothing happens" is read literally: a plain
+  left click on empty ground neither orders (left never orders — that part
+  was already true) *nor clears the selection*. Generals ZH players may
+  expect ground-click-to-deselect; the plan's sentence wins, and
+  deselection stays available through Esc (the §1.3 Escape ladder) and an
+  empty box-drag (a drag is "something else"). Logged because a future
+  playtest may report "I can't deselect by clicking the ground" — that is
+  this assumption, not a bug.
+
+- **A-092 (PLAN-M10.2 §1.2, M10.2).** The right button's command/drag
+  threshold is 6.0 px of Euclidean travel (the plan says "about 6"), and
+  exactly 6.0 px counts as a command — the drag must be unambiguous. The
+  threshold applies to the press→release travel; a drag that crossed it and
+  returned to the press point is still a scroll (the release orders
+  nothing), and a press whose ground point is off-screen (above the
+  horizon) re-grabs at the crossing so a sky-started drag still scrolls.
+
+- **A-093 (PLAN-M10.2 §1.2, M10.2).** Middle-drag rotation is
+  horizontal-only, at a fixed 0.005 rad/px, direction pinned to match E
+  ("orbit right"): dragging right increases yaw at every camera angle
+  (pinned at yaw 0 and 90). Vertical middle-drag travel is inert — the
+  plan says "rotates", and pitch already has Ctrl+wheel; vertical drag
+  rotation would fight the wheel's muscle memory.
+
+- **A-094 (PLAN-M10.2 §1.2, M10.2).** The edge-scroll band is 14 px (the
+  plan says "about 12–16"), speed scales *linearly* with the cursor's depth
+  into the band (the old M9.1 zone snapped to full speed at 24 px, which
+  the owner read as broken), and depth is measured to the outermost pixel
+  (`w-1` / `h-1`) so the last pixel row scrolls at full speed. The band is
+  on by default; the *toggle* is PLAN §3/Phase 3's settings screen (the
+  `edge_scroll_enabled` flag is wired now, DEBT-014 holds the UI).
+
+- **A-095 (PLAN-M10.2 §1.3, M10.2).** The double-click and double-tap
+  windows are both 350 ms (the plan names neither; Generals uses a similar
+  few-hundred-millisecond window). A double click requires the second click
+  to *pick* an entity — two quick clicks on empty ground are two
+  nothing-happens clicks (A-091). A control-group *assign* (Ctrl+digit)
+  breaks the double-tap chain: the next double tap must be two recalls.
+
+- **A-096 (PLAN-M10.2 §1.3, M10.2).** "Double-click a unit selects all
+  visible units of the same kind" means same kind AND same owner, drawn
+  from the fog-filtered view snapshot (so "visible" is the fog's truth);
+  enemy units never join a selection (selection itself stays own-only,
+  the M6-era placeholder rule). A double-clicked *building* expands to
+  all visible buildings of that kind too — the plan says "units", but
+  kind-parity is the honest reading of the mechanism and it is harmless.
+
+- **A-097 (PLAN-M10.2 §1.3, M10.2).** Space ("jump to the last event or
+  base", optional) jumps to the most recent **death** — the event class a
+  player most wants to look at — else the player's start anchor, keeping
+  the current zoom distance. Attack hits were rejected as the tracked
+  class: they fire many times per combat tick and the jump target would
+  thrash. The command ping's position was rejected as a fallback: the
+  player already knows where they clicked.
+
+- **A-098 (PLAN-M10.2 §1.3, M10.2).** The cursor-feedback "invalid" state
+  (the plan offers "Move / Attack / invalid") is *silence*: no marker when
+  nothing is orderable (empty selection, placement mode owns the cursor,
+  or no ground under the cursor). A permanent gray marker under an idle
+  cursor would be noise, not feedback; the armed attack-move gets the
+  crosshair *window cursor* as its mode cue, and its ground marker is
+  orange (distinct from the red Attack preview).
+
+- **A-099 (PLAN-M10.2 §1.2, M10.2).** Right-button release routing, per
+  the state machine: a sub-threshold release over the bottom-bar buttons
+  is swallowed (UI is not a world order — the old code only guarded the
+  left button); a sub-threshold release over the minimap orders at the
+  mapped ground point, as Move — or as AttackMove when attack-move was
+  armed at the *press* (fixing the M9.1 dead branch the §1.1 audit found:
+  the old code disarmed before the minimap check read the flag); a
+  right-press that cancels a placement consumes the whole gesture (the
+  release is a no-op, matching the old behavior).
+
+- **A-100 (PLAN-M10.2 delivery, M10.2).** The owner's delivery answers for
+  this pass (recorded where the plan leaves the choices open): the
+  delivery covers **Phase 1 (Controls) only** — Phases 2–4 (visual
+  legibility, menus/settings, audio) wait for the owner's re-test verdict;
+  the Phase 4 audio backend, when that phase runs, is **rodio** (an
+  external-crate allow-list amendment + ADR is required then — the
+  allow-list is untouched by this pass); edge scrolling defaults to on
+  with the 14 px band; and the patch's commits are authored as
+  `elieaazzam-art <elieaazzam-art@users.noreply.github.com>` (the owner's
+  account noreply form, so GitHub attributes them on import; the owner
+  can `git am` and `--reset-author` if they prefer their local identity).
