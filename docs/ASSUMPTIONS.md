@@ -753,3 +753,41 @@ confirms or rejects it.
   for no acceptance value. The swap is the pass's one hash-moving
   commit; every subsequent task re-verifies zero golden movement
   against the new pins.
+
+- **A-088 (§11.6, M10.1).** The F8 bug-report dump's shape: a
+  `pandemonium-report-<seed>-tick<tick>.pdrp` replay record (built exactly
+  as the tools' recorder builds one, forced final at the dump's tick) plus
+  a sidecar `-info.txt` carrying seed, tick, content hash, map id, player
+  slot, frame count, selection size, and the controls line in effect
+  (interpreted as the *input mode*: the armed-attack-move instruction, a
+  showing refusal notice, or the standing controls summary — the state a
+  reproducer needs). The sidecar's frame count is presented-frame state, so
+  two dumps at the same tick but different frames differ in exactly that
+  field; the "same tick → identical bytes" property is the pure-function
+  determinism over identical state (pinned by `report.rs`'s unit test —
+  no wall-clock, no paths, no environment), and the `.pdrp` itself is
+  byte-identical across same-tick presses (verified windowed). The dump
+  writes beside `--record`'s path when given, the working directory
+  otherwise.
+
+- **A-089 (§6.5, M10.1).** `--record`'s write points: at the match's end
+  (first `is_finished()` — the log is complete there) and at clean exit
+  (every exit path funnels through the winit `exiting` hook — window
+  close, Escape, the `--frames` budget — writing only when the match never
+  wrote its record). A restart starts a fresh segment: the checkpoint trail
+  and the written-flag reset with the host, so the file on disk always
+  describes the most recent completed or in-progress segment. Each write
+  overwrites the path — the recording is "the run so far", not an archive.
+
+- **A-090 (§12, M10.1).** The nightly soak's shard shape — 10 shards × 100
+  matches — reads plan §12's "in parallel processes" at the process level
+  (the soak binary itself stays sequential; the sequential runner is the
+  tested artifact). 10×100 keeps every shard's runtime inside a 90-minute
+  timeout at the measured ~800-830 ticks/s (~1.6M ticks per shard ≈ 33
+  minutes), leaves headroom for a cold build (~15-20 min) and slower
+  runners, and makes the seed intervals round ([BASE+100k, BASE+100k+100),
+  union [BASE, BASE+1000) — the same 1000 consecutive seeds the sequential
+  run covered). The smoke tier's seeds keep overlapping shard 0's first 32,
+  exactly as they overlapped the unsharded tier before it. The optional
+  `--json` summary flag was skipped: the tee'd text summary is the
+  evidence, and the flag was explicitly allowed to be dropped.

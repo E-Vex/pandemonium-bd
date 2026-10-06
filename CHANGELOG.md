@@ -7,11 +7,68 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
-## [Unreleased] — pre-M10 cleanup
+## [M10.1] — pre-declaration hardening & A14 enablement
 
-A review pass over M0–M9.1 in preparation for M10 (Stabilization &
-declaration). No frozen decision changed; no golden hash moved; no
-dependency bumped.
+The pass between M10 and the Alpha declaration: the one open gate is A14 (the
+human playtest), and it lacked its enabling machinery. This pass builds it,
+repays the one debt whose trigger had fired (DEBT-001), hardens the nightly
+soak, and closes out the registers — leaving the project one human playtest
+away from the declaration. Not new gameplay, content, balance, audio,
+graphics, multiplayer, or refactoring (plan §0 governs).
+
+- **fx (DEBT-001 repaid — the pass's single hash-moving commit)**:
+  `XxHash64` (the reference XXH64 algorithm, written in-repo like PCG32 —
+  the dependency law forbids `twox-hash`) is now the canonical hasher behind
+  the same incremental `write_*`/`finish` surface; the state hash, the
+  fixture/content hashes, and every checkpoint digest moved in one commit.
+  Golden-tested against reference vectors (stripe boundaries 31/32/33, a
+  nonzero seed) plus a chunking-invariance property. `STATE_ENCODING_VERSION`
+  and the replay `format_version` unchanged (byte layouts identical —
+  A-087; no replay files existed in the wild). `Fnv1a64` remains as the
+  replay *file* checksum. Every pinned golden re-pinned with its written
+  reason (one commit, no split: demo `0xb6fff6659cfb7709`, flagship
+  `0x6e9a18bd7c5f699f`, content hash `0x9bc18c521107b262` / map id
+  `0xd38136401ab02ff1`).
+- **client (plan §6.5/§11.6)**: the windowed player can now participate in
+  the reproducibility promise — `--seed <u64>` (default 7) names the match,
+  `--record <path>` writes a replay at match end / clean exit that
+  `tools replay-verify` accepts, and **F8** is the §11.6 deterministic
+  bug-report dump: a `pandemonium-report-<seed>-tick<tick>.pdrp` replay plus
+  a sidecar `…-info.txt` (seed, tick, content identity, player slot, frame
+  count, selection size, the controls line in effect — no wall-clock), both
+  filenames printed, an on-screen ping cue, works while paused. The assembly
+  lives in the new `crates/client/src/report.rs` as pure functions with
+  tests (the A2 re-sim pattern at the client seam, pause validity, sidecar
+  determinism); parser tests cover `--seed`/`--record`. Verified windowed
+  under Xvfb + XTEST (DEBT-008's recipe): seeds diverge, records verify,
+  two F8 dumps (one mid-run, one paused) replay-verify PASS and the `.pdrp`
+  is byte-identical across same-tick presses. Zero golden movement —
+  client-only.
+- **docs**: `docs/PLAYTEST.md` — the A14 instrument (per-OS quickstart, the
+  controls card, the unaided-loop checklist, spectator legibility, the
+  debt-arming probes, the F8 procedure, the five-row results table, the
+  pass bar).
+- **ci**: the nightly soak is sharded 10×100 (seeds disjoint by construction
+  — the arithmetic proven in comments), `timeout-minutes` on every job
+  (90/shard, 30 smoke, 30 bench), every shard tees + uploads its summary,
+  and an aggregate job concatenates the evidence, sums win rates, and fails
+  on any nonzero `crashed` count. Zero Rust changes.
+- **registers**: DEBT-001 repaid; DEBT-013 (client monoliths) logged with
+  the post-alpha split plan; DEBT-011/012 triggers sharpened to name their
+  PLAYTEST.md probes; A-087..A-090 logged (the no-bump swap, the F8 dump
+  format + sidecar scope, the `--record` per-segment semantics, the shard
+  shape); AI-Handoff §2/§4/§6 refreshed; ARCHITECTURE carries the
+  post-alpha refactor map.
+
+414 dev / 409 release tests green (20 new: 8 fx, 12 client); fmt + clippy
+clean; replay round-trip and `content-validate` re-run PASS at the new
+identity; a 4-match soak spot-check clean.
+
+## [M10] — stabilization & declaration (incl. the pre-M10 cleanup)
+
+The pre-M10 cleanup review pass (formerly `[Unreleased]`) shipped as part of
+the M10 series. No frozen decision changed; no golden hash moved at the time
+(the M10.1 hasher swap above is what moved them); no dependency bumped.
 
 - **ci**: `Swatinem/rust-cache@v2` added to every CI job, keyed on
   `Cargo.lock` — cuts typical CI time roughly in half on a cache hit.
@@ -32,6 +89,15 @@ dependency bumped.
 - **test**: `crates/fx/tests/properties.rs` — added property tests for
   `Vec2Fx::dist` ↔ `(a - b).len()`, `Fnv1a64` integer-write LE encoding,
   and `Fx::abs`/`Fx::square` contracts.
+
+The M10 declaration itself: the A1–A15 acceptance sweep recorded with
+evidence in `docs/ALPHA_DECLARATION.md` — thirteen criteria pass
+automated, A14 recorded as an honest finding pending the human playtest;
+the 1000-match A7 tier wired nightly; §15 bench baselines recorded
+(0.25 ms avg, 2.22 ms p99, 4060 t/s — all budgets met); the M10
+playability/visual series (command card, fog rendering, minimap,
+lighting, silhouettes, shadows, death fades) landed with zero golden
+movement.
 
 ## [M9.1] — input hotfix (DEBT-008 human pass findings)
 

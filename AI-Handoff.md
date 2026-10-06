@@ -31,7 +31,7 @@
 | Repo | `github.com/E-VEx/pandemonium-bd` (git, branch `master`; local clone at `/home/z/my-project/bd` — the M9.1 session's path; wherever it lives, `git status` must be clean before work begins) |
 | Toolchain | Rust 1.98.1, edition 2021, pinned by `rust-toolchain.toml` |
 | Presentation | **3D perspective over the 2D logical ground plane** — the simulation stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md), 2026-10-01) |
-| Status | **M9.1 (input hotfix) COMPLETE on top of M9 — the loop is playable, and now *controllable*.** The DEBT-008 human pass finally ran (the project owner played the windowed build) and reported: *"nothing is moving, the control is bad, D goes left and A goes right, I can't move with the mouse, I can't order my army to move or attack, nothing appears on the screen."* Every symptom was real and every root cause was client-side (the simulation itself was machine-verified through M9 and untouched): (1) the camera's screen-right axis had been **negated since M3** — D panned left, A right, W retreated, S advanced; no sim-side test can catch presentation direction, and nobody had ever played it; (2) the mouse **could not move the camera at all** — plan §11.3's "pan by edge + keys" and "zoom toward the cursor" were never implemented, and the wheel direction was inverted (orbit-only); (3) right-click only ever issued `Move` — **the client had no way to order an attack at all** (§11.3's right-click *context* command was unimplemented); (4) 'A' fired attack-move on key-down *and on every OS key repeat* while also being a pan key; (5) **rejected orders were silent** — `CommandRejected` events were dropped, so every illegal order read as "the controls don't work"; (6) the opening camera framed the map center at 58 tiles out — the starting force read as specks ("nothing appears"); (7) `frames_presented` only advanced in `--frames` verification mode, so M9's flashes and pings **never expired and accumulated forever** in normal play. M9.1 fixes all seven: corrected pan axes (with direction-pinning tests at yaw 0 and 90°), WASD + arrow-key panning at frame-rate-independent speed, edge scrolling + middle-drag grab-pan + wheel zoom-toward-cursor, right-click context resolution (enemy → Attack, node → Gather for workers, ground → Move; `client::orders`), 'A' arms attack-move for the next left-click (HUD line included; Esc/right-click cancels), key-repeat guards, refusal cues (red square at the click point + HUD reason line; the smoke run now pins the wiring with a deliberately invalid order), selection corner brackets, an opening camera focused on the player's start at 26 tiles (re-framed on restart), map-bounds clamping, and a viewport-centered end screen. Machine-verified end to end under Xvfb + llvmpipe with XTEST injection (the DEBT-008 recipe, extended — see §8): a 900-frame windowed run with drag-box selection of the 5 start entities and 2 submitted commands (a context Move and an armed attack-move), the loop healthy through pan, zoom, and middle-drag. 352 dev / 347 release tests green (19 new: 7 camera, 8 context-resolution, 4 feedback). **Zero golden movement** — the fix is 100% presentation/input (no sim/ai/content files touched): demo `0x9d5ba9b565060336`, flagship `0x01b3b60b741f03e9`, content `0x249b69f0ee343a10` all re-verified bit-identical. (M10.1: those were the FNV-era values — the canonical hasher swap repaid DEBT-001 and moved every digest; §4 carries the current pins.) M9 remains complete underneath (the frozen-army chase-order pop, the re-marching wave machine with CC focus, waves of ten — matches resolve in 9.1k–23.3k ticks across a 32-seed sweep, `tests/alpha_loop.rs`; the feel pass: hit flashes, health bars, command pings, the §11.5 audio seam). DEBT-008 is narrowed to its last inch: the human *re-verification* of the fixed build on a real display (the feel judgment). **Next: M10 is complete — the acceptance sweep is recorded in docs/ALPHA_DECLARATION.md** | defeat = zero owned Footprint structures OR resigned; victory = one survivor; `MatchEnded` fires exactly once (idempotent — `Sim::outcome` caches the result, derived state per A-066, not hashed — the same reasoning as fog A-059; the defeat check fires only in structure-bearing matches, A-067). `MatchHost` hosts the vs-AI opponent (`with_controllers`), keeps the command log, surfaces the outcome; the client's full loop (hosted AI, end screen, R restart, control groups, context orders, feedback cues) runs through it. A15 green (two fresh hosts from the same seed: identical hashes; with AI controllers: identical logs too). |
+| Status | **M10.1 (pre-declaration hardening & A14 enablement) COMPLETE — the Alpha declaration now waits only on the A14 human playtest; `docs/PLAYTEST.md` is the instrument, F8 the evidence channel.** What this pass did: (1) repaid DEBT-001 — `fx::XxHash64` (the reference XXH64, written in-repo like PCG32) is now the canonical hasher behind the same `write_*`/`finish` surface; the pass's single hash-moving commit re-pinned every golden with its written reason (demo `0xb6fff6659cfb7709`, flagship `0x6e9a18bd7c5f699f`, content `0x9bc18c521107b262` / map id `0xd38136401ab02ff1`); encodings and format versions unchanged (A-087; `Fnv1a64` remains the replay file checksum). (2) The windowed client joined the reproducibility promise: `--seed <u64>`, `--record <path>` (writes at match end / clean exit; `tools replay-verify` accepts the file), and the §11.6 F8 deterministic bug-report dump (`pandemonium-report-<seed>-tick<tick>.pdrp` + the `-info.txt` sidecar; pure-function assembly in `crates/client/src/report.rs`, re-sim-verified at the client seam, works while paused). (3) `docs/PLAYTEST.md` — the A14 instrument, all eight sections. (4) The nightly soak: sharded 10×100 with disjoint seeds proven in comments, `timeout-minutes` everywhere, per-shard evidence artifacts, and an aggregate job that gates on `crashed`. (5) Registers closed out: DEBT-013 (the client monoliths) logged, DEBT-011/012 triggers sharpened to name their PLAYTEST.md probes, A-087..A-090 logged, ARCHITECTURE carries the post-alpha refactor map. 414 dev / 409 release tests green (20 new: 8 fx, 12 client). **Next: run the playtest (≥ 5 testers through PLAYTEST.md), fill the results table, flip A14 in `docs/ALPHA_DECLARATION.md`, declare the Alpha** |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires. |
 
 ## 3. Non-negotiable working rules (digest of plan §0)
@@ -61,18 +61,24 @@ cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 7200 --p1 ai --p2 ai
 cargo run -p pandemonium-client             # windowed 3D client; headless smoke pass without a display
 cargo run -p pandemonium-client -- --frames 900   # windowed smoke: auto-exit + evidence summary
+cargo run -p pandemonium-client -- --seed 42 --record run.pdrp   # named seed + session replay
+cargo run -p pandemonium-tools -- replay-verify run.pdrp         # the record re-verifies (A2)
 ```
 
-Expected at this handoff: all commands succeed; 352 tests pass in dev
-(347 in release — the 5 should-panic invariant-checker tests are
-debug-only by nature — `debug_assert` compiles out in release): 39 fx
-unit tests, 15 fx property tests, 16 ai unit tests (15 + M9's
-re-march pin), 105 sim unit tests (103 + M9's two chase-order-pop
-tests), 4 sim_api unit tests, 8 replay codec tests, 48 engine tests
-(41 + M9.1's seven camera direction/pan_world/zoom_toward/focus
-pins), 22 client tests (10 + M9.1's eight context-resolution and
-four refusal/bracket tests), 11 tools tests, 33 content unit tests,
-and the acceptance suite: 9 determinism (A1/A2), 4 content-pipeline, 3 movement, 4
+Expected at this handoff: all commands succeed; 414 tests pass in dev
+(409 in release — the 5 should-panic invariant-checker tests are
+debug-only by nature — `debug_assert` compiles out in release): 47 fx
+unit tests (40 + M10.1's seven xxHash64 tests: the reference golden
+vectors, every-split and chunked incremental equality, LE integer
+writes, seed sensitivity), 20 fx property tests (19 + M10.1's
+xxHash64 chunking-invariance property), 16 ai unit tests, 108 sim unit
+tests, 4 sim_api unit tests, 8 replay codec tests, 53 engine tests,
+55 client tests (43 + M10.1's twelve: `report.rs`'s five — the
+re-sim-verified record, F8-during-pause validity, sidecar
+determinism, the stem's purity, the controls line — and the seven
+`--seed`/`--record`/`--frames` parser tests), 17 tools tests, 33
+content unit tests,
+and the acceptance suite: 9 determinism (A1/A2), 5 content-pipeline, 3 movement, 4
 economy, 7 combat, 5 vision, 2 architecture-law, 8 M7 tests
 (`tests/ai.rs`: two A5 structural audits, the A5 ledger identity, the
 A11 battery, the A11 proptest fuzz, completion + determinism, the
@@ -144,7 +150,7 @@ crates/ai        DONE    Controller trait (plan §9.6 verbatim) + ScriptedContro
 crates/replay    DONE    canonical LE byte codec + checksummed replay record/validate (re-sim driver lives in sim since M7)
 crates/engine    DONE*   FixedTimestep, Interpolator, MatchHost (structural FD-2) + pause/single-step, RtsCamera (glam) + picking/box-select, terrain mesh, Renderer trait + null renderer (Frame carries selection + M9's flash set), HudState on the Frame boundary, ai_host (M7): AiMatchHost — controllers on the tick boundary, ascending slot order, every fed command recorded — and the alpha plan builder (capability-shaped kind resolution, costs through the Ore seam, ring-scanned build ground clear of static claims + node doorsteps), + audio (M9, §11.5): AudioSink trait, the pure event -> cue mapping, the null counter sink (*engine core)
                    (*engine core)
-crates/client    DONE*   winit window + wgpu 26 3D renderer (depth buffer, terrain mesh + heightmap, instanced placeholder boxes), selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, --frames windowed smoke, headless smoke fallback (drives the AI-hosting seam since M9), + the M9 feel pass: feedback.rs (hit flashes, health bars, command pings — pure, unit-tested geometry) wired into draw() with the audio sink (*DEBT-008 keeps the human visual pass)
+crates/client    DONE*   winit window + wgpu 26 3D renderer (depth buffer, terrain mesh + heightmap, instanced placeholder boxes), selection + right-click Move, fontdue text atlas + HUD/debug overlay pass, --frames windowed smoke, headless smoke fallback (drives the AI-hosting seam since M9), + the M9 feel pass: feedback.rs (hit flashes, health bars, command pings — pure, unit-tested geometry) wired into draw() with the audio sink, + the M10 command card/minimap/fog/visual series (ui.rs), + M10.1's report.rs (--seed/--record + the F8 §11.6 bug-report dump; pure assembly, client-seam A2 tests) (*DEBT-008 keeps the human visual pass; DEBT-013 logs the render.rs/main.rs monoliths for the post-alpha split)
 crates/tools     DONE    headless (the M1 demo + M7's --p1/--p2 ai|idle controller slots over the real content, per-player evidence lines, --record for both), replay-verify (world resolution by content identity), content-validate (clap CLI)
 tests/           ACTIVE  pandemonium-tests: architecture_law.rs (A13) + determinism.rs (A1/A2 + spine proofs) + content_pipeline.rs (M2/A3) + movement.rs (M4/P1) + economy.rs (M5/P3) + combat.rs (M6/P2) + vision.rs (M6/A10) + ai.rs (M7: A5 + A11 + AI-vs-AI completion/determinism/golden/log-alone replay)
 content/         DONE    rules/, entities/ (9 kinds), factions/ (Legion), maps/ (Crossroads 64x64, symmetric, heightmap)
@@ -174,6 +180,7 @@ reads, and floating-point type names. Breaking the architecture fails CI.
 | M9 | Alpha content & feel pass | ✅ **complete** | The M8 gap closed: the frozen-chase-order sim bug fixed (defense orders outliving their dead targets froze both armies; combat stage 1 pops them now — 2 unit tests), the wave machine re-marches on the pressure cadence and focuses the sighted enemy CC (re-pinned + a new pin test), waves of ten / army cap sixteen. `tests/alpha_loop.rs`: AI-vs-AI resolves inside 27000 ticks across seeds (measured 9.1k–23.3k over a 32-seed sweep), end-to-end resolution determinism (same seed → same winner, end tick, log, final hash), and the windowed host's vs-AI loop closes naturally (an idle human's base falls to the AI, `outcome()` surfaces through the end-screen boundary). Feel pass: hit flashes, health bars, command pings (5 unit tests, no GPU needed), the `AudioSink` seam + placeholder cue set (3 unit tests; no audible backend — DEBT-011). Manifest review: no value changed — the stall was code, not content (§10.4 pins hold). Goldens: the demo untouched; the AI flagship re-pinned twice with written reasons |
 | M9.1 | Input hotfix (the DEBT-008 human pass findings) | ✅ **complete** | The first human playtest of the windowed client (the project owner, on a real display) reported every input-layer defect the machine pass could not see: mirrored WASD/pan axes (the camera's screen-right vector negated since M3), W/S inverted, no mouse camera control (plan §11.3's edge pan + zoom-toward-cursor never implemented; wheel direction inverted), no attack order path (right-click context resolution unimplemented), 'A' firing attack-move on key-down *and key repeats* while doubling as a pan key, silent rejections, an illegible 58-tile opening zoom, and M9's cues never expiring (the feedback clock only advanced in `--frames` mode). All fixed, all pinned: 7 camera direction/API tests, 8 context-resolution tests, 4 refusal/bracket tests; the smoke run pins the refusal wiring with a deliberately invalid order; Xvfb + XTEST injection re-verified the windowed loop (900 frames, 5-entity drag selection, context Move + armed attack-move submitted). Zero golden movement — presentation/input only. DEBT-008 narrowed to the human re-verification of *this* build |
 | M10 | Stabilization & declaration | ✅ **complete** | The A1–A15 sweep is recorded with evidence in `docs/ALPHA_DECLARATION.md`: 13 criteria pass with automated evidence (M10 verified them bit-identical at their then-FNV values; M10.1's hasher swap re-pinned them: demo 0xb6fff6659cfb7709, flagship 0x6e9a18bd7c5f699f, content 0x9bc18c521107b262); A14 is recorded as an honest finding (a human playtest needs humans). The soak evidence run: 32/32 resolved, 0 crashed, avg end tick 11877 / max 23265 at the plan's real stuck threshold (A-086). Bench baselines (release): 0.25 ms avg, 2.22 ms p99, 4060 t/s — all §15 budgets met. The nightly workflow runs the 1000-match A7 tier and the bench. The M10-prep review pass also landed the playability/visual series (command card + train/build/queue-cancel/rally, fog rendering, minimap, lighting, silhouettes, shadows, death fades) with zero golden movement |
+| M10.1 | Pre-declaration hardening & A14 enablement | ✅ **complete** | DEBT-001 repaid: xxHash64 is the canonical hasher (one hash-moving commit; every golden re-pinned with its written reason — demo 0xb6fff6659cfb7709, flagship 0x6e9a18bd7c5f699f, content 0x9bc18c521107b262; encodings and format versions unchanged, A-087). The client joined the reproducibility promise: `--seed`, `--record` (match end / clean exit, `replay-verify`-accepted), and the §11.6 F8 bug-report dump (replay + deterministic sidecar; pure assembly in `client/src/report.rs`, re-sim-verified at the client seam, pause-safe, windowed-verified under Xvfb+XTEST — same-tick `.pdrp` byte-identical). `docs/PLAYTEST.md` written (all eight sections — the A14 instrument). The nightly soak sharded 10×100 (disjoint seeds proven in comments), timeouts on every job, per-shard evidence artifacts + an aggregate crashed-gate. Registers closed: DEBT-013 logged, DEBT-011/012 triggers sharpened to their PLAYTEST.md probes, A-087..A-090, CHANGELOG carries M10.1. 414 dev / 409 release green (20 new tests). Zero golden movement outside Task 1's single swap commit |
 
 **The plan was broken into parts along these milestones.** Parts 1–8 (M0–M3,
 M4 movement, M5 economy/production/construction, M6 combat & vision, M7
@@ -616,26 +623,23 @@ event, the `MatchHost` extensions for AI hosting + outcome + log, the
 windowed client's vs-AI loop with end screen + restart + control groups +
 hotkeys, and the A15 restart cleanliness proof). What remains, in order:
 
-1. **The human *re*-verification pass of DEBT-008 (narrowed to its last
-   inch by M9.1)**: the human pass finally RAN (the project owner played
-   the M9 windowed build on a real display) — and it did its job: it
-   found every input-layer defect the machine pass is structurally blind
-   to (mirrored pan axes since M3, no mouse camera control, no attack
-   order path, key-repeat spam, silent rejections, the illegible opening
-   zoom, never-expiring cues). M9.1 fixed them all; the machine half is
-   re-proven (Xvfb + XTEST: 900 frames, 5-entity drag selection, context
-   Move + armed attack-move). What still needs a human: play the M9.1
-   build — `cargo run -p pandemonium-client` — through a full vs-AI
-   match to resolution and judge that the controls now *feel* right
-   (pan/zoom/edge-scroll/middle-drag, right-click context orders, the
-   armed-A flow, the refusal cues, the selection brackets, the opening
-   framing, the end screen + restart). Then DEBT-008 closes.
-2. **M10 — Stabilization & declaration (Phase 5)**: the full A1–A15
-   acceptance sweep with written evidence, the 1000-match nightly soak
-   (A7), benchmark baselines (plan §15), the documentation pass, and
-   `docs/ALPHA_DECLARATION.md`. DEBT-011 (no audible audio backend)
-   is a declaration-time finding, not a blocker — plan §11.5's letter
-   is satisfied by the seam.
+1. **A14 — the human playtest (the declaration's one open gate).** The
+   instrument exists (`docs/PLAYTEST.md`: quickstart, controls card, the
+   unaided-loop checklist, spectator legibility, the debt-arming probes,
+   the F8 procedure, the results table) and the evidence channel exists
+   (F8's replay + sidecar, `--record`, `--seed`). What it needs: the
+   owner distributes the post-M10.1 build, ≥ 5 testers run the loop
+   unaided, the results table fills honestly — a failed tester is a
+   finding, never a wave-through. The same sessions close DEBT-008's
+   human re-verification (play the full vs-AI match to resolution and
+   judge the controls *feel* right) and arm the DEBT-011/DEBT-012
+   triggers through PLAYTEST.md's probes.
+2. **Declare the Alpha (or file the findings).** Flip A14 in
+   `docs/ALPHA_DECLARATION.md` citing PLAYTEST.md, flip the README stage
+   badge, update this file's §2 "Next:", decide the LICENSE (flagged:
+   a public repo taking external playtesters needs one — the owner's
+   copyright, the owner's call), and write the declaration (or record
+   the honest findings, per plan §13's rule).
 3. Known limitations to carry forward honestly: the formation-less jam shape
    (A-040), path-smoothing-free staircases on detours, stalled construction
    sites when the builder dies (no reassignment command — A-045, carried

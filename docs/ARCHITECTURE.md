@@ -1,9 +1,10 @@
 # Pandemonium — Architecture
 
-Status: milestone M9.1 complete (input hotfix on top of M9's Alpha content &
-feel pass); M10 (Stabilization & declaration) is next. The authoritative
-specification is [`plan.md`](../plan.md) — §2 frozen decisions, §4 workspace law,
-§5 determinism rules, §10 content.
+Status: M10.1 complete (pre-declaration hardening & A14 enablement on top
+of M10's stabilization & declaration); the Alpha declaration now waits only
+on the A14 human playtest (`docs/PLAYTEST.md` is the instrument). The
+authoritative specification is [`plan.md`](../plan.md) — §2 frozen decisions,
+§4 workspace law, §5 determinism rules, §10 content.
 This file is the working map of how the code is actually laid out; update it when the
 shape of the system changes, not for every feature. For current build status and what
 exists versus what is pending, see [`AI-Handoff.md`](../AI-Handoff.md).
@@ -312,6 +313,21 @@ crates/client/src/
                   the host with fresh controllers from the same bundle + seed,
                   A15); control groups 1-9 (Ctrl+digit assigns, digit recalls);
                   'S' Stop and 'A' AttackMove hotkeys on the selection.
+                  **M10.1**: `--seed <u64>` names the match; `--record <path>`
+                  writes the segment's replay at match end / clean exit (every
+                  exit path funnels through the winit `exiting` hook); the
+                  per-frame checkpoint trail feeding both lives here.
+  report.rs       M10.1 (plan §6.5/§11.6): the reproduction tooling's pure
+                  assembly — `replay_record` (the ReplayFile built exactly
+                  like the tools' recorder: content hash, map id, the host's
+                  command log, the trail, the forced final), `sidecar_text` +
+                  `SidecarInfo` (the deterministic F8 info file), `report_stem`
+                  (the `<seed>-tick<tick>` filename), `write_files`. F8's
+                  handler in main.rs drives these; the client-seam A2 test
+                  (decode + `run_command_log` re-sim + hash equality), the
+                  pause-validity test, and the sidecar determinism test live
+                  here. Also the M10 command card / minimap / fog / visual
+                  series (ui.rs) and the feel pass's feedback.rs.
   text.rs         our own text renderer (plan §3.1/§3.2): fontdue rasterizes
                   the embedded "Pandemonium Sans" (ASCII subset of DejaVu
                   Sans, renamed per the Bitstream Vera license —
@@ -331,6 +347,31 @@ get one; the engine's `MatchHost` is the only owner, `FD-2`'s "step inputs only"
 made structural. The windowed path is machine-verified on Xvfb + llvmpipe
 (selection + right-click Move provably work — A-037); only the human visual
 pass remains (DEBT-008, narrowed).
+
+### Post-alpha refactor map (guidance only — DEBT-013 owns the work)
+
+The client grew two monoliths (`render.rs` ~2.5k lines, `main.rs` ~1.8k lines:
+DEBT-013). The split below records the intended module boundaries for the
+post-alpha presentation pass (plan §19 schedules that rewrite on purpose —
+renderer and UI are rewritten then, so no split happens before the Alpha
+declares). Guidance for whoever holds that debt, not a commitment:
+
+- `render/` — the wgpu renderer split by pipeline: `pipeline/` (device,
+  surface, common bind groups), `terrain/` (terrain mesh + fog decal),
+  `entities/` (instanced boxes, silhouettes, shadows, death fades),
+  `overlay/` (world-space cues: selection brackets, health bars, pings,
+  refusal squares), `minimap/` (the composite + its textures).
+- `app/` — the non-input application state: `main.rs`'s `App` struct,
+  match hosting + restart, the checkpoint trail, the `--record`/F8 wiring
+  (report.rs stays the pure seam).
+- `input/` — the winit event translation: camera controls, selection,
+  context orders, placement mode, control groups, hotkeys.
+- `screens/` — the end screen and any future menus (§11.4's shell).
+
+The seam to preserve while splitting: everything above `engine` stays above
+it — `MatchHost::submit`/`advance` remain the only mutation paths, and
+report.rs's pure functions keep the F8/`--record` assembly testable without
+a window.
 
 ## The replay format (M1)
 

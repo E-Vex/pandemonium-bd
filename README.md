@@ -385,7 +385,11 @@ the assumptions log; frozen decisions change only through an ADR.
 Gameplay content is not accepted yet — the content pipeline is **complete** (M2), but the Alpha content manifest is locked per the plan; content is data, so the door opens when the data boundary exists and the Alpha declares. Bug reports, however,
 are welcome now, and this project makes them unusually actionable: a report that
 includes the seed and the tick is a reproducible incident. Anything else is a war
-story.
+story. The windowed client writes that report for you: press **F8** at (or right
+after) the moment of the problem and it drops a replay record
+(`pandemonium-report-<seed>-tick<tick>.pdrp`) plus a sidecar `…-info.txt`
+carrying the seed, the tick, and the content identity — attach both files to the
+issue; the replay re-verifies headlessly (`tools replay-verify`).
 
 ## License
 
