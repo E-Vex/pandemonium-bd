@@ -11,6 +11,7 @@
 //! and color thresholds, the flash bookkeeping, and the expiry. The
 //! pixel-level "does it read well" judgement is the human half of DEBT-008.
 
+use crate::input::CursorOrderHint;
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_engine::{logical_to_world, RenderSnapshot, RtsCamera};
 use pandemonium_sim_api::{EntityId, Event, KindId, PlayerId, RejectReason, Vec2Fx};
@@ -355,9 +356,142 @@ pub fn rejection_text(reason: RejectReason) -> &'static str {
     }
 }
 
+/// The cursor order-feedback marker's color per hint (M10.2, PLAN §1.3's
+/// "draw a small marker for Move / Attack / invalid"): green Move, red
+/// Attack, amber Gather, blue rally, orange attack-move — and no marker at
+/// all when nothing is orderable (`None`: the plan's "invalid" reads
+/// cleanest as silence; a permanent gray marker under a cursor with
+/// nothing selected would be noise). The colors avoid the red/green
+/// confusion pair by value as well as hue (the plan's §2.2 color-blind
+/// note, applied early where cheap).
+pub fn cursor_marker_color(hint: CursorOrderHint) -> Option<[f32; 4]> {
+    match hint {
+        CursorOrderHint::Move => Some([0.35, 1.0, 0.45, 0.9]),
+        CursorOrderHint::Attack => Some([1.0, 0.35, 0.30, 0.9]),
+        CursorOrderHint::Gather => Some([1.0, 0.78, 0.30, 0.9]),
+        CursorOrderHint::Rally => Some([0.45, 0.75, 1.0, 0.9]),
+        CursorOrderHint::AttackMove => Some([1.0, 0.55, 0.25, 0.9]),
+        CursorOrderHint::None => None,
+    }
+}
+
+/// Builds the cursor's order-feedback marker quads (M10.2, PLAN §1.3): a
+/// small filled square inside a hollow outline, drawn at the ground point
+/// under the cursor (it sticks to the world, not the pixel), in the hint's
+/// color. Nothing orderable or no ground under the cursor draws nothing.
+pub fn cursor_marker_quads(
+    atlas: &TextAtlas,
+    hint: CursorOrderHint,
+    ground: Option<glam::Vec3>,
+    camera: &RtsCamera,
+    viewport: (f32, f32),
+) -> Vec<UiQuad> {
+    /// Half the outline square's side, in pixels.
+    const HALF: f32 = 8.0;
+    /// Outline stroke thickness, in pixels.
+    const THICK: f32 = 1.5;
+    /// Half the filled center square's side, in pixels.
+    const CENTER: f32 = 3.0;
+    let Some(color) = cursor_marker_color(hint) else {
+        return Vec::new();
+    };
+    let Some(ground) = ground else {
+        return Vec::new();
+    };
+    let ndc = camera.project(ground);
+    if !ndc.x.is_finite() || !ndc.y.is_finite() {
+        return Vec::new();
+    }
+    let (cx, cy) = ndc_to_pixels((ndc.x, ndc.y), viewport);
+    let (left, right) = (cx - HALF, cx + HALF);
+    let (top, bottom) = (cy - HALF, cy + HALF);
+    let mut quads =
+        vec![atlas.solid_rect(cx - CENTER, cy - CENTER, 2.0 * CENTER, 2.0 * CENTER, color)];
+    // The hollow outline: one thin rect per side.
+    quads.push(atlas.solid_rect(left, top, 2.0 * HALF, THICK, color));
+    quads.push(atlas.solid_rect(left, bottom - THICK, 2.0 * HALF, THICK, color));
+    quads.push(atlas.solid_rect(left, top, THICK, 2.0 * HALF, color));
+    quads.push(atlas.solid_rect(right - THICK, top, THICK, 2.0 * HALF, color));
+    quads
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::CursorOrderHint;
+
+    #[test]
+    fn the_cursor_marker_colors_name_the_order_and_none_is_silent() {
+        assert_eq!(
+            cursor_marker_color(CursorOrderHint::Move),
+            Some([0.35, 1.0, 0.45, 0.9])
+        );
+        assert_eq!(
+            cursor_marker_color(CursorOrderHint::Attack),
+            Some([1.0, 0.35, 0.30, 0.9])
+        );
+        assert_eq!(
+            cursor_marker_color(CursorOrderHint::Gather),
+            Some([1.0, 0.78, 0.30, 0.9])
+        );
+        assert_eq!(
+            cursor_marker_color(CursorOrderHint::Rally),
+            Some([0.45, 0.75, 1.0, 0.9])
+        );
+        assert_eq!(
+            cursor_marker_color(CursorOrderHint::AttackMove),
+            Some([1.0, 0.55, 0.25, 0.9])
+        );
+        assert_eq!(cursor_marker_color(CursorOrderHint::None), None);
+    }
+
+    #[test]
+    fn the_cursor_marker_draws_five_quads_at_the_ground_point() {
+        let mut camera = RtsCamera::new(16, 16, 16.0 / 9.0);
+        camera.focus(8.0, 8.0, 20.0);
+        let atlas = TextAtlas::new();
+        let ground = Some(glam::Vec3::new(8.0, 0.0, 8.0));
+        let quads = cursor_marker_quads(
+            &atlas,
+            CursorOrderHint::Move,
+            ground,
+            &camera,
+            (1920.0, 1080.0),
+        );
+        // One filled center + four outline sides, all in the hint color.
+        assert_eq!(quads.len(), 5);
+        assert_eq!(quads[0].color, [0.35, 1.0, 0.45, 0.9]);
+        assert_eq!(quads[1].color, [0.35, 1.0, 0.45, 0.9]);
+        // The center square is 6 px wide, the outline rects 16 px.
+        assert!((quads[0].w - 6.0).abs() < 1e-3);
+        assert!((quads[1].w - 16.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_cursor_marker_is_silent_when_nothing_is_orderable_or_off_ground() {
+        let mut camera = RtsCamera::new(16, 16, 16.0 / 9.0);
+        camera.focus(8.0, 8.0, 20.0);
+        let atlas = TextAtlas::new();
+        let ground = Some(glam::Vec3::new(8.0, 0.0, 8.0));
+        // Nothing orderable: no marker even over ground.
+        assert!(cursor_marker_quads(
+            &atlas,
+            CursorOrderHint::None,
+            ground,
+            &camera,
+            (1920.0, 1080.0)
+        )
+        .is_empty());
+        // No ground under the cursor (above the horizon): no marker.
+        assert!(cursor_marker_quads(
+            &atlas,
+            CursorOrderHint::Move,
+            None,
+            &camera,
+            (1920.0, 1080.0)
+        )
+        .is_empty());
+    }
 
     #[test]
     fn ndc_to_pixels_maps_the_corners_and_center() {

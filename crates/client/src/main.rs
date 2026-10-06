@@ -212,6 +212,9 @@ struct App {
     /// jump's preferred target, else the start anchor — "jump to the last
     /// event or base").
     last_event_ground: Option<(f32, f32)>,
+    /// M10.2 (PLAN §1.3): whether the window cursor is currently the
+    /// crosshair (the armed attack-move state's cursor; set on change only).
+    crosshair_cursor: bool,
     /// M10.2 (PLAN §1.2): whether edge scrolling is on (the settings toggle
     /// itself is Phase 3; the flag is wired now so the toggle only flips a
     /// bool then). The band width and depth scaling live in `input.rs`.
@@ -376,6 +379,7 @@ impl App {
             last_left_click: None,
             last_digit_press: None,
             last_event_ground: None,
+            crosshair_cursor: false,
             edge_scroll_enabled: true,
             focused: true,
             attack_move_armed: false,
@@ -450,6 +454,7 @@ impl App {
         self.last_left_click = None;
         self.last_digit_press = None;
         self.last_event_ground = None;
+        self.crosshair_cursor = false;
         // M10.1: the recording state restarts with the match — the new
         // segment gets its own tick-0 checkpoint and its own end-of-match
         // record write.
@@ -610,6 +615,20 @@ impl App {
         Self::to_ndc(window, x, y)
     }
 
+    /// Whether the selection is exactly one producing structure (the
+    /// right-click rally case, §11.4) — extracted so the context order and
+    /// the cursor's order hint agree on what a producer selection means.
+    fn selection_is_single_producer(&self) -> bool {
+        self.selection.len() == 1 && {
+            let selected = self.selection[0];
+            self.latest_view.as_ref().is_some_and(|view| {
+                view.production
+                    .iter()
+                    .any(|queue| queue.producer == selected)
+            })
+        }
+    }
+
     /// The pick under a single left click: the nearest own entity to the
     /// cursor within the pick radius (`None` on empty ground). M10.2
     /// (PLAN §1.1): what the *click then does* is the release handler's
@@ -671,27 +690,20 @@ impl App {
         // A single selected producer sets its rally with a right-click (the
         // §11.4 rally point; buildings cannot move, so the ground context
         // order means "deliver here", not "go there").
-        if self.selection.len() == 1 {
+        if self.selection_is_single_producer() {
             let selected = self.selection[0];
-            let is_producer = self.latest_view.as_ref().is_some_and(|view| {
-                view.production
-                    .iter()
-                    .any(|queue| queue.producer == selected)
-            });
-            if is_producer {
-                let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
-                    return;
-                };
-                let target = MatchHost::world_to_logical(point.x, point.z);
-                self.submit_order(
-                    CommandKind::SetRally {
-                        producer: selected,
-                        target,
-                    },
-                    Some(target),
-                );
+            let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
                 return;
-            }
+            };
+            let target = MatchHost::world_to_logical(point.x, point.z);
+            self.submit_order(
+                CommandKind::SetRally {
+                    producer: selected,
+                    target,
+                },
+                Some(target),
+            );
+            return;
         }
         let snapshot = self.view_snapshot();
         let Some(order) = orders::resolve_context_order(
@@ -1621,6 +1633,35 @@ impl App {
             self.last_seen
                 .insert(entity.id, (entity.pos, entity.kind, entity.owner));
         }
+        // M10.2 (PLAN §1.3): the cursor's order-feedback hint, resolved
+        // before the renderer borrow (it reads the whole app: the cursor
+        // position, the selection, the context-order machinery). The marker
+        // quads build below, next to the other feedback cues.
+        let cursor = self.cursor_ndc();
+        let cursor_ground = self
+            .camera
+            .ground_point(glam::Vec2::new(cursor.0, cursor.1));
+        let cursor_rally = self.selection_is_single_producer();
+        let cursor_resolved = if cursor_rally {
+            None
+        } else {
+            orders::resolve_context_order(
+                &self.camera,
+                &snapshot,
+                glam::Vec2::new(cursor.0, cursor.1),
+                HUMAN,
+                self.node_kind,
+                self.worker_kind,
+                &self.selection,
+            )
+        };
+        let cursor_hint = input::cursor_order_hint(
+            cursor_resolved,
+            cursor_rally,
+            self.attack_move_armed,
+            self.placement.is_some(),
+            self.selection.is_empty(),
+        );
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -1687,6 +1728,33 @@ impl App {
             self.frames_presented,
             viewport,
         ));
+        // M10.2 (PLAN §1.3): cursor feedback — a small ground marker naming
+        // the order the next right-click (or armed left-click) would issue,
+        // resolved above through the same context machinery that issues it.
+        // It sticks to the ground under the cursor, not the pixel. The
+        // command ping on submission stays (the marker previews, the ping
+        // confirms).
+        quads.extend(feedback::cursor_marker_quads(
+            renderer.atlas(),
+            cursor_hint,
+            cursor_ground,
+            &self.camera,
+            viewport,
+        ));
+        // M10.2 (PLAN §1.3): the crosshair cursor while attack-move is
+        // armed (the plan's "change the cursor" half; set only on change —
+        // not every frame).
+        let want_crosshair = self.attack_move_armed;
+        if want_crosshair != self.crosshair_cursor {
+            self.crosshair_cursor = want_crosshair;
+            if let Some(window) = &self.window {
+                window.set_cursor(if want_crosshair {
+                    winit::window::CursorIcon::Crosshair
+                } else {
+                    winit::window::CursorIcon::Default
+                });
+            }
+        }
         // The HUD and debug overlay quads (plan §11.4 / §11.6) queue before the
         // frame; the renderer drains them on top of the world.
         quads.extend(overlay_quads(OverlayInput {

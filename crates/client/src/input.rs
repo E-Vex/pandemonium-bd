@@ -291,6 +291,56 @@ pub fn jump_target(last_event: Option<(f32, f32)>, start_anchor: (f32, f32)) -> 
     last_event.unwrap_or(start_anchor)
 }
 
+/// What the cursor's order-feedback marker shows (PLAN §1.3: "change the
+/// cursor or draw a small marker for Move / Attack / invalid"): the
+/// would-be order for the selection under the cursor, so the player sees
+/// what the next right-click does before pressing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorOrderHint {
+    /// Open ground under a live selection: Move.
+    Move,
+    /// An enemy under the cursor: Attack.
+    Attack,
+    /// A resource node under the cursor: Gather.
+    Gather,
+    /// A single selected producer over ground: rally point.
+    Rally,
+    /// Attack-move is armed: the next left-click attacks into that ground.
+    AttackMove,
+    /// Nothing orderable (empty selection, placement mode owns the cursor,
+    /// or no ground under the cursor).
+    None,
+}
+
+/// Resolves the cursor hint from the same context-order resolution the
+/// right-click uses. Armed attack-move takes precedence (the armed flow
+/// owns the next left-click); placement mode and an empty selection
+/// suppress the marker (the ghost is the placement marker; nothing
+/// selected means nothing to preview).
+pub fn cursor_order_hint(
+    order: Option<crate::orders::ContextOrder>,
+    rally: bool,
+    armed: bool,
+    placing: bool,
+    selection_empty: bool,
+) -> CursorOrderHint {
+    if selection_empty || placing {
+        return CursorOrderHint::None;
+    }
+    if armed {
+        return CursorOrderHint::AttackMove;
+    }
+    if rally {
+        return CursorOrderHint::Rally;
+    }
+    match order {
+        Some(crate::orders::ContextOrder::Attack { .. }) => CursorOrderHint::Attack,
+        Some(crate::orders::ContextOrder::Gather { .. }) => CursorOrderHint::Gather,
+        Some(crate::orders::ContextOrder::Move { .. }) => CursorOrderHint::Move,
+        None => CursorOrderHint::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,6 +635,89 @@ mod tests {
     fn jump_target_prefers_the_last_event_else_the_base() {
         assert_eq!(jump_target(None, (10.0, 20.0)), (10.0, 20.0));
         assert_eq!(jump_target(Some((33.0, 44.0)), (10.0, 20.0)), (33.0, 44.0));
+    }
+
+    // ---- cursor order hint -------------------------------------------------
+
+    use pandemonium_sim_api::Vec2Fx;
+
+    #[test]
+    fn the_cursor_hint_names_the_order_the_next_click_would_issue() {
+        // (order, rally, armed, placing, selection_empty) -> expected hint.
+        let at = Vec2Fx::from_ints(3, 3);
+        let units = vec![EntityId(1)];
+        let cases: [(
+            Option<crate::orders::ContextOrder>,
+            bool,
+            bool,
+            bool,
+            bool,
+            CursorOrderHint,
+        ); 8] = [
+            (
+                Some(crate::orders::ContextOrder::Move { target: at }),
+                false,
+                false,
+                false,
+                false,
+                CursorOrderHint::Move,
+            ),
+            (
+                Some(crate::orders::ContextOrder::Attack {
+                    target: EntityId(9),
+                    at,
+                }),
+                false,
+                false,
+                false,
+                false,
+                CursorOrderHint::Attack,
+            ),
+            (
+                Some(crate::orders::ContextOrder::Gather {
+                    node: EntityId(9),
+                    at,
+                    units,
+                }),
+                false,
+                false,
+                false,
+                false,
+                CursorOrderHint::Gather,
+            ),
+            // A selected producer over ground: rally (the resolver's own
+            // rally path is main's; the hint takes the flag).
+            (None, true, false, false, false, CursorOrderHint::Rally),
+            // Armed attack-move owns the next click, even over a rally.
+            (
+                Some(crate::orders::ContextOrder::Move { target: at }),
+                true,
+                true,
+                false,
+                false,
+                CursorOrderHint::AttackMove,
+            ),
+            // Empty selection: no marker.
+            (None, false, false, false, true, CursorOrderHint::None),
+            // Placement mode owns the cursor (the ghost is its marker).
+            (
+                Some(crate::orders::ContextOrder::Move { target: at }),
+                false,
+                false,
+                true,
+                false,
+                CursorOrderHint::None,
+            ),
+            // No resolution (cursor above the horizon) and no rally.
+            (None, false, false, false, false, CursorOrderHint::None),
+        ];
+        for (order, rally, armed, placing, empty, expected) in cases {
+            assert_eq!(
+                cursor_order_hint(order.clone(), rally, armed, placing, empty),
+                expected,
+                "order={order:?} rally={rally} armed={armed} placing={placing} empty={empty}"
+            );
+        }
     }
 
     // ---- direction pinning: middle-drag rotate ---------------------------
