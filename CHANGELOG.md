@@ -7,6 +7,64 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [M10.2] — playtest-1 findings, Phase 1: the Generals ZH controls
+
+The project owner's first human playtest of the windowed client (post-M10.1)
+blocked the Alpha declaration (A14) on four findings: controls, visual
+legibility, menus/settings, audio. `docs/PLAN-M10.2.md` is the milestone
+spec; `docs/PLAYTEST.md` result #1 records the finding. This delivery is
+**Phase 1 (Controls) only** — the owner scoped it that way (A-100, DEBT-015);
+Phases 2-4 wait on their re-test verdict. Presentation/input only, zero
+golden movement (demo `0xb6fff6659cfb7709`, flagship `0x6e9a18bd7c5f699f`,
+content `0x9bc18c521107b262` all bit-identical), delivered as one
+`git format-patch` series on the branch `m10.2` (never squashed).
+
+- **client (PLAN §1.1, the audit)**: recorded in PLAYTEST result #1 — a
+  plain left click never issues an order in the M10.1 code (context orders
+  have been right-button-only since M9.1; the owner's "movement on the left
+  button" traces to the armed-A path, the command card, or the placement
+  confirm). The audit also found the armed minimap attack-move branch was
+  dead code (the right-press disarm preceded the check) — fixed in the
+  state-machine rework below.
+- **client (PLAN §1.2, the camera)**: the right button is a press/release
+  state machine (`crates/client/src/input.rs`, pure) — under 6 px of
+  press-to-release travel it is the command click, beyond it the
+  Generals-style grab-and-drag map scroll and the release orders nothing.
+  Ordering moved to the release (sub-threshold): the context order at the
+  release position, the minimap order at the mapped point (attack-move when
+  the gesture began armed — the fixed dead branch), UI buttons swallow,
+  placement-cancel consumes the gesture. Middle-drag now rotates (it panned;
+  0.005 rad/px, direction pinned to match E). Edge scrolling: the old 24 px
+  binary zone became a 14 px band whose speed scales with the cursor's
+  depth into it, on all four edges and corners — the owner's "only the very
+  last pixel works" finding was the snap. A wired `edge_scroll_enabled`
+  flag awaits Phase 3's settings toggle (DEBT-014).
+- **client (PLAN §1.3, selection parity)**: shift+click toggles membership,
+  shift+drag unions the box, double-click selects every visible unit of the
+  clicked one's kind (same owner, fog-filtered view), Ctrl+digit assigns /
+  digit recalls / double-tap centers the camera on the group's live center,
+  S stops, A-then-left-click attack-moves (the armed flow, now with the
+  crosshair cursor), Escape climbs one rung per press (armed command ->
+  placement -> selection -> quit — it used to quit on the first press),
+  Space jumps to the last death or the base, and a click on empty ground
+  does nothing at all (A-091: no order, and no silent deselect either).
+- **client (PLAN §1.3, cursor feedback)**: a small ground marker names the
+  order the next right-click would issue — green Move, red Attack, amber
+  Gather, blue rally, orange armed attack-move — resolved through the same
+  context machinery that issues it; the command ping stays as the
+  confirmation. Silence when nothing is orderable (A-098).
+- **tests**: 26 new client tests (23 in `input.rs`: the state machine's
+  press/move/release paths, the band math at real window sizes, direction
+  pinning for the grab-scroll and the rotate at yaw 0 and 90, the selection
+  parity, the double-tap centroid, the Escape ladder, the hint table; 3 in
+  `feedback.rs`: the marker's colors, quads, silences). 440 dev / 435
+  release green. The windowed input paths re-verified under Xvfb + XTEST.
+- **registers**: A-091..A-100 (the interpretations and the owner's delivery
+  answers); DEBT-014 (the edge-scroll toggle's missing UI), DEBT-015
+  (Phases 2-4 deferred, gated on the owner re-test); DEBT-008's next human
+  pass is the Phase 1 re-test. README + PLAYTEST controls cards rewritten
+  as the Generals ZH card.
+
 ## [M10.1] — pre-declaration hardening & A14 enablement
 
 The pass between M10 and the Alpha declaration: the one open gate is A14 (the
