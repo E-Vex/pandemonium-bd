@@ -16,8 +16,8 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 ![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.svg">
-  <img src="assets/hero-light.svg" alt="Pandemonium theater display rendered in 3D: on the left, scattered debris and an amber strike reticle labeled CONTACTS — UNSORTED; in the centre, three tanks follow dashed movement paths to a hostile target diamond while an F-16-style fighter jet with a lit afterburner and vapor trails fires a missile that locks onto it (TGT LOCK); on the right, build-order footprints and a neat row of contacts labeled CONTACTS — SORTED. A tick ruler along the bottom runs to T+300 with a checkpoint every 30 ticks. Instrument labels read simulation feed live, replay verify pass, seed 7, 30 ticks per second, and Q16.16 fixed-point, no floats." width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="readme-assets/hero-dark.svg">
+  <img src="readme-assets/hero-light.svg" alt="Pandemonium theater display rendered in 3D: on the left, scattered debris and an amber strike reticle labeled CONTACTS — UNSORTED; in the centre, three tanks follow dashed movement paths to a hostile target diamond while an F-16-style fighter jet with a lit afterburner and vapor trails fires a missile that locks onto it (TGT LOCK); on the right, build-order footprints and a neat row of contacts labeled CONTACTS — SORTED. A tick ruler along the bottom runs to T+300 with a checkpoint every 30 ticks. Instrument labels read simulation feed live, replay verify pass, seed 7, 30 ticks per second, and Q16.16 fixed-point, no floats." width="100%">
 </picture>
 
 </div>
@@ -127,8 +127,8 @@ snapshots. Time originates in the engine and the client — never inside the
 simulation.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/timestep-dark.svg">
-  <img src="assets/timestep-light.svg" alt="Two timelines: the simulation track ticks at a fixed 30 Hz with 33.33 ms intervals; the render track runs denser at display rate. A highlighted band shows the client interpolating between two snapshots by alpha = accumulator / tick duration. A note marks the catch-up cap of five ticks per frame." width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="readme-assets/timestep-dark.svg">
+  <img src="readme-assets/timestep-light.svg" alt="Two timelines: the simulation track ticks at a fixed 30 Hz with 33.33 ms intervals; the render track runs denser at display rate. A highlighted band shows the client interpolating between two snapshots by alpha = accumulator / tick duration. A note marks the catch-up cap of five ticks per frame." width="100%">
 </picture>
 
 ### Inside a tick
@@ -403,8 +403,8 @@ updated the moment that changes.
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/seal-dark.svg">
-  <img src="assets/seal-light.svg" alt="Circular seal: a dial of thirty tick marks, PANDEMONIUM inscribed above, BUILD & DESTROY below, and a hostile diamond overlaying a dashed divide between scattered strokes and an ordered grid of squares." width="150">
+  <source media="(prefers-color-scheme: dark)" srcset="readme-assets/seal-dark.svg">
+  <img src="readme-assets/seal-light.svg" alt="Circular seal: a dial of thirty tick marks, PANDEMONIUM inscribed above, BUILD & DESTROY below, and a hostile diamond overlaying a dashed divide between scattered strokes and an ordered grid of squares." width="150">
 </picture>
 
 **Pandemonium: Build & Destroy** — by [E-Vex](https://github.com/E-Vex)
