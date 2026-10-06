@@ -13,11 +13,12 @@
 mod feedback;
 mod orders;
 mod render;
+mod report;
 mod text;
 mod ui;
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,8 +30,8 @@ use pandemonium_engine::audio::{AudioSink, NullAudioSink};
 use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
 use pandemonium_engine::{
-    alpha_controller, alpha_plan, Interpolator, MatchHost, MatchOutcome, NullRenderer, Renderer,
-    RtsCamera,
+    alpha_controller, alpha_plan, FrameOutcome, Interpolator, MatchHost, MatchOutcome,
+    NullRenderer, Renderer, RtsCamera,
 };
 use pandemonium_sim_api::{
     Command, CommandKind, ControllerKind, EntityId, Event, KindId, MatchSetup, PlayerId,
@@ -83,6 +84,9 @@ const EDGE_SCROLL_PX: f64 = 24.0;
 const START_CAMERA_DISTANCE: f32 = 26.0;
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let seed = seed_from_args(&args);
+    let record_path = record_from_args(&args);
     let content = content_path();
     let bundle = ContentBundle::load_dir(content)
         .with_context(|| format!("loading content from {}", content.display()))?;
@@ -99,8 +103,8 @@ fn main() -> anyhow::Result<()> {
             return headless_smoke(&bundle);
         }
     };
-    let mut app = App::new(bundle)?;
-    app.frames_budget = frames_budget_arg();
+    let mut app = App::new(bundle, seed, record_path)?;
+    app.frames_budget = frames_budget_arg(&args);
     event_loop
         .run_app(&mut app)
         .map_err(|error| anyhow::anyhow!(error))?;
@@ -111,8 +115,8 @@ fn main() -> anyhow::Result<()> {
 /// presented frames and print the windowed smoke summary (tick, state hash,
 /// commands submitted, selection size). Presentation-layer tooling for the
 /// DEBT-008 windowed verification — it changes no simulation behavior.
-fn frames_budget_arg() -> Option<u64> {
-    let mut args = std::env::args();
+fn frames_budget_arg(args: &[String]) -> Option<u64> {
+    let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "--frames" {
             let value = args
@@ -120,6 +124,38 @@ fn frames_budget_arg() -> Option<u64> {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(180);
             return Some(value.max(1));
+        }
+    }
+    None
+}
+
+/// Parses the reproduction affordance `--seed N` (M10.1, plan §6.5: a match
+/// is seed + content + command log — the README's bug-report promise needs
+/// the windowed player to be able to name the seed they played). Default 7
+/// (the seed every existing pin and the M1 demo use); a missing or malformed
+/// value falls back to the default, mirroring `--frames`'s parser.
+fn seed_from_args(args: &[String]) -> u64 {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--seed" {
+            return args
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(7);
+        }
+    }
+    7
+}
+
+/// Parses the recording affordance `--record <path>` (M10.1, plan §6.5):
+/// when set, the windowed run writes its replay at match end / clean exit —
+/// a file `tools replay-verify` accepts (A2's evidence channel for the
+/// human playtest). A missing value disables recording.
+fn record_from_args(args: &[String]) -> Option<PathBuf> {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--record" {
+            return args.next().cloned().map(PathBuf::from);
         }
     }
     None
@@ -222,6 +258,19 @@ struct App {
     /// The bottom bar's clickable regions, rebuilt every frame by the UI
     /// pass and hit-tested before world clicks.
     ui_buttons: Vec<Button>,
+    /// M10.1 (plan §6.5): `--record <path>` — when set, the windowed run's
+    /// replay is written at match end / clean exit (a file `tools
+    /// replay-verify` accepts — A2's evidence channel for the playtest).
+    record_path: Option<PathBuf>,
+    /// M10.1: whether the current match segment's record was already
+    /// written at its end (the exit path writes only when it never was —
+    /// restart resets this with the segment).
+    record_written: bool,
+    /// M10.1 (plan §6.5/§11.6): the checkpoint trail feeding `--record` and
+    /// the F8 dump — the tick-0 hash plus every periodic checkpoint the
+    /// host reported per frame (the same assembly the tools' AI-match
+    /// recorder uses).
+    checkpoints: Vec<(u32, u64)>,
 }
 
 /// Active structure placement (plan §11.3's build placement mode with a
@@ -236,9 +285,9 @@ struct PlacementState {
 }
 
 impl App {
-    fn new(bundle: ContentBundle) -> anyhow::Result<Self> {
+    fn new(bundle: ContentBundle, seed: u64, record_path: Option<PathBuf>) -> anyhow::Result<Self> {
         let setup = MatchSetup {
-            seed: 7,
+            seed,
             players: vec![
                 PlayerSetup {
                     player: PlayerId(0),
@@ -279,6 +328,9 @@ impl App {
         let worker_kind = Some(plan.worker);
         let node_kind = plan.node;
         let host = Self::build_host(&bundle, setup.clone());
+        // M10.1: the checkpoint trail opens at the fresh match's tick-0
+        // hash (the same first entry the tools' recorder pushes).
+        let checkpoints = vec![(0, host.state_hash())];
         Ok(Self {
             bundle,
             setup,
@@ -315,6 +367,9 @@ impl App {
             latest_view: None,
             placement: None,
             ui_buttons: Vec::new(),
+            record_path,
+            record_written: false,
+            checkpoints,
         })
     }
 
@@ -353,6 +408,11 @@ impl App {
         self.latest_view = None;
         self.placement = None;
         self.ui_buttons.clear();
+        // M10.1: the recording state restarts with the match — the new
+        // segment gets its own tick-0 checkpoint and its own end-of-match
+        // record write.
+        self.checkpoints = vec![(0, self.host.state_hash())];
+        self.record_written = false;
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -383,6 +443,115 @@ impl App {
     /// query (selection, context orders) reads through this.
     fn view_snapshot(&self) -> pandemonium_engine::RenderSnapshot {
         self.view_interp.render(self.host.alpha())
+    }
+
+    /// M10.1 (plan §6.5): folds one frame outcome's periodic checkpoints
+    /// into the trail `--record` and F8 read (the same accumulation the
+    /// tools' AI-match recorder performs).
+    fn collect_checkpoints(&mut self, outcome: &FrameOutcome) {
+        for &(tick, hash) in &outcome.hashes {
+            self.checkpoints.push((tick, hash));
+        }
+    }
+
+    /// M10.1 (plan §6.5): writes the current match segment's replay record
+    /// to the `--record` path — a file `tools replay-verify` accepts, built
+    /// exactly like the tools' recorder (content hash, map id, the host's
+    /// command log, the checkpoint trail, the forced final hash).
+    fn write_recording(&mut self) {
+        let Some(path) = self.record_path.clone() else {
+            return;
+        };
+        let world = self.bundle.world();
+        let replay = report::replay_record(
+            &world,
+            &self.setup,
+            self.host.log(),
+            &self.checkpoints,
+            self.host.tick(),
+            self.host.state_hash(),
+        );
+        let bytes = replay.encode();
+        match std::fs::write(&path, &bytes) {
+            Ok(()) => {
+                println!(
+                    "pandemonium client — replay recorded: {} ({} bytes, {} checkpoints, final \
+                     hash {:#018x})",
+                    path.display(),
+                    bytes.len(),
+                    replay.checkpoints.len(),
+                    replay.final_hash
+                );
+                self.record_written = true;
+            }
+            Err(error) => {
+                // Not recorded: the exit path may try again once the run ends
+                // or the loop exits (a transient I/O failure should not lose
+                // the recording).
+                println!("pandemonium client — replay record failed: {error}");
+            }
+        }
+    }
+
+    /// M10.1 (plan §11.6): the deterministic F8 bug-report dump — the replay
+    /// record of the match so far (`pandemonium-report-<seed>-tick<tick>.pdrp`)
+    /// plus the sidecar info file (`…-info.txt`), written beside `--record`'s
+    /// path or in the working directory, both filenames printed so the tester
+    /// can attach them to the report. Works while paused (the dump reads the
+    /// current state); deterministic content only, so two dumps at the same
+    /// tick produce identical bytes.
+    fn dump_bug_report(&mut self) {
+        let world = self.bundle.world();
+        let tick = self.host.tick();
+        let replay = report::replay_record(
+            &world,
+            &self.setup,
+            self.host.log(),
+            &self.checkpoints,
+            tick,
+            self.host.state_hash(),
+        );
+        let sidecar = report::sidecar_text(&report::SidecarInfo {
+            seed: self.setup.seed,
+            tick,
+            content_hash: replay.content_hash,
+            map_id: replay.map_id,
+            player_slot: HUMAN.0,
+            frame_count: self.frames_presented,
+            selection_size: self.selection.len(),
+            controls_line: report::controls_line(
+                self.attack_move_armed,
+                self.feedback.refusal_notice.is_some(),
+            ),
+        });
+        // Beside --record's path when given, the working directory otherwise.
+        let dir = match &self.record_path {
+            Some(path) => path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+                .unwrap_or_default(),
+            None => PathBuf::from("."),
+        };
+        let stem = report::report_stem(self.setup.seed, tick);
+        match report::write_files(&dir, &stem, &replay, &sidecar) {
+            Ok((replay_path, info_path)) => {
+                println!("pandemonium bug report: {}", replay_path.display());
+                println!("pandemonium bug report: {}", info_path.display());
+                // The on-screen cue (plan §11.6): a brief ping where the
+                // tester is looking, so the dump's success is visible.
+                let ndc = self.cursor_ndc();
+                let ground = self
+                    .camera
+                    .ground_point(glam::Vec2::new(ndc.0, ndc.1))
+                    .map(|point| MatchHost::world_to_logical(point.x, point.z))
+                    .unwrap_or_else(|| {
+                        Vec2Fx::from_ints(self.start_anchor.0 as i32, self.start_anchor.1 as i32)
+                    });
+                self.feedback.ping(ground, self.frames_presented);
+            }
+            Err(error) => println!("pandemonium bug report: write failed ({error})"),
+        }
     }
 
     /// The cursor's current NDC position (M8: used by the AttackMove hotkey,
@@ -969,15 +1138,21 @@ impl ApplicationHandler for App {
                                 self.attack_move_armed = false;
                             }
                         }
-                        // §11.6 debug tooling: overlay toggle, pause, single-step.
+                        // §11.6 debug tooling: overlay toggle, pause, single-step,
+                        // and the M10.1 F8 bug-report dump (seed + tick,
+                        // deterministic — see report.rs).
                         winit::keyboard::KeyCode::F3 if pressed => {
                             self.debug_overlay = !self.debug_overlay;
+                        }
+                        winit::keyboard::KeyCode::F8 if pressed => {
+                            self.dump_bug_report();
                         }
                         winit::keyboard::KeyCode::KeyP if pressed => {
                             self.host.set_paused(!self.host.is_paused());
                         }
                         winit::keyboard::KeyCode::Period if pressed => {
-                            let _ = self.host.step_once();
+                            let outcome = self.host.step_once();
+                            self.collect_checkpoints(&outcome);
                         }
                         // M8 (plan §11.3): control groups 1-9. Ctrl+digit
                         // assigns the current selection; digit alone recalls.
@@ -1030,6 +1205,16 @@ impl ApplicationHandler for App {
                 self.focused = focused;
             }
             _ => {}
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // M10.1 (plan §6.5): `--record`'s clean-exit write. Every exit path
+        // (window close, Escape, the `--frames` budget) lands here — the
+        // segment's replay is written unless the match already ended and
+        // wrote its record at the end tick.
+        if self.record_path.is_some() && !self.record_written {
+            self.write_recording();
         }
     }
 
@@ -1136,6 +1321,14 @@ impl App {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
         let outcome = self.host.advance(dt);
+        // M10.1 (plan §6.5/§11.6): the trail feeding --record and F8.
+        self.collect_checkpoints(&outcome);
+        // M10.1 (plan §6.5): --record writes the segment's replay at the
+        // match's end — the log is complete there, and the checkpoint at the
+        // end tick is the natural replay finale.
+        if self.record_path.is_some() && !self.record_written && self.host.is_finished() {
+            self.write_recording();
+        }
         // M9 (plan §11.5, FD-9): the step's events flow outward — the audio
         // sink and the feedback state consume them after the step, never
         // inside it. Presentation-only bookkeeping.
@@ -1567,9 +1760,9 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
             format!("hash {:#018x}", hud.state_hash),
             format!("entities {entities}  selected {selected}  log {log_len}"),
             if hud.paused {
-                "PAUSED  [.] step".to_string()
+                "PAUSED  [.] step  [F8] bug report".to_string()
             } else {
-                "[F3] overlay  [P] pause".to_string()
+                "[F3] overlay  [P] pause  [F8] bug report".to_string()
             },
         ];
         let widest = lines
@@ -1779,4 +1972,79 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
     println!("  content hash:    {:#018x}", bundle.content_hash());
     println!("pandemonium client — smoke PASS (windowed M3 verification requires a display)");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{frames_budget_arg, record_from_args, seed_from_args};
+
+    /// `args(["--seed", "42"])` — the standard helper spelling.
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| part.to_string()).collect()
+    }
+
+    #[test]
+    fn seed_parser_accepts_a_valid_value() {
+        assert_eq!(
+            seed_from_args(&args(&["pandemonium-client", "--seed", "42"])),
+            42
+        );
+        assert_eq!(seed_from_args(&args(&["--seed", "0"])), 0);
+        assert_eq!(
+            seed_from_args(&args(&["--seed", "18446744073709551615"])),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn seed_parser_defaults_without_the_flag() {
+        assert_eq!(seed_from_args(&args(&["pandemonium-client"])), 7);
+        assert_eq!(seed_from_args(&args(&["--frames", "900"])), 7);
+    }
+
+    #[test]
+    fn seed_parser_falls_back_on_a_missing_value() {
+        // Mirrors `--frames`: a missing value silently takes the default
+        // (7) rather than failing to start — the flag is an affordance, not
+        // a contract.
+        assert_eq!(seed_from_args(&args(&["--seed"])), 7);
+    }
+
+    #[test]
+    fn seed_parser_falls_back_on_a_garbage_value() {
+        assert_eq!(seed_from_args(&args(&["--seed", "not-a-number"])), 7);
+        assert_eq!(seed_from_args(&args(&["--seed", "-1"])), 7);
+        assert_eq!(seed_from_args(&args(&["--seed", ""])), 7);
+    }
+
+    #[test]
+    fn record_parser_reads_the_path() {
+        assert_eq!(
+            record_from_args(&args(&["--record", "/tmp/match.pdrp"])),
+            Some(std::path::PathBuf::from("/tmp/match.pdrp"))
+        );
+        // A relative path (the playtest quickstart's shape) passes verbatim.
+        assert_eq!(
+            record_from_args(&args(&["--record", "match.pdrp"])),
+            Some(std::path::PathBuf::from("match.pdrp"))
+        );
+    }
+
+    #[test]
+    fn record_parser_is_none_without_the_flag_or_value() {
+        assert_eq!(record_from_args(&args(&["pandemonium-client"])), None);
+        assert_eq!(record_from_args(&args(&["--seed", "42"])), None);
+        // A missing value disables recording rather than guessing a file.
+        assert_eq!(record_from_args(&args(&["--record"])), None);
+    }
+
+    #[test]
+    fn frames_parser_still_parses_after_the_signature_change() {
+        assert_eq!(frames_budget_arg(&args(&["--frames", "900"])), Some(900));
+        assert_eq!(
+            frames_budget_arg(&args(&["--frames", "garbage"])),
+            Some(180)
+        );
+        assert_eq!(frames_budget_arg(&args(&["pandemonium-client"])), None);
+    }
 }
