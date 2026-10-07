@@ -931,4 +931,28 @@ mod tests {
             .count();
         assert_eq!(cancels, 2, "the busy queue keeps its cancel buttons");
     }
+
+    #[test]
+    fn the_name_lookup_feeds_the_panel_and_the_tooltip() {
+        // PLAN-M10.2 §2.6: the name lookup the info panel and the hover
+        // tooltip use resolves every authored kind to its display name.
+        let bundle = bundle();
+        for (id, display) in [
+            ("worker", "Worker"),
+            ("rifleman", "Rifleman"),
+            ("raider", "Raider"),
+            ("guardian", "Guardian"),
+            ("command_center", "Command Center"),
+            ("barracks", "Barracks"),
+            ("supply_depot", "Supply Depot"),
+            ("turret", "Turret"),
+            ("ore_node", "Ore Node"),
+        ] {
+            let kind = kind_of(&bundle, id).unwrap_or_else(|| panic!("{id} resolves"));
+            let def = def_of(&bundle, kind).unwrap_or_else(|| panic!("{id} has a def"));
+            assert_eq!(def.display_name, display, "{id} names itself for the HUD");
+        }
+        // An unknown kind id has no def: both callers fall back safely.
+        assert!(def_of(&bundle, KindId(9999)).is_none());
+    }
 }
