@@ -16,6 +16,10 @@ mod input;
 mod orders;
 mod render;
 mod report;
+// The menu wiring (the app consuming screens::AppState) lands in the next
+// commits of this phase; the allow comes off with it.
+#[allow(dead_code)]
+mod screens;
 mod silhouette;
 mod text;
 mod ui;
