@@ -235,7 +235,27 @@ fix: distinct multi-part silhouettes per kind, blue/orange team bands and
 rings, a bigger selected-entity health bar, hover name tooltips, a
 production-queue summary in the info panel, distinct minimap markers
 (buildings visibly larger; ore a diamond), and calmer ground with darker
-rock. The re-test for the row above now also asks: **can you identify the
+rock.
+
+**Machine half of the exit test (Xvfb + llvmpipe, this environment)**: the
+windowed client presented frames through the real wgpu GL path (700/1500/
+2000/1600-frame smokes, all healthy, zero golden movement) and the captures
+verify on sight: the **command center** reads as THE base (tall slab +
+corner tower, team blue), **workers** read as small blue units and name
+themselves on hover ("Worker / yours"), **ore nodes** pop as bright amber
+crystal clusters off the calm ground ("Ore Node / neutral" on hover), the
+selected worker draws the **bigger always-on health bar** plus the green
+selection brackets and the info panel with its build card, and the
+minimap carries the base cluster. The Xvfb pass also caught a live miss —
+hovering the Command Center's tower mass fell outside the fixed hover
+radius — fixed in the same pass (footprint-scaled reach, unit-pinned).
+**Not directly captured: a Guardian on screen** (the start force fields
+none and the AI's first wave was not on camera in the captured windows);
+its hull/treads/turret/barrel silhouette is pinned by the shape tests, so
+the tank-on-sight read is the one item the re-test confirms on a real
+display.
+
+The re-test for the row above now also asks: **can you identify the
 command center, a worker, and a tank on sight, without a legend? Can you
 tell the sides apart at a glance? Can you read the minimap and the health
 state?** Report anything that does not read — a failed read is a finding,
