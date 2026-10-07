@@ -37,6 +37,8 @@ pub enum MatchMode {
 impl MatchMode {
     /// The mode's label on the New Match screen (ASCII — the embedded font
     /// is an ASCII subset of DejaVu Sans).
+    // (rendered by the New Match screen's commit, later this phase)
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Self::PlayerVsAi => "Player vs AI",
@@ -190,6 +192,8 @@ pub enum Effect {
     /// Drop the host and return to the menu.
     DropMatch,
     /// Pause the host (opening the pause menu).
+    // (consumed by the pause-menu + Escape-ladder commit, later this phase)
+    #[allow(dead_code)]
     Pause,
     /// Unpause the host (leaving the pause menu).
     Unpause,
@@ -237,6 +241,12 @@ pub struct KeyContext {
     /// seed, A-111 — never the sim's deterministic RNG). Used to fill an
     /// empty seed field and to randomize on demand.
     pub random_seed: u64,
+    /// The `--seed N` flag's value (None = the seed field starts empty,
+    /// i.e. random at Start) — pre-fills the New Match screen's seed field
+    /// every time the screen opens.
+    pub seed_prefill: Option<u64>,
+    /// How many maps the loaded content tree lists.
+    pub map_count: usize,
 }
 
 /// One focusable row's identity — the shared vocabulary between the
@@ -299,6 +309,18 @@ impl AppState {
     /// but swallow the world's clicks and keys).
     pub fn takes_world_input(&self) -> bool {
         matches!(self.screen, Screen::InMatch)
+    }
+
+    /// The screen's name for evidence lines (lowercase, ASCII).
+    pub fn name(&self) -> &'static str {
+        match self.screen {
+            Screen::MainMenu => "main menu",
+            Screen::NewMatch(_) => "new match screen",
+            Screen::Settings { .. } => "settings screen",
+            Screen::InMatch => "match",
+            Screen::PauseMenu => "pause menu",
+            Screen::EndScreen => "end screen",
+        }
     }
 
     /// The focused row's identity.
@@ -418,14 +440,17 @@ impl AppState {
         next.focus = index;
         match id {
             ButtonId::NewMatch => {
+                // A fresh New Match screen: the default mode, the flag's
+                // pre-filled seed (empty = random at Start), the first map.
                 next.screen = Screen::NewMatch(NewMatchState {
                     mode: MatchMode::PlayerVsAi,
-                    seed_text: String::new(),
+                    seed_text: ctx
+                        .seed_prefill
+                        .map(|seed| seed.to_string())
+                        .unwrap_or_default(),
                     map_index: 0,
-                    map_count: 1,
+                    map_count: ctx.map_count.max(1),
                 });
-                // The caller re-stamps the field defaults it owns (the
-                // pre-filled seed, the real map count) — see `new_match_screen`.
                 (next, Effect::None)
             }
             ButtonId::Settings => {
@@ -583,6 +608,8 @@ impl AppState {
     /// The in-match Escape edge (the input layer's ladder exhausted): open
     /// the pause menu and pause the host. The wiring layer calls this; the
     /// effect pauses through the existing `MatchHost` pause.
+    // (consumed by the pause-menu + Escape-ladder commit, later this phase)
+    #[allow(dead_code)]
     pub fn open_pause(&self) -> (AppState, Effect) {
         let mut next = self.clone();
         if matches!(self.screen, Screen::InMatch) {
@@ -604,23 +631,6 @@ impl AppState {
         }
         next
     }
-
-    /// Builds a New Match screen with the caller's field defaults: the
-    /// pre-filled seed (`--seed N`'s value, else empty = random) and the
-    /// real map count.
-    pub fn new_match_screen(seed_prefill: Option<u64>, map_count: usize) -> AppState {
-        AppState {
-            screen: Screen::NewMatch(NewMatchState {
-                mode: MatchMode::PlayerVsAi,
-                seed_text: seed_prefill
-                    .map(|seed| seed.to_string())
-                    .unwrap_or_default(),
-                map_index: 0,
-                map_count: map_count.max(1),
-            }),
-            focus: 0,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -629,7 +639,26 @@ mod tests {
 
     /// A pinned context (the random seed is an input — tests know it).
     fn ctx() -> KeyContext {
-        KeyContext { random_seed: 1234 }
+        KeyContext {
+            random_seed: 1234,
+            seed_prefill: None,
+            map_count: 1,
+        }
+    }
+
+    /// A pinned context carrying the `--seed 4242` prefill and 3 maps.
+    fn ctx_prefilled() -> KeyContext {
+        KeyContext {
+            random_seed: 1234,
+            seed_prefill: Some(4242),
+            map_count: 3,
+        }
+    }
+
+    /// The New Match screen a context produces (the activation path's
+    /// builder — what a caller uses instead of hand-assembling the state).
+    fn new_match_screen(ctx: &KeyContext) -> AppState {
+        menu().activate_index(0, ctx).0
     }
 
     fn at(screen: Screen) -> AppState {
@@ -669,7 +698,10 @@ mod tests {
 
     #[test]
     fn new_match_start_starts_the_match_with_the_fields() {
-        let start = AppState::new_match_screen(Some(42), 1);
+        let start = new_match_screen(&KeyContext {
+            seed_prefill: Some(42),
+            ..ctx()
+        });
         let (next, effect) = start.activate_index(3, &ctx()); // Start
         assert_eq!(next.screen, Screen::InMatch);
         assert_eq!(
@@ -684,7 +716,7 @@ mod tests {
 
     #[test]
     fn new_match_back_and_escape_return_to_the_main_menu() {
-        let start = AppState::new_match_screen(None, 1);
+        let start = new_match_screen(&ctx());
         let (next, _) = start.activate_index(4, &ctx()); // Back
         assert_eq!(next.screen, Screen::MainMenu);
         let (next, _) = start.on_key(NavKey::Escape, &ctx());
@@ -693,7 +725,7 @@ mod tests {
 
     #[test]
     fn an_empty_seed_field_starts_from_the_fresh_random_seed() {
-        let start = AppState::new_match_screen(None, 1);
+        let start = new_match_screen(&ctx());
         let fields = match &start.screen {
             Screen::NewMatch(fields) => fields.clone(),
             _ => unreachable!(),
@@ -877,7 +909,7 @@ mod tests {
 
     #[test]
     fn left_right_on_the_mode_row_cycles_the_field() {
-        let start = AppState::new_match_screen(None, 1);
+        let start = new_match_screen(&ctx());
         let mode_row = {
             let mut s = start.clone();
             s.focus_index(0);
@@ -907,7 +939,10 @@ mod tests {
 
     #[test]
     fn the_map_row_cycles_and_wraps_by_the_bundle_count() {
-        let start = AppState::new_match_screen(None, 3);
+        let start = new_match_screen(&KeyContext {
+            map_count: 3,
+            ..ctx()
+        });
         let mut map_row = start.clone();
         map_row.focus_index(2);
         let at_focus = |screen: Screen| AppState { screen, focus: 2 };
@@ -927,14 +962,14 @@ mod tests {
             Screen::NewMatch(f) if f.map_index == 0 // wrapped
         ));
         // A one-map bundle stays on its only map.
-        let single = AppState::new_match_screen(None, 1);
+        let single = new_match_screen(&ctx());
         let (same, _) = single.on_key(NavKey::Right, &ctx());
         assert!(matches!(&same.screen, Screen::NewMatch(f) if f.map_index == 0));
     }
 
     #[test]
     fn seed_digits_type_backspace_deletes_and_enter_randomizes() {
-        let start = AppState::new_match_screen(None, 1);
+        let start = new_match_screen(&ctx());
         let mut seed_row = start.clone();
         seed_row.focus_index(1);
         let (mut next, _) = seed_row.on_key(NavKey::Digit('4'), &ctx());
@@ -972,7 +1007,7 @@ mod tests {
 
     #[test]
     fn seed_typing_is_capped_and_digits_only_land_when_the_row_is_focused() {
-        let start = AppState::new_match_screen(None, 1);
+        let start = new_match_screen(&ctx());
         let mut seed_row = start.clone();
         seed_row.focus_index(1);
         let mut next = seed_row.clone();
@@ -990,7 +1025,7 @@ mod tests {
 
     #[test]
     fn a_prefilled_seed_field_carries_the_seed_flag_value() {
-        let start = AppState::new_match_screen(Some(4242), 1);
+        let start = new_match_screen(&ctx_prefilled());
         assert!(matches!(&start.screen, Screen::NewMatch(f) if f.seed_text == "4242"));
         let (_, effect) = start.activate_index(3, &ctx());
         assert_eq!(

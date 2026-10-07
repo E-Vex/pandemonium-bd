@@ -66,6 +66,30 @@ impl Button {
     }
 }
 
+/// One clickable region of a menu screen (PLAN-M10.2 §3.6): a plain
+/// rectangle with the row identity the pure state machine resolves clicks
+/// through. The hover/focus visuals are drawn by the menu pass.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct MenuButton {
+    /// Left edge (pixels).
+    pub x: f32,
+    /// Top edge (pixels).
+    pub y: f32,
+    /// Width.
+    pub w: f32,
+    /// Height.
+    pub h: f32,
+    /// Which row of the active screen this is (focus-index order).
+    pub id: crate::screens::ButtonId,
+}
+
+impl MenuButton {
+    /// Whether the point (window pixels) is inside the button.
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
+    }
+}
+
 /// The bottom bar's panel rectangles, computed from the viewport.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarLayout {

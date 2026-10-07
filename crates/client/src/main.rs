@@ -16,9 +16,6 @@ mod input;
 mod orders;
 mod render;
 mod report;
-// The menu wiring (the app consuming screens::AppState) lands in the next
-// commits of this phase; the allow comes off with it.
-#[allow(dead_code)]
 mod screens;
 mod silhouette;
 mod text;
@@ -33,7 +30,7 @@ use anyhow::Context;
 use feedback::FeedbackState;
 use input::{RightButton, RightRelease};
 use pandemonium_ai::Controller;
-use pandemonium_content::ContentBundle;
+use pandemonium_content::{ContentBundle, ContentTree};
 use pandemonium_engine::audio::{AudioSink, NullAudioSink};
 use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
@@ -46,9 +43,10 @@ use pandemonium_sim_api::{
     PlayerSetup, PlayerView, Snapshot, TileFog, TilePos, Vec2Fx,
 };
 use render::WgpuRenderer;
+use screens::{AppState, Effect, KeyContext, MatchMode, NavKey, Screen};
 use std::collections::BTreeMap;
 use text::{TextAtlas, UiQuad};
-use ui::{Button, ButtonAction};
+use ui::{Button, ButtonAction, MenuButton};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -88,11 +86,24 @@ const START_CAMERA_DISTANCE: f32 = 26.0;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let seed = seed_from_args(&args);
+    let seed_flag = seed_flag_from_args(&args);
     let record_path = record_from_args(&args);
     let content = content_path();
-    let bundle = ContentBundle::load_dir(content)
+    // PLAN-M10.2 §3.3: the whole tree loads — the New Match screen lists its
+    // maps, and a match bundles the selected one. The Alpha ships one map;
+    // the default bundle (its first map) backs the menu's backdrop and the
+    // headless smoke pass.
+    let tree = ContentTree::load_dir(content)
         .with_context(|| format!("loading content from {}", content.display()))?;
+    let default_bundle = tree
+        .bundle(
+            &tree
+                .maps
+                .first()
+                .map(|map| map.id.clone())
+                .ok_or_else(|| anyhow::anyhow!("the content tree lists no maps"))?,
+        )
+        .with_context(|| "bundling the default map")?;
 
     let event_loop = match EventLoop::builder().build() {
         Ok(event_loop) => event_loop,
@@ -103,10 +114,13 @@ fn main() -> anyhow::Result<()> {
                 "pandemonium client — no display available ({error}); running the headless \
                  smoke pass (windowed mode needs X11/Wayland; see AI-Handoff §8)"
             );
-            return headless_smoke(&bundle);
+            return headless_smoke(&default_bundle);
         }
     };
-    let mut app = App::new(bundle, seed, record_path)?;
+    // PLAN-M10.2 §3.2: the game starts at the main menu — the match host is
+    // deferred until Start is pressed (the A15 drop + reconstruct path,
+    // unchanged determinism).
+    let mut app = App::new(tree, default_bundle, seed_flag, record_path)?;
     app.frames_budget = frames_budget_arg(&args);
     event_loop
         .run_app(&mut app)
@@ -134,20 +148,29 @@ fn frames_budget_arg(args: &[String]) -> Option<u64> {
 
 /// Parses the reproduction affordance `--seed N` (M10.1, plan §6.5: a match
 /// is seed + content + command log — the README's bug-report promise needs
-/// the windowed player to be able to name the seed they played). Default 7
-/// (the seed every existing pin and the M1 demo use); a missing or malformed
-/// value falls back to the default, mirroring `--frames`'s parser.
-fn seed_from_args(args: &[String]) -> u64 {
+/// the windowed player to be able to name the seed they played).
+/// PLAN-M10.2 §3.3: the value pre-fills the New Match screen's seed field;
+/// when the flag is absent (or malformed) the field starts *random* — the
+/// plan's own default — so `Some(N)` means "the player asked for this seed"
+/// and `None` means "roll one" (the OS-entropy source, A-111).
+fn seed_flag_from_args(args: &[String]) -> Option<u64> {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "--seed" {
-            return args
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(7);
+            return args.next().and_then(|value| value.parse::<u64>().ok());
         }
     }
-    7
+    None
+}
+
+/// A fresh seed from the OS entropy source available in std (A-111):
+/// `RandomState` is seeded from the OS per construction, so two fresh
+/// hashers finish to different values. UI-only — this fills the New Match
+/// screen's seed field and never touches the sim's deterministic RNG.
+fn random_seed() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    RandomState::new().build_hasher().finish()
 }
 
 /// Parses the recording affordance `--record <path>` (M10.1, plan §6.5):
@@ -172,17 +195,35 @@ fn content_path() -> &'static Path {
 
 /// The windowed application state.
 struct App {
-    /// The loaded content bundle (M8: retained for restart — fresh controllers
-    /// are re-derived from the bundle + seed on each restart).
-    bundle: ContentBundle,
+    /// The whole loaded content tree (PLAN-M10.2 §3.3): the New Match screen
+    /// lists its maps and a started match bundles the selected one.
+    tree: ContentTree,
+    /// The current screen state (PLAN-M10.2 §3.1) — the application state
+    /// machine plus the keyboard focus within the active menu.
+    screen: AppState,
+    /// The pre-filled seed (the `--seed N` flag; None = the New Match field
+    /// starts random — A-111's OS-entropy source).
+    seed_prefill: Option<u64>,
     /// The persisted settings (PLAN-M10.2 §3.4), loaded at startup with safe
     /// defaults when the config file is missing or malformed — the settings
     /// screen edits this live copy and saves it on Done.
     settings: config::Settings,
-    /// The match setup (M8: retained for restart — the same seed reproduces
-    /// the same match bit-for-bit, A15).
+    /// The current match's bundle (rebuilt per match: the selected map's).
+    /// At the menu this holds the default bundle (the backdrop's map).
+    bundle: ContentBundle,
+    /// The live match's host — None until Start is pressed (PLAN-M10.2 §3.2:
+    /// the game starts at the menu), Some for exactly as long as the screen
+    /// is InMatch / PauseMenu / EndScreen. Every host access is guarded on
+    /// this; a menu-only session must never panic, write a report, or
+    /// submit a command.
+    host: Option<MatchHost>,
+    /// The live match's mode (A-112) — what Start was pressed with.
+    match_mode: MatchMode,
+    /// The live match's setup (M8: retained for restart — the same seed
+    /// reproduces the same match bit-for-bit, A15).
     setup: MatchSetup,
-    host: MatchHost,
+    /// The live match's selected map (index into `tree.maps`).
+    map_index: usize,
     camera: RtsCamera,
     renderer: Option<WgpuRenderer>,
     window: Option<Arc<Window>>,
@@ -295,6 +336,10 @@ struct App {
     /// The bottom bar's clickable regions, rebuilt every frame by the UI
     /// pass and hit-tested before world clicks.
     ui_buttons: Vec<Button>,
+    /// The active menu screen's clickable regions (PLAN-M10.2 §3.6), rebuilt
+    /// every frame by the menu pass — hit-tested before any world input
+    /// routing (empty while a match owns the input).
+    menu_buttons: Vec<MenuButton>,
     /// M10.1 (plan §6.5): `--record <path>` — when set, the windowed run's
     /// replay is written at match end / clean exit (a file `tools
     /// replay-verify` accepts — A2's evidence channel for the playtest).
@@ -306,7 +351,7 @@ struct App {
     /// M10.1 (plan §6.5/§11.6): the checkpoint trail feeding `--record` and
     /// the F8 dump — the tick-0 hash plus every periodic checkpoint the
     /// host reported per frame (the same assembly the tools' AI-match
-    /// recorder uses).
+    /// recorder uses). Reset by every begin_match; empty at the menu.
     checkpoints: Vec<(u32, u64)>,
 }
 
@@ -322,57 +367,47 @@ struct PlacementState {
 }
 
 impl App {
-    fn new(bundle: ContentBundle, seed: u64, record_path: Option<PathBuf>) -> anyhow::Result<Self> {
-        let setup = MatchSetup {
-            seed,
-            players: vec![
-                PlayerSetup {
-                    player: PlayerId(0),
-                    controller: ControllerKind::Human,
-                },
-                PlayerSetup {
-                    player: PlayerId(1),
-                    controller: ControllerKind::Ai,
-                },
-            ],
-        };
-        let resource_names: Vec<String> = bundle
+    fn new(
+        tree: ContentTree,
+        default_bundle: ContentBundle,
+        seed_prefill: Option<u64>,
+        record_path: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        let resource_names: Vec<String> = tree
             .rules
             .resources
             .iter()
             .map(|resource| resource.display_name.clone())
             .collect();
-        // M9.1: open on the player's base, not the map center — the start
-        // anchor with its starting force fills the frame at the closer
-        // distance, so the player sees their units on frame one.
-        let start_anchor = bundle
+        // M9.1's opening view (now the menu's backdrop): the default map's
+        // player start at the readable opening distance. A started match
+        // re-frames on its own map's anchor (begin_match).
+        let start_anchor = default_bundle
             .map
             .starts
             .iter()
             .find(|start| start.player == 0)
             .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
             .unwrap_or((
-                bundle.map.width as f32 / 2.0,
-                bundle.map.height as f32 / 2.0,
+                default_bundle.map.width as f32 / 2.0,
+                default_bundle.map.height as f32 / 2.0,
             ));
-        let mut camera = RtsCamera::new(bundle.map.width, bundle.map.height, 16.0 / 9.0);
+        let mut camera = RtsCamera::new(
+            default_bundle.map.width,
+            default_bundle.map.height,
+            16.0 / 9.0,
+        );
         camera.focus(start_anchor.0, start_anchor.1, START_CAMERA_DISTANCE);
-        // M9.1: the right-click context resolver needs the content's worker
-        // and node kind ids — the engine's alpha-plan resolution (capability
-        // shaped, never name-matched) already derives exactly those.
-        let world = bundle.world();
-        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
-        let worker_kind = Some(plan.worker);
-        let node_kind = plan.node;
-        let host = Self::build_host(&bundle, setup.clone());
-        // M10.1: the checkpoint trail opens at the fresh match's tick-0
-        // hash (the same first entry the tools' recorder pushes).
-        let checkpoints = vec![(0, host.state_hash())];
         Ok(Self {
-            bundle,
+            tree,
+            screen: AppState::at_main_menu(),
+            seed_prefill,
             settings: config::load(),
-            setup,
-            host,
+            bundle: default_bundle,
+            host: None,
+            match_mode: MatchMode::PlayerVsAi,
+            setup: MatchMode::PlayerVsAi.match_setup(seed_prefill.unwrap_or(7)),
+            map_index: 0,
             camera,
             renderer: None,
             window: None,
@@ -395,8 +430,8 @@ impl App {
             attack_move_armed: false,
             last_order: None,
             start_anchor,
-            worker_kind,
-            node_kind,
+            worker_kind: None,
+            node_kind: None,
             last_frame: Instant::now(),
             command_seq: 0,
             resource_names,
@@ -413,34 +448,118 @@ impl App {
             latest_view: None,
             placement: None,
             ui_buttons: Vec::new(),
+            menu_buttons: Vec::new(),
             record_path,
             record_written: false,
-            checkpoints,
+            checkpoints: Vec::new(),
         })
     }
 
-    /// Builds a fresh `MatchHost` with a fresh AI controller for the opponent
-    /// slot (M8). Used at construction and on restart — the controller's RNG
-    /// seed derives from the match seed (plan §9.6: seeded, never its own
-    /// entropy), so a same-seed restart reproduces the same match.
-    fn build_host(bundle: &ContentBundle, setup: MatchSetup) -> MatchHost {
+    /// Builds a fresh `MatchHost` for a mode (M8 + PLAN-M10.2 §3.3, A-112):
+    /// one scripted Alpha controller per `mode.ai_slots()` — the opponent in
+    /// Player vs AI, both players in spectate, none in Sandbox. The
+    /// controller's RNG seed derives from the match seed (plan §9.6: seeded,
+    /// never its own entropy), so a same-seed restart reproduces the same
+    /// match.
+    fn build_host(bundle: &ContentBundle, setup: MatchSetup, mode: MatchMode) -> MatchHost {
         let world = bundle.world();
-        let controllers: Vec<(PlayerId, Box<dyn Controller>)> = vec![(
-            AI,
-            Box::new(alpha_controller(bundle, &world, AI, setup.seed)),
-        )];
+        let controllers: Vec<(PlayerId, Box<dyn Controller>)> = mode
+            .ai_slots()
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    Box::new(alpha_controller(bundle, &world, slot, setup.seed))
+                        as Box<dyn Controller>,
+                )
+            })
+            .collect();
         MatchHost::with_controllers(&world, setup, controllers)
     }
 
-    /// Restarts the match: drops the current host and builds a fresh one from
-    /// the same bundle + setup (M8, plan §9.7, A15 — "new Sim from the same
-    /// setup with a new seed, with no leaked state"). The fresh controller
-    /// re-derives its RNG seed from the match seed, so a same-seed restart
-    /// reproduces the same match bit-for-bit. The camera, selection, control
-    /// groups, and counters all reset.
-    fn restart(&mut self) {
-        let setup = self.setup.clone();
-        self.host = Self::build_host(&self.bundle, setup);
+    /// Starts a match (PLAN-M10.2 §3.3): bundles the selected map, builds the
+    /// mode's setup and host, and resets every match-scoped state — the same
+    /// drop + reconstruct discipline M8's restart established (A15), so
+    /// determinism is unchanged: the same (mode, seed, map) builds the same
+    /// match bit-for-bit.
+    fn begin_match(&mut self, mode: MatchMode, seed: u64, map_index: usize) {
+        let map_id = self
+            .tree
+            .maps
+            .get(map_index)
+            .map(|map| map.id.clone())
+            .unwrap_or_default();
+        let bundle = match self.tree.bundle(&map_id) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                // The map came from the same tree's list; a failure here is
+                // not a state the loop can render. Surface and keep the
+                // menu (never crash the loop — PLAN §4.3's spirit).
+                println!("pandemonium client — could not bundle map '{map_id}': {error:#}");
+                return;
+            }
+        };
+        let setup = mode.match_setup(seed);
+        // M9.1: the right-click context resolver needs the content's worker
+        // and node kind ids — the engine's alpha-plan resolution (capability
+        // shaped, never name-matched) already derives exactly those.
+        let world = bundle.world();
+        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
+        let host = Self::build_host(&bundle, setup.clone(), mode);
+        self.bundle = bundle;
+        self.match_mode = mode;
+        self.setup = setup;
+        self.map_index = map_index;
+        self.host = Some(host);
+        // The per-match derived state (restart's source of truth).
+        self.start_anchor = self
+            .bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| start.player == 0)
+            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+            .unwrap_or((
+                self.bundle.map.width as f32 / 2.0,
+                self.bundle.map.height as f32 / 2.0,
+            ));
+        self.worker_kind = Some(plan.worker);
+        self.node_kind = plan.node;
+        self.reset_match_state();
+        // M10.1: the checkpoint trail opens at the fresh match's tick-0
+        // hash (the same first entry the tools' recorder pushes).
+        self.checkpoints = vec![(0, self.host.as_ref().expect("just built").state_hash())];
+        self.record_written = false;
+        self.screen = AppState {
+            screen: Screen::InMatch,
+            focus: 0,
+        };
+    }
+
+    /// Restarts the live match (M8, plan §9.7, A15): drop + reconstruct
+    /// through the same (mode, seed, map) record Start used — a same-seed
+    /// restart reproduces the same match bit-for-bit (test-pinned; do not
+    /// weaken).
+    fn restart_match(&mut self) {
+        let (mode, seed, map_index) = (self.match_mode, self.setup.seed, self.map_index);
+        self.begin_match(mode, seed, map_index);
+    }
+
+    /// Drops the match and returns to the main menu (PLAN-M10.2 §3.1's
+    /// `-> MainMenu` edges). A menu-only session must never panic, write a
+    /// report, or submit a command — everything match-scoped clears here.
+    fn drop_match(&mut self) {
+        self.host = None;
+        self.reset_match_state();
+        self.checkpoints.clear();
+        self.record_written = false;
+        self.screen = AppState::at_main_menu();
+    }
+
+    /// The shared reset every match boundary runs (begin and drop): the
+    /// camera re-frames on the base, the input-layer state machines go
+    /// idle, and the counters zero.
+    fn reset_match_state(&mut self) {
         self.selection = Vec::new();
         self.control_groups = vec![Vec::new(); CONTROL_GROUP_COUNT];
         self.command_seq = 0;
@@ -465,11 +584,9 @@ impl App {
         self.last_digit_press = None;
         self.last_event_ground = None;
         self.crosshair_cursor = false;
-        // M10.1: the recording state restarts with the match — the new
-        // segment gets its own tick-0 checkpoint and its own end-of-match
-        // record write.
-        self.checkpoints = vec![(0, self.host.state_hash())];
-        self.record_written = false;
+        self.attack_move_armed = false;
+        self.last_order = None;
+        self.drag_start = None;
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -477,8 +594,6 @@ impl App {
             self.start_anchor.1,
             START_CAMERA_DISTANCE,
         );
-        self.attack_move_armed = false;
-        self.last_order = None;
         // M9: the feel pass's state resets with the match — a fresh match
         // starts with clean feedback (no stale flashes or pings).
         self.audio = NullAudioSink::new();
@@ -499,7 +614,60 @@ impl App {
     /// set the human's player may see. Every drawn pixel and every screen
     /// query (selection, context orders) reads through this.
     fn view_snapshot(&self) -> pandemonium_engine::RenderSnapshot {
-        self.view_interp.render(self.host.alpha())
+        match (&self.view_interp, &self.host) {
+            (interp, Some(host)) => interp.render(host.alpha()),
+            (_, None) => pandemonium_engine::RenderSnapshot::default(),
+        }
+    }
+
+    /// The live match's host (the match path only — every caller runs after
+    /// the menu early-return, so the expect is the invariant that a host
+    /// exists exactly while the screen is InMatch/PauseMenu/EndScreen).
+    fn host(&self) -> &MatchHost {
+        self.host.as_ref().expect("a live match")
+    }
+
+    /// Interprets one menu effect (PLAN §3.1: "effects are an enum the app
+    /// layer interprets").
+    fn apply_effect(&mut self, effect: Effect, event_loop: &ActiveEventLoop) {
+        match effect {
+            Effect::None => {}
+            Effect::StartMatch {
+                mode,
+                seed,
+                map_index,
+            } => self.begin_match(mode, seed, map_index),
+            Effect::RestartMatch => self.restart_match(),
+            Effect::DropMatch => self.drop_match(),
+            Effect::Pause => {
+                if let Some(host) = &mut self.host {
+                    host.set_paused(true);
+                }
+            }
+            Effect::Unpause => {
+                if let Some(host) = &mut self.host {
+                    host.set_paused(false);
+                }
+            }
+            Effect::SaveSettings => self.save_settings(),
+            // The settings screen lands later in this phase; clicks and
+            // Left/Right on its rows arrive here and adjust nothing yet.
+            Effect::AdjustSetting { .. } => {}
+            Effect::QuitApp => event_loop.exit(),
+        }
+    }
+
+    /// Persists the settings (the settings screen's Done). Best effort: the
+    /// run keeps the in-memory values even when the write fails, and a
+    /// machine with no config directory (A-109) simply never persists.
+    fn save_settings(&mut self) {
+        match config::save(&self.settings) {
+            Some(Ok(())) => {}
+            Some(Err(error)) => {
+                println!("pandemonium client — settings save failed: {error}");
+            }
+            None => {} // persistence disabled (no config dir) — A-109
+        }
     }
 
     /// M10.1 (plan §6.5): folds one frame outcome's periodic checkpoints
@@ -515,18 +683,25 @@ impl App {
     /// to the `--record` path — a file `tools replay-verify` accepts, built
     /// exactly like the tools' recorder (content hash, map id, the host's
     /// command log, the checkpoint trail, the forced final hash).
+    /// PLAN-M10.2 §3.5: a menu-only session records nothing — a run that
+    /// never left the menu writes no file; a run whose match starts later
+    /// records exactly the same segment a menu-less run of the same match
+    /// would.
     fn write_recording(&mut self) {
         let Some(path) = self.record_path.clone() else {
             return;
+        };
+        let Some(host) = &mut self.host else {
+            return; // no live match — nothing to record
         };
         let world = self.bundle.world();
         let replay = report::replay_record(
             &world,
             &self.setup,
-            self.host.log(),
+            host.log(),
             &self.checkpoints,
-            self.host.tick(),
-            self.host.state_hash(),
+            host.tick(),
+            host.state_hash(),
         );
         let bytes = replay.encode();
         match std::fs::write(&path, &bytes) {
@@ -558,15 +733,24 @@ impl App {
     /// current state); deterministic content only, so two dumps at the same
     /// tick produce identical bytes.
     fn dump_bug_report(&mut self) {
+        let Some(host) = &self.host else {
+            // PLAN-M10.2 §3.5: at the menu there is no match to report —
+            // the dump is a match-scoped tool.
+            println!(
+                "pandemonium bug report: no live match (at the {})",
+                self.screen.name()
+            );
+            return;
+        };
         let world = self.bundle.world();
-        let tick = self.host.tick();
+        let tick = host.tick();
         let replay = report::replay_record(
             &world,
             &self.setup,
-            self.host.log(),
+            host.log(),
             &self.checkpoints,
             tick,
-            self.host.state_hash(),
+            host.state_hash(),
         );
         let sidecar = report::sidecar_text(&report::SidecarInfo {
             seed: self.setup.seed,
@@ -678,14 +862,25 @@ impl App {
     /// acknowledgment, and remembers the order for rejection feedback
     /// (M9.1 — the last two are the "the control works" cues).
     fn submit_order(&mut self, kind: CommandKind, ping_at: Option<Vec2Fx>) {
+        // PLAN-M10.2 §3.3 (A-113): spectate silences the human's order path
+        // at the orders layer — a hidden-but-live path would inject P1
+        // commands into a match the "player" does not own. Silently: a
+        // refusal cue under a spectator's idle clicks is noise.
+        if !self.match_mode.human_orders() {
+            return;
+        }
+        // And no order ever leaves a menu (a menu-only session submits
+        // nothing — the belt under the input routing).
+        let Some(host) = &mut self.host else {
+            return;
+        };
         self.command_seq += 1;
         self.commands_submitted += 1;
         if let Some(at) = ping_at {
             self.feedback.ping(at, self.frames_presented);
             self.last_order = Some((self.command_seq, at));
         }
-        self.host
-            .submit(Command::new(HUMAN, 0, self.command_seq, kind));
+        host.submit(Command::new(HUMAN, 0, self.command_seq, kind));
     }
 
     /// M9.1 (plan §11.3): the right-click context command — what is under
@@ -925,7 +1120,7 @@ impl ApplicationHandler for App {
         );
         match WgpuRenderer::new(
             window.clone(),
-            &terrain_mesh_of(),
+            &terrain_mesh(&self.tree.maps[0], HEIGHT_SCALE),
             kind_shapes(&self.bundle),
         ) {
             Ok(renderer) => {
@@ -968,6 +1163,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let _ = self.drag_current.insert((position.x, position.y));
+                // PLAN-M10.2 §3.6: menus own the pointer — hover moves the
+                // keyboard focus so mouse and keyboard share one navigation
+                // core. (The button rects arrive with the menu pass.)
+                if !self.screen.takes_world_input() {
+                    self.menu_hover();
+                    return;
+                }
                 // M10.2 (PLAN §1.2): right-drag map scrolling — once the
                 // right button's gesture crosses the command threshold, the
                 // ground point grabbed at the press follows the cursor
@@ -1024,6 +1226,15 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // PLAN-M10.2 §3.6: menus own the buttons — a left press
+                // activates the hovered row; nothing in a menu may send a
+                // sim command. The other buttons are inert at a menu.
+                if !self.screen.takes_world_input() {
+                    if (button, state) == (MouseButton::Left, ElementState::Pressed) {
+                        self.menu_click(event_loop);
+                    }
+                    return;
+                }
                 let Some(window) = &self.window else { return };
                 let cursor = self.drag_current.unwrap_or((0.0, 0.0));
                 let ndc = Self::to_ndc(window, cursor.0, cursor.1);
@@ -1223,6 +1434,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if !self.screen.takes_world_input() {
+                    return; // menus own the wheel
+                }
                 // Ctrl+wheel adjusts pitch (Generals-style); without Ctrl the
                 // wheel zooms toward the cursor (plan §11.3, M9.1).
                 let lines = match delta {
@@ -1255,6 +1469,18 @@ impl ApplicationHandler for App {
                 }
                 let pressed = event.state == ElementState::Pressed;
                 if let PhysicalKey::Code(code) = event.physical_key {
+                    // PLAN-M10.2 §3.6: menus own the keyboard — up/down moves
+                    // focus, Enter activates, Esc backs out (the pure
+                    // machine). Stale camera keys clear so a resumed match
+                    // never pans on a ghost of a held key.
+                    if !self.screen.takes_world_input() {
+                        if pressed {
+                            self.menu_key(code, event_loop);
+                        } else {
+                            self.keys.clear();
+                        }
+                        return;
+                    }
                     match code {
                         winit::keyboard::KeyCode::KeyW => set_key(&mut self.keys, "w", pressed),
                         // M9.1: the arrow keys alias the WASD pan (plan
@@ -1267,7 +1493,7 @@ impl ApplicationHandler for App {
                             // no longer fires at the cursor — that fought
                             // the key's camera-pan role). Only while the
                             // match is ongoing; the end screen takes over.
-                            if pressed && !self.host.is_finished() {
+                            if pressed && !self.host.as_ref().is_some_and(|h| h.is_finished()) {
                                 self.attack_move_armed = true;
                             }
                         }
@@ -1277,7 +1503,7 @@ impl ApplicationHandler for App {
                         winit::keyboard::KeyCode::KeyS => {
                             set_key(&mut self.keys, "s", pressed);
                             // M8: 'S' is also the Stop hotkey on press.
-                            if pressed && !self.host.is_finished() {
+                            if pressed && !self.host.as_ref().is_some_and(|h| h.is_finished()) {
                                 self.issue_stop();
                             }
                         }
@@ -1316,11 +1542,15 @@ impl ApplicationHandler for App {
                             self.dump_bug_report();
                         }
                         winit::keyboard::KeyCode::KeyP if pressed => {
-                            self.host.set_paused(!self.host.is_paused());
+                            if let Some(host) = &mut self.host {
+                                host.set_paused(!host.is_paused());
+                            }
                         }
                         winit::keyboard::KeyCode::Period if pressed => {
-                            let outcome = self.host.step_once();
-                            self.collect_checkpoints(&outcome);
+                            if let Some(host) = &mut self.host {
+                                let outcome = host.step_once();
+                                self.collect_checkpoints(&outcome);
+                            }
                         }
                         // M8 (plan §11.3): control groups 1-9. Ctrl+digit
                         // assigns the current selection; digit alone
@@ -1373,8 +1603,11 @@ impl ApplicationHandler for App {
                         // it has ended. The host's outcome surfaces through
                         // the boundary; restart drops + reconstructs.
                         winit::keyboard::KeyCode::KeyR if pressed => {
-                            if self.host.is_finished() {
-                                self.restart();
+                            // The end-screen rematch shortcut for the sliver
+                            // between the match ending and the draw-time
+                            // promotion; the end screen itself owns R after.
+                            if self.host.as_ref().is_some_and(|h| h.is_finished()) {
+                                self.restart_match();
                             }
                         }
                         winit::keyboard::KeyCode::Escape if pressed => {
@@ -1475,7 +1708,7 @@ impl ApplicationHandler for App {
         // only — an unfocused game never scrolls the desktop. The band is
         // toggleable (`edge_scroll_enabled`); the settings screen that
         // flips it is Phase 3.
-        if self.focused && self.edge_scroll_enabled {
+        if self.focused && self.edge_scroll_enabled && self.screen.takes_world_input() {
             if let (Some(window), Some((mx, my))) = (&self.window, self.drag_current) {
                 let size = window.inner_size();
                 if size.width > 0 && size.height > 0 {
@@ -1514,7 +1747,23 @@ impl App {
     /// presented, sim progress, commands submitted through input, selection,
     /// and — the M9 full-loop evidence — whether the match resolved).
     fn windowed_summary(&self) {
-        let outcome = match self.host.outcome() {
+        // PLAN-M10.2 §3 (T7's honesty): a `--frames` run that never left the
+        // menu reports the menu — no sim commands exist to summarize, and no
+        // record is written (the menu submits nothing).
+        let Some(host) = &self.host else {
+            let seed = match self.seed_prefill {
+                Some(seed) => format!("--seed {seed}"),
+                None => "random".to_string(),
+            };
+            println!(
+                "pandemonium client — windowed smoke: {} frames presented, at the {} (no match \
+                 this run; seed prefill {seed})",
+                self.frames_presented,
+                self.screen.name()
+            );
+            return;
+        };
+        let outcome = match host.outcome() {
             Some(outcome) => format!(
                 "match ended, {} wins (tick {})",
                 match outcome.winner {
@@ -1528,24 +1777,194 @@ impl App {
             "pandemonium client — windowed smoke: {} frames presented, tick {}, state hash {:#018x}, \
              {} commands submitted, selection {}, {}",
             self.frames_presented,
-            self.host.tick(),
-            self.host.state_hash(),
+            host.tick(),
+            host.state_hash(),
             self.commands_submitted,
             self.selection.len(),
             outcome
         );
     }
 
+    /// Menu pointer hover (PLAN-M10.2 §3.6): the hit-test against the menu
+    /// buttons moves the machine's focus — mouse and keyboard share the one
+    /// navigation core. (The button rects arrive with the menu pass's commit;
+    /// until then there is nothing to hover.)
+    fn menu_hover(&mut self) {
+        let Some((mx, my)) = self.drag_current else {
+            return;
+        };
+        if let Some(index) = self
+            .menu_buttons
+            .iter()
+            .position(|button| button.contains(mx as f32, my as f32))
+        {
+            self.screen.focus_index(index);
+        }
+    }
+
+    /// Menu click: activate the hovered/clicked button (the mouse path over
+    /// the machine's `activate_index`).
+    fn menu_click(&mut self, event_loop: &ActiveEventLoop) {
+        let Some((mx, my)) = self.drag_current else {
+            return;
+        };
+        let Some(index) = self
+            .menu_buttons
+            .iter()
+            .position(|button| button.contains(mx as f32, my as f32))
+        else {
+            return; // a click off every button: nothing (menus never order)
+        };
+        let (next, effect) = self.screen.activate_index(index, &self.menu_ctx());
+        self.screen = next;
+        self.apply_effect(effect, event_loop);
+    }
+
+    /// One menu key press (the winit key -> NavKey mapping, then the pure
+    /// machine).
+    fn menu_key(&mut self, code: winit::keyboard::KeyCode, event_loop: &ActiveEventLoop) {
+        self.keys.clear(); // menus own the keyboard: no ghost camera keys
+                           // The end screen keeps the card's R shortcut (rematch).
+        if matches!(self.screen.screen, Screen::EndScreen) && code == winit::keyboard::KeyCode::KeyR
+        {
+            let (next, effect) = self.screen.activate_index(0, &self.menu_ctx());
+            self.screen = next;
+            self.apply_effect(effect, event_loop);
+            return;
+        }
+        let key = match code {
+            winit::keyboard::KeyCode::ArrowUp => NavKey::Up,
+            winit::keyboard::KeyCode::ArrowDown => NavKey::Down,
+            winit::keyboard::KeyCode::ArrowLeft => NavKey::Left,
+            winit::keyboard::KeyCode::ArrowRight => NavKey::Right,
+            winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter => {
+                NavKey::Enter
+            }
+            winit::keyboard::KeyCode::Escape => NavKey::Escape,
+            winit::keyboard::KeyCode::Backspace => NavKey::Backspace,
+            winit::keyboard::KeyCode::Digit0 | winit::keyboard::KeyCode::Numpad0 => {
+                NavKey::Digit('0')
+            }
+            winit::keyboard::KeyCode::Digit1 | winit::keyboard::KeyCode::Numpad1 => {
+                NavKey::Digit('1')
+            }
+            winit::keyboard::KeyCode::Digit2 | winit::keyboard::KeyCode::Numpad2 => {
+                NavKey::Digit('2')
+            }
+            winit::keyboard::KeyCode::Digit3 | winit::keyboard::KeyCode::Numpad3 => {
+                NavKey::Digit('3')
+            }
+            winit::keyboard::KeyCode::Digit4 | winit::keyboard::KeyCode::Numpad4 => {
+                NavKey::Digit('4')
+            }
+            winit::keyboard::KeyCode::Digit5 | winit::keyboard::KeyCode::Numpad5 => {
+                NavKey::Digit('5')
+            }
+            winit::keyboard::KeyCode::Digit6 | winit::keyboard::KeyCode::Numpad6 => {
+                NavKey::Digit('6')
+            }
+            winit::keyboard::KeyCode::Digit7 | winit::keyboard::KeyCode::Numpad7 => {
+                NavKey::Digit('7')
+            }
+            winit::keyboard::KeyCode::Digit8 | winit::keyboard::KeyCode::Numpad8 => {
+                NavKey::Digit('8')
+            }
+            winit::keyboard::KeyCode::Digit9 | winit::keyboard::KeyCode::Numpad9 => {
+                NavKey::Digit('9')
+            }
+            _ => return, // every other key is inert at a menu
+        };
+        let (next, effect) = self.screen.on_key(key, &self.menu_ctx());
+        self.screen = next;
+        self.apply_effect(effect, event_loop);
+    }
+
+    /// The per-event context for the pure machine (A-111: the random seed is
+    /// an input, freshly drawn per event; the seed prefill and the map count
+    /// are the app's own field defaults for a fresh New Match screen).
+    fn menu_ctx(&self) -> KeyContext {
+        KeyContext {
+            random_seed: random_seed(),
+            seed_prefill: self.seed_prefill,
+            map_count: self.tree.maps.len(),
+        }
+    }
+
+    /// The menu frame (PLAN-M10.2 §3.2): the title over a dimmed, matchless
+    /// world — the same overlay pass, no host, no HUD, nothing that could
+    /// submit or record. The button list lands with the menu pass.
+    fn draw_menu_frame(&mut self) {
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+        let viewport = self
+            .window
+            .as_ref()
+            .map(|window| {
+                let size = window.inner_size();
+                (size.width as f32, size.height as f32)
+            })
+            .unwrap_or((1920.0, 1080.0));
+        let atlas = renderer.atlas();
+        let mut quads = Vec::new();
+        // The dim backdrop over the (empty) world.
+        quads.push(atlas.solid_rect(0.0, 0.0, viewport.0, viewport.1, [0.02, 0.03, 0.05, 0.92]));
+        let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+        let title = "PANDEMONIUM";
+        let title_w = atlas.measure(title);
+        let title_x = viewport.0 * 0.5 - title_w * 0.5;
+        let title_baseline = viewport.1 * 0.5 - 3.0 * line_height;
+        quads.extend(atlas.layout(title, title_x, title_baseline, [0.85, 0.9, 1.0, 1.0]));
+        let hint = "the menu buttons land with the menu pass (PLAN-M10.2 3.2)";
+        let hint_w = atlas.measure(hint);
+        let hint_x = viewport.0 * 0.5 - hint_w * 0.5;
+        quads.extend(atlas.layout(
+            hint,
+            hint_x,
+            title_baseline + 2.0 * line_height,
+            [0.55, 0.62, 0.7, 0.9],
+        ));
+        renderer.queue_ui(&quads);
+        let snapshot = pandemonium_engine::RenderSnapshot::default();
+        let hud = HudState::default();
+        renderer.render(Frame {
+            snapshot: &snapshot,
+            view_projection: self.camera.view_projection(),
+            eye: self.camera.eye(),
+            selection: &[],
+            hud: &hud,
+            flashes: &[],
+        });
+    }
+
     fn draw(&mut self) {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
-        let outcome = self.host.advance(dt);
+        // PLAN-M10.2 §3.1: the match resolved -> the state machine promotes
+        // InMatch to the end screen (the panel's buttons own the choice now).
+        if self.host.as_ref().is_some_and(|h| h.is_finished())
+            && matches!(self.screen.screen, Screen::InMatch)
+        {
+            self.screen = self.screen.promote_to_end();
+        }
+        // PLAN-M10.2 §3.2: at the menu there is no match to advance — the
+        // frame is the menu over the (empty) world.
+        let outcome = match self.host.as_mut() {
+            Some(host) => host.advance(dt),
+            None => {
+                self.draw_menu_frame();
+                return;
+            }
+        };
         // M10.1 (plan §6.5/§11.6): the trail feeding --record and F8.
         self.collect_checkpoints(&outcome);
         // M10.1 (plan §6.5): --record writes the segment's replay at the
         // match's end — the log is complete there, and the checkpoint at the
         // end tick is the natural replay finale.
-        if self.record_path.is_some() && !self.record_written && self.host.is_finished() {
+        if self.record_path.is_some()
+            && !self.record_written
+            && self.host.as_ref().is_some_and(|h| h.is_finished())
+        {
             self.write_recording();
         }
         // M9 (plan §11.5, FD-9): the step's events flow outward — the audio
@@ -1593,7 +2012,7 @@ impl App {
         // renders and clicks through what their player may see. The view is
         // pushed at the same cadence the host pushes its full snapshots, and
         // the fog texture refreshes once per sim step, not per frame.
-        let view = self.host.player_view(HUMAN);
+        let view = self.host().player_view(HUMAN);
         let view_tick = view.tick;
         let ore = view
             .resources
@@ -1712,12 +2131,13 @@ impl App {
         // hash is O(n) over the whole world — paying it every frame for a
         // value nothing else reads is a real waste on the renderer's hot
         // path.
-        let hud = if self.debug_overlay {
-            self.host.hud_state_with_hash(HUMAN)
-        } else {
-            self.host.hud_state(HUMAN)
+        // (Field-style host access: `renderer` holds the mutable borrow.)
+        let hud = match &self.host {
+            Some(host) if self.debug_overlay => host.hud_state_with_hash(HUMAN),
+            Some(host) => host.hud_state(HUMAN),
+            None => HudState::default(),
         };
-        let outcome = self.host.outcome();
+        let outcome = self.host.as_ref().and_then(|host| host.outcome());
         // M9: the health bars and command pings join the overlay pass
         // (plan §11.2's overlay layer). Projected through the same camera
         // the box select uses. (`viewport` and the bar layout were computed
@@ -1803,7 +2223,7 @@ impl App {
             selected: self.selection.len(),
             entities: snapshot.entities.len(),
             outcome: outcome.as_ref(),
-            log_len: self.host.log().len(),
+            log_len: self.host.as_ref().map_or(0, |host| host.log().len()),
             viewport,
             armed: self.attack_move_armed,
             notice: self
@@ -2174,14 +2594,6 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
     quads
 }
 
-/// Builds the terrain mesh from the content the client loaded: the map grid
-/// plus the display-only heightmap (ADR-0001). Revalidates the bundle, which
-/// already passed at startup, so it cannot fail in practice.
-fn terrain_mesh_of() -> pandemonium_engine::mesh::TerrainMesh {
-    let bundle = ContentBundle::load_dir(content_path()).expect("content revalidates");
-    terrain_mesh(&bundle.map, HEIGHT_SCALE)
-}
-
 /// The headless smoke pass: prove the whole pipeline minus the GPU — content
 /// loads, the match advances, the renderer interface is driven (HUD data
 /// included), and the state hash is stable.
@@ -2201,8 +2613,9 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
     };
     // M9: the smoke drives the windowed path's exact hosting seam — the AI
     // opponent runs through MatchHost::with_controllers, so the event wiring
-    // below sees the same stream the windowed client draws from.
-    let mut host = App::build_host(bundle, setup);
+    // below sees the same stream the windowed client draws from. The menu
+    // flow's Player vs AI mode builds exactly this host (A-112).
+    let mut host = App::build_host(bundle, setup, MatchMode::PlayerVsAi);
     let mut null_renderer = NullRenderer::new();
     // M9: the smoke run exercises the feel pass's event wiring too — the
     // same sink + feedback state the windowed draw feeds, driven without a
@@ -2296,7 +2709,7 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{frames_budget_arg, record_from_args, seed_from_args};
+    use super::{frames_budget_arg, random_seed, record_from_args, seed_flag_from_args};
 
     /// `args(["--seed", "42"])` — the standard helper spelling.
     fn args(parts: &[&str]) -> Vec<String> {
@@ -2306,35 +2719,49 @@ mod tests {
     #[test]
     fn seed_parser_accepts_a_valid_value() {
         assert_eq!(
-            seed_from_args(&args(&["pandemonium-client", "--seed", "42"])),
-            42
+            seed_flag_from_args(&args(&["pandemonium-client", "--seed", "42"])),
+            Some(42)
         );
-        assert_eq!(seed_from_args(&args(&["--seed", "0"])), 0);
+        assert_eq!(seed_flag_from_args(&args(&["--seed", "0"])), Some(0));
         assert_eq!(
-            seed_from_args(&args(&["--seed", "18446744073709551615"])),
-            u64::MAX
+            seed_flag_from_args(&args(&["--seed", "18446744073709551615"])),
+            Some(u64::MAX)
         );
     }
 
     #[test]
-    fn seed_parser_defaults_without_the_flag() {
-        assert_eq!(seed_from_args(&args(&["pandemonium-client"])), 7);
-        assert_eq!(seed_from_args(&args(&["--frames", "900"])), 7);
+    fn seed_parser_is_none_without_the_flag() {
+        // PLAN-M10.2 §3.3: the New Match seed field starts *random* when the
+        // flag is absent — the plan's own default (the M10.1-era fixed 7 is
+        // gone with the boot-time match).
+        assert_eq!(seed_flag_from_args(&args(&["pandemonium-client"])), None);
+        assert_eq!(seed_flag_from_args(&args(&["--frames", "900"])), None);
     }
 
     #[test]
-    fn seed_parser_falls_back_on_a_missing_value() {
-        // Mirrors `--frames`: a missing value silently takes the default
-        // (7) rather than failing to start — the flag is an affordance, not
-        // a contract.
-        assert_eq!(seed_from_args(&args(&["--seed"])), 7);
+    fn seed_parser_is_none_on_a_missing_value() {
+        // A missing value means "not asked for" — the field starts random.
+        assert_eq!(seed_flag_from_args(&args(&["--seed"])), None);
     }
 
     #[test]
-    fn seed_parser_falls_back_on_a_garbage_value() {
-        assert_eq!(seed_from_args(&args(&["--seed", "not-a-number"])), 7);
-        assert_eq!(seed_from_args(&args(&["--seed", "-1"])), 7);
-        assert_eq!(seed_from_args(&args(&["--seed", ""])), 7);
+    fn seed_parser_is_none_on_a_garbage_value() {
+        assert_eq!(
+            seed_flag_from_args(&args(&["--seed", "not-a-number"])),
+            None
+        );
+        assert_eq!(seed_flag_from_args(&args(&["--seed", "-1"])), None);
+        assert_eq!(seed_flag_from_args(&args(&["--seed", ""])), None);
+    }
+
+    #[test]
+    fn the_random_seed_source_is_fresh_per_call() {
+        // A-111: the OS-entropy source (std's RandomState) — two draws in a
+        // row differ; 8 draws showing at least two distinct values pins the
+        // freshness without a flaky exact-inequality (a single collision is
+        // a 2^-64 event, but the set check cannot flake at all).
+        let draws: Vec<u64> = (0..8).map(|_| random_seed()).collect();
+        assert!(draws.iter().any(|draw| *draw != draws[0]));
     }
 
     #[test]
