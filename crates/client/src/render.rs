@@ -42,55 +42,12 @@ struct EntityInstance {
     _pad: f32,
 }
 
-/// What each kind renders as. The client derives one per kind from the
-/// content's capability composition (capability-shaped, never name-matched —
-/// the same law the engine's plan resolution follows).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum ShapeKind {
-    /// A static structure: a footprint-sized slab plus a lighter roof block.
-    Structure {
-        /// Footprint width in tiles.
-        w: f32,
-        /// Footprint depth in tiles.
-        h: f32,
-    },
-    /// A moving unit: a body box plus a darker head block, facing its
-    /// movement direction.
-    Unit {
-        /// Body extent (x, y, z) in tiles.
-        body: [f32; 3],
-        /// Head extent (x, y, z) in tiles.
-        head: [f32; 3],
-    },
-    /// A resource node: a cluster of two tilted amber blocks.
-    Node,
-    /// A turret: a low slab plus a thin raised barrel.
-    Turret,
-}
-
-/// One kind's presentation spec: the silhouette plus a per-kind tint applied
-/// over the team color (so kinds read apart while teams stay obvious).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct KindShape {
-    /// The silhouette this kind renders as.
-    pub kind: ShapeKind,
-    /// Per-kind tint (RGB, multiplied over the team color; 1.0 = neutral).
-    pub tint: [f32; 3],
-}
-
-impl KindShape {
-    /// The default silhouette for a kind with unknown content: a plain unit
-    /// box with a neutral tint (defensive — never used with real content).
-    pub fn fallback() -> Self {
-        Self {
-            kind: ShapeKind::Unit {
-                body: [0.4, 0.62, 0.4],
-                head: [0.24, 0.22, 0.24],
-            },
-            tint: [1.0, 1.0, 1.0],
-        }
-    }
-}
+/// What each kind renders as: the multi-part silhouette from the pure
+/// [`silhouette`] module (PLAN-M10.2 §2.1 — distinct box compositions per
+/// kind, keyed by kind name, with the capability-shape fallback living in
+/// `silhouette::capability_fallback`). The type alias keeps the renderer's
+/// historical `KindShape` name for the per-kind spec.
+pub type KindShape = crate::silhouette::Silhouette;
 
 const TERRAIN_SHADER: &str = r#"
 struct CameraUniform { view_projection: mat4x4<f32> };
@@ -494,8 +451,9 @@ pub struct WgpuRenderer {
     fog_texture: wgpu::Texture,
     fog_texture_size: (u32, u32),
     fog_map_size: (f32, f32),
-    /// Per-kind silhouette specs (index = KindId), derived from content by
-    /// the client and handed to the renderer once at startup.
+    /// Per-kind silhouette specs (index = KindId), derived from the loaded
+    /// bundle by the client (the kind-name table + capability fallback in
+    /// [`crate::silhouette`]) and handed to the renderer once at startup.
     kind_specs: Vec<KindShape>,
     decal_pipeline: wgpu::RenderPipeline,
     quad_vertex_buf: wgpu::Buffer,
@@ -524,7 +482,7 @@ pub struct WgpuRenderer {
 impl WgpuRenderer {
     /// Creates the renderer for a window: device, queues, pipelines, and the
     /// static terrain buffers. `kind_specs` maps each content kind id to its
-    /// silhouette (the client derives them from the loaded bundle).
+    /// multi-part silhouette (the client derives them from the loaded bundle).
     pub fn new(
         window: std::sync::Arc<winit::window::Window>,
         terrain: &TerrainMesh,
@@ -1612,13 +1570,11 @@ impl WgpuRenderer {
     }
 }
 
-/// The neutral ore color (resource nodes belong to no team).
-const ORE_COLOR: [f32; 3] = [0.85, 0.66, 0.20];
-
 /// Builds one entity's instances — the silhouette pass (pure geometry, so it
-/// is unit-testable without a GPU). `yaw` comes from the entity's facing,
-/// `moving` slightly squats units while they walk, and selection/hit feedback
-/// brighten the whole silhouette.
+/// is unit-testable without a GPU). Each [`Silhouette`] part becomes one
+/// instance: the part's local offset rotates with the entity's facing, the
+/// part's tone resolves against the team palette, `moving` squats whole
+/// unit silhouettes, and selection/hit feedback brightens everything.
 fn build_entity_instances(
     entity: &pandemonium_engine::RenderEntity,
     shape: &KindShape,
@@ -1627,14 +1583,6 @@ fn build_entity_instances(
     out: &mut Vec<EntityInstance>,
 ) {
     let base = team_color(entity.owner, selected, flashing);
-    let tint = shape.tint;
-    let mix = |color: [f32; 3], other: [f32; 3], t: f32| -> [f32; 3] {
-        [
-            color[0] * (1.0 - t) + other[0] * t,
-            color[1] * (1.0 - t) + other[1] * t,
-            color[2] * (1.0 - t) + other[2] * t,
-        ]
-    };
     let x = entity.pos.x;
     let z = entity.pos.z;
     let yaw = if entity.facing.length_squared() > 0.25 {
@@ -1642,93 +1590,39 @@ fn build_entity_instances(
     } else {
         0.0
     };
-    let push =
-        |out: &mut Vec<EntityInstance>, y: f32, scale: [f32; 3], yaw: f32, color: [f32; 3]| {
-            out.push(EntityInstance {
-                position: [x, y, z],
-                yaw,
-                scale,
-                color,
-                _pad: 0.0,
-            });
-        };
-    match shape.kind {
-        ShapeKind::Structure { w, h } => {
-            // A footprint slab plus a lighter, slightly inset roof block.
-            // Height scales with the footprint so bigger buildings read
-            // bigger; every slab sits flush on the ground.
-            let height = w.max(h) * 0.35 + 0.5;
-            let wall = mix(base, [0.35, 0.35, 0.38], 0.25);
-            let roof = mix(base, [0.95, 0.95, 1.0], 0.35);
-            push(out, height * 0.5, [w * 0.94, height, h * 0.94], 0.0, wall);
-            push(
-                out,
-                height + height * 0.22,
-                [w * 0.62, height * 0.45, h * 0.62],
-                0.0,
-                roof,
-            );
-        }
-        ShapeKind::Unit { body, head } => {
-            // A squatting unit is a moving unit (the M3..M9 half-extent cue,
-            // kept and carried into the silhouette). The yaw turns the body
-            // toward its facing; the head rides on top, unrotated colors
-            // slightly darker so it reads as a separate mass.
-            let squat = if entity.move_state == MoveState::Moving {
-                0.85
-            } else {
-                1.0
-            };
-            let body_color = mix(base, tint, 0.35);
-            let head_color = mix(base, [0.1, 0.1, 0.12], 0.35);
-            let body_y = body[1] * squat * 0.5;
-            push(
-                out,
-                body_y,
-                [body[0], body[1] * squat, body[2]],
-                yaw,
-                body_color,
-            );
-            push(out, body[1] * squat + head[1] * 0.5, head, yaw, head_color);
-        }
-        ShapeKind::Node => {
-            // A crystal cluster: two rotated blocks, the second offset and
-            // leaning, both amber regardless of the (neutral) owner.
-            let sparkle = match entity.id.0 % 4 {
-                0 => 1.06,
-                1 => 0.97,
-                2 => 1.03,
-                _ => 0.94,
-            };
-            push(
-                out,
-                0.42,
-                [0.62 * sparkle, 0.84, 0.62 * sparkle],
-                0.78,
-                ORE_COLOR,
-            );
-            push(
-                out,
-                0.72,
-                [0.40, 0.60, 0.40],
-                -0.52,
-                mix(ORE_COLOR, [1.0, 1.0, 0.85], 0.25),
-            );
-        }
-        ShapeKind::Turret => {
-            // A low octagonal-feel slab plus a raised thin barrel pointing
-            // at the entity's (idle-zero) facing — east by convention.
-            let wall = mix(base, [0.30, 0.30, 0.33], 0.30);
-            push(out, 0.22, [1.35, 0.44, 1.35], 0.0, wall);
-            push(
-                out,
-                0.62,
-                [0.85, 0.36, 0.30],
-                yaw,
-                mix(base, [1.0, 1.0, 1.0], 0.2),
-            );
-        }
+    // A squatting unit is a moving unit (the M3..M9 half-extent cue, kept
+    // and carried into the multi-part world: the whole silhouette squats,
+    // offsets included, so the parts stay glued together).
+    let squat = if shape.unit && entity.move_state == MoveState::Moving {
+        0.85
+    } else {
+        1.0
+    };
+    let (cos, sin) = (yaw.cos(), yaw.sin());
+    for part in &shape.parts {
+        // The offset rotates with the facing so "forward" parts (barrels,
+        // tools, noses) point where the entity faces. The instance shader
+        // rotates a box by yaw as (c*x + s*z, y, -s*x + c*z) — the mirrored
+        // convention — so the offset uses the transposed form to map local
+        // +x onto the facing direction, while the box itself takes the
+        // plain (entity yaw + the part's own tilt) the shader expects.
+        let local = part.offset;
+        let world_x = cos * local[0] - sin * local[2];
+        let world_z = sin * local[0] + cos * local[2];
+        out.push(EntityInstance {
+            position: [x + world_x, local[1] * squat, z + world_z],
+            yaw: yaw + part.yaw,
+            scale: [part.scale[0], part.scale[1] * squat, part.scale[2]],
+            color: crate::silhouette::part_color(part.tone, base),
+            _pad: 0.0,
+        });
     }
+}
+
+/// The defensive fallback for a kind id outside the specs (never used with
+/// real content — the plain unit box).
+fn fallback_shape() -> KindShape {
+    crate::silhouette::capability_fallback(None, false, false, false)
 }
 
 /// Builds the whole frame's instance stream (ascending entity order — the
@@ -1747,8 +1641,8 @@ fn build_instances(
         }
         let shape = kind_specs
             .get(entity.kind.0 as usize)
-            .copied()
-            .unwrap_or_else(KindShape::fallback);
+            .cloned()
+            .unwrap_or_else(fallback_shape);
         let selected = selection.contains(&entity.id);
         let flashing = flashes.contains(&entity.id);
         let before = instances.len();
@@ -1766,18 +1660,8 @@ fn build_instances(
 /// rasterization noise, small enough to look glued to the ground.
 const DECAL_LIFT: f32 = 0.02;
 
-/// The shadow blob's radius for one kind (in tiles) — slightly wider than
-/// the silhouette's widest mass, so the object visibly "sits" in it.
-fn silhouette_radius(shape: &KindShape) -> f32 {
-    match shape.kind {
-        ShapeKind::Structure { w, h } => w.max(h) * 0.55,
-        ShapeKind::Unit { body, .. } => body[0] * 0.95,
-        ShapeKind::Node => 0.68,
-        ShapeKind::Turret => 0.80,
-    }
-}
-
-/// Builds the shadow blob stream: one dark ellipse under every entity.
+/// Builds the shadow blob stream: one dark ellipse under every entity,
+/// sized by the silhouette's derived ground radius.
 fn build_shadows(
     snapshot: &pandemonium_engine::RenderSnapshot,
     kind_specs: &[KindShape],
@@ -1790,9 +1674,9 @@ fn build_shadows(
         }
         let shape = kind_specs
             .get(entity.kind.0 as usize)
-            .copied()
-            .unwrap_or_else(KindShape::fallback);
-        let radius = silhouette_radius(&shape);
+            .cloned()
+            .unwrap_or_else(fallback_shape);
+        let radius = shape.radius;
         decals.push(DecalInstance {
             position: [entity.pos.x, DECAL_LIFT, entity.pos.z],
             scale: [radius * 2.0, radius * 2.0],
@@ -1826,9 +1710,9 @@ fn build_rings(
         }
         let shape = kind_specs
             .get(entity.kind.0 as usize)
-            .copied()
-            .unwrap_or_else(KindShape::fallback);
-        let radius = silhouette_radius(&shape) + 0.12;
+            .cloned()
+            .unwrap_or_else(fallback_shape);
+        let radius = shape.radius + 0.12;
         decals.push(DecalInstance {
             position: [entity.pos.x, DECAL_LIFT * 2.0, entity.pos.z],
             scale: [radius * 2.0, radius * 2.0],
@@ -1862,8 +1746,9 @@ pub struct DyingCue {
     pub progress: f32,
 }
 
-/// Builds the dying entity's single instance: its silhouette's main mass,
-/// shrinking to a quarter and charring toward soot as `progress` advances.
+/// Builds the dying entity's single instance: its silhouette's main mass
+/// (the largest-volume part), shrinking to a quarter and charring toward
+/// soot as `progress` advances.
 fn death_instance(cue: &DyingCue, shape: &KindShape) -> EntityInstance {
     let shrink = 1.0 - 0.75 * cue.progress.clamp(0.0, 1.0);
     let base = team_color(cue.owner, false, false);
@@ -1872,22 +1757,14 @@ fn death_instance(cue: &DyingCue, shape: &KindShape) -> EntityInstance {
         base[1] * (1.0 - 0.85 * cue.progress) + 0.08 * cue.progress,
         base[2] * (1.0 - 0.85 * cue.progress) + 0.08 * cue.progress,
     ];
-    let (full_scale, y_center) = match shape.kind {
-        ShapeKind::Structure { w, h } => {
-            let height = w.max(h) * 0.35 + 0.5;
-            ([w * 0.94, height, h * 0.94], height * 0.5)
-        }
-        ShapeKind::Unit { body, .. } => ([body[0], body[1], body[2]], body[1] * 0.5),
-        ShapeKind::Node => ([0.62, 0.84, 0.62], 0.42),
-        ShapeKind::Turret => ([1.35, 0.44, 1.35], 0.22),
-    };
+    let main = shape.main_part();
     let scale = [
-        full_scale[0] * shrink,
-        full_scale[1] * shrink,
-        full_scale[2] * shrink,
+        main.scale[0] * shrink,
+        main.scale[1] * shrink,
+        main.scale[2] * shrink,
     ];
     EntityInstance {
-        position: [cue.pos[0], y_center * shrink, cue.pos[2]],
+        position: [cue.pos[0], main.offset[1] * shrink, cue.pos[2]],
         yaw: 0.0,
         scale,
         color: charred,
@@ -1935,8 +1812,8 @@ impl Renderer for WgpuRenderer {
             let shape = self
                 .kind_specs
                 .get(cue.kind.0 as usize)
-                .copied()
-                .unwrap_or_else(KindShape::fallback);
+                .cloned()
+                .unwrap_or_else(fallback_shape);
             instances.push(death_instance(&cue, &shape));
         }
         let needed = instances.len() as u64;
@@ -2199,21 +2076,26 @@ mod silhouette_tests {
     }
 
     fn unit_shape() -> KindShape {
-        KindShape {
-            kind: ShapeKind::Unit {
-                body: [0.4, 0.6, 0.4],
-                head: [0.2, 0.2, 0.2],
-            },
-            tint: [1.0, 1.0, 1.0],
-        }
+        crate::silhouette::Silhouette::from_parts(
+            true,
+            vec![
+                crate::silhouette::Part::at(
+                    [0.0, 0.3, 0.0],
+                    [0.4, 0.6, 0.4],
+                    crate::silhouette::Tone::Body,
+                ),
+                crate::silhouette::Part::at(
+                    [0.0, 0.7, 0.0],
+                    [0.2, 0.2, 0.2],
+                    crate::silhouette::Tone::Dark,
+                ),
+            ],
+        )
     }
 
     #[test]
     fn a_structure_is_a_slab_plus_a_roof_sized_to_its_footprint() {
-        let shape = KindShape {
-            kind: ShapeKind::Structure { w: 4.0, h: 3.0 },
-            tint: [1.0; 3],
-        };
+        let shape = crate::silhouette::capability_fallback(Some((4, 3)), false, false, false);
         let mut out = Vec::new();
         build_entity_instances(
             &entity(1, 0, PlayerId(0), MoveState::Idle),
@@ -2222,7 +2104,7 @@ mod silhouette_tests {
             false,
             &mut out,
         );
-        assert_eq!(out.len(), 2, "slab + roof");
+        assert_eq!(out.len(), 3, "slab + roof + team band");
         let slab = &out[0];
         assert!(
             (slab.scale[0] - 4.0 * 0.94).abs() < 1e-4,
@@ -2238,36 +2120,67 @@ mod silhouette_tests {
         assert!(out[1].position[1] > slab.position[1] + slab.scale[1] * 0.5);
         // Structures never rotate (footprints are axis-aligned).
         assert_eq!(slab.yaw, 0.0);
+        // The band trim hugs the ground in the team color.
+        assert_eq!(out[2].scale[1], 0.12);
+        assert!(out[2].position[1] < slab.position[1]);
     }
 
     #[test]
     fn a_unit_is_a_body_plus_a_head_and_faces_its_direction() {
+        let shape = crate::silhouette::named("rifleman").expect("authored");
         let mut e = entity(1, 0, PlayerId(0), MoveState::Idle);
         e.facing = Vec3::new(1.0, 0.0, 0.0); // east
         let mut out = Vec::new();
-        build_entity_instances(&e, &unit_shape(), false, false, &mut out);
-        assert_eq!(out.len(), 2, "body + head");
+        build_entity_instances(&e, &shape, false, false, &mut out);
+        assert_eq!(out.len(), 3, "body + head + rifle");
         let yaw = out[0].yaw;
         assert!(
-            (yaw - 0.0).abs() < 1e-4 || (yaw.abs() - std::f32::consts::PI).abs() < 1e-4,
-            "an east-facing yaw lands on the +x/-x axis, got {yaw}"
+            (yaw - 0.0).abs() < 1e-4,
+            "an east-facing unit yaws to 0, got {yaw}"
         );
-        // A moving unit squats: its body is shorter than the idle one.
+        // The rifle rides ahead of the body center along the facing.
+        assert!(out[2].position[0] > out[0].position[0], "rifle forward");
+        // A moving unit squats: its whole silhouette is shorter.
         let mut moving = entity(1, 0, PlayerId(0), MoveState::Moving);
         moving.facing = Vec3::new(1.0, 0.0, 0.0);
         let mut out2 = Vec::new();
-        build_entity_instances(&moving, &unit_shape(), false, false, &mut out2);
+        build_entity_instances(&moving, &shape, false, false, &mut out2);
         assert!(out2[0].scale[1] < out[0].scale[1], "moving squats the body");
+        assert!(
+            out2[2].position[1] < out[2].position[1],
+            "offsets squat with the body"
+        );
         // The head rides on top of the (squatting) body.
         assert!(out2[1].position[1] > out2[0].position[1]);
     }
 
     #[test]
+    fn a_facing_turn_rotates_forward_parts_with_the_body() {
+        // North-facing (+z): the rifle's forward offset maps onto +z and its
+        // right-hand carry maps onto -x (right = forward x up). Both prove
+        // the whole silhouette turned with the body.
+        let shape = crate::silhouette::named("rifleman").expect("authored");
+        let mut e = entity(1, 0, PlayerId(0), MoveState::Idle);
+        e.facing = Vec3::new(0.0, 0.0, 1.0);
+        let mut out = Vec::new();
+        build_entity_instances(&e, &shape, false, false, &mut out);
+        assert!(
+            (out[0].yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-4,
+            "a north-facing unit yaws to +90 degrees"
+        );
+        assert!(
+            out[2].position[2] > out[0].position[2],
+            "rifle forward (+z)"
+        );
+        assert!(
+            out[2].position[0] < out[0].position[0],
+            "rifle carried right"
+        );
+    }
+
+    #[test]
     fn an_ore_node_is_amber_regardless_of_owner() {
-        let shape = KindShape {
-            kind: ShapeKind::Node,
-            tint: [1.0; 3],
-        };
+        let shape = crate::silhouette::named("ore_node").expect("authored");
         let mut out = Vec::new();
         build_entity_instances(
             &entity(1, 4, PlayerId(1), MoveState::Idle),
@@ -2276,13 +2189,25 @@ mod silhouette_tests {
             false,
             &mut out,
         );
-        assert_eq!(out.len(), 2, "crystal cluster");
+        assert_eq!(out.len(), 4, "crystal cluster");
         for instance in &out {
             assert!(
-                (instance.color[0] - ORE_COLOR[0]).abs() < 0.12
-                    && instance.color[0] > instance.color[2],
+                instance.color[0] > instance.color[2],
                 "the node reads amber, not team red"
             );
+        }
+        // The amber is team-independent: the same shards resolve identically
+        // for player 0.
+        let mut out_p0 = Vec::new();
+        build_entity_instances(
+            &entity(1, 4, PlayerId(0), MoveState::Idle),
+            &shape,
+            false,
+            false,
+            &mut out_p0,
+        );
+        for (red, blue) in out.iter().zip(out_p0.iter()) {
+            assert_eq!(red.color, blue.color, "ore reads the same for both");
         }
     }
 
@@ -2331,7 +2256,8 @@ mod silhouette_tests {
         };
         // Room for exactly three entities' silhouettes (2 instances each) —
         // the fourth is dropped whole, never half-drawn.
-        let instances = build_instances(&snapshot, &[], &[], &[], 6);
+        let specs = [unit_shape(), unit_shape(), unit_shape(), unit_shape()];
+        let instances = build_instances(&snapshot, &[], &[], &specs, 6);
         assert_eq!(instances.len(), 6);
         assert!(instances
             .iter()
@@ -2345,7 +2271,7 @@ mod silhouette_tests {
             entities: vec![entity(1, 99, PlayerId(0), MoveState::Idle)],
         };
         let instances = build_instances(&snapshot, &[], &[], &[], 64);
-        assert_eq!(instances.len(), 2, "the fallback silhouette still renders");
+        assert_eq!(instances.len(), 1, "the fallback silhouette still renders");
     }
 }
 
@@ -2403,25 +2329,14 @@ mod decal_tests {
 
     #[test]
     fn bigger_kinds_cast_bigger_shadows() {
-        let structure = KindShape {
-            kind: ShapeKind::Structure { w: 4.0, h: 4.0 },
-            tint: [1.0; 3],
-        };
-        let unit = KindShape {
-            kind: ShapeKind::Unit {
-                body: [0.4, 0.6, 0.4],
-                head: [0.2, 0.2, 0.2],
-            },
-            tint: [1.0; 3],
-        };
-        let s_radius = silhouette_radius(&structure);
-        let u_radius = silhouette_radius(&unit);
+        let structure = crate::silhouette::named("command_center").expect("authored");
+        let unit = crate::silhouette::named("worker").expect("authored");
         assert!(
-            s_radius > u_radius,
+            structure.radius > unit.radius,
             "a command center shadows more than a worker"
         );
         // And the ring is slightly larger than its shadow.
-        assert!(silhouette_radius(&unit) + 0.12 > u_radius);
+        assert!(unit.radius + 0.12 > unit.radius);
     }
 }
 
@@ -2440,13 +2355,21 @@ mod death_render_tests {
     }
 
     fn unit_shape() -> KindShape {
-        KindShape {
-            kind: ShapeKind::Unit {
-                body: [0.4, 0.6, 0.4],
-                head: [0.2, 0.2, 0.2],
-            },
-            tint: [1.0; 3],
-        }
+        crate::silhouette::Silhouette::from_parts(
+            true,
+            vec![
+                crate::silhouette::Part::at(
+                    [0.0, 0.3, 0.0],
+                    [0.4, 0.6, 0.4],
+                    crate::silhouette::Tone::Body,
+                ),
+                crate::silhouette::Part::at(
+                    [0.0, 0.7, 0.0],
+                    [0.2, 0.2, 0.2],
+                    crate::silhouette::Tone::Dark,
+                ),
+            ],
+        )
     }
 
     #[test]

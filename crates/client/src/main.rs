@@ -15,6 +15,7 @@ mod input;
 mod orders;
 mod render;
 mod report;
+mod silhouette;
 mod text;
 mod ui;
 
@@ -876,44 +877,26 @@ fn digit_to_group_index(code: winit::keyboard::KeyCode) -> usize {
     }
 }
 
-/// Derives one silhouette per kind from the content's capability
-/// composition — the same capability-shaped law the engine's plan resolution
-/// follows (never a name match). Ore nodes (Resource) read as amber
-/// clusters, turrets (Attack + Footprint, no Move) as slabs with barrels,
-/// structures (Footprint) as footprint-sized buildings, movers as body+head
-/// units whose size varies deterministically by kind so infantry kinds read
-/// apart without any content edits.
+/// Derives one multi-part silhouette per kind from the loaded bundle
+/// (PLAN-M10.2 §2.1): the kind-name table resolves the nine authored kinds
+/// to their hand-tuned box compositions; anything the table does not know
+/// falls back by capability shape (Resource → amber cluster, Footprint →
+/// building box, Move → unit box) — the same capability-shaped law the
+/// engine's plan resolution follows. No presentation data touches the
+/// content files.
 fn kind_shapes(bundle: &ContentBundle) -> Vec<render::KindShape> {
     bundle
         .entities
         .iter()
-        .enumerate()
-        .map(|(index, def)| {
-            let has = |name: &str| def.capability(name).is_some();
-            let kind = if has("Resource") {
-                render::ShapeKind::Node
-            } else if has("Attack") && def.footprint().is_some() && !has("Move") {
-                render::ShapeKind::Turret
-            } else if let Some((w, h)) = def.footprint() {
-                render::ShapeKind::Structure {
-                    w: w as f32,
-                    h: h as f32,
-                }
-            } else {
-                // Deterministic per-kind size variation within infantry
-                // proportions (kind index, not a name or an RNG).
-                let wide = 0.36 + ((index + 1) % 3) as f32 * 0.05;
-                let tall = 0.52 + (index % 3) as f32 * 0.07;
-                render::ShapeKind::Unit {
-                    body: [wide, tall, wide],
-                    head: [wide * 0.55, tall * 0.34, wide * 0.55],
-                }
-            };
-            // Structures and nodes tint themselves in build_entity_instances;
-            // units get a mild per-kind cool/warm shift so kinds read apart.
-            let shift = ((index % 3) as f32 - 1.0) * 0.05;
-            let tint = [1.0 + shift, 1.0, 1.0 - shift];
-            render::KindShape { kind, tint }
+        .map(|def| {
+            silhouette::named(&def.id).unwrap_or_else(|| {
+                silhouette::capability_fallback(
+                    def.footprint(),
+                    def.capability("Move").is_some(),
+                    def.capability("Attack").is_some(),
+                    def.capability("Resource").is_some(),
+                )
+            })
         })
         .collect()
 }
