@@ -398,11 +398,12 @@ impl App {
             16.0 / 9.0,
         );
         camera.focus(start_anchor.0, start_anchor.1, START_CAMERA_DISTANCE);
+        let settings = config::load();
         Ok(Self {
             tree,
             screen: AppState::at_main_menu(),
             seed_prefill,
-            settings: config::load(),
+            settings,
             bundle: default_bundle,
             host: None,
             match_mode: MatchMode::PlayerVsAi,
@@ -425,7 +426,10 @@ impl App {
             last_digit_press: None,
             last_event_ground: None,
             crosshair_cursor: false,
-            edge_scroll_enabled: true,
+            // DEBT-014 repaid (PLAN-M10.2 §3.4): the toggle now comes from
+            // the settings file (true by default) and the settings screen
+            // flips it live.
+            edge_scroll_enabled: settings.edge_scroll,
             focused: true,
             attack_move_armed: false,
             last_order: None,
@@ -526,6 +530,12 @@ impl App {
         self.worker_kind = Some(plan.worker);
         self.node_kind = plan.node;
         self.reset_match_state();
+        // PLAN-M10.2 §3.4: the debug overlay's default at match start (F3
+        // stays the live toggle), and the user zoom limits re-clamp the
+        // opening view.
+        self.debug_overlay = self.settings.debug_overlay;
+        self.camera
+            .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
         // M10.1: the checkpoint trail opens at the fresh match's tick-0
         // hash (the same first entry the tools' recorder pushes).
         self.checkpoints = vec![(0, self.host.as_ref().expect("just built").state_hash())];
@@ -650,9 +660,7 @@ impl App {
                 }
             }
             Effect::SaveSettings => self.save_settings(),
-            // The settings screen lands later in this phase; clicks and
-            // Left/Right on its rows arrive here and adjust nothing yet.
-            Effect::AdjustSetting { .. } => {}
+            Effect::AdjustSetting { row, dir } => self.adjust_setting(row, dir),
             Effect::QuitApp => event_loop.exit(),
         }
     }
@@ -667,6 +675,39 @@ impl App {
                 println!("pandemonium client — settings save failed: {error}");
             }
             None => {} // persistence disabled (no config dir) — A-109
+        }
+    }
+
+    /// Adjusts one settings row and applies it live (PLAN-M10.2 §3.4): the
+    /// edge-scroll flag flips immediately (DEBT-014's repayment — the flag
+    /// has been wired since Phase 1), the zoom limits re-clamp the camera
+    /// now, the debug overlay follows (it is also the match-start default),
+    /// fullscreen toggles the window, and pan speed is read live from the
+    /// struct already. Master volume stores for Phase 4 (the sink is
+    /// null-backed, DEBT-011).
+    fn adjust_setting(&mut self, row: usize, dir: i32) {
+        self.settings = config::adjust_setting(self.settings, row, dir);
+        match row {
+            0 => self.edge_scroll_enabled = self.settings.edge_scroll,
+            2 | 3 => self
+                .camera
+                .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max),
+            6 => self.debug_overlay = self.settings.debug_overlay,
+            5 => self.apply_fullscreen(),
+            _ => {}
+        }
+    }
+
+    /// Applies the fullscreen setting to the window (best effort — a
+    /// window manager may refuse; Xvfb has none at all, and the re-test on
+    /// a real display is the honest verdict, T9).
+    fn apply_fullscreen(&mut self) {
+        if let Some(window) = &self.window {
+            if self.settings.fullscreen {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            } else {
+                window.set_fullscreen(None);
+            }
         }
     }
 
@@ -1704,21 +1745,23 @@ impl ApplicationHandler for App {
         // of the old binary zone. The cursor at the window edge scrolls at
         // full speed, halfway into the `input::EDGE_SCROLL_BAND_PX` band at
         // half speed, and the interior not at all; all four edges work and
-        // corners combine (the vector carries both axes). Focused windows
-        // only — an unfocused game never scrolls the desktop. The band is
-        // toggleable (`edge_scroll_enabled`); the settings screen that
-        // flips it is Phase 3.
-        if self.focused && self.edge_scroll_enabled && self.screen.takes_world_input() {
-            if let (Some(window), Some((mx, my))) = (&self.window, self.drag_current) {
-                let size = window.inner_size();
-                if size.width > 0 && size.height > 0 {
-                    let (scale_x, scale_z) = input::edge_scroll_vector(
-                        (mx, my),
-                        (size.width as f64, size.height as f64),
-                    );
-                    dx += pan * scale_x;
-                    dz += pan * scale_z;
-                }
+        // corners combine (the vector carries both axes). The guards —
+        // focus, the settings toggle (§3.4, DEBT-014 repaid: the flag now
+        // comes from the settings file and the settings screen flips it),
+        // and menus owning the input — live in the pure contribution
+        // function the tests pin.
+        if let (Some(window), Some((mx, my))) = (&self.window, self.drag_current) {
+            let size = window.inner_size();
+            if size.width > 0 && size.height > 0 {
+                let (scale_x, scale_z) = input::edge_pan_contribution(
+                    self.edge_scroll_enabled,
+                    self.focused,
+                    self.screen.takes_world_input(),
+                    (mx, my),
+                    (size.width as f64, size.height as f64),
+                );
+                dx += pan * scale_x;
+                dz += pan * scale_z;
             }
         }
         if dx != 0.0 || dz != 0.0 {

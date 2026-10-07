@@ -23,8 +23,12 @@ const NEAR: f32 = 0.1;
 const FAR: f32 = 500.0;
 /// Pitch clamp: never fully horizontal (degenerate), never fully top-down-only.
 const PITCH_RANGE: (f32, f32) = (0.25, 1.45);
-/// Distance clamp in tiles.
-const DISTANCE_RANGE: (f32, f32) = (8.0, 160.0);
+/// Distance clamp in tiles. Public since M10.2 Phase 3 (PLAN §3.4): the
+/// client's settings file stores user zoom limits and clamps through
+/// [`RtsCamera::clamp_distance_to`] — the defaults mirror this range so a
+/// settings file that never narrows them behaves exactly like the engine's
+/// own clamp.
+pub const DISTANCE_RANGE: (f32, f32) = (8.0, 160.0);
 /// Default yaw rotation speed (radians per second) — Generals-style Q/E
 /// camera rotation: a full turn takes ~6 seconds, fast enough to re-orient
 /// without inducing motion sickness.
@@ -151,6 +155,22 @@ impl RtsCamera {
     /// [`DISTANCE_RANGE`].
     pub fn zoom(&mut self, factor: f32) {
         self.distance = (self.distance * factor).clamp(DISTANCE_RANGE.0, DISTANCE_RANGE.1);
+    }
+
+    /// Clamps the orbit distance into a caller-supplied range, intersected
+    /// with [`DISTANCE_RANGE`] (a user range can only narrow, never widen;
+    /// an inverted range is treated as its own min/max). The client's
+    /// settings (PLAN-M10.2 §3.4: "camera zoom limits") apply this after
+    /// every distance mutation — presentation-only; the engine stores no
+    /// setting.
+    pub fn clamp_distance_to(&mut self, min: f32, max: f32) {
+        let min = min.clamp(DISTANCE_RANGE.0, DISTANCE_RANGE.1);
+        let max = max.clamp(DISTANCE_RANGE.0, DISTANCE_RANGE.1);
+        if min <= max {
+            self.distance = self.distance.clamp(min, max);
+        } else {
+            self.distance = self.distance.clamp(max, min);
+        }
     }
 
     /// Zooms by `factor` while keeping the ground point currently under
@@ -334,4 +354,46 @@ fn the_ground_footprint_tracks_pitch_and_yaw() {
         extent(&shallow) > extent(&corners),
         "a shallow pitch sees more ground"
     );
+}
+
+#[cfg(test)]
+mod clamp_distance_tests {
+    use super::*;
+
+    fn camera() -> RtsCamera {
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        camera.focus(32.0, 32.0, 40.0);
+        camera
+    }
+
+    #[test]
+    fn user_limits_narrow_the_distance_and_intersect_the_engine_range() {
+        let mut camera = camera();
+        // A user range inside the engine range clamps to the user range
+        // (the client applies this after every zoom mutation).
+        camera.clamp_distance_to(12.0, 60.0);
+        assert_eq!(camera.distance(), 40.0, "40 is inside 12..=60");
+        camera.zoom(0.1); // the engine's own clamp floors at 8...
+        camera.clamp_distance_to(12.0, 60.0); // ...the user range lifts it back
+        assert_eq!(camera.distance(), 12.0);
+        camera.zoom(20.0); // the engine clamps at 160...
+        camera.clamp_distance_to(12.0, 60.0); // ...the user range caps it
+        assert_eq!(camera.distance(), 60.0, "the user max caps the zoom-out");
+        // A user range *outside* the engine range intersects to the engine's.
+        camera.clamp_distance_to(0.0, 1.0e6);
+        assert!(
+            camera.distance() >= DISTANCE_RANGE.0 && camera.distance() <= DISTANCE_RANGE.1,
+            "the engine range always holds"
+        );
+    }
+
+    #[test]
+    fn an_inverted_user_range_is_treated_as_its_own_min_max() {
+        let mut camera = camera();
+        camera.clamp_distance_to(50.0, 20.0); // "min" above "max"
+        assert!(
+            camera.distance() >= 20.0 && camera.distance() <= 50.0,
+            "the pair clamps as (20, 50), never panics"
+        );
+    }
 }

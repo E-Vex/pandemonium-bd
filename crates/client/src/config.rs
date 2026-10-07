@@ -36,12 +36,12 @@ pub struct Settings {
     pub debug_overlay: bool,
 }
 
-/// The camera zoom default bounds — the engine's own `DISTANCE_RANGE`,
-/// restated here so a settings file that never narrows them behaves exactly
-/// like the engine's clamp.
-pub const DEFAULT_ZOOM_MIN: f32 = 8.0;
+/// The camera zoom default bounds — the engine's own `DISTANCE_RANGE`
+/// (public since this phase), so a settings file that never narrows them
+/// behaves exactly like the engine's clamp.
+pub const DEFAULT_ZOOM_MIN: f32 = pandemonium_engine::camera::DISTANCE_RANGE.0;
 /// See [`DEFAULT_ZOOM_MIN`].
-pub const DEFAULT_ZOOM_MAX: f32 = 160.0;
+pub const DEFAULT_ZOOM_MAX: f32 = pandemonium_engine::camera::DISTANCE_RANGE.1;
 /// The default pan speed — `PAN_TILES_PER_SECOND`'s value, now configurable.
 pub const DEFAULT_PAN_SPEED: f32 = 34.0;
 
@@ -77,8 +77,6 @@ impl Settings {
     /// Serializes to the file format: one `key=value` per line, in
     /// [`SETTING_KEYS`] order, with a leading comment line. Deterministic —
     /// two equal settings serialize to equal bytes.
-    // (consumed by `save` / the settings screen, later in this phase)
-    #[allow(dead_code)]
     pub fn to_text(self) -> String {
         let mut out = String::from("# pandemonium settings - key=value lines\n");
         out.push_str(&format!("edge_scroll={}\n", self.edge_scroll));
@@ -179,6 +177,34 @@ pub fn clamp_zoom(zoom: f32) -> f32 {
     zoom.clamp(DEFAULT_ZOOM_MIN, DEFAULT_ZOOM_MAX)
 }
 
+/// One step of an adjustable setting (the settings screen's rows — click
+/// advances, keyboard Left/Right step both ways; PLAN-M10.2 §3.4). The row
+/// indices are [`SETTING_KEYS`]'s order. Booleans toggle on any direction.
+pub fn adjust_setting(settings: Settings, row: usize, dir: i32) -> Settings {
+    let mut next = settings;
+    match row {
+        0 => next.edge_scroll = !next.edge_scroll,
+        1 => {
+            next.pan_speed = clamp_pan_speed(next.pan_speed + 2.0 * dir as f32);
+        }
+        2 => {
+            let max = next.zoom_max;
+            next.zoom_min = (next.zoom_min + 2.0 * dir as f32).clamp(DEFAULT_ZOOM_MIN, max);
+        }
+        3 => {
+            let min = next.zoom_min;
+            next.zoom_max = (next.zoom_max + 2.0 * dir as f32).clamp(min, DEFAULT_ZOOM_MAX);
+        }
+        4 => {
+            next.master_volume = (next.master_volume + 0.05 * dir as f32).clamp(0.0, 1.0);
+        }
+        5 => next.fullscreen = !next.fullscreen,
+        6 => next.debug_overlay = !next.debug_overlay,
+        _ => {} // the Done row is not a setting
+    }
+    next
+}
+
 /// The config file's path from the platform's env values (pure — the thin
 /// wrapper [`config_path`] reads `std::env`). Resolution order:
 ///
@@ -264,8 +290,6 @@ pub fn load() -> Settings {
 /// Saves the settings to the config path (best effort). Returns whether the
 /// write landed — the caller surfaces a one-line notice on failure and the
 /// run continues on the in-memory values either way (never a crash).
-// (the settings screen's Done button calls this, later in this phase)
-#[allow(dead_code)]
 pub fn save(settings: &Settings) -> Option<std::io::Result<()>> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
@@ -439,6 +463,58 @@ mod tests {
         assert_eq!(config_path_from(None, None, None), None);
         // An empty XDG_CONFIG_HOME is unset for our purposes (XDG spec).
         assert_eq!(config_path_from(None, None, Some(PathBuf::new())), None);
+    }
+
+    #[test]
+    fn adjust_steps_every_row_within_its_range() {
+        let s = Settings::default();
+        // Booleans toggle on any direction.
+        assert!(!adjust_setting(s, 0, 1).edge_scroll);
+        assert!(!adjust_setting(s, 0, -1).edge_scroll);
+        assert!(adjust_setting(s, 5, -1).fullscreen);
+        assert!(adjust_setting(s, 6, 1).debug_overlay);
+        // Numbers step and clamp.
+        assert_eq!(adjust_setting(s, 1, 1).pan_speed, 36.0);
+        assert_eq!(adjust_setting(s, 1, -1).pan_speed, 32.0);
+        assert_eq!(
+            adjust_setting(clamp_test_settings(4.0), 1, -1).pan_speed,
+            2.0
+        );
+        assert_eq!(adjust_setting(s, 2, 1).zoom_min, 10.0);
+        assert_eq!(adjust_setting(s, 3, -1).zoom_max, 158.0);
+        // zoom_min never steps past zoom_max (and vice versa).
+        let tight = Settings {
+            zoom_min: 60.0,
+            zoom_max: 60.0,
+            ..Settings::default()
+        };
+        assert_eq!(
+            adjust_setting(tight, 2, 1).zoom_min,
+            60.0,
+            "min stops at max"
+        );
+        assert_eq!(
+            adjust_setting(tight, 3, -1).zoom_max,
+            60.0,
+            "max stops at min"
+        );
+        // Volume steps by 5% and clamps at both ends.
+        assert_eq!(adjust_setting(s, 4, -1).master_volume, 0.95);
+        let quiet = Settings {
+            master_volume: 0.02,
+            ..Settings::default()
+        };
+        assert_eq!(adjust_setting(quiet, 4, -1).master_volume, 0.0);
+        // The Done row (7) adjusts nothing.
+        assert_eq!(adjust_setting(s, 7, 1), s);
+    }
+
+    /// A settings value hand-placed at a boundary for the step tests.
+    fn clamp_test_settings(pan: f32) -> Settings {
+        Settings {
+            pan_speed: pan,
+            ..Settings::default()
+        }
     }
 
     #[test]

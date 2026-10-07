@@ -171,6 +171,26 @@ pub fn edge_scroll_vector(cursor: (f64, f64), window: (f64, f64)) -> (f32, f32) 
     (x, z)
 }
 
+/// The edge band's actual pan contribution for one frame (PLAN §1.2's
+/// band + §3.4's toggle): the depth-scaled vector when edge scrolling is
+/// enabled AND the window has focus AND a match owns the input; zero
+/// otherwise (a menu never scrolls its own backdrop, and an unfocused game
+/// never steals the desktop). DEBT-014's repayment: the flag the settings
+/// screen flips is this function's first argument.
+pub fn edge_pan_contribution(
+    enabled: bool,
+    focused: bool,
+    in_match: bool,
+    cursor: (f64, f64),
+    window: (f64, f64),
+) -> (f32, f32) {
+    if enabled && focused && in_match {
+        edge_scroll_vector(cursor, window)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
 /// How long (in milliseconds) two left clicks may sit apart and still count
 /// as one double click (the same-kind select-all of PLAN §1.3). Generals
 /// uses a similar few-hundred-millisecond window; long enough for a
@@ -586,6 +606,40 @@ mod tests {
         );
         // An id outside the snapshot expands to nothing.
         assert_eq!(same_kind_selection(&entities, EntityId(99)), None);
+    }
+
+    #[test]
+    fn edge_scrolling_off_or_unfocused_or_at_a_menu_pans_nothing() {
+        // PLAN-M10.2 §3.4's exit item: the toggle (and the focus and menu
+        // guards) produce no pan from the band. The cursor sits hard in the
+        // corner — the strongest possible band reading.
+        let corner = (0.0, 0.0);
+        let window = (1920.0, 1080.0);
+        let _ = edge_scroll_vector(corner, window); // nonzero when enabled
+        assert!(
+            edge_scroll_vector(corner, window) != (0.0, 0.0),
+            "the band itself is live (sanity)"
+        );
+        assert_eq!(
+            edge_pan_contribution(false, true, true, corner, window),
+            (0.0, 0.0),
+            "the settings toggle silences the band"
+        );
+        assert_eq!(
+            edge_pan_contribution(true, false, true, corner, window),
+            (0.0, 0.0),
+            "an unfocused window never scrolls"
+        );
+        assert_eq!(
+            edge_pan_contribution(true, true, false, corner, window),
+            (0.0, 0.0),
+            "a menu never scrolls its own backdrop"
+        );
+        assert_eq!(
+            edge_pan_contribution(true, true, true, corner, window),
+            edge_scroll_vector(corner, window),
+            "on, focused, in-match: the band's own vector"
+        );
     }
 
     #[test]
