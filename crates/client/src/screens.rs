@@ -37,8 +37,6 @@ pub enum MatchMode {
 impl MatchMode {
     /// The mode's label on the New Match screen (ASCII — the embedded font
     /// is an ASCII subset of DejaVu Sans).
-    // (rendered by the New Match screen's commit, later this phase)
-    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Self::PlayerVsAi => "Player vs AI",

@@ -1167,6 +1167,9 @@ impl ApplicationHandler for App {
             Ok(renderer) => {
                 self.renderer = Some(renderer);
                 self.window = Some(window);
+                // PLAN-M10.2 §3.4: the persisted fullscreen preference
+                // applies at startup too (not only at toggle time).
+                self.apply_fullscreen();
             }
             Err(error) => {
                 eprintln!("pandemonium client — GPU initialization failed: {error:#}");
@@ -1499,6 +1502,10 @@ impl ApplicationHandler for App {
                     let ndc = self.cursor_ndc();
                     self.camera
                         .zoom_toward(1.0 - lines * 0.1, glam::Vec2::new(ndc.0, ndc.1));
+                    // PLAN-M10.2 §3.4: the user zoom limits apply after the
+                    // engine's own clamp (they can only narrow it).
+                    self.camera
+                        .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
