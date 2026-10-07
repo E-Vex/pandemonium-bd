@@ -877,3 +877,50 @@ confirms or rejects it.
   `elieaazzam-art <elieaazzam-art@users.noreply.github.com>` (the owner's
   account noreply form, so GitHub attributes them on import; the owner
   can `git am` and `--reset-author` if they prefer their local identity).
+
+- **A-101 (PLAN-M10.2 kickoff, M10.2 Phase 2).** The owner's kickoff answers
+  for the Phase 2 pass: the Phase 1 controls re-test is reported as
+  **"passed with notes"** — the notes themselves arrive after this delivery
+  (the owner re-tests on their own machine and reports exact locations of
+  any issue), so `docs/PLAYTEST.md` carries the re-test row with that
+  caveat. The scope is **Phase 2 only** (the owner's re-test gates Phase 3,
+  as with Phase 1). Blocker policy: best effort + a log entry, never a
+  silent skip.
+
+- **A-102 (PLAN-M10.2 §2.2, M10.2 Phase 2).** Team palette: the owner chose
+  **blue/orange** (the plan's colorblind-safe preference). The client
+  resolves P1's content-red to orange — the mapping lives entirely in the
+  presentation layer (`render::team_color` and the minimap dot table);
+  content files and the content hash are untouched. P0 keeps a blue in the
+  content's family and neutral keeps gold for ore.
+
+- **A-103 (PLAN-M10.2 §2.1, M10.2 Phase 2).** The kind → silhouette mapping
+  is keyed by the bundle's kind *name* (`EntityDef::id`) with a
+  capability-shape fallback (Resource → amber cluster, Attack+Footprint
+  without Move → turret, Footprint → building box with a team band, Move →
+  unit box, else a plain unit box). The nine hand-tuned specs assume the
+  authored footprints (CC 4×4, barracks 3×3, depot/turret 2×2); a content
+  footprint change would need the client spec re-tuned (DEBT-016). All
+  silhouettes are pure client data (`client/src/silhouette.rs`).
+
+- **A-104 (PLAN-M10.2 Phase 2 exit, M10.2 Phase 2).** Evidence: the owner
+  opted for a **text-only delivery** — no PNG screenshots are uploaded to
+  the delivery folder. The Xvfb visual pass still runs (or its blocker is
+  logged honestly) so the machine half of "a stranger identifies command
+  center, worker, and tank" is exercised; the human verdict is the owner's
+  re-test on their display.
+
+- **A-105 (PLAN-M10.2 delivery, M10.2 Phase 2).** The delivery folder is
+  `m10.2-phase2/` in the owner's delivery repo — the plan's generic
+  "folder m10.2/" wording is refined to keep the Phase 1 delivery
+  (already in `m10.2/`) and this one distinct. The patch, a README.txt
+  with the base hash + apply command, and nothing else land there.
+
+- **A-106 (PLAN-M10.2 §2.3, M10.2 Phase 2).** The single-selection info
+  panel gains a production-queue summary (head item name + progress, count
+  of the rest) next to the existing queue strip above the command card —
+  the panel shows *what the selected building is doing*, the strip keeps
+  the per-item cancel buttons. The hover tooltip shows the display name
+  plus an owner tag (Own/Enemy/Neutral) near the cursor; it is suppressed
+  over the bottom bar and the minimap, where the cursor means UI, not
+  world.
