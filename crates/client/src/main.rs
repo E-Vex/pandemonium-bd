@@ -302,6 +302,10 @@ struct App {
     /// How many commands the client has submitted this run (the windowed
     /// smoke summary's evidence that input reached the simulation).
     commands_submitted: u32,
+    /// How many matches this session started (the summary's honesty about
+    /// a menu-end state: "no match" and "a match that was dropped" are
+    /// different facts).
+    matches_started: u32,
     /// M9 (plan §11.5): the audio sink fed by the step's events — the null
     /// implementation (cue-counting; a mixer swaps in post-Alpha behind the
     /// same trait).
@@ -438,6 +442,7 @@ impl App {
             node_kind: None,
             last_frame: Instant::now(),
             command_seq: 0,
+            matches_started: 0,
             resource_names,
             debug_overlay: false,
             frames_budget: None,
@@ -510,6 +515,7 @@ impl App {
         let world = bundle.world();
         let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
         let host = Self::build_host(&bundle, setup.clone(), mode);
+        self.matches_started += 1;
         self.bundle = bundle;
         self.match_mode = mode;
         self.setup = setup;
@@ -1813,9 +1819,18 @@ impl App {
                 Some(seed) => format!("--seed {seed}"),
                 None => "random".to_string(),
             };
+            let session = if self.matches_started == 0 {
+                "no match this run".to_string()
+            } else {
+                format!(
+                    "{} match{} started this run, none live",
+                    self.matches_started,
+                    if self.matches_started == 1 { "" } else { "es" }
+                )
+            };
             println!(
-                "pandemonium client — windowed smoke: {} frames presented, at the {} (no match \
-                 this run; seed prefill {seed})",
+                "pandemonium client — windowed smoke: {} frames presented, at the {} ({session}; \
+                 seed prefill {seed})",
                 self.frames_presented,
                 self.screen.name()
             );
@@ -1833,13 +1848,14 @@ impl App {
         };
         println!(
             "pandemonium client — windowed smoke: {} frames presented, tick {}, state hash {:#018x}, \
-             {} commands submitted, selection {}, {}",
+             {} commands submitted, selection {}, {}, at the {}",
             self.frames_presented,
             host.tick(),
             host.state_hash(),
             self.commands_submitted,
             self.selection.len(),
-            outcome
+            outcome,
+            self.screen.name()
         );
     }
 
