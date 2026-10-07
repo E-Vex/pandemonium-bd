@@ -10,6 +10,7 @@
 //! null renderer) and exits 0 with a printed finding — the windowed exit test
 //! of M3 needs a display and is recorded as such (plan §13 honest declaration).
 
+mod config;
 mod feedback;
 mod input;
 mod orders;
@@ -61,11 +62,10 @@ const CLICK_SLOP: f32 = 0.01;
 const HEIGHT_SCALE: f32 = 0.02;
 /// How many control groups the client tracks (plan §11.3: control groups).
 const CONTROL_GROUP_COUNT: usize = 9;
-/// Camera pan speed in tiles per second (keys and edge scrolling share it —
-/// scaled by the real frame delta so pan speed does not depend on the
-/// display's refresh rate; M9.1: the old fixed per-frame speed made a 144 Hz
-/// monitor pan more than twice as fast as 60 Hz).
-const PAN_TILES_PER_SECOND: f32 = 34.0;
+/// Camera pan speed comes from the settings file now (PLAN-M10.2 §3.4:
+/// `pan_speed`, default [`config::DEFAULT_PAN_SPEED`]) — keys and the edge
+/// band share it, scaled by the real frame delta so pan speed does not
+/// depend on the display's refresh rate.
 /// Camera yaw rotation speed in radians per second (Generals-style Q/E
 /// camera rotation). Held keys apply this rate, scaled by the frame
 /// delta, so a full turn takes ~6 s — fast enough to re-orient without
@@ -171,6 +171,10 @@ struct App {
     /// The loaded content bundle (M8: retained for restart — fresh controllers
     /// are re-derived from the bundle + seed on each restart).
     bundle: ContentBundle,
+    /// The persisted settings (PLAN-M10.2 §3.4), loaded at startup with safe
+    /// defaults when the config file is missing or malformed — the settings
+    /// screen edits this live copy and saves it on Done.
+    settings: config::Settings,
     /// The match setup (M8: retained for restart — the same seed reproduces
     /// the same match bit-for-bit, A15).
     setup: MatchSetup,
@@ -362,6 +366,7 @@ impl App {
         let checkpoints = vec![(0, host.state_hash())];
         Ok(Self {
             bundle,
+            settings: config::load(),
             setup,
             host,
             camera,
@@ -1437,7 +1442,10 @@ impl ApplicationHandler for App {
             .elapsed()
             .as_secs_f32()
             .min(MAX_PAN_FRAME_SECONDS);
-        let pan = PAN_TILES_PER_SECOND * dt;
+        // M9.1: the speed stays frame-delta scaled (a 144 Hz monitor must not
+        // pan twice as fast as 60 Hz); the value itself is configurable now
+        // (PLAN-M10.2 §3.4 `pan_speed`, default config::DEFAULT_PAN_SPEED).
+        let pan = self.settings.pan_speed * dt;
         let mut dx = 0.0;
         let mut dz = 0.0;
         // M9.1: W pans the view up-screen (away from the camera), D pans
