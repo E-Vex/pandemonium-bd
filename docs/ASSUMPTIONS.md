@@ -932,3 +932,96 @@ confirms or rejects it.
   Phase 2 re-test row and Phase 3 (menu and settings, PLAN §3) proceeds on
   the standing plan. Scope law unchanged: `crates/client` plus at most
   tiny presentation-only `crates/engine` touches; zero golden movement.
+
+- **A-108 (PLAN-M10.2 §3.4, M10.2 Phase 3).** The config parser salvages
+  per-key: a line whose value is malformed costs that key its default while
+  the parseable keys keep their values. The plan's letter allows the
+  stricter whole-file reset ("missing/malformed file or value → safe
+  defaults for the whole file") and explicitly invites the nicer per-key
+  reading when logged and tested — both are (a mixed good/garbage file test
+  pins it: the good line survives, the garbage lines default).
+
+- **A-109 (PLAN-M10.2 §3.4, M10.2 Phase 3).** The config directory is
+  resolved by hand from `std::env` (no `dirs` crate — the client allow-list
+  is untouched): `%APPDATA%\pandemonium\settings.cfg` on Windows,
+  `$HOME/Library/Application Support/pandemonium/settings.cfg` on macOS,
+  `$XDG_CONFIG_HOME/pandemonium/settings.cfg` else
+  `$HOME/.config/pandemonium/settings.cfg` on Linux/BSD. A machine with
+  neither HOME nor APPDATA (CI, containers) runs on in-memory defaults with
+  persistence silently disabled — never a panic, the same fallback spirit
+  as PLAN §4.3's audio route. An empty `XDG_CONFIG_HOME` counts as unset
+  (the XDG spec's own reading).
+
+- **A-110 (PLAN-M10.2 §3.1, M10.2 Phase 3).** Keyboard focus wraps within
+  a screen's button list (Down past the last row returns to the first,
+  Up past the first reaches the last), and a fresh screen starts focused
+  on row 0. Mouse hover moves the same focus (there is one navigation
+  core, one highlight visual). A mouse focus index is clamped into the
+  screen's row count so a stale index cannot escape.
+
+- **A-111 (PLAN-M10.2 §3.3, M10.2 Phase 3).** The New Match screen's seed
+  is **random by default** (the plan's own letter), drawn from the OS
+  entropy source available in std — `RandomState::new().build_hasher()
+  .finish()`, whose per-construction keys the OS seeds — never the sim's
+  deterministic RNG, and it only ever fills the menu's seed field. `--seed
+  N` pre-fills the field (a malformed or absent flag = the field starts
+  random; the M10.1-era fixed default 7 is gone with the boot-time match
+  — the menu shows the seed it will use, so the bug-report promise is
+  stronger, not weaker). The field types digits (capped at 20, the width
+  of `u64::MAX`), Backspace deletes, and Enter re-rolls.
+
+- **A-112 (PLAN-M10.2 §3.3, M10.2 Phase 3).** The mode semantics: Player
+  vs AI is exactly today's wiring (P1 Human, P2 `alpha_controller`); AI vs
+  AI (spectate) attaches `alpha_controller` to **both** slots; Sandbox
+  keeps P2 present in the setup but attaches **no** controller (an empty
+  controllers vec through `MatchHost::with_controllers` — P2's starting
+  force stands idle, which is the "no opponent, for testing" the plan
+  wants). The setups declare `ControllerKind::Human`/`Ai` per slot to
+  match.
+
+- **A-113 (PLAN-M10.2 §3.3, M10.2 Phase 3).** Spectate silences the human
+  order path **at the orders layer** (`submit_order` returns before
+  stamping or submitting) and **silently** — no refusal cue, no cursor
+  marker: a spectator's idle clicks are not feedback, they are noise.
+  Selection and camera stay live (spectating is about watching, and the
+  camera is not match input).
+
+- **A-114 (PLAN-M10.2 §3.5, M10.2 Phase 3).** Opening the pause menu
+  force-pauses the match through the existing `MatchHost` pause; Resume
+  (and Esc on the pause menu) unpauses — even when P had already paused
+  (the menu is modal, its exit means "playing again"). P remains a direct
+  toggle that never opens the menu, exactly as Phase 1 re-tested it.
+
+- **A-115 (PLAN-M10.2 §3.4, M10.2 Phase 3).** Settings changes apply to the
+  running session **live** (edge scroll flips immediately, zoom limits
+  re-clamp, fullscreen toggles, the debug overlay follows) and **Done
+  saves** to the config file while **Esc leaves without saving** — the
+  unsaved values stay for this run but do not survive a restart. The
+  choice is documented on the screen itself (the hint line under the
+  rows).
+
+- **A-116 (PLAN-M10.2 §3.1, M10.2 Phase 3).** Esc at the main menu quits
+  the application (the classic main-menu convention; nothing is lost
+  there — a match has not started). Esc on the end screen does nothing:
+  an explicit choice (Rematch / Main Menu) is required, and R remains the
+  end screen's rematch shortcut from the Phase 1 card. The camera keys
+  and edge scrolling are dead while any menu owns the screen, and a
+  menu clears the held-key set so a resumed match never pans on a ghost
+  of a held key.
+
+- **A-117 (PLAN-M10.2 §3.3, M10.2 Phase 3).** The New Match screen's
+  field rows cycle on Left/Right (mode wraps through the three modes; the
+  map wraps the bundle's list — with one authored map, Crossroads, the
+  list renders without arrows). A mouse **click on a field row advances
+  it one step** (the row is its own button); Left/Right exist for the
+  keyboard. Re-entering the New Match screen starts a fresh screen: the
+  seed field re-prefills from `--seed` (or starts random).
+
+- **A-118 (PLAN-M10.2 §3.4, M10.2 Phase 3).** Fullscreen uses winit's
+  borderless fullscreen at toggle time and after window creation at
+  startup. Under Xvfb (no window manager) the call may be a no-op or
+  misbehave — the machine pass records what it can and the honest verdict
+  on a real display is the owner's re-test (the DEBT-008 recipe's standing
+  limitation). The multi-map note rides with it: the renderer's terrain
+  mesh is built from the tree's first map at window creation; a second
+  authored map would need a mesh-update path (DEBT-017).
