@@ -48,9 +48,11 @@ fn tile_variation(x: u32, y: u32) -> f32 {
     ((hash >> 9) & 0xFF) as f32 / 255.0
 }
 
-/// Terrain albedo by class with per-tile variation: passable ground reads as
-/// dry steppe grass with hue/brightness jitter; blocked terrain as gray-brown
-/// rock. Placeholder-plus (plan §0): flat colors, but shaded ones.
+/// Terrain albedo by class with per-tile variation: passable ground reads
+/// as calm, low-saturation dry steppe — muted enough that the team-colored
+/// entities pop against it (PLAN-M10.2 §2.5); blocked terrain as dark
+/// gray-brown rock, clearly darker than the ground so walls and ridges read
+/// as obstacles. Placeholder-plus (plan §0): flat colors, but shaded ones.
 fn class_color(passable: bool, variation: f32, height: f32) -> [f32; 3] {
     // ±0.045 of jitter around the class base, plus a subtle two-tile checker
     // so flat areas keep a readable grain.
@@ -61,16 +63,19 @@ fn class_color(passable: bool, variation: f32, height: f32) -> [f32; 3] {
         -0.015
     };
     let mut color = if passable {
-        // Dry grass base, jittered toward either lusher or drier.
+        // Dry steppe: the old grass carried a strong green dominance that
+        // fought the team colors; this stays green-leaning but muted, with
+        // a gentle dryness drift toward tan.
         let dryness = variation;
         [
-            0.33 + 0.10 * dryness + jitter,
-            0.47 + 0.03 * dryness + jitter,
-            0.27 - 0.05 * dryness + jitter,
+            0.36 + 0.06 * dryness + jitter,
+            0.41 + 0.02 * dryness + jitter,
+            0.33 - 0.02 * dryness + jitter,
         ]
     } else {
-        // Rock: gray-brown, jittered brightness.
-        [0.41 + jitter, 0.38 + jitter, 0.35 + jitter]
+        // Rock: distinctly darker than any passable tile — the obstacle
+        // read is the point (the walls of the Crossroads crossing).
+        [0.30 + jitter, 0.27 + jitter, 0.25 + jitter]
     };
     // Hills pick up a rocky tint with height (the heightmap is display-only,
     // so this is pure presentation math).
@@ -270,6 +275,26 @@ mod tests {
                 let value = tile_variation(x, y);
                 assert!((0.0..=1.0).contains(&value), "variation stays in range");
             }
+        }
+    }
+
+    #[test]
+    fn the_ground_stays_calm_and_rock_reads_as_an_obstacle() {
+        // PLAN-M10.2 §2.5: the ground is calmer (lower saturation) than the
+        // entities, and rock is plainly darker than any ground shade.
+        for variation in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            let ground = class_color(true, variation, 0.0);
+            let rock = class_color(false, variation, 0.0);
+            let lum = |c: [f32; 3]| (c[0] + c[1] + c[2]) / 3.0;
+            assert!(
+                lum(rock) < lum(ground) - 0.05,
+                "rock reads darker than ground at variation {variation}"
+            );
+            // Green-leaning but muted: the channel spread stays small.
+            let spread =
+                ground[0].max(ground[1]).max(ground[2]) - ground[0].min(ground[1]).min(ground[2]);
+            assert!(spread < 0.13, "the ground stays calm at {variation}");
+            assert!(ground[1] > ground[2], "still green-dominant");
         }
     }
 }
