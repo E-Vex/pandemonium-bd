@@ -2431,10 +2431,11 @@ mod decal_tests {
         assert_eq!(&rings[0].color[..3], &TEAM_P0[..]);
         assert_eq!(&rings[1].color[..3], &TEAM_P1[..]);
         assert_eq!(rings[0].color[3], TEAM_RING_ALPHA);
-        // A structure silhouette never rings (it has the band instead).
+        // A structure silhouette never rings (it has the band instead) —
+        // the spec sits at the entity's kind index.
         let cc = crate::silhouette::named("command_center").expect("authored");
         assert!(
-            build_team_rings(&snapshot_with(&[(3, 1)]), &[cc], 64).is_empty(),
+            build_team_rings(&snapshot_with(&[(3, 0)]), &[cc], 64).is_empty(),
             "a command center gets no unit ring"
         );
     }
