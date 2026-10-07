@@ -2068,6 +2068,13 @@ impl Renderer for WgpuRenderer {
                 }
             }
             pass.set_pipeline(&self.entity_pipeline);
+            // Re-bind the camera group for the entity draw: the fog pass
+            // leaves the *fog* group in slot 0, and the decal pass between
+            // them (which restores the camera group) is skipped when there
+            // is nothing to draw — a menu frame with zero entities hit
+            // exactly that (PLAN-M10.2 §3.2's menu-first world). wgpu
+            // validates the bind group even for a zero-instance draw.
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_vertex_buffer(0, self.entity_vertex_buf.slice(..));
             pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));
             pass.draw(0..36, 0..needed.min(self.entity_instance_capacity) as u32);
