@@ -192,8 +192,6 @@ pub enum Effect {
     /// Drop the host and return to the menu.
     DropMatch,
     /// Pause the host (opening the pause menu).
-    // (consumed by the pause-menu + Escape-ladder commit, later this phase)
-    #[allow(dead_code)]
     Pause,
     /// Unpause the host (leaving the pause menu).
     Unpause,
@@ -608,8 +606,6 @@ impl AppState {
     /// The in-match Escape edge (the input layer's ladder exhausted): open
     /// the pause menu and pause the host. The wiring layer calls this; the
     /// effect pauses through the existing `MatchHost` pause.
-    // (consumed by the pause-menu + Escape-ladder commit, later this phase)
-    #[allow(dead_code)]
     pub fn open_pause(&self) -> (AppState, Effect) {
         let mut next = self.clone();
         if matches!(self.screen, Screen::InMatch) {

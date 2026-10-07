@@ -292,11 +292,18 @@ cargo run -p pandemonium-tools -- replay-verify demo.pdrp
 # validate the content bundle (prints content hash + map id, exits 0 on PASS)
 cargo run -p pandemonium-tools -- content-validate content
 
-# the windowed 3D client — on a desktop opens a window; headless runs a smoke pass
+# the windowed 3D client — opens at the main menu on a desktop; headless runs a smoke pass
 cargo run -p pandemonium-client
 # windowed smoke: auto-exit after N frames with evidence summary
 cargo run -p pandemonium-client -- --frames 900
 ```
+
+The main menu starts a match (Player vs AI / AI vs AI spectate / Sandbox),
+remembers the seed and map you pick, and remembers your settings across runs
+(`edge_scroll`, `pan_speed`, `zoom_min`, `zoom_max`, `master_volume`,
+`fullscreen`, `debug_overlay` — a small `key=value` file in your user config
+directory). `--seed N` pre-fills the New Match screen's seed field; without
+it the seed is random (and shown, so you can still report it).
 
 Controls (Generals: Zero Hour muscle memory — see `docs/PLAYTEST.md`'s card
 for the tester-facing copy):
@@ -321,9 +328,9 @@ zooms toward the cursor, **Ctrl+wheel** tilts the pitch.
 **Groups & jumps** — **1–9** recall control groups, **Ctrl+1–9** assigns,
 double-tapping a digit recalls and centers the camera on the group. **Space**
 jumps to the last death (or your base). **Esc** climbs one rung per press:
-armed command → placement → selection → quit. **P** pauses, **F3** toggles the
-debug overlay, **F8** writes the bug-report dump, **R** restarts after the
-match ends.
+armed command → placement → selection → **pause menu**. **P** pauses without
+the menu, **F3** toggles the debug overlay, **F8** writes the bug-report
+dump, **R** restarts after the match ends.
 
 The full verification gate — the same one CI runs:
 

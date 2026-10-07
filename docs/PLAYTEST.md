@@ -91,8 +91,19 @@ zooms toward the cursor, **Ctrl+wheel** tilts the pitch.
 **Groups & jumps** — **1–9** recall control groups, **Ctrl+1–9** assigns,
 double-tapping a digit recalls and centers the camera on the group. **Space**
 jumps to the last death (or your base). **Esc** climbs one rung per press:
-armed command → placement → selection → quit. **P** pauses, **F3** toggles the
-debug overlay, **R** restarts after the match ends.
+armed command → placement → selection → **pause menu**. **P** pauses without
+the menu, **F3** toggles the debug overlay, **R** restarts after the match
+ends (the end screen offers Rematch / Main Menu too).
+
+**Menus** — the game starts at the **main menu**; every screen is reachable
+by keyboard alone (arrows + Enter, Esc backs out) and by mouse alone (hover
+highlights, click activates). The New Match screen picks the **mode**
+(Player vs AI / AI vs AI spectate / Sandbox), the **seed** (random by
+default, typeable, Enter re-rolls) and the **map**. The **settings** screen
+adjusts edge scroll, pan speed, zoom limits, master volume (audible in
+Phase 4), fullscreen, and the debug-overlay default; **Done saves** to the
+config file, **Esc leaves without saving**. In a match, the pause menu
+(Esc's last rung) offers Resume / Settings / Restart / Quit to Menu.
 
 **[F8] bug report** — press it at (or right after) the moment anything goes
 wrong; it writes two files (section 6).

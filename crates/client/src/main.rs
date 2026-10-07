@@ -1673,7 +1673,15 @@ impl ApplicationHandler for App {
                                 input::EscapeAction::ClearSelection => {
                                     self.selection.clear();
                                 }
-                                input::EscapeAction::Quit => event_loop.exit(),
+                                // PLAN-M10.2 §3.5: the ladder's exhausted
+                                // rung opens the pause menu (it quit the
+                                // app before). The match pauses through
+                                // the existing MatchHost pause.
+                                input::EscapeAction::OpenPauseMenu => {
+                                    let (next, effect) = self.screen.open_pause();
+                                    self.screen = next;
+                                    self.apply_effect(effect, event_loop);
+                                }
                             }
                         }
                         // M10.2 (PLAN §1.3, the "only if cheap" extra):

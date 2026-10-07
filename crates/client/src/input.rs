@@ -278,7 +278,10 @@ pub fn group_center(entities: &[RenderEntity], group: &[EntityId]) -> Option<(f3
 
 /// What Escape does first (PLAN §1.3: "Escape cancels an armed command or
 /// clears the selection"): the cancellation ladder, one rung at a time per
-/// press — armed command, placement, selection, quit.
+/// press — armed command, placement, selection, then the pause menu
+/// (PLAN-M10.2 §3.5: the exhausted ladder used to quit the application
+/// mid-match; an accidental Esc with nothing selected cost the player
+/// their window. It opens the pause menu now — Quit to Menu lives there).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EscapeAction {
     /// An armed attack-move was pending — cancel it.
@@ -287,8 +290,8 @@ pub enum EscapeAction {
     CancelPlacement,
     /// Something is selected — clear the selection.
     ClearSelection,
-    /// Nothing armed, placing, or selected — quit the application.
-    Quit,
+    /// Nothing armed, placing, or selected — open the pause menu.
+    OpenPauseMenu,
 }
 
 /// Resolves one Escape press to its next action, in ladder order.
@@ -300,7 +303,7 @@ pub fn escape_action(armed: bool, placing: bool, selection_nonempty: bool) -> Es
     } else if selection_nonempty {
         EscapeAction::ClearSelection
     } else {
-        EscapeAction::Quit
+        EscapeAction::OpenPauseMenu
     }
 }
 
@@ -682,7 +685,12 @@ mod tests {
             escape_action(false, false, true),
             EscapeAction::ClearSelection
         );
-        assert_eq!(escape_action(false, false, false), EscapeAction::Quit);
+        // PLAN-M10.2 §3.5: the exhausted rung opens the pause menu, not the
+        // exit — the earlier rungs stay exactly as Phase 1 re-tested them.
+        assert_eq!(
+            escape_action(false, false, false),
+            EscapeAction::OpenPauseMenu
+        );
     }
 
     #[test]
