@@ -2736,6 +2736,83 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+mod mode_pins {
+    //! The in-match half of the mode mapping (PLAN-M10.2 §3.3, A-112):
+    //! sandbox constructs and ticks with P2's starting force standing
+    //! idle, and no mode adds state to the match (the tick-0 hash is the
+    //! mode-neutral world's — the controllers are the only difference).
+
+    use super::*;
+
+    fn bundle() -> ContentBundle {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        ContentBundle::load_dir(path).expect("the repo content loads")
+    }
+
+    #[test]
+    fn a_sandbox_match_constructs_ticks_and_leaves_p2_standing() {
+        let bundle = bundle();
+        let setup = MatchMode::Sandbox.match_setup(7);
+        let mut host = App::build_host(&bundle, setup, MatchMode::Sandbox);
+        // Both sides' starting forces exist from tick 0 (22 entities on the
+        // Alpha content: two 5-entity armies + the ore nodes + ...).
+        let snapshot = host.render_snapshot();
+        assert!(snapshot.entities.iter().any(|e| e.owner == PlayerId(1)));
+        // 90 ticks of nobody issuing anything: the idler's base stands, the
+        // match stays unresolved, no invariant fires (debug asserts run).
+        for _ in 0..90 {
+            host.advance(std::time::Duration::from_secs_f64(1.0 / 30.0));
+        }
+        assert!(!host.is_finished(), "an idle sandbox never resolves");
+        let snapshot = host.render_snapshot();
+        assert!(
+            snapshot.entities.iter().any(|e| e.owner == PlayerId(1)),
+            "P2's starting force still stands"
+        );
+    }
+
+    #[test]
+    fn same_seed_spectate_hosts_are_a15_identical_and_the_modes_differ_only_in_setup() {
+        // The modes differ in the declared controller kinds (which the
+        // state hash covers — the players are hashed), so the honest pin is
+        // the A15 shape: two same-seed same-mode hosts are bit-identical in
+        // hash and command log, controllers included.
+        let bundle = bundle();
+        let run = |mode: MatchMode| -> (u64, u64, Vec<String>) {
+            let mut host = App::build_host(&bundle, mode.match_setup(7), mode);
+            let opening = host.state_hash();
+            for _ in 0..30 {
+                host.advance(std::time::Duration::from_secs_f64(1.0 / 30.0));
+            }
+            let log = host
+                .log()
+                .iter()
+                .map(|entry| format!("{:?}", entry.kind))
+                .collect();
+            (opening, host.state_hash(), log)
+        };
+        let first = run(MatchMode::AiVsAi);
+        let second = run(MatchMode::AiVsAi);
+        assert_eq!(
+            first, second,
+            "same-seed spectate hosts are bit-identical (hashes + log)"
+        );
+        // And the modes are not secretly the same match: the declared
+        // controllers differ, so the openings differ.
+        let player_vs_ai = run(MatchMode::PlayerVsAi);
+        let sandbox = run(MatchMode::Sandbox);
+        assert_ne!(
+            first.0, player_vs_ai.0,
+            "spectate differs from Player vs AI"
+        );
+        assert_ne!(
+            player_vs_ai.0, sandbox.0,
+            "sandbox differs from Player vs AI"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{frames_budget_arg, random_seed, record_from_args, seed_flag_from_args};
 
