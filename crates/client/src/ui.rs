@@ -523,6 +523,73 @@ pub fn placement_is_likely_legal(
     true
 }
 
+/// The hover tooltip's owner tag (PLAN-M10.2 §2.3): whose thing the cursor
+/// rests on. Pure label logic — the display name itself comes from the
+/// bundle (`def_of`).
+pub fn owner_tag(
+    owner: pandemonium_sim_api::PlayerId,
+    human: pandemonium_sim_api::PlayerId,
+) -> &'static str {
+    if owner == human {
+        "yours"
+    } else if owner == pandemonium_sim_api::PlayerId::NEUTRAL {
+        "neutral"
+    } else {
+        "enemy"
+    }
+}
+
+/// Whether a window-pixel point sits over one of the bottom-bar panels
+/// (selection, card, queue strip, minimap). The tooltip suppresses there:
+/// over the UI the cursor means UI, not world.
+pub fn cursor_over_bottom_bar(layout: &BarLayout, px: f32, py: f32) -> bool {
+    let over = |rect: &[f32; 4]| {
+        px >= rect[0] && py >= rect[1] && px <= rect[0] + rect[2] && py <= rect[1] + rect[3]
+    };
+    over(&layout.selection) || over(&layout.card) || over(&layout.queue) || over(&layout.minimap)
+}
+
+/// The hover name tooltip (PLAN-M10.2 §2.3): a small dark panel near the
+/// cursor carrying the entity's display name and its owner tag. Clamped
+/// into the viewport and flipped to the left of the cursor near the right
+/// edge. Pure layout over the atlas metrics — unit-testable without a GPU.
+pub fn tooltip_quads(
+    atlas: &TextAtlas,
+    name: &str,
+    tag: &str,
+    cursor_px: (f32, f32),
+    viewport: (f32, f32),
+) -> Vec<UiQuad> {
+    let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+    let pad = 5.0;
+    let name_w = atlas.measure(name);
+    let tag_w = atlas.measure(tag);
+    let panel_w = name_w.max(tag_w) + 2.0 * pad;
+    let panel_h = 2.0 * line_height + 2.0 * pad;
+    // Right of the cursor by default; flip left near the right edge; clamp
+    // vertically into the viewport.
+    let mut x = cursor_px.0 + 14.0;
+    if x + panel_w > viewport.0 {
+        x = cursor_px.0 - 14.0 - panel_w;
+    }
+    x = x.clamp(0.0, (viewport.0 - panel_w).max(0.0));
+    let y = (cursor_px.1 - panel_h - 8.0).clamp(0.0, (viewport.1 - panel_h).max(0.0));
+    let mut quads = vec![atlas.solid_rect(x, y, panel_w, panel_h, [0.02, 0.04, 0.07, 0.82])];
+    quads.extend(atlas.layout(
+        name,
+        x + pad,
+        y + pad + atlas.ascent,
+        [0.95, 0.97, 1.0, 0.95],
+    ));
+    quads.extend(atlas.layout(
+        tag,
+        x + pad,
+        y + pad + line_height + atlas.ascent,
+        [0.65, 0.75, 0.85, 0.9],
+    ));
+    quads
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,5 +793,53 @@ mod tests {
                 y: 5
             }
         ));
+    }
+
+    #[test]
+    fn the_owner_tag_names_the_three_relations() {
+        use pandemonium_sim_api::PlayerId;
+        let human = PlayerId(0);
+        assert_eq!(owner_tag(PlayerId(0), human), "yours");
+        assert_eq!(owner_tag(PlayerId(1), human), "enemy");
+        assert_eq!(owner_tag(PlayerId::NEUTRAL, human), "neutral");
+    }
+
+    #[test]
+    fn the_tooltip_panel_hugs_the_cursor_and_flips_at_the_right_edge() {
+        let atlas = TextAtlas::new();
+        let viewport = (1280.0, 800.0);
+        // Mid-screen: the panel sits right of the cursor, above it.
+        let quads = tooltip_quads(&atlas, "Worker", "yours", (640.0, 400.0), viewport);
+        assert!(quads.len() >= 3, "panel + name line + tag line");
+        let panel = quads[0];
+        assert!(panel.x > 640.0, "right of the cursor: {}", panel.x);
+        assert!(panel.y + panel.h < 400.0, "above the cursor");
+        // Near the right edge the panel flips to the left of the cursor.
+        let flipped = tooltip_quads(&atlas, "Command Center", "enemy", (1270.0, 400.0), viewport);
+        assert!(flipped[0].x + flipped[0].w <= 1280.0, "clamped inside");
+        assert!(flipped[0].x < 1270.0, "flipped left of the cursor");
+    }
+
+    #[test]
+    fn the_cursor_over_the_bottom_bar_check_covers_the_panels() {
+        let viewport = (1920.0, 1080.0);
+        let layout = bar_layout(viewport);
+        let center = |rect: &[f32; 4]| (rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5);
+        for rect in [
+            &layout.minimap,
+            &layout.selection,
+            &layout.card,
+            &layout.queue,
+        ] {
+            let (x, y) = center(rect);
+            assert!(
+                cursor_over_bottom_bar(&layout, x, y),
+                "the panel center reads as over-the-bar"
+            );
+        }
+        assert!(
+            !cursor_over_bottom_bar(&layout, 960.0, 200.0),
+            "mid-screen is world"
+        );
     }
 }

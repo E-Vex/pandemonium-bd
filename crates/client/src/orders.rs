@@ -135,6 +135,19 @@ fn logical_of(pos: glam::Vec3) -> Vec2Fx {
     Vec2Fx::new(world_to_fx(pos.x), world_to_fx(pos.z))
 }
 
+/// The nearest visible entity of ANY owner under the cursor — the hover
+/// tooltip's pick (PLAN-M10.2 §2.3). Pure geometry over the same projection
+/// the selection and the context resolver use: what is under the cursor is
+/// what the player sees. Passive by nature — it issues nothing and touches
+/// no input state (the right-button machine is unaffected).
+pub fn pick_visible_entity<'a>(
+    camera: &RtsCamera,
+    entities: &'a [RenderEntity],
+    cursor: glam::Vec2,
+) -> Option<&'a RenderEntity> {
+    pick_entity(camera, entities, cursor, |_| true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +370,31 @@ mod tests {
             matches!(resolved, ContextOrder::Move { .. }),
             "own entities are never attack targets: {resolved:?}"
         );
+    }
+
+    #[test]
+    fn the_hover_pick_finds_any_owner_under_the_cursor() {
+        let worker = entity(2, OWN, WORKER, glam::Vec3::new(24.0, 0.0, 24.0));
+        let camera = camera_on(worker.pos);
+        let snapshot = snapshot(vec![worker]);
+        let cursor = camera.project(glam::Vec3::new(24.0, 0.0, 24.0));
+        let picked = pick_visible_entity(&camera, &snapshot.entities, cursor)
+            .expect("the cursor rests on the worker");
+        assert_eq!(picked.id, EntityId(2));
+    }
+
+    #[test]
+    fn the_hover_pick_takes_the_nearest_and_skips_off_cursor() {
+        let near = entity(2, OWN, WORKER, glam::Vec3::new(20.0, 0.0, 30.0));
+        let far = entity(3, ENEMY_OWNER, SOLDIER, glam::Vec3::new(21.5, 0.0, 30.0));
+        let camera = camera_on(near.pos);
+        let snapshot = snapshot(vec![near, far]);
+        let cursor = camera.project(glam::Vec3::new(20.0, 0.0, 30.0));
+        let picked = pick_visible_entity(&camera, &snapshot.entities, cursor)
+            .expect("two entities in radius");
+        assert_eq!(picked.id, EntityId(2), "the nearest wins");
+        // Off-entity: nothing hovers.
+        let away = camera.project(glam::Vec3::new(40.0, 0.0, 40.0));
+        assert!(pick_visible_entity(&camera, &snapshot.entities, away).is_none());
     }
 }

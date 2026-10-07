@@ -1645,6 +1645,35 @@ impl App {
             self.placement.is_some(),
             self.selection.is_empty(),
         );
+        // M10.2 Phase 2 (PLAN §2.3): the hover name tooltip's data — resolved
+        // before the renderer borrow, purely reading the snapshot. Passive:
+        // it issues nothing and consumes no gesture state. Suppressed over
+        // the bottom bar, where the cursor means UI, not world.
+        let viewport = self
+            .window
+            .as_ref()
+            .map(|window| {
+                let size = window.inner_size();
+                (size.width as f32, size.height as f32)
+            })
+            .unwrap_or((1920.0, 1080.0));
+        let layout = ui::bar_layout(viewport);
+        let cursor_px = feedback::ndc_to_pixels(cursor, viewport);
+        let hover_info = if ui::cursor_over_bottom_bar(&layout, cursor_px.0, cursor_px.1) {
+            None
+        } else {
+            orders::pick_visible_entity(
+                &self.camera,
+                &snapshot.entities,
+                glam::Vec2::new(cursor.0, cursor.1),
+            )
+            .map(|entity| {
+                let name = ui::def_of(&self.bundle, entity.kind)
+                    .map(|def| def.display_name.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                (name, ui::owner_tag(entity.owner, HUMAN))
+            })
+        };
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -1671,15 +1700,8 @@ impl App {
         let outcome = self.host.outcome();
         // M9: the health bars and command pings join the overlay pass
         // (plan §11.2's overlay layer). Projected through the same camera
-        // the box select uses.
-        let viewport = self
-            .window
-            .as_ref()
-            .map(|window| {
-                let size = window.inner_size();
-                (size.width as f32, size.height as f32)
-            })
-            .unwrap_or((1920.0, 1080.0));
+        // the box select uses. (`viewport` and the bar layout were computed
+        // above, before the renderer borrow — the tooltip shares them.)
         // M9.1: the selection brackets — the persistent read of what is
         // selected (the brightened team color alone did not read at play
         // distance).
@@ -1725,6 +1747,18 @@ impl App {
             &self.camera,
             viewport,
         ));
+        // M10.2 Phase 2 (PLAN §2.3): the hover name tooltip — the display
+        // name plus the owner tag, near the cursor, when the cursor rests
+        // on a visible entity.
+        if let Some((name, tag)) = &hover_info {
+            quads.extend(ui::tooltip_quads(
+                renderer.atlas(),
+                name,
+                tag,
+                cursor_px,
+                viewport,
+            ));
+        }
         // M10.2 (PLAN §1.3): the crosshair cursor while attack-move is
         // armed (the plan's "change the cursor" half; set only on change —
         // not every frame).
@@ -1763,7 +1797,6 @@ impl App {
         // the input pass before any world click.
         self.ui_buttons.clear();
         if let Some(view) = &self.latest_view {
-            let layout = ui::bar_layout(viewport);
             let built = ui::build_bottom_bar(ui::CardInput {
                 atlas: renderer.atlas(),
                 layout,
