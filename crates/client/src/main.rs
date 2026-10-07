@@ -120,6 +120,23 @@ fn main() -> anyhow::Result<()> {
     // PLAN-M10.2 §3.2: the game starts at the main menu — the match host is
     // deferred until Start is pressed (the A15 drop + reconstruct path,
     // unchanged determinism).
+    // PLAN-M10.2 §3.4's evidence line: where the settings came from (the
+    // persistence-across-runs proof the re-test and the smoke runs read).
+    match config::config_path() {
+        Some(path) => println!(
+            "pandemonium client — settings: {} ({} the file)",
+            path.display(),
+            if path.is_file() {
+                "loaded"
+            } else {
+                "absent, defaults"
+            }
+        ),
+        None => println!(
+            "pandemonium client — settings: no config directory, in-memory defaults (persistence \
+             disabled)"
+        ),
+    }
     let mut app = App::new(tree, default_bundle, seed_flag, record_path)?;
     app.frames_budget = frames_budget_arg(&args);
     event_loop
@@ -1723,6 +1740,24 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The exit line: how this run ended (the windowed verification's
+        // evidence — a menu quit, a window close, the frames budget all
+        // read differently here).
+        if let Some(host) = &self.host {
+            println!(
+                "pandemonium client — exiting at the {} (tick {}, {} commands submitted)",
+                self.screen.name(),
+                host.tick(),
+                self.commands_submitted
+            );
+        } else {
+            println!(
+                "pandemonium client — exiting at the {} ({} match{} started this run)",
+                self.screen.name(),
+                self.matches_started,
+                if self.matches_started == 1 { "" } else { "es" }
+            );
+        }
         // M10.1 (plan §6.5): `--record`'s clean-exit write. Every exit path
         // (window close, Escape, the `--frames` budget) lands here — the
         // segment's replay is written unless the match already ended and

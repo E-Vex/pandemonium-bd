@@ -434,6 +434,24 @@ impl AppState {
         };
         let mut next = self.clone();
         next.focus = index;
+        let (mut next, effect) = self.activate_button(id, next, ctx);
+        // A screen change starts the new screen fresh: focus on its first
+        // row (entering Settings from the main menu's Settings *button*
+        // must not leave focus on row 1 — the Xvfb pass caught this).
+        if self.screen != next.screen {
+            next.focus = 0;
+        }
+        (next, effect)
+    }
+
+    /// The per-button transition core ([`AppState::activate_index]'s
+    /// match, extracted so the focus reset can run after it).
+    fn activate_button(
+        &self,
+        id: ButtonId,
+        mut next: AppState,
+        ctx: &KeyContext,
+    ) -> (AppState, Effect) {
         match id {
             ButtonId::NewMatch => {
                 // A fresh New Match screen: the default mode, the flag's
@@ -858,6 +876,21 @@ mod tests {
         // Enter activates the focused row — the Quit row.
         let (_, effect) = state.on_key(NavKey::Enter, &ctx());
         assert_eq!(effect, Effect::QuitApp);
+    }
+
+    #[test]
+    fn entering_a_screen_resets_the_focus_to_its_first_row() {
+        // The Xvfb settings-persistence pass caught this: activating the
+        // main menu's Settings button (row 1) used to carry focus 1 into
+        // the screen — Enter then adjusted pan speed, not edge scroll.
+        let (next, _) = menu().activate_index(1, &ctx()); // open Settings
+        assert_eq!(next.focus, 0, "the entered screen starts on row 0");
+        // Cycling a field on the same screen keeps the focus where it is.
+        let mut new_match = new_match_screen(&ctx());
+        new_match.focus_index(0); // Mode
+        let (next, _) = new_match.activate_index(0, &ctx());
+        assert_eq!(next.focus, 0, "same screen: focus stays on the row");
+        assert!(matches!(next.screen, Screen::NewMatch(_)));
     }
 
     #[test]
