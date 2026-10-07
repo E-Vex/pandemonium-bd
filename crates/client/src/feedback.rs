@@ -185,23 +185,42 @@ pub fn health_color(hp_fraction_milli: u32) -> [f32; 4] {
 }
 
 /// Builds the health-bar quads for every damaged entity in the snapshot
-/// (full-health entities draw nothing — a healthy field is not noise).
-/// One bar per entity: a dark backing rect and a colored fill whose width
-/// is the remaining fraction. Bars sit above the entity's projected head.
+/// (full-health entities draw nothing — a healthy field is not noise),
+/// plus a LARGER bar for every selected entity — always drawn, even at
+/// full health (PLAN-M10.2 §2.3: the selected entity's health state is
+/// the one thing the player is asking about). One bar per entity: a dark
+/// backing rect and a colored fill whose width is the remaining fraction.
+/// Bars sit above the entity's projected head.
 pub fn health_bar_quads(
     atlas: &TextAtlas,
     snapshot: &pandemonium_engine::RenderSnapshot,
+    selection: &[EntityId],
     camera: &RtsCamera,
     viewport: (f32, f32),
 ) -> Vec<UiQuad> {
+    /// The regular bar's width, in pixels.
     const BAR_W: f32 = 36.0;
+    /// The regular bar's height, in pixels.
     const BAR_H: f32 = 4.0;
+    /// The selected bar's width — visibly bigger at a glance.
+    const SELECTED_W: f32 = 64.0;
+    /// The selected bar's height.
+    const SELECTED_H: f32 = 7.0;
     const LIFT: f32 = 14.0;
+    /// The selected bar rides higher (it is taller; clear the brackets).
+    const SELECTED_LIFT: f32 = 22.0;
+    let selected: std::collections::BTreeSet<EntityId> = selection.iter().copied().collect();
     let mut quads = Vec::new();
     for entity in &snapshot.entities {
-        if entity.hp_fraction_milli >= 999 {
+        let is_selected = selected.contains(&entity.id);
+        if entity.hp_fraction_milli >= 999 && !is_selected {
             continue;
         }
+        let (bar_w, bar_h, lift) = if is_selected {
+            (SELECTED_W, SELECTED_H, SELECTED_LIFT)
+        } else {
+            (BAR_W, BAR_H, LIFT)
+        };
         let ndc = camera.project(glam::Vec3::new(
             entity.pos.x,
             entity.pos.y + 0.6,
@@ -211,17 +230,17 @@ pub fn health_bar_quads(
             continue; // behind the camera
         }
         let (cx, top) = ndc_to_pixels((ndc.x, ndc.y), viewport);
-        let top = top - LIFT;
-        let x = cx - BAR_W * 0.5;
+        let top = top - lift;
+        let x = cx - bar_w * 0.5;
         quads.push(atlas.solid_rect(
             x - 1.0,
             top - 1.0,
-            BAR_W + 2.0,
-            BAR_H + 2.0,
+            bar_w + 2.0,
+            bar_h + 2.0,
             [0.0, 0.0, 0.0, 0.6],
         ));
-        let fill = BAR_W * entity.hp_fraction_milli as f32 / 1000.0;
-        quads.push(atlas.solid_rect(x, top, fill, BAR_H, health_color(entity.hp_fraction_milli)));
+        let fill = bar_w * entity.hp_fraction_milli as f32 / 1000.0;
+        quads.push(atlas.solid_rect(x, top, fill, bar_h, health_color(entity.hp_fraction_milli)));
     }
     quads
 }
@@ -567,7 +586,7 @@ mod tests {
             tick: 0,
             entities: vec![damaged, healthy],
         };
-        let quads = health_bar_quads(&atlas, &snapshot, &camera, (1920.0, 1080.0));
+        let quads = health_bar_quads(&atlas, &snapshot, &[], &camera, (1920.0, 1080.0));
         // One damaged entity: a backing rect + a fill rect; the healthy one
         // contributes nothing.
         assert_eq!(quads.len(), 2, "backing + fill for the damaged entity only");
@@ -579,6 +598,49 @@ mod tests {
             "half-health fill: {:?}",
             quads[1]
         );
+    }
+
+    #[test]
+    fn the_selected_entity_gets_a_bigger_bar_even_at_full_health() {
+        use pandemonium_engine::{RenderEntity, RenderSnapshot};
+        let camera = RtsCamera::new(4, 4, 16.0 / 9.0);
+        let atlas = TextAtlas::new();
+        let entity = RenderEntity {
+            id: EntityId(1),
+            owner: pandemonium_sim_api::PlayerId(0),
+            kind: pandemonium_sim_api::KindId(0),
+            pos: glam::Vec3::new(1.0, 0.0, 1.0),
+            facing: glam::Vec3::ZERO,
+            hp_fraction_milli: 1000,
+            move_state: pandemonium_sim_api::MoveState::Idle,
+        };
+        let snapshot = RenderSnapshot {
+            tick: 0,
+            entities: vec![entity],
+        };
+        // Unselected + full health: nothing (a healthy field is not noise).
+        assert!(health_bar_quads(&atlas, &snapshot, &[], &camera, (1920.0, 1080.0)).is_empty());
+        // Selected + full health: the big bar draws anyway (backing + fill).
+        let quads = health_bar_quads(&atlas, &snapshot, &[EntityId(1)], &camera, (1920.0, 1080.0));
+        assert_eq!(quads.len(), 2, "backing + fill for the selected entity");
+        // The backing is the 64 px selected bar plus its 1 px border.
+        assert!((quads[0].w - 66.0).abs() < 1e-3, "selected: {:?}", quads[0]);
+        // The fill is the full selected width.
+        assert!((quads[1].w - 64.0).abs() < 1e-3);
+        // And it rides higher than the regular bar (22 vs 14 px): a damaged,
+        // UNSELECTED neighbor keeps the small bar lower on screen.
+        let damaged = RenderEntity {
+            id: EntityId(2),
+            hp_fraction_milli: 500,
+            ..entity
+        };
+        let mixed = RenderSnapshot {
+            tick: 0,
+            entities: vec![entity, damaged],
+        };
+        let quads = health_bar_quads(&atlas, &mixed, &[EntityId(1)], &camera, (1920.0, 1080.0));
+        assert_eq!(quads.len(), 4, "big bar + small bar, two rects each");
+        assert!(quads[0].y < quads[2].y, "selected bar rides higher");
     }
 
     #[test]

@@ -1693,6 +1693,7 @@ impl App {
         quads.extend(feedback::health_bar_quads(
             renderer.atlas(),
             &snapshot,
+            &self.selection,
             &self.camera,
             viewport,
         ));
