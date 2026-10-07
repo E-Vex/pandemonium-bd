@@ -1662,10 +1662,18 @@ impl App {
         let hover_info = if ui::cursor_over_bottom_bar(&layout, cursor_px.0, cursor_px.1) {
             None
         } else {
-            orders::pick_visible_entity(
+            orders::pick_visible_entity_sized(
                 &self.camera,
                 &snapshot.entities,
                 glam::Vec2::new(cursor.0, cursor.1),
+                |entity| {
+                    // Big silhouettes read from farther out: structures get
+                    // an extra reach proportional to their footprint.
+                    ui::def_of(&self.bundle, entity.kind)
+                        .and_then(|def| def.footprint())
+                        .map(|(w, h)| (w.max(h) as f32) * 0.018)
+                        .unwrap_or(0.0)
+                },
             )
             .map(|entity| {
                 let name = ui::def_of(&self.bundle, entity.kind)

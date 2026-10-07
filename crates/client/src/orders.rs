@@ -135,17 +135,29 @@ fn logical_of(pos: glam::Vec3) -> Vec2Fx {
     Vec2Fx::new(world_to_fx(pos.x), world_to_fx(pos.z))
 }
 
-/// The nearest visible entity of ANY owner under the cursor — the hover
-/// tooltip's pick (PLAN-M10.2 §2.3). Pure geometry over the same projection
-/// the selection and the context resolver use: what is under the cursor is
-/// what the player sees. Passive by nature — it issues nothing and touches
-/// no input state (the right-button machine is unaffected).
-pub fn pick_visible_entity<'a>(
+/// The hover pick with per-entity extra radii: a big silhouette's projected
+/// ground point is a small part of its on-screen mass (the Command Center's
+/// tower rises well above its center), so large structures read from
+/// farther out than the fixed [`PICK_RADIUS`] a unit needs.
+pub fn pick_visible_entity_sized<'a>(
     camera: &RtsCamera,
     entities: &'a [RenderEntity],
     cursor: glam::Vec2,
+    extra_radius: impl Fn(&RenderEntity) -> f32,
 ) -> Option<&'a RenderEntity> {
-    pick_entity(camera, entities, cursor, |_| true)
+    let mut best: Option<(f32, &'a RenderEntity)> = None;
+    for entity in entities {
+        let projected = camera.project(entity.pos);
+        if !projected.x.is_finite() || !projected.y.is_finite() {
+            continue; // behind the camera — not on screen, not hoverable
+        }
+        let distance = (projected - cursor).length();
+        let reach = PICK_RADIUS + extra_radius(entity);
+        if distance <= reach && best.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best = Some((distance, entity));
+        }
+    }
+    best.map(|(_, entity)| entity)
 }
 
 #[cfg(test)]
@@ -378,7 +390,7 @@ mod tests {
         let camera = camera_on(worker.pos);
         let snapshot = snapshot(vec![worker]);
         let cursor = camera.project(glam::Vec3::new(24.0, 0.0, 24.0));
-        let picked = pick_visible_entity(&camera, &snapshot.entities, cursor)
+        let picked = pick_visible_entity_sized(&camera, &snapshot.entities, cursor, |_| 0.0)
             .expect("the cursor rests on the worker");
         assert_eq!(picked.id, EntityId(2));
     }
@@ -390,11 +402,46 @@ mod tests {
         let camera = camera_on(near.pos);
         let snapshot = snapshot(vec![near, far]);
         let cursor = camera.project(glam::Vec3::new(20.0, 0.0, 30.0));
-        let picked = pick_visible_entity(&camera, &snapshot.entities, cursor)
+        let picked = pick_visible_entity_sized(&camera, &snapshot.entities, cursor, |_| 0.0)
             .expect("two entities in radius");
         assert_eq!(picked.id, EntityId(2), "the nearest wins");
         // Off-entity: nothing hovers.
         let away = camera.project(glam::Vec3::new(40.0, 0.0, 40.0));
-        assert!(pick_visible_entity(&camera, &snapshot.entities, away).is_none());
+        assert!(pick_visible_entity_sized(&camera, &snapshot.entities, away, |_| 0.0).is_none());
+    }
+
+    #[test]
+    fn big_structures_hover_from_farther_out() {
+        // A building whose silhouette reaches beyond the fixed unit radius:
+        // the caller supplies the per-entity extra (the CC's footprint).
+        let cc = entity(5, OWN, SOLDIER, glam::Vec3::new(20.0, 0.0, 30.0));
+        let camera = camera_on(cc.pos);
+        let snapshot = snapshot(vec![cc]);
+        let ground = camera.project(glam::Vec3::new(20.0, 0.0, 30.0));
+        // A point just outside the fixed radius: no hover without the extra,
+        // hover with it.
+        let just_outside = glam::Vec2::new(ground.x, ground.y - 0.07);
+        let without = pick_visible_entity_sized(&camera, &snapshot.entities, just_outside, |_| 0.0);
+        assert!(without.is_none(), "the fixed radius alone misses");
+        let with = pick_visible_entity_sized(&camera, &snapshot.entities, just_outside, |entity| {
+            if entity.id.0 == 5 {
+                0.05
+            } else {
+                0.0
+            }
+        });
+        assert!(with.is_some(), "the sized pick reads the big structure");
+        // The extra never lets a far-off cursor hover: way outside both.
+        let way_out = glam::Vec2::new(ground.x, ground.y - 0.4);
+        assert!(
+            pick_visible_entity_sized(&camera, &snapshot.entities, way_out, |entity| {
+                if entity.id.0 == 5 {
+                    0.05
+                } else {
+                    0.0
+                }
+            })
+            .is_none()
+        );
     }
 }
