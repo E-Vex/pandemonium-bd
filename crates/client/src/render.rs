@@ -1504,25 +1504,17 @@ impl WgpuRenderer {
             scratch[offset + 2] = (base[2] as f32 * shade) as u8;
             scratch[offset + 3] = 255;
         }
-        // Entity dots: one tile dot per entity, brighter than any terrain.
-        // The dot colors mirror render::TEAM_* (A-102's blue/orange pair).
-        for entity in entities {
-            let tx = entity.pos.x.floor();
-            let ty = entity.pos.z.floor();
-            if tx < 0.0 || ty < 0.0 || tx >= w as f32 || ty >= h as f32 {
-                continue;
-            }
-            let dot = match entity.owner {
-                pandemonium_sim_api::PlayerId(0) => [70.0, 130.0, 255.0],
-                pandemonium_sim_api::PlayerId(1) => [255.0, 150.0, 40.0],
-                _ => [250.0, 190.0, 60.0],
-            };
-            let offset = ((ty as u32 * w + tx as u32) as usize) * 4;
-            scratch[offset] = dot[0] as u8;
-            scratch[offset + 1] = dot[1] as u8;
-            scratch[offset + 2] = dot[2] as u8;
-            scratch[offset + 3] = 255;
-        }
+        // Entity markers (PLAN-M10.2 §2.4): distinct per role — units one
+        // tile, buildings a solid 2×2 block, ore nodes a 3×3 amber diamond —
+        // painted over the fog-shaded terrain (the entity list is already
+        // the fog-filtered view).
+        let specs = &self.kind_specs;
+        paint_minimap_markers(
+            &mut self.minimap_scratch,
+            entities,
+            specs,
+            self.minimap_size,
+        );
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.minimap_tex,
@@ -1815,6 +1807,77 @@ fn death_instance(cue: &DyingCue, shape: &KindShape) -> EntityInstance {
         scale,
         color: charred,
         _pad: 0.0,
+    }
+}
+
+/// The minimap marker palette, mirroring [`TEAM_P0`]/[`TEAM_P1`] (A-102):
+/// own blue, enemy orange, ore amber — the colorblind-safe triple.
+const MINIMAP_OWN: [f32; 3] = [70.0, 130.0, 255.0];
+const MINIMAP_ENEMY: [f32; 3] = [255.0, 150.0, 40.0];
+const MINIMAP_ORE: [f32; 3] = [250.0, 190.0, 60.0];
+
+/// Paints the minimap's entity markers into the map-sized RGBA scratch
+/// buffer (one byte quad per tile, row-major). Pure geometry + color: units
+/// one tile, structures a solid 2×2 block (visibly larger — PLAN-M10.2
+/// §2.4), neutral resource nodes a 3×3 amber diamond so the map carries the
+/// world's shapes. Off-map entities paint nothing.
+fn paint_minimap_markers(
+    scratch: &mut [u8],
+    entities: &[pandemonium_engine::RenderEntity],
+    kind_specs: &[KindShape],
+    map_size: (u32, u32),
+) {
+    let (w, h) = map_size;
+    for entity in entities {
+        let tx = entity.pos.x.floor();
+        let ty = entity.pos.z.floor();
+        if tx < 0.0 || ty < 0.0 || tx >= w as f32 || ty >= h as f32 {
+            continue;
+        }
+        let shape = kind_specs
+            .get(entity.kind.0 as usize)
+            .cloned()
+            .unwrap_or_else(fallback_shape);
+        let (color, extent, diamond) = if entity.owner == pandemonium_sim_api::PlayerId::NEUTRAL {
+            (MINIMAP_ORE, 3, true)
+        } else if shape.unit {
+            (
+                match entity.owner {
+                    pandemonium_sim_api::PlayerId(0) => MINIMAP_OWN,
+                    _ => MINIMAP_ENEMY,
+                },
+                1,
+                false,
+            )
+        } else {
+            (
+                match entity.owner {
+                    pandemonium_sim_api::PlayerId(0) => MINIMAP_OWN,
+                    _ => MINIMAP_ENEMY,
+                },
+                2,
+                false,
+            )
+        };
+        let extent = extent as i32;
+        let anchor = extent / 2;
+        for dy in -anchor..extent - anchor {
+            for dx in -anchor..extent - anchor {
+                if diamond && dx.abs() + dy.abs() > 1 {
+                    continue; // the diamond trims its own corners
+                }
+                let px = tx as i32 + dx;
+                let py = ty as i32 + dy;
+                if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                    continue;
+                }
+                let offset = ((py as u32 * w + px as u32) as usize) * 4;
+                scratch[offset] = color[0] as u8;
+                scratch[offset + 1] = color[1] as u8;
+                scratch[offset + 2] = color[2] as u8;
+                scratch[offset + 3] = 255;
+            }
+        }
     }
 }
 
@@ -2505,5 +2568,125 @@ mod death_render_tests {
         // The shrink bottoms out at a quarter (it never inverts).
         let clamped = death_instance(&cue(2.0), &unit_shape());
         assert!(clamped.scale[1] > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod minimap_marker_tests {
+    use super::*;
+    use glam::Vec3;
+    use pandemonium_engine::RenderEntity;
+    use pandemonium_sim_api::{EntityId, KindId, MoveState};
+
+    const MAP: (u32, u32) = (8, 8);
+
+    fn entity(id: u64, kind: u32, owner: PlayerId, x: f32, z: f32) -> RenderEntity {
+        RenderEntity {
+            id: EntityId(id),
+            owner,
+            kind: KindId(kind),
+            pos: Vec3::new(x, 0.0, z),
+            facing: Vec3::ZERO,
+            hp_fraction_milli: 1000,
+            move_state: MoveState::Idle,
+        }
+    }
+
+    fn tile(scratch: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let offset = ((y * MAP.0 + x) as usize) * 4;
+        [
+            scratch[offset],
+            scratch[offset + 1],
+            scratch[offset + 2],
+            scratch[offset + 3],
+        ]
+    }
+
+    fn specs() -> Vec<KindShape> {
+        vec![
+            crate::silhouette::named("worker").expect("authored"),
+            crate::silhouette::named("command_center").expect("authored"),
+            crate::silhouette::named("ore_node").expect("authored"),
+        ]
+    }
+
+    #[test]
+    fn units_paint_one_tile_in_the_owner_color() {
+        let mut scratch = vec![0u8; (MAP.0 * MAP.1 * 4) as usize];
+        paint_minimap_markers(
+            &mut scratch,
+            &[entity(1, 0, PlayerId(0), 2.5, 3.7)],
+            &specs(),
+            MAP,
+        );
+        assert_eq!(tile(&scratch, 2, 3)[0], MINIMAP_OWN[0] as u8);
+        assert_eq!(tile(&scratch, 2, 3)[1], MINIMAP_OWN[1] as u8);
+        // The neighbors stay bare: one tile, no block.
+        assert_eq!(tile(&scratch, 3, 3)[3], 0);
+        assert_eq!(tile(&scratch, 2, 2)[3], 0);
+        // Enemy units read orange.
+        let mut scratch2 = vec![0u8; (MAP.0 * MAP.1 * 4) as usize];
+        paint_minimap_markers(
+            &mut scratch2,
+            &[entity(2, 0, PlayerId(1), 2.5, 3.7)],
+            &specs(),
+            MAP,
+        );
+        assert_eq!(tile(&scratch2, 2, 3)[0], MINIMAP_ENEMY[0] as u8);
+    }
+
+    #[test]
+    fn buildings_paint_bigger_blocks_than_units() {
+        let mut scratch = vec![0u8; (MAP.0 * MAP.1 * 4) as usize];
+        paint_minimap_markers(
+            &mut scratch,
+            &[entity(1, 1, PlayerId(0), 5.0, 5.0)],
+            &specs(),
+            MAP,
+        );
+        // The 2x2 block: four painted tiles around the anchor.
+        let painted = [(4, 4), (5, 4), (4, 5), (5, 5)];
+        for (x, y) in painted {
+            assert_eq!(tile(&scratch, x, y)[3], 255, "painted at {x},{y}");
+            assert_eq!(tile(&scratch, x, y)[0], MINIMAP_OWN[0] as u8);
+        }
+        // The tiles just outside the block stay bare.
+        assert_eq!(tile(&scratch, 6, 6)[3], 0);
+        assert_eq!(tile(&scratch, 3, 3)[3], 0);
+    }
+
+    #[test]
+    fn ore_paints_an_amber_diamond() {
+        let mut scratch = vec![0u8; (MAP.0 * MAP.1 * 4) as usize];
+        paint_minimap_markers(
+            &mut scratch,
+            &[entity(1, 2, PlayerId::NEUTRAL, 4.0, 4.0)],
+            &specs(),
+            MAP,
+        );
+        // The plus-shaped diamond: center + the four edge-adjacent tiles.
+        for (x, y) in [(4, 4), (3, 4), (5, 4), (4, 3), (4, 5)] {
+            assert_eq!(tile(&scratch, x, y)[0], MINIMAP_ORE[0] as u8, "{x},{y}");
+        }
+        // The corners the diamond trims stay bare.
+        assert_eq!(tile(&scratch, 3, 3)[3], 0);
+        assert_eq!(tile(&scratch, 5, 5)[3], 0);
+    }
+
+    #[test]
+    fn off_map_entities_paint_nothing_and_clamp_does_not_panic() {
+        let mut scratch = vec![0u8; (MAP.0 * MAP.1 * 4) as usize];
+        paint_minimap_markers(
+            &mut scratch,
+            &[
+                entity(1, 0, PlayerId(0), 20.0, 20.0),
+                entity(2, 1, PlayerId(0), 0.0, 0.0),
+            ],
+            &specs(),
+            MAP,
+        );
+        // The corner building clamps inside the map without panicking.
+        assert_eq!(tile(&scratch, 0, 0)[3], 255);
+        assert_eq!(tile(&scratch, 7, 7)[3], 0, "the far corner stays terrain");
     }
 }
