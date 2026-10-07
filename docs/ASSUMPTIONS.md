@@ -924,3 +924,11 @@ confirms or rejects it.
   plus an owner tag (Own/Enemy/Neutral) near the cursor; it is suppressed
   over the bottom bar and the minimap, where the cursor means UI, not
   world.
+
+- **A-107 (PLAN-M10.2 kickoff, M10.2 Phase 3).** The owner's go-ahead for
+  this pass, recorded at kickoff: the Phase 2 (visual legibility) re-test
+  verdict is a **pass** — "Great now write the task P3 to the next AI
+  agent" (2026-10-08) — so `docs/PLAYTEST.md`'s results table carries the
+  Phase 2 re-test row and Phase 3 (menu and settings, PLAN §3) proceeds on
+  the standing plan. Scope law unchanged: `crates/client` plus at most
+  tiny presentation-only `crates/engine` touches; zero golden movement.

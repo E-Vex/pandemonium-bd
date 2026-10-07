@@ -168,6 +168,7 @@ tester.
 |---|---|---|---|---|---|---|---|
 | owner (playtest-1) | 2026-10 (post-M10.1) | desktop, real display | bdf1266 | **no** — controls unusable (finding #1, detail below) | not reached | feel: the four findings below | none filed (findings went to `docs/PLAN-M10.2.md` instead) |
 | owner (re-test) | 2026-10 (post-M10.2 Phase 1) | desktop, real display | d84203e | **pass, with notes** — the loop is playable with the new controls card; the notes arrive after the Phase 2 delivery (A-101: the owner re-tests on their machine and reports any issue with its exact location; a reported issue becomes a finding row here) | not reached | feel: pending specifics | none filed yet |
+| owner (re-test 2) | 2026-10-08 (post-M10.2 Phase 2) | desktop, real display | 404e906 | **pass** — the Phase 2 visual pass cleared the way for Phase 3 (the owner's go-ahead: "Great now write the task P3 to the next AI agent"; A-107); any residual visual notes fold into the next re-test | not reached | feel: unchanged from the Phase 1 notes | none filed |
 | | | | | | | | |
 | | | | | | | | |
 | | | | | | | | |
