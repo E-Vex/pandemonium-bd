@@ -1839,14 +1839,14 @@ fn paint_minimap_markers(
             .cloned()
             .unwrap_or_else(fallback_shape);
         let (color, extent, diamond) = if entity.owner == pandemonium_sim_api::PlayerId::NEUTRAL {
-            (MINIMAP_ORE, 3, true)
+            (MINIMAP_ORE, 3i32, true)
         } else if shape.unit {
             (
                 match entity.owner {
                     pandemonium_sim_api::PlayerId(0) => MINIMAP_OWN,
                     _ => MINIMAP_ENEMY,
                 },
-                1,
+                1i32,
                 false,
             )
         } else {
@@ -1855,11 +1855,10 @@ fn paint_minimap_markers(
                     pandemonium_sim_api::PlayerId(0) => MINIMAP_OWN,
                     _ => MINIMAP_ENEMY,
                 },
-                2,
+                2i32,
                 false,
             )
         };
-        let extent = extent as i32;
         let anchor = extent / 2;
         for dy in -anchor..extent - anchor {
             for dx in -anchor..extent - anchor {
