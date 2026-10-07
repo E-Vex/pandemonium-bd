@@ -222,6 +222,38 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
         };
         ui.quads
             .push(atlas.solid_rect(sel[0] + PAD, bar_y, bar_w * fraction, 8.0, color));
+        // M10.2 Phase 2 (PLAN §2.3): the production-queue summary — what a
+        // selected producing building is working on: the head item, its
+        // progress, and how many items wait behind it. The queue strip
+        // above the command card keeps the per-item cancel buttons; the
+        // panel answers "is this building doing anything?".
+        if let Some(queue) = production.iter().find(|queue| queue.producer == entity.id) {
+            let queue_baseline = bar_y + 14.0 + atlas.ascent;
+            let line = if queue.items.is_empty() {
+                "queue: idle".to_string()
+            } else {
+                let head = def_of(bundle, queue.items[0].kind)
+                    .map(|def| def.display_name.clone())
+                    .unwrap_or_else(|| "?".to_string());
+                let waiting = queue.items.len() - 1;
+                if waiting > 0 {
+                    format!(
+                        "queue: {} {}%  (+{} waiting)",
+                        head,
+                        queue.items[0].progress_milli / 10,
+                        waiting
+                    )
+                } else {
+                    format!("queue: {} {}%", head, queue.items[0].progress_milli / 10)
+                }
+            };
+            ui.quads.extend(atlas.layout(
+                &line,
+                sel[0] + PAD,
+                queue_baseline,
+                [0.7, 0.8, 0.9, 0.9],
+            ));
+        }
     } else {
         // Multi-selection: a count line plus a per-kind census by display
         // name (data-defined, deterministic — entities arrive kind-ordered
@@ -841,5 +873,62 @@ mod tests {
             !cursor_over_bottom_bar(&layout, 960.0, 200.0),
             "mid-screen is world"
         );
+    }
+
+    #[test]
+    fn the_info_panel_carries_the_production_queue_summary() {
+        let bundle = bundle();
+        let atlas = crate::text::TextAtlas::new();
+        let cc_kind = kind_of(&bundle, "command_center").expect("cc");
+        let cc = view_entity(10, cc_kind, 8, 8);
+        let production = |items: usize| -> Vec<QueueView> {
+            vec![QueueView {
+                producer: cc.id,
+                items: (0..items)
+                    .map(|index| pandemonium_sim_api::QueueItemView {
+                        kind: kind_of(&bundle, "worker").expect("worker"),
+                        progress_milli: if index == 0 { 450 } else { 0 },
+                    })
+                    .collect(),
+                rally: None,
+            }]
+        };
+        let build = |prod: &Vec<QueueView>| {
+            build_bottom_bar(CardInput {
+                atlas: &atlas,
+                layout: bar_layout((1280.0, 800.0)),
+                view_entities: std::slice::from_ref(&cc),
+                production: prod,
+                bundle: &bundle,
+                selection: std::slice::from_ref(&cc.id),
+                ore: 0,
+            })
+        };
+        let busy = build(&production(2));
+        let idle = build(&production(0));
+        // The busy line ("queue: Worker 45%  (+1 waiting)") and the idle
+        // line ("queue: idle") are different strings — different glyph
+        // quads — and both panels draw a queue line the bare panel lacks.
+        assert_ne!(busy.quads.len(), idle.quads.len(), "busy vs idle text");
+        let no_queue = build_bottom_bar(CardInput {
+            atlas: &atlas,
+            layout: bar_layout((1280.0, 800.0)),
+            view_entities: std::slice::from_ref(&cc),
+            production: &[],
+            bundle: &bundle,
+            selection: std::slice::from_ref(&cc.id),
+            ore: 0,
+        });
+        assert!(
+            busy.quads.len() > no_queue.quads.len(),
+            "the queue line is extra text"
+        );
+        // The cancel buttons live in the strip, untouched by the summary.
+        let cancels = busy
+            .buttons
+            .iter()
+            .filter(|button| matches!(button.action, ButtonAction::CancelQueueItem { .. }))
+            .count();
+        assert_eq!(cancels, 2, "the busy queue keeps its cancel buttons");
     }
 }
