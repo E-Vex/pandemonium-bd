@@ -1890,10 +1890,12 @@ impl App {
         }
     }
 
-    /// The menu frame (PLAN-M10.2 §3.2): the title over a dimmed, matchless
-    /// world — the same overlay pass, no host, no HUD, nothing that could
-    /// submit or record. The button list lands with the menu pass.
+    /// The menu frame (PLAN-M10.2 §3.2/§3.6): the menu pass over a dimmed,
+    /// matchless world — the same overlay pass, no host, no HUD, nothing
+    /// that could submit or record. The built buttons become this frame's
+    /// hit rects (hover/click routing reads them).
     fn draw_menu_frame(&mut self) {
+        let maps = self.map_list(); // before the renderer borrow
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -1905,26 +1907,17 @@ impl App {
                 (size.width as f32, size.height as f32)
             })
             .unwrap_or((1920.0, 1080.0));
-        let atlas = renderer.atlas();
-        let mut quads = Vec::new();
-        // The dim backdrop over the (empty) world.
-        quads.push(atlas.solid_rect(0.0, 0.0, viewport.0, viewport.1, [0.02, 0.03, 0.05, 0.92]));
-        let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
-        let title = "PANDEMONIUM";
-        let title_w = atlas.measure(title);
-        let title_x = viewport.0 * 0.5 - title_w * 0.5;
-        let title_baseline = viewport.1 * 0.5 - 3.0 * line_height;
-        quads.extend(atlas.layout(title, title_x, title_baseline, [0.85, 0.9, 1.0, 1.0]));
-        let hint = "the menu buttons land with the menu pass (PLAN-M10.2 3.2)";
-        let hint_w = atlas.measure(hint);
-        let hint_x = viewport.0 * 0.5 - hint_w * 0.5;
-        quads.extend(atlas.layout(
-            hint,
-            hint_x,
-            title_baseline + 2.0 * line_height,
-            [0.55, 0.62, 0.7, 0.9],
-        ));
-        renderer.queue_ui(&quads);
+        let built = ui::build_menu(ui::MenuInput {
+            atlas: renderer.atlas(),
+            viewport,
+            screen: &self.screen,
+            settings: &self.settings,
+            maps: &maps,
+            end_lines: None, // no host behind a menu-only frame
+            backdrop: [0.02, 0.03, 0.05, 0.94],
+        });
+        self.menu_buttons = built.buttons;
+        renderer.queue_ui(&built.quads);
         let snapshot = pandemonium_engine::RenderSnapshot::default();
         let hud = HudState::default();
         renderer.render(Frame {
@@ -1935,6 +1928,16 @@ impl App {
             hud: &hud,
             flashes: &[],
         });
+    }
+
+    /// The map list (id, display name) in tree order — the New Match
+    /// screen's Map field and the pass's labels.
+    fn map_list(&self) -> Vec<(String, String)> {
+        self.tree
+            .maps
+            .iter()
+            .map(|map| (map.id.clone(), map.display_name.clone()))
+            .collect()
     }
 
     fn draw(&mut self) {
@@ -2113,6 +2116,7 @@ impl App {
                 (name, ui::owner_tag(entity.owner, HUMAN))
             })
         };
+        let maps = self.map_list(); // before the renderer borrow
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -2294,6 +2298,30 @@ impl App {
                     legal,
                 })
             }));
+        }
+        // PLAN-M10.2 §3.5/§3.6: when a menu owns the screen (pause menu,
+        // end screen, settings-over-pause), its pass dims the live world
+        // and draws its panel on top; the built buttons are this frame's
+        // hit rects.
+        if !self.screen.takes_world_input() {
+            let headline = outcome.as_ref().map(|outcome| match outcome.winner {
+                HUMAN => ("VICTORY", "You eliminated the enemy."),
+                AI => ("DEFEAT", "Your base was destroyed."),
+                _ => ("MUTUAL DESTRUCTION", "Both sides were eliminated."),
+            });
+            let built = ui::build_menu(ui::MenuInput {
+                atlas: renderer.atlas(),
+                viewport,
+                screen: &self.screen,
+                settings: &self.settings,
+                maps: &maps,
+                end_lines: headline,
+                backdrop: [0.0, 0.0, 0.0, 0.55],
+            });
+            self.menu_buttons = built.buttons;
+            quads.extend(built.quads);
+        } else {
+            self.menu_buttons.clear();
         }
         // Everything the overlay pass draws this frame queues together: the
         // feedback cues, the HUD panels, and the bottom bar.

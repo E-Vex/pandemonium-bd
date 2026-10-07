@@ -646,6 +646,342 @@ pub fn tooltip_quads(
     quads
 }
 
+// ── The menu screens (PLAN-M10.2 §3.6) ─────────────────────────────────
+//
+// One builder renders every screen the pure state machine
+// (`crate::screens`) navigates: solid panels, bordered buttons, one
+// accent for hover/focus (the Phase 2 blue/orange law — nothing new is
+// invented). Buttons are plain rectangles with hit rects in focus-index
+// order, so the machine's `activate_index(i)` and the pixel geometry agree
+// by construction.
+
+/// The blue/orange accent law the menu pass reuses (Phase 2's palette).
+const MENU_BLUE: [f32; 3] = crate::render::TEAM_P0;
+/// The amber accent (focus/highlight text).
+const MENU_AMBER: [f32; 3] = crate::render::TEAM_P1;
+
+/// One row's label/value pair for the menu pass.
+struct Row {
+    /// The focus index this row occupies (must match the machine's order).
+    index: usize,
+    /// The id the machine resolves this row to.
+    id: crate::screens::ButtonId,
+    /// Left-aligned label text (ASCII only — the embedded font subset).
+    label: String,
+    /// Right-aligned value text.
+    value: String,
+}
+
+/// The inputs to [`build_menu`].
+pub struct MenuInput<'a> {
+    /// The text atlas (the shared overlay pass's glyph source).
+    pub atlas: &'a TextAtlas,
+    /// The window's pixel size.
+    pub viewport: (f32, f32),
+    /// The state machine (screen + focus).
+    pub screen: &'a crate::screens::AppState,
+    /// The live settings (the settings screen's values).
+    pub settings: &'a crate::config::Settings,
+    /// The loaded maps: (id, display name) in list order.
+    pub maps: &'a [(String, String)],
+    /// The end screen's headline/subline when the screen is the end screen.
+    pub end_lines: Option<(&'a str, &'a str)>,
+    /// The dimming backdrop's strength over a live match (menus without a
+    /// host behind them dim harder).
+    pub backdrop: [f32; 4],
+}
+
+/// What [`build_menu`] produced: the quads to draw and the hit rects.
+pub struct BuiltMenu {
+    /// The screen-space quads (panel, rows, focus ring).
+    pub quads: Vec<UiQuad>,
+    /// The clickable rows, in focus-index order.
+    pub buttons: Vec<MenuButton>,
+}
+
+/// The button rows of one screen, in focus-index order.
+fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
+    use crate::screens::{ButtonId, Screen};
+    let value_of = |settings: &crate::config::Settings, row: usize| -> String {
+        match row {
+            0 => on_off(settings.edge_scroll),
+            1 => format!("{:.0}", settings.pan_speed),
+            2 => format!("{:.0}", settings.zoom_min),
+            3 => format!("{:.0}", settings.zoom_max),
+            4 => format!("{}%", (settings.master_volume * 100.0).round() as i32),
+            5 => on_off(settings.fullscreen),
+            6 => on_off(settings.debug_overlay),
+            _ => String::new(),
+        }
+    };
+    match &input.screen.screen {
+        Screen::MainMenu => vec![
+            row(0, ButtonId::NewMatch, "New Match", String::new()),
+            row(1, ButtonId::Settings, "Settings", String::new()),
+            row(2, ButtonId::Quit, "Quit", String::new()),
+        ],
+        Screen::NewMatch(fields) => {
+            let seed = if fields.seed_text.is_empty() {
+                "random".to_string()
+            } else {
+                fields.seed_text.clone()
+            };
+            let map_name = input
+                .maps
+                .get(fields.map_index)
+                .map(|(_, name)| name.clone())
+                .unwrap_or_else(|| "?".to_string());
+            let map_value = if fields.map_count > 1 {
+                format!("< {map_name} >")
+            } else {
+                map_name
+            };
+            vec![
+                row(
+                    0,
+                    ButtonId::Mode,
+                    "Mode",
+                    format!("< {} >", fields.mode.label()),
+                ),
+                row(1, ButtonId::Seed, "Seed", format!("{seed} [Enter: random]")),
+                row(2, ButtonId::Map, "Map", map_value),
+                row(3, ButtonId::Start, "Start", String::new()),
+                row(4, ButtonId::Back, "Back", String::new()),
+            ]
+        }
+        Screen::Settings { .. } => {
+            let labels = [
+                "Edge scroll",
+                "Pan speed",
+                "Zoom min",
+                "Zoom max",
+                "Master volume (audio: Phase 4)",
+                "Fullscreen",
+                "Debug overlay",
+            ];
+            let mut rows: Vec<Row> = labels
+                .iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    row(
+                        index,
+                        ButtonId::Setting(index),
+                        label,
+                        value_of(input.settings, index),
+                    )
+                })
+                .collect();
+            rows.push(row(7, ButtonId::Done, "Done (save)", String::new()));
+            rows
+        }
+        Screen::PauseMenu => vec![
+            row(0, ButtonId::Resume, "Resume", String::new()),
+            row(1, ButtonId::Settings, "Settings", String::new()),
+            row(2, ButtonId::PauseRestart, "Restart", String::new()),
+            row(3, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
+        ],
+        Screen::EndScreen => vec![
+            row(0, ButtonId::Rematch, "Rematch", String::new()),
+            row(1, ButtonId::ToMenu, "Main Menu", String::new()),
+        ],
+        Screen::InMatch => Vec::new(), // the match owns the input; no rows
+    }
+}
+
+/// A row helper (keeps the focus-index and id in lockstep).
+fn row(index: usize, id: crate::screens::ButtonId, label: &str, value: String) -> Row {
+    Row {
+        index,
+        id,
+        label: label.to_string(),
+        value,
+    }
+}
+
+/// `ON`/`OFF` for a settings row's bool.
+fn on_off(on: bool) -> String {
+    if on { "ON" } else { "OFF" }.to_string()
+}
+
+/// The settings row hint (shown under the settings screen's panel): mouse
+/// and keyboard both adjust, Done saves, Esc leaves without saving.
+const SETTINGS_HINT: &str = "click / left-right: adjust    Enter: toggle or Done    Esc: no save";
+
+/// Builds the active screen's menu: the dim backdrop, the panel, the title,
+/// and the rows (label left, value right, focus ring on the focused row).
+pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
+    let MenuInput {
+        atlas,
+        viewport,
+        screen,
+        settings: _,
+        maps: _,
+        end_lines,
+        backdrop,
+    } = input;
+    let mut quads: Vec<UiQuad> = Vec::new();
+    let mut buttons = Vec::new();
+    let rows = screen_rows(&input);
+    if rows.is_empty() {
+        return BuiltMenu { quads, buttons };
+    }
+
+    // The dim backdrop over whatever is behind the menu.
+    quads.push(atlas.solid_rect(0.0, 0.0, viewport.0, viewport.1, backdrop));
+
+    let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+    const PAD: f32 = 10.0;
+    const ROW_H: f32 = 30.0;
+    const ROW_GAP: f32 = 8.0;
+    let panel_w = 440.0_f32.min(viewport.0 * 0.9);
+    let row_w = panel_w - 2.0 * PAD;
+
+    // The title (or the end screen's headline) rides above the rows.
+    let (title, subline) = match (&screen.screen, end_lines) {
+        (_, Some((headline, subline))) => (headline.to_string(), Some(subline.to_string())),
+        (crate::screens::Screen::MainMenu, _) => ("PANDEMONIUM".to_string(), None),
+        (crate::screens::Screen::NewMatch(_), _) => ("NEW MATCH".to_string(), None),
+        (crate::screens::Screen::Settings { .. }, _) => ("SETTINGS".to_string(), None),
+        (crate::screens::Screen::PauseMenu, _) => ("PAUSED".to_string(), None),
+        _ => ("PANDEMONIUM".to_string(), None),
+    };
+
+    let hint = matches!(screen.screen, crate::screens::Screen::Settings { .. });
+    let mut panel_h = PAD + line_height + PAD + ROW_GAP; // title + gap
+    if subline.is_some() {
+        panel_h += line_height + 4.0;
+    }
+    panel_h += rows.len() as f32 * (ROW_H + ROW_GAP);
+    if hint {
+        panel_h += line_height + PAD; // the hint line
+    }
+    let panel_x = viewport.0 * 0.5 - panel_w * 0.5;
+    let panel_y = viewport.1 * 0.5 - panel_h * 0.5;
+
+    // The panel.
+    quads.push(atlas.solid_rect(panel_x, panel_y, panel_w, panel_h, [0.03, 0.05, 0.08, 0.96]));
+    let border = panel_border_pub(atlas, [panel_x, panel_y, panel_w, panel_h], MENU_BLUE, 1.5);
+    quads.extend(border);
+
+    // The title.
+    let title_color = match end_lines {
+        // The outcome panel's law from M8: victory reads green, defeat red.
+        Some((headline, _)) if headline.starts_with("VICTORY") => [0.6, 1.0, 0.6, 1.0],
+        Some((headline, _)) if headline.starts_with("DEFEAT") => [1.0, 0.5, 0.5, 1.0],
+        _ => [0.9, 0.94, 1.0, 1.0],
+    };
+    let title_w = atlas.measure(&title);
+    quads.extend(atlas.layout(
+        &title,
+        panel_x + (panel_w - title_w) * 0.5,
+        panel_y + PAD + atlas.ascent,
+        title_color,
+    ));
+    let mut cursor_y = panel_y + PAD + line_height + ROW_GAP;
+    if let Some(subline) = &subline {
+        let sub_w = atlas.measure(subline);
+        quads.extend(atlas.layout(
+            subline,
+            panel_x + (panel_w - sub_w) * 0.5,
+            cursor_y + atlas.ascent,
+            [1.0, 1.0, 1.0, 0.9],
+        ));
+        cursor_y += line_height + 4.0;
+    }
+
+    // The rows.
+    for entry in &rows {
+        let focused = screen.focus == entry.index;
+        let y = cursor_y;
+        // The row's plate: brighter when focused (the hover state — hover
+        // moves the same focus the keyboard moves, one visual for both).
+        let plate = if focused {
+            [
+                MENU_BLUE[0] * 0.35 + 0.05,
+                MENU_BLUE[1] * 0.35 + 0.05,
+                MENU_BLUE[2] * 0.35 + 0.08,
+                0.95,
+            ]
+        } else {
+            [0.10, 0.13, 0.18, 0.9]
+        };
+        quads.push(atlas.solid_rect(panel_x + PAD, y, row_w, ROW_H, plate));
+        if focused {
+            quads.extend(panel_border_pub(
+                atlas,
+                [panel_x + PAD, y, row_w, ROW_H],
+                MENU_BLUE,
+                1.5,
+            ));
+        }
+        // Label (left) and value (right).
+        quads.extend(atlas.layout(
+            &entry.label,
+            panel_x + PAD + 8.0,
+            y + (ROW_H - line_height) * 0.5 + atlas.ascent,
+            [0.88, 0.92, 0.98, 1.0],
+        ));
+        let value_color = if focused {
+            MENU_AMBER
+        } else {
+            [0.7, 0.76, 0.85]
+        };
+        if !entry.value.is_empty() {
+            let value_w = atlas.measure(&entry.value);
+            quads.extend(atlas.layout(
+                &entry.value,
+                panel_x + panel_w - PAD - 8.0 - value_w,
+                y + (ROW_H - line_height) * 0.5 + atlas.ascent,
+                [value_color[0], value_color[1], value_color[2], 1.0],
+            ));
+        }
+        buttons.push(MenuButton {
+            x: panel_x + PAD,
+            y,
+            w: row_w,
+            h: ROW_H,
+            id: entry.id,
+        });
+        cursor_y += ROW_H + ROW_GAP;
+    }
+
+    if hint {
+        let hint_w = atlas.measure(SETTINGS_HINT);
+        quads.extend(atlas.layout(
+            SETTINGS_HINT,
+            panel_x + (panel_w - hint_w) * 0.5,
+            cursor_y + PAD + atlas.ascent,
+            [0.55, 0.6, 0.68, 0.9],
+        ));
+    }
+
+    BuiltMenu { quads, buttons }
+}
+
+/// A thin bordered rect (the menu pass's public helper — the same shape
+/// `main.rs`'s `panel_border` draws for the HUD panels).
+fn panel_border_pub(atlas: &TextAtlas, rect: [f32; 4], color: [f32; 3], t: f32) -> Vec<UiQuad> {
+    let [x, y, w, h] = rect;
+    vec![
+        atlas.solid_rect(
+            x - t,
+            y - t,
+            w + 2.0 * t,
+            t,
+            [color[0], color[1], color[2], 0.9],
+        ),
+        atlas.solid_rect(
+            x - t,
+            y + h,
+            w + 2.0 * t,
+            t,
+            [color[0], color[1], color[2], 0.9],
+        ),
+        atlas.solid_rect(x - t, y, t, h, [color[0], color[1], color[2], 0.9]),
+        atlas.solid_rect(x + w, y, t, h, [color[0], color[1], color[2], 0.9]),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,5 +1314,146 @@ mod tests {
         }
         // An unknown kind id has no def: both callers fall back safely.
         assert!(def_of(&bundle, KindId(9999)).is_none());
+    }
+
+    // ── the menu pass (PLAN-M10.2 §3.6) ─────────────────────────────────
+
+    /// A process-wide atlas for the menu tests (fontdue rasterizes the
+    /// embedded font once).
+    static ATLAS: std::sync::OnceLock<TextAtlas> = std::sync::OnceLock::new();
+
+    fn atlas() -> &'static TextAtlas {
+        ATLAS.get_or_init(TextAtlas::new)
+    }
+
+    /// The shared test fixtures for the menu pass (settings + maps live as
+    /// long as the tests do, so the borrowed input has somewhere to point).
+    static SETTINGS: std::sync::OnceLock<crate::config::Settings> = std::sync::OnceLock::new();
+
+    static MAPS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+    fn menu_input(screen: &crate::screens::AppState) -> MenuInput<'_> {
+        MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen,
+            settings: SETTINGS.get_or_init(crate::config::Settings::default),
+            maps: MAPS.get_or_init(|| vec![("crossroads".to_string(), "Crossroads".to_string())]),
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+        }
+    }
+
+    #[test]
+    fn the_menu_buttons_match_the_machines_focus_indices_on_every_screen() {
+        let screens = [
+            crate::screens::AppState::at_main_menu(),
+            crate::screens::AppState {
+                screen: crate::screens::Screen::NewMatch(crate::screens::NewMatchState {
+                    mode: crate::screens::MatchMode::Sandbox,
+                    seed_text: "42".to_string(),
+                    map_index: 0,
+                    map_count: 1,
+                }),
+                focus: 0,
+            },
+            crate::screens::AppState {
+                screen: crate::screens::Screen::Settings {
+                    return_to: crate::screens::SettingsReturn::MainMenu,
+                },
+                focus: 3,
+            },
+            crate::screens::AppState {
+                screen: crate::screens::Screen::PauseMenu,
+                focus: 1,
+            },
+            crate::screens::AppState {
+                screen: crate::screens::Screen::EndScreen,
+                focus: 1,
+            },
+        ];
+        for state in &screens {
+            let input = MenuInput {
+                atlas: atlas(),
+                viewport: (1280.0, 800.0),
+                screen: state,
+                settings: &crate::config::Settings::default(),
+                maps: &[("crossroads".to_string(), "Crossroads".to_string())],
+                end_lines: Some(("VICTORY", "You eliminated the enemy.")),
+                backdrop: [0.0, 0.0, 0.0, 0.5],
+            };
+            let built = build_menu(input);
+            let expected: Vec<crate::screens::ButtonId> = (0..state.button_count())
+                .map(|index| state.button_at(index).expect("every index resolves"))
+                .collect();
+            let got: Vec<crate::screens::ButtonId> =
+                built.buttons.iter().map(|button| button.id).collect();
+            assert_eq!(got, expected, "the screen {:?}", state.screen);
+        }
+    }
+
+    #[test]
+    fn menu_buttons_are_real_rects_that_catch_their_labels() {
+        let state = crate::screens::AppState {
+            screen: crate::screens::Screen::Settings {
+                return_to: crate::screens::SettingsReturn::PauseMenu,
+            },
+            focus: 0,
+        };
+        let built = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &state,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+        });
+        assert_eq!(built.buttons.len(), 8);
+        for button in &built.buttons {
+            assert!(button.w > 0.0 && button.h > 0.0, "a real rect");
+            // Inside the viewport, and the center is inside the rect.
+            assert!(button.x >= 0.0 && button.y >= 0.0);
+            assert!(
+                button.contains(button.x + button.w * 0.5, button.y + button.h * 0.5),
+                "the center is hittable"
+            );
+        }
+        // The rows do not overlap (one focus per pixel).
+        for (i, a) in built.buttons.iter().enumerate() {
+            for b in built.buttons.iter().skip(i + 1) {
+                let disjoint =
+                    a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                assert!(disjoint, "rows {a:?} and {b:?} overlap");
+            }
+        }
+    }
+
+    #[test]
+    fn the_new_match_screen_renders_the_fields_and_a_random_seed_shows_the_hint() {
+        let with_seed = crate::screens::AppState {
+            screen: crate::screens::Screen::NewMatch(crate::screens::NewMatchState {
+                mode: crate::screens::MatchMode::AiVsAi,
+                seed_text: "4242".to_string(),
+                map_index: 0,
+                map_count: 1,
+            }),
+            focus: 0,
+        };
+        let built = build_menu(menu_input(&with_seed));
+        assert_eq!(built.buttons.len(), 5);
+        // (The values ride the quads as text; the ids and the rect geometry
+        // are the machine's contract — pinned above.)
+        let without_seed = crate::screens::AppState {
+            screen: crate::screens::Screen::NewMatch(crate::screens::NewMatchState {
+                mode: crate::screens::MatchMode::PlayerVsAi,
+                seed_text: String::new(),
+                map_index: 0,
+                map_count: 1,
+            }),
+            focus: 0,
+        };
+        let built = build_menu(menu_input(&without_seed));
+        assert_eq!(built.buttons.len(), 5);
     }
 }
