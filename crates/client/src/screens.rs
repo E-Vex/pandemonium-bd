@@ -17,6 +17,8 @@
 //! hover sets focus, click activates, arrows + Enter work alone (§3.6's
 //! "keyboard AND mouse navigable" exit bar).
 
+use pandemonium_sim_api::{ControllerKind, MatchSetup, PlayerId, PlayerSetup};
+
 /// The match modes the New Match screen offers (PLAN §3.3): how the two
 /// match slots are driven.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +51,44 @@ impl MatchMode {
     /// "player" does not own).
     pub fn human_orders(self) -> bool {
         !matches!(self, Self::AiVsAi)
+    }
+
+    /// The match setup for this mode (A-112): both slots are always present
+    /// — the sim's match rules and the spawn/population paths assume a
+    /// two-player setup, so "no opponent" means a controller-less P2 whose
+    /// starting force stands idle, never a missing player.
+    pub fn match_setup(self, seed: u64) -> MatchSetup {
+        let ai = |slot_is_ai: bool| {
+            if slot_is_ai {
+                ControllerKind::Ai
+            } else {
+                ControllerKind::Human
+            }
+        };
+        MatchSetup {
+            seed,
+            players: vec![
+                PlayerSetup {
+                    player: PlayerId(0),
+                    controller: ai(matches!(self, Self::AiVsAi)),
+                },
+                PlayerSetup {
+                    player: PlayerId(1),
+                    controller: ai(!matches!(self, Self::Sandbox)),
+                },
+            ],
+        }
+    }
+
+    /// Which slots the wiring layer attaches a scripted Alpha controller
+    /// to (A-112): the opponent in Player vs AI, both players in spectate,
+    /// nobody in Sandbox (P2's force idles).
+    pub fn ai_slots(self) -> Vec<PlayerId> {
+        match self {
+            Self::PlayerVsAi => vec![PlayerId(1)],
+            Self::AiVsAi => vec![PlayerId(0), PlayerId(1)],
+            Self::Sandbox => Vec::new(),
+        }
     }
 
     /// Cycles to the next/previous mode (wraps — A-110).
@@ -1018,5 +1058,39 @@ mod tests {
         assert!(MatchMode::PlayerVsAi.label().is_ascii());
         assert!(MatchMode::AiVsAi.label().is_ascii());
         assert!(MatchMode::Sandbox.label().is_ascii());
+    }
+
+    // ---- mode -> setup/controller mapping (A-112) -------------------------
+
+    #[test]
+    fn player_vs_ai_is_todays_wiring_one_human_one_ai() {
+        let setup = MatchMode::PlayerVsAi.match_setup(42);
+        assert_eq!(setup.seed, 42);
+        assert_eq!(setup.players.len(), 2);
+        assert_eq!(setup.players[0].player, PlayerId(0));
+        assert_eq!(setup.players[0].controller, ControllerKind::Human);
+        assert_eq!(setup.players[1].player, PlayerId(1));
+        assert_eq!(setup.players[1].controller, ControllerKind::Ai);
+        assert_eq!(MatchMode::PlayerVsAi.ai_slots(), vec![PlayerId(1)]);
+    }
+
+    #[test]
+    fn spectate_drives_both_slots_and_yields_them_to_the_ai() {
+        let setup = MatchMode::AiVsAi.match_setup(7);
+        assert_eq!(setup.players[0].controller, ControllerKind::Ai);
+        assert_eq!(setup.players[1].controller, ControllerKind::Ai);
+        assert_eq!(MatchMode::AiVsAi.ai_slots(), vec![PlayerId(0), PlayerId(1)]);
+    }
+
+    #[test]
+    fn sandbox_keeps_both_players_but_attaches_no_controller() {
+        // P2 stays in the setup (the defeat rule, spawns, and population all
+        // assume two players — a missing P2 is not a legal setup, A-112);
+        // the controller vec is empty so its starting force idles.
+        let setup = MatchMode::Sandbox.match_setup(9);
+        assert_eq!(setup.players.len(), 2);
+        assert_eq!(setup.players[0].controller, ControllerKind::Human);
+        assert_eq!(setup.players[1].controller, ControllerKind::Human);
+        assert_eq!(MatchMode::Sandbox.ai_slots(), Vec::<PlayerId>::new());
     }
 }
