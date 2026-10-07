@@ -355,6 +355,15 @@ fn cube_vertices() -> Vec<CubeVertex> {
     vertices
 }
 
+/// The team palette (PLAN-M10.2 §2.2, A-102): P0 blue, P1 orange — the
+/// colorblind-safe pair the owner picked — and gold for the neutral slot.
+/// The mapping is presentation-only: content files and the content hash
+/// never move. The minimap dot table mirrors these (render.rs keeps both
+/// in one place).
+pub const TEAM_P0: [f32; 3] = [0.22, 0.45, 0.92];
+pub const TEAM_P1: [f32; 3] = [0.95, 0.55, 0.15];
+pub const TEAM_NEUTRAL: [f32; 3] = [0.78, 0.66, 0.28];
+
 /// Team colors for the placeholder boxes (player slots 0 and 1, neutral).
 /// M9 (plan §11.5, visual feedback): a flashing entity — one hit in the
 /// last few presented frames — is pushed toward a hot white so a landed
@@ -362,9 +371,9 @@ fn cube_vertices() -> Vec<CubeVertex> {
 /// when both apply (the player's own click feedback takes precedence).
 fn team_color(owner: PlayerId, selected: bool, flashing: bool) -> [f32; 3] {
     let base = match owner {
-        PlayerId(0) => [0.22, 0.45, 0.92],
-        PlayerId(1) => [0.90, 0.30, 0.24],
-        _ => [0.78, 0.66, 0.28], // Neutral (ore nodes).
+        PlayerId(0) => TEAM_P0,
+        PlayerId(1) => TEAM_P1,
+        _ => TEAM_NEUTRAL, // Neutral (ore nodes).
     };
     if selected {
         [base[0] + 0.35, base[1] + 0.35, base[2] + 0.35]
@@ -1496,6 +1505,7 @@ impl WgpuRenderer {
             scratch[offset + 3] = 255;
         }
         // Entity dots: one tile dot per entity, brighter than any terrain.
+        // The dot colors mirror render::TEAM_* (A-102's blue/orange pair).
         for entity in entities {
             let tx = entity.pos.x.floor();
             let ty = entity.pos.z.floor();
@@ -1503,9 +1513,9 @@ impl WgpuRenderer {
                 continue;
             }
             let dot = match entity.owner {
-                pandemonium_sim_api::PlayerId(0) => [90.0, 150.0, 255.0],
-                pandemonium_sim_api::PlayerId(1) => [255.0, 95.0, 80.0],
-                _ => [235.0, 190.0, 70.0],
+                pandemonium_sim_api::PlayerId(0) => [70.0, 130.0, 255.0],
+                pandemonium_sim_api::PlayerId(1) => [255.0, 150.0, 40.0],
+                _ => [250.0, 190.0, 60.0],
             };
             let offset = ((ty as u32 * w + tx as u32) as usize) * 4;
             scratch[offset] = dot[0] as u8;
@@ -1688,6 +1698,42 @@ fn build_shadows(
 
 /// The selection ring color (own-team green — Generals convention).
 const RING_COLOR: [f32; 4] = [0.35, 1.0, 0.45, 0.85];
+
+/// The team ring's alpha — strong enough to read the owner at a glance,
+/// quieter than the bright green selection ring that draws over it.
+const TEAM_RING_ALPHA: f32 = 0.5;
+
+/// Builds the team-color ground ring stream (PLAN-M10.2 §2.2): one ring
+/// under every *unit* silhouette, in the owner's team color — the
+/// at-a-glance owner read that survives zoom-out. Structures identify by
+/// their band parts instead; ore nodes are neutral and get none.
+fn build_team_rings(
+    snapshot: &pandemonium_engine::RenderSnapshot,
+    kind_specs: &[KindShape],
+    capacity: usize,
+) -> Vec<DecalInstance> {
+    let mut decals = Vec::with_capacity(snapshot.entities.len());
+    for entity in &snapshot.entities {
+        if decals.len() >= capacity {
+            break;
+        }
+        let shape = kind_specs
+            .get(entity.kind.0 as usize)
+            .cloned()
+            .unwrap_or_else(fallback_shape);
+        if !shape.unit {
+            continue;
+        }
+        let team = team_color(entity.owner, false, false);
+        let radius = shape.radius + 0.04;
+        decals.push(DecalInstance {
+            position: [entity.pos.x, DECAL_LIFT * 1.5, entity.pos.z],
+            scale: [radius * 2.0, radius * 2.0],
+            color: [team[0], team[1], team[2], TEAM_RING_ALPHA],
+        });
+    }
+    decals
+}
 
 /// Builds the selection ring stream: one ground ellipse around every
 /// selected entity, sized to its silhouette.
@@ -1913,6 +1959,15 @@ impl Renderer for WgpuRenderer {
             } else {
                 0
             };
+            // Team rings land first, selection rings after them, so a
+            // selected unit reads both: owner color beneath, green on top.
+            let team_rings = build_team_rings(
+                frame.snapshot,
+                &self.kind_specs,
+                decal_capacity - decals.len(),
+            );
+            let team_ring_count = team_rings.len() as u32;
+            decals.extend(team_rings);
             let rings = build_rings(
                 frame.snapshot,
                 frame.selection,
@@ -1941,11 +1996,12 @@ impl Renderer for WgpuRenderer {
                     pass.set_vertex_buffer(0, self.quad_vertex_buf.slice(..));
                     pass.draw(0..self.quad_vertex_count, 0..(shadow_count + ghost_count));
                 }
-                if ring_count > 0 {
+                if team_ring_count + ring_count > 0 {
                     pass.set_vertex_buffer(0, self.ring_vertex_buf.slice(..));
                     pass.draw(
                         0..self.ring_vertex_count,
-                        (shadow_count + ghost_count)..(shadow_count + ghost_count + ring_count),
+                        (shadow_count + ghost_count)
+                            ..(shadow_count + ghost_count + team_ring_count + ring_count),
                     );
                 }
             }
@@ -2325,6 +2381,62 @@ mod decal_tests {
         assert!(rings[0].position[1] > DECAL_LIFT);
         let empty = build_rings(&snapshot, &[], &[], 64);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn team_p1_reads_orange_and_p0_blue() {
+        // A-102's colorblind-safe pair: P1 shifted off content-red onto
+        // orange, P0 keeping the content blue. Presentation-only mapping.
+        assert_eq!(team_color(PlayerId(0), false, false), TEAM_P0);
+        assert_eq!(team_color(PlayerId(1), false, false), TEAM_P1);
+        assert_eq!(team_color(PlayerId::NEUTRAL, false, false), TEAM_NEUTRAL);
+        // Blue and orange stay far apart in the red channel (the channel a
+        // deuteranope still reads reliably).
+        let spread = TEAM_P1[0] - TEAM_P0[0];
+        assert!(spread > 0.5, "the two team colors separate on red");
+        // Selection brightens but never flips teams.
+        assert!(team_color(PlayerId(1), true, false)[0] > TEAM_P1[0]);
+    }
+
+    #[test]
+    fn team_rings_land_under_units_in_team_colors() {
+        // A P0 worker and a P1 worker side by side: every unit rings in its
+        // owner's team color.
+        let snapshot = pandemonium_engine::RenderSnapshot {
+            tick: 0,
+            entities: vec![
+                RenderEntity {
+                    id: EntityId(1),
+                    owner: PlayerId(0),
+                    kind: KindId(0),
+                    pos: Vec3::new(5.0, 0.0, 0.0),
+                    facing: Vec3::ZERO,
+                    hp_fraction_milli: 1000,
+                    move_state: MoveState::Idle,
+                },
+                RenderEntity {
+                    id: EntityId(2),
+                    owner: PlayerId(1),
+                    kind: KindId(0),
+                    pos: Vec3::new(9.0, 0.0, 0.0),
+                    facing: Vec3::ZERO,
+                    hp_fraction_milli: 1000,
+                    move_state: MoveState::Idle,
+                },
+            ],
+        };
+        let worker = crate::silhouette::named("worker").expect("authored");
+        let rings = build_team_rings(&snapshot, &[worker.clone(), worker], 64);
+        assert_eq!(rings.len(), 2);
+        assert_eq!(&rings[0].color[..3], &TEAM_P0[..]);
+        assert_eq!(&rings[1].color[..3], &TEAM_P1[..]);
+        assert_eq!(rings[0].color[3], TEAM_RING_ALPHA);
+        // A structure silhouette never rings (it has the band instead).
+        let cc = crate::silhouette::named("command_center").expect("authored");
+        assert!(
+            build_team_rings(&snapshot_with(&[(3, 1)]), &[cc], 64).is_empty(),
+            "a command center gets no unit ring"
+        );
     }
 
     #[test]
