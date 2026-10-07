@@ -167,7 +167,7 @@ tester.
 | Tester | Date | OS | Build commit | Loop completed (unaided?) | Spectator verdict | Probes (placement / audio / feel) | Incidents (seed + tick + dump filenames) |
 |---|---|---|---|---|---|---|---|
 | owner (playtest-1) | 2026-10 (post-M10.1) | desktop, real display | bdf1266 | **no** — controls unusable (finding #1, detail below) | not reached | feel: the four findings below | none filed (findings went to `docs/PLAN-M10.2.md` instead) |
-| | | | | | | | |
+| owner (re-test) | 2026-10 (post-M10.2 Phase 1) | desktop, real display | d84203e | **pass, with notes** — the loop is playable with the new controls card; the notes arrive after the Phase 2 delivery (A-101: the owner re-tests on their machine and reports any issue with its exact location; a reported issue becomes a finding row here) | not reached | feel: pending specifics | none filed yet |
 | | | | | | | | |
 | | | | | | | | |
 | | | | | | | | |
@@ -227,3 +227,16 @@ right-button path as a state machine and removes the dead branch.
 The re-test for this row: after M10.2 Phase 1, the owner replays the loop
 with the updated controls card (section 2) — the row above is then updated
 or a second row is added for the re-test pass.
+
+### Phase 2 delivery note (visual legibility — the re-test's second target)
+
+This pass (branch `m10.2-phase2`) builds the legibility half of finding #2's
+fix: distinct multi-part silhouettes per kind, blue/orange team bands and
+rings, a bigger selected-entity health bar, hover name tooltips, a
+production-queue summary in the info panel, distinct minimap markers
+(buildings visibly larger; ore a diamond), and calmer ground with darker
+rock. The re-test for the row above now also asks: **can you identify the
+command center, a worker, and a tank on sight, without a legend? Can you
+tell the sides apart at a glance? Can you read the minimap and the health
+state?** Report anything that does not read — a failed read is a finding,
+not a wave-through.

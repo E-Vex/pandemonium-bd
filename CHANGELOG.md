@@ -7,6 +7,61 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [M10.2 Phase 2] — playtest-1 findings: visual legibility
+
+The second of the owner's four playtest-1 findings, delivered as its own
+patch series on branch `m10.2-phase2` (Phase 1's re-test verdict came back
+"pass, with notes" — A-101 — so this pass builds on it; the notes arrive
+post-delivery by the owner's own account). Scope: **Phase 2 (visual
+legibility) only** — Phases 3-4 stay gated on the owner's re-test. The
+plan's exit bar: a stranger can identify the command center, a worker, and
+a tank in a screenshot without a legend. Presentation/input only
+(`crates/client`, `crates/engine`); zero golden movement (demo
+`0xb6fff6659cfb7709`, flagship `0x6e9a18bd7c5f699f`, content
+`0x9bc18c521107b262` all bit-identical); 465 dev / 460 release tests green.
+
+- **client (PLAN §2.1, silhouettes)**: the single-tinted-box shapes are
+  replaced by distinct multi-part silhouettes (`silhouette.rs`, pure, 10
+  tests) — worker: round body + visible steel tool; rifleman: capsule body
+  + thin rifle; raider: low buggy (chassis, wedge nose, cabin, roll bar);
+  guardian: hull + dark treads + turret + steel barrel; command center:
+  tall slab + corner tower capped in the team band; barracks: wide slab +
+  door + flag pole flying the team color; supply depot: stacked crates;
+  turret: pedestal + cap + raised barrel; ore node: four bright amber
+  crystals. Mapping keyed by the bundle's kind *name* with the
+  capability-shape fallback (Resource → cluster, Attack+Footprint →
+  turret, Footprint → building, Move → unit, else plain box) — no
+  presentation data touches `content/` (DEBT-016 logs the footprint
+  coupling).
+- **client (PLAN §2.2, team identification)**: P1 shifts off content-red
+  onto orange `[0.95, 0.55, 0.15]` (the owner's colorblind-safe
+  blue/orange pick, A-102 — a client-side mapping, content hash unmoved);
+  every unit gets a team-color ground ring; every structure carries a
+  team-band part (CC tower cap, barracks flag, depot/turret trim); the
+  minimap dots re-tint to the same pair.
+- **client (PLAN §2.3, selection & info)**: the selected entity draws a
+  larger health bar (64×7 px vs 36×4) that shows even at full health; a
+  hover tooltip near the cursor names any visible entity with an owner
+  tag (yours/enemy/neutral), suppressed over the bottom bar; the
+  single-selection info panel gains a production-queue summary (head item
+  + percent + waiting count; `queue: idle` otherwise) while the queue
+  strip keeps its cancel buttons.
+- **client (PLAN §2.4, minimap)**: markers are now distinct per role —
+  units one tile, buildings a solid 2×2 block (visibly larger), ore nodes
+  a 3×3 amber diamond (color AND shape AND size).
+- **engine (PLAN §2.5, ground contrast)**: terrain ground drops its green
+  dominance (channel spread under 0.13) so entities pop; rock darkens
+  from `[0.41, 0.38, 0.35]` to `[0.30, 0.27, 0.25]` so walls read as
+  obstacles; the minimap's baked base inherits the calmer palette.
+- **tests (PLAN §2.6)**: 25 new tests across `silhouette.rs` (unique mesh
+  per kind, per-kind part/vertex counts, above-ground + inside-radius
+  invariants, tone/team separability, fallback paths), `render.rs`
+  (multi-part instance building, facing rotation at yaw 0/90°, ore amber
+  team-independence, team rings, minimap markers), `feedback.rs` (the
+  bigger selected bar), `orders.rs` (hover picks), and `ui.rs` (owner
+  tags, tooltip placement, queue summary, the shared display-name
+  lookup).
+
 ## [M10.2] — playtest-1 findings, Phase 1: the Generals ZH controls
 
 The project owner's first human playtest of the windowed client (post-M10.1)
