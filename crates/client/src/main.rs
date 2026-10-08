@@ -1883,10 +1883,11 @@ impl App {
         };
         println!(
             "pandemonium client — windowed smoke: {} frames presented, tick {}, state hash {:#018x}, \
-             {} commands submitted, selection {}, {}, at the {}",
+             seed {}, {} commands submitted, selection {}, {}, at the {}",
             self.frames_presented,
             host.tick(),
             host.state_hash(),
+            self.setup.seed,
             self.commands_submitted,
             self.selection.len(),
             outcome,
@@ -2053,10 +2054,21 @@ impl App {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
         // PLAN-M10.2 §3.1: the match resolved -> the state machine promotes
-        // InMatch to the end screen (the panel's buttons own the choice now).
+        // InMatch to the end screen (the panel's buttons own the choice
+        // now). The live line is the long-run evidence the M9 windowed
+        // pass printed only at exit.
         if self.host.as_ref().is_some_and(|h| h.is_finished())
             && matches!(self.screen.screen, Screen::InMatch)
         {
+            if let Some(outcome) = self.host.as_ref().and_then(|h| h.outcome()) {
+                let winner = match outcome.winner {
+                    PlayerId(id) => format!("player {id}"),
+                };
+                println!(
+                    "pandemonium client — match ended, {winner} wins (tick {}, seed {})",
+                    outcome.ended_tick, self.setup.seed
+                );
+            }
             self.screen = self.screen.promote_to_end();
         }
         // PLAN-M10.2 §3.2: at the menu there is no match to advance — the
