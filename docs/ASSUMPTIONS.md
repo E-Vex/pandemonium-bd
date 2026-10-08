@@ -1094,3 +1094,15 @@ confirms or rejects it.
   evidence is the wiring, not the loudness. A Phase 3 settings file
   (seven keys, no `muted`) parses cleanly with mute off: the eighth key
   is purely additive.
+
+- **A-126 (PLAN-M10.2 §5, M10.2 Phase 5).** The owner's Phase 4
+  real-hardware audio re-test (2026-10-09): **pass, clean** — the nine
+  cues fire at their moments and sound distinct, master volume changes
+  loudness live, mute silences everything, both survive Done + relaunch,
+  and a big fight reads as a heartbeat rather than noise; no incidents
+  were filed. Registered on the owner's word (the machine pass proved
+  wiring and counting only — it cannot hear), it is the go for the
+  M10.2 closeout and the A14 scheduling: the five first-time tester
+  slots now live in `docs/PLAYTEST.md` §7, and the audio probe there
+  stays armed as a regression guard for the A14 sessions rather than an
+  open question.
