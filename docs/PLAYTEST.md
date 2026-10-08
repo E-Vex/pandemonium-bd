@@ -45,7 +45,7 @@ spectate / Sandbox — no opponent, for testing), the seed, and the map, then
 **Start** drops you into the match. Every screen works by keyboard alone
 (arrows + Enter, Esc backs out) and by mouse alone (hover highlights, click
 activates). **Settings** adjusts edge scroll, pan speed, camera zoom limits,
-master volume (audible in Phase 4), fullscreen, and the debug-overlay
+master volume and mute, fullscreen, and the debug-overlay
 default; Done saves to the user config directory and the next run remembers
 (A-115). In a match, Esc's final rung opens the **pause menu**
 (Resume / Settings / Restart / Quit to Menu).
@@ -112,9 +112,11 @@ by keyboard alone (arrows + Enter, Esc backs out) and by mouse alone (hover
 highlights, click activates). The New Match screen picks the **mode**
 (Player vs AI / AI vs AI spectate / Sandbox), the **seed** (random by
 default, typeable, Enter re-rolls) and the **map**. The **settings** screen
-adjusts edge scroll, pan speed, zoom limits, master volume (audible in
-Phase 4), fullscreen, and the debug-overlay default; **Done saves** to the
-config file, **Esc leaves without saving**. In a match, the pause menu
+adjusts edge scroll, pan speed, zoom limits, master volume and mute,
+fullscreen, and the debug-overlay default — the volume row is live and
+audible (the nine synthesized cues; the owner's re-test verified them on
+real hardware), mute silences everything, and both persist; **Done saves**
+to the config file, **Esc leaves without saving**. In a match, the pause menu
 (Esc's last rung) offers Resume / Settings / Restart / Quit to Menu.
 
 **[F8] bug report** — press it at (or right after) the moment anything goes

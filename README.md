@@ -325,7 +325,7 @@ cargo run -p pandemonium-client -- --frames 900
 The main menu starts a match (Player vs AI / AI vs AI spectate / Sandbox),
 remembers the seed and map you pick, and remembers your settings across runs
 (`edge_scroll`, `pan_speed`, `zoom_min`, `zoom_max`, `master_volume`,
-`fullscreen`, `debug_overlay` — a small `key=value` file in your user config
+`muted`, `fullscreen`, `debug_overlay` — a small `key=value` file in your user config
 directory). `--seed N` pre-fills the New Match screen's seed field; without
 it the seed is random (and shown, so you can still report it).
 
