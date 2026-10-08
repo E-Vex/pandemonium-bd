@@ -35,12 +35,24 @@ cargo run --release -p pandemonium-client
 Run **from the repository root** (the clone directory): the client resolves its
 `content/` data relative to the repo, so launching from elsewhere finds no
 content and refuses to start. On a desktop this opens the windowed 3D client
-against the AI opponent; on a machine with no display it prints a finding and
-runs a headless smoke pass instead (that is expected there, not a failure — but
-it is not a playtest either; use a desktop).
+**at the main menu** (M10.2 Phase 3 — the game no longer drops you straight
+into a match); on a machine with no display it prints a finding and runs a
+headless smoke pass instead (that is expected there, not a failure — but it is
+not a playtest either; use a desktop).
 
-**Seeding a match for reproducibility:** the match seed defaults to 7. Any u64
-works:
+From the menu: **New Match** picks the mode (Player vs AI / AI vs AI
+spectate / Sandbox — no opponent, for testing), the seed, and the map, then
+**Start** drops you into the match. Every screen works by keyboard alone
+(arrows + Enter, Esc backs out) and by mouse alone (hover highlights, click
+activates). **Settings** adjusts edge scroll, pan speed, camera zoom limits,
+master volume (audible in Phase 4), fullscreen, and the debug-overlay
+default; Done saves to the user config directory and the next run remembers
+(A-115). In a match, Esc's final rung opens the **pause menu**
+(Resume / Settings / Restart / Quit to Menu).
+
+**Seeding a match for reproducibility:** the seed field is **random by
+default** and always visible on the New Match screen — type digits to set it
+exactly, Enter re-rolls, and `--seed N` pre-fills it:
 
 ```bash
 cargo run --release -p pandemonium-client -- --seed 42

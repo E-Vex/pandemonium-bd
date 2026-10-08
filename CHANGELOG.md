@@ -7,6 +7,84 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [M10.2 Phase 3] — playtest-1 findings: menu and settings
+
+The third of the owner's four playtest-1 findings, delivered as its own
+patch series on branch `m10.2-phase3` (Phase 2's re-test came back a pass —
+the owner's go-ahead for Phase 3 is A-107). Scope: **Phase 3 (menu and
+settings) only** — Phase 4 (audio) stays gated on this phase's re-test. The
+plan's exit bar: the game starts at the menu, a match can be started in each
+mode, settings persist across runs, and tests cover the state machine and
+the config parser (including corrupt files). Presentation/input only
+(`crates/client`, plus two presentation-only `crates/engine` touches: the
+public `DISTANCE_RANGE` and `RtsCamera::clamp_distance_to`); zero golden
+movement (demo `0xb6fff6659cfb7709`, flagship `0x6e9a18bd7c5f699f`, content
+`0x9bc18c521107b262` all bit-identical); 523 dev tests green.
+
+- **client (PLAN §3.1, the state machine)**: `screens.rs` — the pure
+  application state machine `MainMenu -> (Settings | NewMatch) -> InMatch ->
+  (PauseMenu | EndScreen) -> MainMenu` with transitions returning
+  (state, effect) pairs, the effects vocabulary the app layer interprets
+  (StartMatch, RestartMatch, DropMatch, Pause/Unpause, SaveSettings,
+  AdjustSetting, QuitApp), a wrapping focus model shared by keyboard and
+  mouse, and the match modes (Player vs AI / AI vs AI spectate / Sandbox —
+  P2 present but controller-less, A-112). 33 unit tests: every diagram
+  edge, back-navigation, settings return-memory, focus movement, seed
+  editing, the mode/setup/controller mapping.
+- **client (PLAN §3.2/§3.3, the start flow)**: the host construction is
+  deferred — `App` starts at the main menu over the (empty) world and
+  `begin_match` builds the host only when Start is pressed (the A15 drop +
+  reconstruct discipline; determinism unchanged). The New Match screen
+  carries the mode, the seed (random by default from std's OS-entropy
+  `RandomState`, never the sim's RNG — A-111; `--seed N` pre-fills), and
+  the map from the content tree. Spectate silences the human order path at
+  the orders layer (A-113). The render fix the menu-first world exposed:
+  the entity draw now re-binds the camera group when no decals exist.
+- **client (PLAN §3.4, settings)**: `config.rs` — a hand-written
+  `key=value` file (no serde, no new crates; the allow-list is untouched),
+  seven keys (edge_scroll, pan_speed, zoom_min, zoom_max, master_volume
+  [Phase 4 placeholder], fullscreen, debug_overlay), per-key salvage on
+  malformed values (A-108), range clamping, and std-env config-dir
+  resolution with the no-HOME/APPDATA fallback (A-109, persistence
+  silently disabled — never a panic). 14 unit tests including the
+  corrupt-file cases and the round trip. DEBT-014 repaid: the edge-scroll
+  toggle is the settings row (the Phase 1 flag loads from the file and
+  flips live). The engine's `DISTANCE_RANGE` is public and the camera
+  clamps user zoom limits through `clamp_distance_to`.
+- **client (PLAN §3.5, the pause menu)**: Esc's exhausted rung opens the
+  pause menu instead of quitting the application (the earlier rungs stay
+  exactly as Phase 1 re-tested them; the rung test and both control cards
+  carry the change). Resume / Settings / Restart / Quit to Menu, over the
+  paused match; opening force-pauses through the existing `MatchHost`
+  pause and Resume/Escape unpause (A-114); P stays a direct toggle. The
+  end screen promotes from InMatch when the host reports an outcome and
+  offers Rematch / Main Menu (R remains its shortcut).
+- **client (PLAN §3.6, the menu UI)**: `ui::build_menu` renders every
+  screen through the existing fontdue overlay pass — solid panels, rows
+  with the label left and value right, the focused row brightened with the
+  Phase 2 blue/orange accents, hit rects in focus-index order so the
+  machine and the pixel geometry agree by construction. Every screen is
+  keyboard AND mouse navigable; menus own the pointer and the keyboard
+  (stale camera keys clear — a resumed match never pans on a ghost of a
+  held key, A-116); nothing in a menu sends a sim command or touches a
+  replay (a menu-only session records nothing).
+- **evidence lines**: the windowed smoke summary reports the session
+  honestly (matches started vs none live, the screen at exit, the seed);
+  a live "match ended" line prints the resolution once with the seed.
+- **Xvfb + XTEST machine half (DEBT-008 recipe)**: keyboard alone and
+  mouse alone each navigate menu -> New Match -> Start (matches ongoing
+  at tick 216/217); all three modes start and run; the pause menu opens
+  by Esc, resumes, restarts (tick reset), and quits to menu; settings
+  toggle, save on Done, and reload across runs (the config file and the
+  startup source line verified); spectate at seed 7 resolved naturally
+  ("player 0 wins (tick 10446, seed 7)" — matching the tools' headless
+  reference), the end screen took the input, and R rematched (exit at
+  tick 99 of the fresh match).
+- **registers/docs**: A-107..A-118, DEBT-014 repaid, DEBT-015 narrowed to
+  Phase 4 only, DEBT-017 (the one-map terrain-mesh renderer limitation),
+  the PLAYTEST quickstart + controls card, the README quickstart + card,
+  this CHANGELOG, and the AI-Handoff refresh.
+
 ## [M10.2 Phase 2] — playtest-1 findings: visual legibility
 
 The second of the owner's four playtest-1 findings, delivered as its own
