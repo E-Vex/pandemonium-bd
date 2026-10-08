@@ -156,7 +156,7 @@ pub enum Screen {
     MainMenu,
     /// Mode / seed / map / Start.
     NewMatch(NewMatchState),
-    /// The seven settings rows + Done. The *values* live in the app's
+    /// The eight settings rows + Done. The *values* live in the app's
     /// [`crate::config::Settings`]; the machine only navigates.
     Settings {
         /// Which screen Settings was opened from.
@@ -336,7 +336,7 @@ impl AppState {
             (Screen::NewMatch(_), 3) => ButtonId::Start,
             (Screen::NewMatch(_), 4) => ButtonId::Back,
             (Screen::Settings { .. }, index) => {
-                const SETTINGS_ROWS: usize = 7; // the seven keys + Done
+                const SETTINGS_ROWS: usize = 8; // the eight keys + Done
                 if index < SETTINGS_ROWS {
                     ButtonId::Setting(index)
                 } else if index == SETTINGS_ROWS {
@@ -361,7 +361,7 @@ impl AppState {
         match self.screen {
             Screen::MainMenu => 3,
             Screen::NewMatch(_) => 5,
-            Screen::Settings { .. } => 8, // 7 settings rows + Done
+            Screen::Settings { .. } => 9, // 8 settings rows + Done
             Screen::InMatch => 0,
             Screen::PauseMenu => 4,
             Screen::EndScreen => 2,
@@ -761,14 +761,14 @@ mod tests {
         let settings = at(Screen::Settings {
             return_to: SettingsReturn::MainMenu,
         });
-        let (next, effect) = settings.activate_index(7, &ctx()); // Done
+        let (next, effect) = settings.activate_index(8, &ctx()); // Done
         assert_eq!(effect, Effect::SaveSettings);
         assert_eq!(next.screen, Screen::MainMenu);
         // From the pause menu (the awkward edge: settings must remember).
         let settings = at(Screen::Settings {
             return_to: SettingsReturn::PauseMenu,
         });
-        let (next, effect) = settings.activate_index(7, &ctx());
+        let (next, effect) = settings.activate_index(8, &ctx());
         assert_eq!(effect, Effect::SaveSettings);
         assert_eq!(next.screen, Screen::PauseMenu);
     }
@@ -1083,26 +1083,35 @@ mod tests {
         let mut done = at(Screen::Settings {
             return_to: SettingsReturn::MainMenu,
         });
-        done.focus_index(7);
+        done.focus_index(8);
         let (_, effect) = done.on_key(NavKey::Left, &ctx());
         assert_eq!(effect, Effect::None);
     }
 
     #[test]
-    fn the_settings_screen_lists_seven_rows_plus_done() {
+    fn the_settings_screen_lists_eight_rows_plus_done() {
         let settings = at(Screen::Settings {
             return_to: SettingsReturn::MainMenu,
         });
-        assert_eq!(settings.button_count(), 8);
-        for row in 0..7 {
+        assert_eq!(settings.button_count(), 9);
+        for row in 0..8 {
             assert_eq!(
                 settings.button_at(row),
                 Some(ButtonId::Setting(row)),
                 "row {row}"
             );
         }
-        assert_eq!(settings.button_at(7), Some(ButtonId::Done));
-        assert_eq!(settings.button_at(8), None);
+        assert_eq!(settings.button_at(8), Some(ButtonId::Done));
+        assert_eq!(settings.button_at(9), None);
+        // Focus walks the whole ladder (keyboard reaches the new row —
+        // M10.2 Phase 4's mute row is row 5, between volume and
+        // fullscreen).
+        let mut walking = settings.clone();
+        for expected in 0..9 {
+            assert_eq!(walking.focus, expected);
+            walking.focus_next();
+        }
+        assert_eq!(walking.focus, 0, "wraps after Done");
     }
 
     // ---- mode semantics ----------------------------------------------------

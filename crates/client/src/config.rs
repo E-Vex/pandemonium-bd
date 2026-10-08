@@ -16,7 +16,8 @@
 
 use std::path::PathBuf;
 
-/// The persisted settings (PLAN §3.4's six keys — exactly these, no more).
+/// The persisted settings (PLAN §3.4's keys — exactly these, no more:
+/// eight after Phase 4 added `muted`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     /// Whether the screen-edge scroll band is active (DEBT-014's toggle).
@@ -27,9 +28,14 @@ pub struct Settings {
     pub zoom_min: f32,
     /// The camera distance upper clamp (tiles).
     pub zoom_max: f32,
-    /// Master volume, 0.0..=1.0 — stored and shown, audible in Phase 4
-    /// (the `AudioSink` seam is fed but null-backed, DEBT-011).
+    /// Master volume, 0.0..=1.0 — live on the audio sink since Phase 4
+    /// (DEBT-011 repaid; A-115's semantics: changes apply live, Done
+    /// saves, Esc leaves this run's value unsaved).
     pub master_volume: f32,
+    /// Mute — beats the volume (a muted non-zero volume is silent).
+    /// The eighth key, right after `master_volume` (PLAN §4.4's "master
+    /// volume and a mute toggle in settings").
+    pub muted: bool,
     /// Whether the window starts fullscreen.
     pub fullscreen: bool,
     /// Whether the F3 debug overlay is visible at match start.
@@ -53,6 +59,7 @@ impl Default for Settings {
             zoom_min: DEFAULT_ZOOM_MIN,
             zoom_max: DEFAULT_ZOOM_MAX,
             master_volume: 1.0,
+            muted: false,
             fullscreen: false,
             debug_overlay: false,
         }
@@ -63,12 +70,13 @@ impl Default for Settings {
 // (the settings screen consumes this + the save path in its own commit,
 // later in this same phase)
 #[allow(dead_code)]
-pub const SETTING_KEYS: [&str; 7] = [
+pub const SETTING_KEYS: [&str; 8] = [
     "edge_scroll",
     "pan_speed",
     "zoom_min",
     "zoom_max",
     "master_volume",
+    "muted",
     "fullscreen",
     "debug_overlay",
 ];
@@ -84,6 +92,7 @@ impl Settings {
         out.push_str(&format!("zoom_min={}\n", self.zoom_min));
         out.push_str(&format!("zoom_max={}\n", self.zoom_max));
         out.push_str(&format!("master_volume={}\n", self.master_volume));
+        out.push_str(&format!("muted={}\n", self.muted));
         out.push_str(&format!("fullscreen={}\n", self.fullscreen));
         out.push_str(&format!("debug_overlay={}\n", self.debug_overlay));
         out
@@ -138,6 +147,9 @@ impl Settings {
                     if let Some(volume) = parse_f32(value) {
                         settings.master_volume = volume.clamp(0.0, 1.0);
                     }
+                }
+                "muted" => {
+                    settings.muted = parse_bool(value).unwrap_or(settings.muted);
                 }
                 "fullscreen" => {
                     settings.fullscreen = parse_bool(value).unwrap_or(settings.fullscreen);
@@ -198,8 +210,9 @@ pub fn adjust_setting(settings: Settings, row: usize, dir: i32) -> Settings {
         4 => {
             next.master_volume = (next.master_volume + 0.05 * dir as f32).clamp(0.0, 1.0);
         }
-        5 => next.fullscreen = !next.fullscreen,
-        6 => next.debug_overlay = !next.debug_overlay,
+        5 => next.muted = !next.muted,
+        6 => next.fullscreen = !next.fullscreen,
+        7 => next.debug_overlay = !next.debug_overlay,
         _ => {} // the Done row is not a setting
     }
     next
@@ -311,6 +324,7 @@ mod tests {
         assert_eq!(s.zoom_min, 8.0);
         assert_eq!(s.zoom_max, 160.0);
         assert_eq!(s.master_volume, 1.0);
+        assert!(!s.muted);
         assert!(!s.fullscreen);
         assert!(!s.debug_overlay);
     }
@@ -323,6 +337,7 @@ mod tests {
             zoom_min: 12.0,
             zoom_max: 90.0,
             master_volume: 0.35,
+            muted: true,
             fullscreen: true,
             debug_overlay: true,
         };
@@ -347,12 +362,13 @@ mod tests {
         // Per-key salvage (A-108): the garbage lines cost their own keys,
         // the good line survives.
         let text = "edge_scroll=maybe\npan_speed=fast\nzoom_min=[]\n\
-                    master_volume=loud\nfullscreen=perhaps\ndebug_overlay=???\n";
+                    master_volume=loud\nmuted=perhaps\nfullscreen=probably\ndebug_overlay=???\n";
         let s = Settings::parse(text);
         assert!(s.edge_scroll); // malformed -> default (true)
         assert_eq!(s.pan_speed, DEFAULT_PAN_SPEED);
         assert_eq!(s.zoom_min, DEFAULT_ZOOM_MIN);
         assert_eq!(s.master_volume, 1.0);
+        assert!(!s.muted); // malformed -> default (false)
         assert!(!s.fullscreen);
         assert!(!s.debug_overlay);
     }
@@ -466,13 +482,54 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_from_before_the_mute_key_loads_with_mute_off() {
+        // Backward compatibility: a Phase 3 file (seven keys, no `muted`)
+        // parses cleanly — mute defaults off, every other value survives.
+        let s = Settings::parse(
+            "edge_scroll=false\npan_speed=60\nzoom_min=12\nzoom_max=90\n\
+             master_volume=0.35\nfullscreen=true\ndebug_overlay=true\n",
+        );
+        assert_eq!(
+            s,
+            Settings {
+                edge_scroll: false,
+                pan_speed: 60.0,
+                zoom_min: 12.0,
+                zoom_max: 90.0,
+                master_volume: 0.35,
+                muted: false,
+                fullscreen: true,
+                debug_overlay: true,
+            }
+        );
+    }
+
+    #[test]
+    fn muted_parses_the_friendly_spellings_and_round_trips() {
+        assert!(Settings::parse("muted=true\n").muted);
+        assert!(Settings::parse("muted=on\n").muted);
+        assert!(!Settings::parse("muted=false\n").muted);
+        // And it persists (the re-test's relaunch check reads this).
+        let original = Settings {
+            muted: true,
+            ..Settings::default()
+        };
+        assert_eq!(Settings::parse(&original.to_text()), original);
+    }
+
+    #[test]
     fn adjust_steps_every_row_within_its_range() {
         let s = Settings::default();
         // Booleans toggle on any direction.
         assert!(!adjust_setting(s, 0, 1).edge_scroll);
         assert!(!adjust_setting(s, 0, -1).edge_scroll);
-        assert!(adjust_setting(s, 5, -1).fullscreen);
-        assert!(adjust_setting(s, 6, 1).debug_overlay);
+        assert!(adjust_setting(s, 5, 1).muted, "row 5 is the mute toggle");
+        assert!(
+            adjust_setting(s, 5, -1).muted,
+            "booleans toggle on any direction"
+        );
+        assert!(adjust_setting(s, 6, -1).fullscreen);
+        assert!(adjust_setting(s, 7, 1).debug_overlay);
         // Numbers step and clamp.
         assert_eq!(adjust_setting(s, 1, 1).pan_speed, 36.0);
         assert_eq!(adjust_setting(s, 1, -1).pan_speed, 32.0);
@@ -498,15 +555,21 @@ mod tests {
             60.0,
             "max stops at min"
         );
-        // Volume steps by 5% and clamps at both ends.
+        // Volume steps by 5% and clamps at both ends; muting does not
+        // touch it (mute beats volume, it does not zero it).
         assert_eq!(adjust_setting(s, 4, -1).master_volume, 0.95);
         let quiet = Settings {
             master_volume: 0.02,
             ..Settings::default()
         };
         assert_eq!(adjust_setting(quiet, 4, -1).master_volume, 0.0);
-        // The Done row (7) adjusts nothing.
-        assert_eq!(adjust_setting(s, 7, 1), s);
+        assert_eq!(
+            adjust_setting(adjust_setting(s, 5, 1), 4, -1).master_volume,
+            0.95,
+            "the mute row leaves the volume value alone"
+        );
+        // The Done row (8) adjusts nothing.
+        assert_eq!(adjust_setting(s, 8, 1), s);
     }
 
     /// A settings value hand-placed at a boundary for the step tests.

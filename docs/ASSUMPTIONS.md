@@ -1083,3 +1083,14 @@ confirms or rejects it.
   panic); a device that dies without an error callback firing stays
   "active" but silent — inherent to the backend, and honest because
   the evidence line claims the arm, never audible sound.
+
+- **A-125 (PLAN-M10.2 §4.4, M10.2 Phase 4).** Mute beats volume and never
+  zeros it: the mute row flips a flag the sink reads as gain 0 whatever
+  the master volume says, and unmuting restores the loudness the player
+  set (the toggle never writes the volume field — the two rows stay
+  independent). Both rows are live per A-115 (apply immediately, Done
+  persists, Esc leaves this run's values unsaved-but-live), and muting
+  silences output only — the cue counters keep counting, because the
+  evidence is the wiring, not the loudness. A Phase 3 settings file
+  (seven keys, no `muted`) parses cleanly with mute off: the eighth key
+  is purely additive.

@@ -326,6 +326,10 @@ pub struct Sound {
     /// changes apply immediately; Done persists, Esc leaves the run's
     /// value unsaved).
     volume: f32,
+    /// Mute — beats the volume (PLAN §4.4: a muted non-zero volume is
+    /// silent; unmuting restores the volume untouched). The cue
+    /// counters keep counting: muting silences output, not evidence.
+    muted: bool,
     /// The evidence counters, reset per match like the other match-scoped
     /// counters (the `--frames` summary reports the live segment).
     events_fed: usize,
@@ -343,7 +347,9 @@ impl Sound {
     /// line; ANY failure — no device, Xvfb, CI, a probe error — means the
     /// null arm, silently: no panic, no stderr spam, one honest line.
     /// Never blocks the render loop (the probe runs before it exists).
-    pub fn new(volume: f32) -> Self {
+    /// The volume and mute come from the loaded settings (Phase 4 made
+    /// them live rows).
+    pub fn new(volume: f32, muted: bool) -> Self {
         match probe_device() {
             Some((sink, degraded)) => {
                 println!(
@@ -359,6 +365,7 @@ impl Sound {
                     })),
                     limiter: RateLimiter::new(CUE_COOLDOWN),
                     volume: volume.clamp(0.0, 1.0),
+                    muted,
                     events_fed: 0,
                     cues_fed: 0,
                     cues_voiced: 0,
@@ -366,14 +373,14 @@ impl Sound {
                     client_cues: 0,
                 }
             }
-            None => Self::without_device(volume),
+            None => Self::without_device(volume, muted),
         }
     }
 
     /// The constructor's other arm, built directly — the no-device
     /// fallback (tests pin this path; the machine pass exercises it under
     /// Xvfb and CI, where the probe finds nothing).
-    pub fn without_device(volume: f32) -> Self {
+    pub fn without_device(volume: f32, muted: bool) -> Self {
         println!(
             "pandemonium client — audio: no device — null fallback (cues counted, never voiced)"
         );
@@ -381,6 +388,7 @@ impl Sound {
             arm: Arm::Null(NullAudioSink::new()),
             limiter: RateLimiter::new(CUE_COOLDOWN),
             volume: volume.clamp(0.0, 1.0),
+            muted,
             events_fed: 0,
             cues_fed: 0,
             cues_voiced: 0,
@@ -391,13 +399,27 @@ impl Sound {
 
     /// The live master volume (A-115): every later voice uses it. Saved by
     /// Done, left unsaved-but-live by Esc — the settings screen's own law.
+    /// Muting never touches the stored volume (mute beats it, it does not
+    /// zero it — unmuting restores the loudness the player set).
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
     }
 
-    /// The effective output gain: the master volume as played.
+    /// The live mute toggle (PLAN §4.4): beats the volume — the effective
+    /// gain is zero while muted, whatever the volume says. Counters keep
+    /// counting (the evidence is the wiring, not the loudness).
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+    }
+
+    /// The effective output gain: zero when muted (mute beats volume),
+    /// else the master volume.
     pub fn gain(&self) -> f32 {
-        self.volume
+        if self.muted {
+            0.0
+        } else {
+            self.volume
+        }
     }
 
     /// Whether the device arm is live (the evidence line's
@@ -442,9 +464,10 @@ impl Sound {
         } else {
             "null fallback (no device)".to_string()
         };
+        let mute = if self.muted { " [muted]" } else { "" };
         let client_side = self.client_cues();
         format!(
-            "{arm}, cues fed/voiced/dropped {}/{}/{} ({client_side} client-side)",
+            "{arm}{mute}, cues fed/voiced/dropped {}/{}/{} ({client_side} client-side)",
             self.cues_fed, self.cues_voiced, self.cues_dropped
         )
     }
@@ -676,7 +699,7 @@ mod tests {
         // counts events and cues, is not "active", and never panics. The
         // machine's own probe result is not a test input — this arm is
         // built explicitly (the CI/Xvfb path's result).
-        let mut sink = Sound::without_device(1.0);
+        let mut sink = Sound::without_device(1.0, false);
         assert!(!sink.is_active(), "no device means the null arm");
         assert_eq!(sink.events_fed(), 0);
         sink.on_events(&[Event::Died {
@@ -688,7 +711,7 @@ mod tests {
         // The real constructor must not panic either, whatever this
         // machine's probe finds (its arm is the machine's fact, printed
         // honestly at startup, never asserted here).
-        let _ = Sound::new(1.0);
+        let _ = Sound::new(1.0, false);
     }
 
     #[test]
@@ -696,7 +719,7 @@ mod tests {
         // The wiring oracle: on the null arm, the engine's NullAudioSink
         // counts what reached the direct path (post-limiter — the limiter
         // sits between the cue source and the sink by design).
-        let mut sink = Sound::without_device(1.0);
+        let mut sink = Sound::without_device(1.0, false);
         assert_eq!(sink.null_client_cues(), 0);
         sink.on_cue(AudioCue::CommandAck);
         assert_eq!(sink.null_client_cues(), 1);
@@ -718,7 +741,7 @@ mod tests {
         // PLAN §4.4: the limiter sits between the cue source and the sink,
         // whichever source — an event storm and a UI click of the same
         // cue kind share that cue's window.
-        let mut sink = Sound::without_device(1.0);
+        let mut sink = Sound::without_device(1.0, false);
         sink.on_cue(AudioCue::AttackLanded);
         assert_eq!(sink.cues_voiced, 1);
         sink.on_events(&[Event::AttackHit {
@@ -733,7 +756,7 @@ mod tests {
 
     #[test]
     fn the_match_reset_clears_counters_and_windows_but_not_the_volume() {
-        let mut sink = Sound::without_device(0.25);
+        let mut sink = Sound::without_device(0.25, false);
         sink.on_cue(AudioCue::UiClick);
         sink.set_volume(0.5);
         sink.reset();
@@ -755,7 +778,7 @@ mod tests {
 
     #[test]
     fn the_volume_is_clamped_into_its_range_and_applied_live() {
-        let mut sink = Sound::without_device(2.0);
+        let mut sink = Sound::without_device(2.0, false);
         assert_eq!(sink.gain(), 1.0, "construction clamps");
         sink.set_volume(-0.5);
         assert_eq!(sink.gain(), 0.0, "and so does every live change");
@@ -764,8 +787,26 @@ mod tests {
     }
 
     #[test]
-    fn the_evidence_line_names_the_arm_and_the_three_fates() {
-        let mut sink = Sound::without_device(1.0);
+    fn mute_beats_volume_and_never_zeros_it() {
+        // PLAN §4.4's precedence: a muted non-zero volume is silent, and
+        // unmuting restores the loudness the player set (the mute toggle
+        // never writes the volume field).
+        let mut sink = Sound::without_device(0.7, true);
+        assert_eq!(sink.gain(), 0.0, "muted construction is silent");
+        sink.set_volume(0.4);
+        assert_eq!(sink.gain(), 0.0, "volume changes while muted stay silent");
+        sink.set_muted(false);
+        assert_eq!(sink.gain(), 0.4, "unmuting restores the set volume");
+        sink.set_muted(true);
+        assert_eq!(sink.gain(), 0.0);
+        // Muting silences output, not evidence: the counters still count.
+        sink.on_cue(AudioCue::UiClick);
+        assert_eq!((sink.cues_fed, sink.cues_voiced), (1, 1));
+    }
+
+    #[test]
+    fn the_evidence_line_names_the_arm_the_mute_and_the_three_fates() {
+        let mut sink = Sound::without_device(1.0, false);
         sink.on_cue(AudioCue::UiClick);
         sink.on_cue(AudioCue::UiClick);
         let line = sink.evidence_line();
@@ -777,6 +818,15 @@ mod tests {
         assert!(
             line.contains("2 client-side"),
             "the wiring count is pre-limiter: {line}"
+        );
+        assert!(
+            !line.contains("muted"),
+            "an unmuted line does not claim mute"
+        );
+        sink.set_muted(true);
+        assert!(
+            sink.evidence_line().contains("[muted]"),
+            "the mute is named"
         );
     }
 }

@@ -709,8 +709,9 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
             2 => format!("{:.0}", settings.zoom_min),
             3 => format!("{:.0}", settings.zoom_max),
             4 => format!("{}%", (settings.master_volume * 100.0).round() as i32),
-            5 => on_off(settings.fullscreen),
-            6 => on_off(settings.debug_overlay),
+            5 => on_off(settings.muted),
+            6 => on_off(settings.fullscreen),
+            7 => on_off(settings.debug_overlay),
             _ => String::new(),
         }
     };
@@ -755,7 +756,8 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
                 "Pan speed",
                 "Zoom min",
                 "Zoom max",
-                "Master volume (audio: Phase 4)",
+                "Master volume",
+                "Mute",
                 "Fullscreen",
                 "Debug overlay",
             ];
@@ -771,7 +773,7 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
                     )
                 })
                 .collect();
-            rows.push(row(7, ButtonId::Done, "Done (save)", String::new()));
+            rows.push(row(8, ButtonId::Done, "Done (save)", String::new()));
             rows
         }
         Screen::PauseMenu => vec![
@@ -1409,7 +1411,7 @@ mod tests {
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
         });
-        assert_eq!(built.buttons.len(), 8);
+        assert_eq!(built.buttons.len(), 9);
         for button in &built.buttons {
             assert!(button.w > 0.0 && button.h > 0.0, "a real rect");
             // Inside the viewport, and the center is inside the rect.

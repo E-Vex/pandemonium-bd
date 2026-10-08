@@ -429,8 +429,9 @@ impl App {
         // ADR-0002), any failure takes the null arm silently, and either
         // way one honest startup line says which (the machine cannot hear:
         // under Xvfb/CI the probe finds nothing and the run exercises the
-        // fallback).
-        let audio = sound::Sound::new(settings.master_volume);
+        // fallback). The settings' volume and mute ride in (Phase 4 made
+        // them live rows).
+        let audio = sound::Sound::new(settings.master_volume, settings.muted);
         Ok(Self {
             tree,
             screen: AppState::at_main_menu(),
@@ -720,10 +721,10 @@ impl App {
     /// has been wired since Phase 1), the zoom limits re-clamp the camera
     /// now, the debug overlay follows (it is also the match-start default),
     /// fullscreen toggles the window, and pan speed is read live from the
-    /// struct already. M10.2 Phase 4: master volume now goes straight to
-    /// the sink (every later voice uses it — DEBT-011's repayment made the
-    /// row real; the volume semantics are A-115's: live now, Done saves,
-    /// Esc leaves this run's value unsaved).
+    /// struct already. M10.2 Phase 4 (DEBT-011 repaid): master volume now
+    /// goes straight to the sink (every later voice uses it) and the new
+    /// mute row beats it — A-115's semantics: live now, Done saves, Esc
+    /// leaves this run's value unsaved.
     fn adjust_setting(&mut self, row: usize, dir: i32) {
         self.settings = config::adjust_setting(self.settings, row, dir);
         match row {
@@ -732,8 +733,9 @@ impl App {
                 .camera
                 .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max),
             4 => self.audio.set_volume(self.settings.master_volume),
+            5 => self.audio.set_muted(self.settings.muted),
             6 => self.debug_overlay = self.settings.debug_overlay,
-            5 => self.apply_fullscreen(),
+            7 => self.apply_fullscreen(),
             _ => {}
         }
     }
@@ -2845,7 +2847,8 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
     // Xvfb/CI; the probe's one honest line prints above), and the counters
     // below are the audio evidence. Whatever arm this machine's probe
     // found, the smoke asserts counting, never audible sound.
-    let mut audio = sound::Sound::new(config::load().master_volume);
+    let smoke_settings = config::load();
+    let mut audio = sound::Sound::new(smoke_settings.master_volume, smoke_settings.muted);
     let mut feedback = FeedbackState::default();
     // M9.1: the smoke also exercises the refusal wiring — one deliberately
     // invalid order (a Move naming a unit that does not exist) must come
@@ -2972,7 +2975,7 @@ mod audio_wiring {
         let mut app = App::new(tree, bundle, Some(7), None).expect("the app constructs");
         // The forced null arm: what the no-device constructor yields, so
         // the oracle counter exists whatever this machine can hear.
-        app.audio = sound::Sound::without_device(1.0);
+        app.audio = sound::Sound::without_device(1.0, false);
         app
     }
 
