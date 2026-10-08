@@ -7,6 +7,66 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [M10.2 Phase 5] — verification and handoff (the closeout)
+
+The final phase of the milestone: prove it, don't extend it. Delivered as
+its own patch series on branch `m10.2-phase5` from `652f6cf` (master's
+Phase 4 closeout). Scope: **Phase 5 only** — the full green gate, the
+Xvfb + XTEST machine pass over the M10.2 paths, the owner's Phase 4
+re-test verdict recorded, the A14 playtest scheduled, and the register/
+doc closeout. A docs-only series (no code moved; the tree is code-
+identical to Phase 4's) — exactly the plan's letter: "verification and
+handoff".
+
+- **the gate**: `cargo fmt --all -- --check` and clippy `-D warnings`
+  clean; **546 dev / 541 release tests green** (the five should-panic
+  invariant tests are debug-only); the three goldens **bit-identical** —
+  demo `0xb6fff6659cfb7709` (seed 7, 300 ticks), flagship
+  `0x6e9a18bd7c5f699f` (seed 7, 7200 ticks AI-vs-AI), content
+  `0x9bc18c521107b262` (map id `0xd38136401ab02ff1`); the replay
+  round-trip (A2) PASS (11 checkpoints); the headless client smoke PASS
+  with its audio evidence line ("null fallback (no device)", cues
+  counted).
+- **the machine pass (Xvfb + XTEST, llvmpipe GL, no audio device — the
+  null arm; the AI-Handoff §9 recipe, harness built locally as the prior
+  phases did)**: five sessions, 29 checks, all green. S1 — a seed-7
+  Player-vs-AI match driven end to end: menu → New Match → Start;
+  drag-box selection of the 5 start entities; one right-click ground
+  order (the summary's human command counter, `commands submitted 1`);
+  a right-drag scroll with the 6 px threshold honored (an 85 % frame
+  pixel diff and **no** extra order); the Esc ladder through
+  clear-selection → pause menu (presented, 99.6 % diff) → Resume; the
+  selection re-held at exit. S2 — a menu-only session whose New Match
+  row was mouse-activated (the focused row's bright plate located from
+  the screenshot; the lesson is now an AI-Handoff §9 gotcha), then
+  Esc-back, Esc-quit. S3/S3b — the settings persistence pair: volume
+  Left to `master_volume=0.95`, mute row activated (`muted=true`),
+  Done saves; the relaunch prints "(loaded the file)" and the audio
+  evidence line reports `[muted]`. S4 — the Esc-discard run: no file
+  written.
+- **the audio evidence lines**: every windowed run states its arm and
+  the cues' fates — the S1 match's line read "null fallback (no
+  device), cues fed/voiced/dropped 24/21/3 (5 client-side)": the
+  machine counts, it never claims sound.
+- **the owner's verdict (A-126, 2026-10-09)**: the Phase 4
+  real-hardware audio re-test — **pass, clean**. The nine cues fire at
+  their moments and sound distinct; volume changes loudness live, mute
+  silences everything, both survive Done + relaunch; a big fight reads
+  as a heartbeat, not noise. No incidents filed. The go for this
+  closeout; DEBT-011 is now fully repaid (backend + ears).
+- **A14 scheduling**: five first-time tester slots T1–T5 in
+  `docs/PLAYTEST.md` §7 (three waves to 2026-10-31, the spectator half
+  explicit, a focus steer per slot that keeps every session unaided);
+  the audio probe stays armed as a regression guard; the declaration
+  flip rule unchanged — five honest rows or a recorded finding.
+- **registers & docs**: A-126 logged; DEBT-011's re-test half closed
+  and DEBT-008 pointed at the A14 sessions; AI-Handoff (board
+  COMPLETE, snapshot, next steps, the menu-targeting gotcha); README
+  (badge "M10.2 complete", the closeout paragraph, `muted` joins the
+  settings key list, the CI count catches up to 546/541); the PLAYTEST
+  controls card speaks in the present tense (volume and mute are real
+  and hardware-verified).
+
 ## [M10.2 Phase 4] — playtest-1 findings: audio
 
 The last of the owner's four playtest-1 findings ("simple sounds that make
