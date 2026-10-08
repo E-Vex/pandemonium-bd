@@ -1025,3 +1025,11 @@ confirms or rejects it.
   limitation). The multi-map note rides with it: the renderer's terrain
   mesh is built from the tree's first map at window creation; a second
   authored map would need a mesh-update path (DEBT-017).
+
+- **A-119 (PLAN-M10.2 §4, M10.2 Phase 4).** The owner's Phase 4 go
+  (2026-10-08): the Phase 3 menus/settings re-test was accepted and the
+  audio pass was directed to proceed on the standing plan, with the backend
+  pre-chosen (rodio, A-100) and its allow-list amendment + ADR due with the
+  work (ADR-0002). DEBT-015's remaining scope ("Phase 4 only") is therefore
+  spent; the A14 declaration stays blocked on the >=5-tester playtest gate,
+  which is the owner's to run.

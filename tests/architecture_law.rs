@@ -132,6 +132,9 @@ fn allowed_external() -> BTreeMap<&'static str, &'static [&'static str]> {
     // math for the presentation layer only, never in the sim's tree.
     m.insert("pandemonium-engine", &["glam", "thiserror"][..]);
     m.insert("pandemonium-content", &["serde", "ron", "thiserror"][..]);
+    // rodio joined the client's allow-list with ADR-0002 (M10.2 Phase 4
+    // audio, the owner's pre-choice A-100): the playback backend behind the
+    // engine's AudioSink seam — client-only, never in the sim's tree.
     m.insert(
         "pandemonium-client",
         &[
@@ -143,6 +146,7 @@ fn allowed_external() -> BTreeMap<&'static str, &'static [&'static str]> {
             "glam",
             "image",
             "pollster",
+            "rodio",
             "thiserror",
             "wgpu",
             "winit",
