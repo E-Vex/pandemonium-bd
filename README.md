@@ -12,7 +12,7 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 [![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
 ![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
-![stage](https://img.shields.io/badge/stage-M10_alpha_declared_(A14_playtest_pending)-9E6A03?labelColor=21262D)
+![stage](https://img.shields.io/badge/stage-M10.2_playtest_fixes_done_(A14_playtest_pending)-9E6A03?labelColor=21262D)
 ![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
 
 <picture>
@@ -169,7 +169,18 @@ points), fog-of-war rendering through the player's own view, a minimap with
 fog, entity dots, a viewport indicator, click-to-move-camera and orders,
 directional lighting, shaded terrain, per-kind silhouettes, blob shadows,
 ground selection rings, and death fades. All of it is client/engine
-presentation: the simulation's golden hashes never moved. The live status
+presentation: the simulation's golden hashes never moved.
+
+M10.2 then worked the playtest's four findings in order — controls (the
+Generals ZH card: right-click orders, right-drag scroll, selection parity,
+the Escape ladder), visual legibility (multi-part silhouettes, team colors,
+tooltips, the minimap), menus/settings (the game starts at a menu; matches
+start in three modes; settings persist), and finally **audio**: nine
+synthesized cues (combat, losses, production, construction, deliveries,
+the match end, plus command acks, selection and UI clicks) through the
+`AudioSink` seam on rodio, rate-limited per cue, with a silent null
+fallback where no device exists and live volume + mute in settings. The
+same rule as ever: presentation only, goldens untouched. The live status
 board is [`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated
 as a bug.
 
@@ -205,6 +216,8 @@ Built and verified through M9:
   (perspective orbit, ground picking, box select), terrain mesh, `Renderer`
   trait + `NullRenderer`. **M9**: the `AudioSink` seam — a pure event → cue
   mapping, a null counter sink, the placeholder cue set (plan §11.5).
+  **M10.2 Phase 4**: `on_cue` (the client-side direct path) and the
+  three UI cues on the enum — the seam itself, unchanged otherwise.
 - **`client`** — winit 0.30 + wgpu 26 windowed 3D renderer (depth buffer, terrain
   mesh with heightmap displacement, instanced placeholder entity boxes), selection
   + right-click context orders, fontdue text atlas + HUD/debug overlay, `--frames N`
@@ -222,6 +235,17 @@ Built and verified through M9:
   attack/gather/move from what is under the cursor, 'A' arms attack-move for
   the next click, refused orders flash red with their reason, selection draws
   corner brackets, and the match opens framed on the player's base.
+  **M10.2 Phase 4 (audio)**: `sound.rs` — the two-arm sink behind the
+  seam. A startup probe picks the arm: a live device gets rodio 0.22.2
+  (ADR-0002) with the stream living for the app's whole run; no device
+  (CI, Xvfb) silently falls back to the counting null sink — one honest
+  line either way. The nine cues are synthesized PCM at startup (mono
+  44100 Hz, all under a second, pairwise distinct — no asset files);
+  each cue is rate-limited to one voice per 80 ms so a big fight stays
+  a heartbeat; the settings screen's volume and mute rows drive it live
+  (mute wins); order acks, selection clicks, and menu clicks round out
+  the six event moments. Machine runs claim counting, never sound —
+  "sounds good" is the owner's re-test to make.
 - **`tools`** — headless runner (demo + `--p1/--p2 ai` controller matches; M8
   adds a `match ended:` line printing the winner), `replay-verify`,
   `content-validate` subcommands.

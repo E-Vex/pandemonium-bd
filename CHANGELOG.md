@@ -7,6 +7,85 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [M10.2 Phase 4] — playtest-1 findings: audio
+
+The last of the owner's four playtest-1 findings ("simple sounds that make
+events feel real"), delivered as its own patch series on branch
+`m10.2-phase4` from `1210cbd` (Phase 3's re-test came back a go — the
+owner's Phase 4 direction is registered as A-119; DEBT-015's last deferred
+scope is spent). Scope: **Phase 4 (audio) only**. The plan's exit bar:
+one backend implementing `AudioSink` behind the existing seam, synthesized
+sounds (no assets), the silent no-device fallback, master volume + mute in
+settings, rate-limited cues, and the tests for all of it. Presentation-only
+(`crates/client` + `crates/engine/src/audio.rs`); zero golden movement
+(demo `0xb6fff6659cfb7709`, flagship `0x6e9a18bd7c5f699f`, content
+`0x9bc18c521107b262` all bit-identical); 546 dev / 541 release tests green.
+
+- **client (PLAN §4.1, ADR-0002, DEBT-011 repaid)**: rodio 0.22.2 joins
+  the client as its only new external crate — `default-features = false,
+  features = ["playback"]` (the decoder features and the noise/rand
+  machinery stay off; every sound this pass makes is synthesized PCM).
+  The allow-list amendment and the ADR (the owner's pre-choice A-100, the
+  resolved version, the feature trim, the alternatives) landed with it.
+- **client (PLAN §4.2, the sound module)**: `client/src/sound.rs` — the
+  `CueBank` (the nine cues' mono 44100 Hz PCM, synthesized at startup by
+  pure functions: deterministic, every buffer under a second, pairwise
+  distinct by construction, soft-limited into the rail; no asset files),
+  the `RateLimiter` (a per-cue 80 ms window — the first cue of a kind
+  voices, repeats inside the window drop, each cue independent), and
+  `Sound`, the two-arm sink behind the engine's `AudioSink` trait: the
+  constructor probes the device once (a Linux `/dev/snd` pre-check keeps
+  the no-device path from waking libasound's chatty config parser — the
+  fallback is silent, A-124), a live device takes the rodio arm whose
+  stream owner (`MixerDeviceSink`, 0.22's `OutputStream` successor) is
+  boxed in the arm and lives for the App's whole lifetime (dropping it
+  silences everything), and ANY failure — no device, Xvfb, CI — or a
+  device lost mid-session (the stream's error callback flags it; one
+  line, one degrade, never a panic, never a block) takes the null arm:
+  the engine's `NullAudioSink` counting what would have played.
+- **engine (PLAN §4.2, the seam's other half)**: `AudioCue` gains the
+  three client-side cues — CommandAck, SelectionClick, UiClick — with
+  `ALL`/`index`/`name` (the cue bank's layout), and `AudioSink` gains
+  `on_cue` (the direct path). The three have no `cue_for` arm BY DESIGN
+  (no sim event exists for them — the mapping is untouched); the null
+  sink counts them on their own counter (the wiring oracle).
+- **client (the wiring, thin and in `main.rs`)**: the step's events still
+  feed the sink after the step (FD-9's order kept); a submitted order
+  acknowledges on the direct path (A-120: submitted, not non-rejected —
+  the sim's verdict surfaces separately through the refusal feedback;
+  spectate's silence carries over); every user-driven selection change
+  funnels through one `set_selection` gate that cues the membership
+  change (A-122); every menu row activation — Enter, click, or the
+  end-screen R shortcut — funnels through one `menu_activate` core that
+  cues the UI click (A-121).
+- **client + config (PLAN §4.4, the controls)**: master volume is live
+  (the settings row drives the sink per A-115: changes apply immediately,
+  Done persists, Esc leaves the run's value unsaved), and `muted` joins
+  as the eighth key right after it (row 5; fullscreen/debug shift to
+  rows 6/7, Done to 8; keyboard and mouse both reach it — the focus map
+  and the ui.rs button-id tests pin the nine-row layout). Mute beats
+  volume and never zeros it (A-125: unmuting restores the set loudness);
+  a Phase 3 seven-key file parses with mute off (backward compatible).
+- **honesty**: the machine cannot hear. Every machine run (CI, Xvfb) takes
+  the null arm, and the evidence lines say exactly what audio did — the
+  arm (active/fallback, `[muted]` when muted) and the cues' three fates
+  (fed/voiced/dropped, plus the client-side count) — in the `--frames`
+  summary and the headless smoke. "The sounds are good" is a claim only
+  the owner's re-test can make.
+- **verification**: 23 new tests (the bank's shape/distinctness/
+  determinism, the limiter's window/independence/reset, the forced null
+  arm + the oracle counter, the shared limiter across cue sources, the
+  match reset, volume/mute precedence, the evidence line, the three
+  wiring pins through a real `App`, the config backward compatibility and
+  the shifted rows). Full gate in dev AND release; all three goldens
+  bit-identical; the headless smoke constructs the real sink (the null
+  arm's evidence under CI); the Xvfb machine pass ran a menu-only session,
+  a 600-frame match (event cues counted), the volume/mute rows adjusted
+  and persisted through Done + relaunch (`master_volume=0.95`,
+  `muted=true`, the relaunch loads and reports `[muted]`), and an
+  Esc-discard run that writes nothing. Registers: A-119..A-125, DEBT-011
+  repaid, DEBT-015 closed (A14's ≥5-tester playtest gate is the owner's).
+
 ## [M10.2 Phase 3] — playtest-1 findings: menu and settings
 
 The third of the owner's four playtest-1 findings, delivered as its own

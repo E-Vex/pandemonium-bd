@@ -28,13 +28,13 @@
 | Stack | Rust 1.98.1 (pinned by `rust-toolchain.toml`), edition 2021, fully custom engine on winit/wgpu — no game engine, no ECS framework |
 | Repo | `github.com/E-Vex/pandemonium-bd`, branch `master`. `git status` must be clean before work begins |
 | Presentation | **3D perspective over the 2D logical ground plane** — the sim stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md)) |
-| Status | **M10.2 (playtest-1 findings): Phases 1-3 complete. Phase 4 (audio, rodio per A-100) is the active task** — the owner gave the go on 2026-10-08. Then: owner re-test → M10.2 closeout → A14 human playtest (≥5 testers) → Alpha declaration |
+| Status | **M10.2 (playtest-1 findings): ALL FOUR PHASES COMPLETE** — Phase 4 (audio) delivered as one `git format-patch` series on `master` (rodio per A-100; the owner's go was A-119, 2026-10-08). Next: the owner's Phase 4 real-machine re-test → M10.2 closeout → A14 human playtest (≥5 testers) → Alpha declaration |
 | Goldens (never move) | demo `0xb6fff6659cfb7709` (seed 7, 300 ticks) · flagship `0x6e9a18bd7c5f699f` (seed 7, 7200 ticks AI-vs-AI; tick-0 `0x71a924ad5799e4b3`) · content `0x9bc18c521107b262` (map id `0xd38136401ab02ff1`) |
-| Tests | 523 dev / 518 release (5 should-panic invariant tests are debug-only) |
-| Registers | ASSUMPTIONS last = A-118. Key open debt: DEBT-008 (human visual pass), DEBT-011 (no audible backend — Phase 4 repays), DEBT-013 (client monoliths), DEBT-015 (M10.2 deferral — Phase 4 closes it), DEBT-016, DEBT-017 |
+| Tests | 546 dev / 541 release (5 should-panic invariant tests are debug-only) |
+| Registers | ASSUMPTIONS last = A-125. Key open debt: DEBT-008 (human visual pass), DEBT-013 (client monoliths), DEBT-016, DEBT-017. Phase 4 repaid DEBT-011 (no audible backend) and closed DEBT-015 (A14's ≥5-tester gate is the owner's, not milestone scope) |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires |
 
-M10.2 in one paragraph: **Phase 1** controls (Generals ZH-style right-button state machine, middle-drag rotate, edge scroll, Escape ladder) re-tested pass-with-notes (A-101). **Phase 2** visual legibility (per-kind silhouettes, blue/orange teams, health bars, tooltips, minimap markers) re-tested pass (A-107). **Phase 3** menus/settings — pure state machine `client/src/screens.rs`, host built on Start (game opens at the menu), `client/src/config.rs` seven-key settings file (no serde), pause menu, end screen with Rematch/Main Menu — Xvfb+XTEST machine-verified; `master_volume` is stored and shown but not audible yet. Registers A-107..A-118.
+M10.2 in one paragraph: **Phase 1** controls (Generals ZH-style right-button state machine, middle-drag rotate, edge scroll, Escape ladder) re-tested pass-with-notes (A-101). **Phase 2** visual legibility (per-kind silhouettes, blue/orange teams, health bars, tooltips, minimap markers) re-tested pass (A-107). **Phase 3** menus/settings — pure state machine `client/src/screens.rs`, host built on Start (game opens at the menu), `client/src/config.rs` settings file (no serde), pause menu, end screen with Rematch/Main Menu — Xvfb+XTEST machine-verified, re-tested (A-119). **Phase 4** audio — rodio 0.22.2 playback-only behind the `AudioSink` seam (ADR-0002), `client/src/sound.rs`'s two-arm sink (a silent null fallback when there is no device), nine synthesized cues (six event-mapped + three client-side through `on_cue`), per-cue 80 ms rate limiter, live volume + `muted` eighth key — machine-verified on Xvfb (the null arm; evidence lines count cues). Registers A-107..A-125.
 
 ## 3. Non-negotiable working rules (digest of plan §0)
 
@@ -60,9 +60,9 @@ cargo run -p pandemonium-client -- --seed 42 --record run.pdrp && \
 cargo run -p pandemonium-tools -- replay-verify run.pdrp                           # A2
 ```
 
-Expected: everything succeeds; 523 tests pass in dev (518 release); all three goldens bit-identical.
+Expected: everything succeeds; 546 tests pass in dev (541 release); all three goldens bit-identical.
 `--p1 ai --p2 ai --ticks 27000` shows a full match resolving naturally. The headless smoke drives the
-windowed path's exact hosting seam (AI opponent included) and prints the feedback-wiring evidence line.
+windowed path's exact hosting seam (AI opponent included) and, since M10.2 Phase 4, constructs the real audio sink — the exit evidence says what audio did (the arm: active or null fallback; the cues' fed/voiced/dropped fates) alongside the feedback-wiring line. The same run that is silent under Xvfb/CI is audible on real hardware.
 The windowed path is verified on Xvfb + llvmpipe (recipe in §9 / DEBT-008); the *human* visual pass is the
 owner's. CI runs fmt + clippy + tests on Linux/Windows/macOS in dev and release, plus replay round-trips.
 
@@ -76,8 +76,8 @@ owner's. CI runs fmt + clippy + tests on Linux/Windows/macOS in dev and release,
 | `content` | Strict RON schema, versioned loaders, validators, `ContentBundle` + hash, the `world()` seam |
 | `ai` | `Controller` trait + `ScriptedController` (the Alpha opponent). Depends only on fx + sim_api |
 | `replay` | Canonical LE byte codec + checksummed replay record/validate |
-| `engine` | FixedTimestep, Interpolator, `MatchHost` (+ pause/step, AI controllers, log, outcome), `RtsCamera`, terrain mesh, Renderer trait, `ai_host`, **`audio.rs`** (`AudioSink`, `cue_for`, `NullAudioSink`) |
-| `client` | winit + wgpu 3D renderer, fontdue text, HUD/overlay, input (`input.rs`, `orders.rs`), `feedback.rs`, `ui.rs`, `report.rs` (F8 bug report), `silhouette.rs`, `screens.rs`, `config.rs`. `main.rs`/`render.rs` are monoliths (DEBT-013) |
+| `engine` | FixedTimestep, Interpolator, `MatchHost` (+ pause/step, AI controllers, log, outcome), `RtsCamera`, terrain mesh, Renderer trait, `ai_host`, **`audio.rs`** (`AudioSink` + `on_cue`, `cue_for`, the nine-cue enum with ALL/index/name, `NullAudioSink` — also the client-cue oracle) |
+| `client` | winit + wgpu 3D renderer, fontdue text, HUD/overlay, input (`input.rs`, `orders.rs`), `feedback.rs`, `ui.rs`, `report.rs` (F8 bug report), `silhouette.rs`, `screens.rs`, `config.rs`, `sound.rs` (two-arm audio sink). `main.rs`/`render.rs` are monoliths (DEBT-013) |
 | `tools` | `headless`, `replay-verify`, `content-validate`, `soak`, `bench` (clap CLI) |
 | `tests/` | `pandemonium-tests` package: architecture_law (A13), determinism, content_pipeline, movement, economy, combat, vision, ai, match_rules, alpha_loop. New acceptance tests need an explicit `[[test]]` entry in `tests/Cargo.toml` |
 
@@ -103,7 +103,7 @@ types, wall-clock reads, and floating-point type names.
 | M9.1 | Input hotfix | ✅ | first human playtest findings: mirrored axes, no mouse camera, no attack path, key-repeat spam, never-expiring cues — all fixed and pinned |
 | M10 | Stabilization & declaration | ✅ | A1–A15 sweep in `docs/ALPHA_DECLARATION.md` (13 pass with evidence; A14 an honest open finding); soak 32/32 resolved; bench within §15 budgets; nightly 1000-match tier |
 | M10.1 | Pre-declaration hardening | ✅ | DEBT-001 repaid (xxHash64 canonical, all goldens re-pinned in one commit); `--seed`/`--record`/F8 report; `docs/PLAYTEST.md` (the A14 instrument); sharded nightly soak |
-| M10.2 | Playtest-1 findings | 🔄 Phases 1-3 ✅ | Controls, visual legibility, menus/settings done (523 dev tests, zero golden movement). **Phase 4 (audio) active**; Phase 5 = closeout + A14 scheduling |
+| M10.2 | Playtest-1 findings | ✅ | Phases 1-3 (controls, visual legibility, menus/settings) delivered and re-tested (A-101, A-107, A-119). Phase 4 (audio, DEBT-011 repaid): rodio 0.22.2 behind the `AudioSink` seam (ADR-0002, A-100), nine synthesized cues + three client-side through `on_cue`, per-cue 80 ms limiter, silent null fallback, live volume + `muted` eighth key (A-125). 546 dev tests, zero golden movement; Xvfb machine-verified (the machine cannot hear — it proved the wiring and the counting; the owner re-tests sound on real hardware). Phase 5 = closeout + A14 scheduling |
 
 ## 7. Inventory — what is worth knowing (the rest is in `docs/ARCHITECTURE.md`)
 
@@ -111,16 +111,15 @@ types, wall-clock reads, and floating-point type names.
 - **sim:** `Sim::new(world, setup)`, `step(&[Command])`. Canonical state hash is entity-major little-endian (encoding v4). Fog (A-059) and match outcome (A-066) are **derived, not hashed**. Command gate sorts by (issuer, seq); refusal changes zero state.
 - **content:** `Sim::new(&bundle.world(), setup)` is the loaded-content path. Spawn order (and entity ids): map starts in authored order → each start's forces in faction order → ore nodes in map order.
 - **replay:** the log records exactly the fed command stream, rejections included (A-019); `run_command_log` is the one re-simulation driver.
-- **engine/audio:** `AudioSink::on_events(&mut self, &[Event])`, pure `cue_for(&Event) -> Option<AudioCue>` (6 cues: attack landed, unit lost, unit ready, structure done, delivery, match ended), `NullAudioSink` counts cues. Fed after each step from the presentation layer; the sim never sees it (FD-9).
-- **client (M10.2):** `screens.rs` (pure application state machine; `App.host` is `Option<MatchHost>`, None exactly while at the menu), `config.rs` (seven keys: incl. `master_volume` 0.0..=1.0), `input.rs` (right-button state machine, edge scroll, Escape ladder), `silhouette.rs`, `ui.rs` (menu pass over the fontdue overlay, keyboard + mouse).
+- **engine/audio:** `AudioSink::on_events(&mut self, &[Event])`, pure `cue_for(&Event) -> Option<AudioCue>` (6 cues: attack landed, unit lost, unit ready, structure done, delivery, match ended), `on_cue(&mut self, AudioCue)` for the three client-side cues (CommandAck, SelectionClick, UiClick), `NullAudioSink` counts both kinds. Fed after each step from the presentation layer; the sim never sees it (FD-9).
+- **client (M10.2):** `screens.rs` (pure application state machine; `App.host` is `Option<MatchHost>`, None exactly while at the menu), `config.rs` (eight keys: incl. `master_volume` 0.0..=1.0 and `muted`), `input.rs` (right-button state machine, edge scroll, Escape ladder), `silhouette.rs`, `ui.rs` (menu pass over the fontdue overlay, keyboard + mouse), `sound.rs` (Phase 4: two-arm sink — rodio arm or null fallback, the synthesized nine-cue bank, the per-cue rate limiter, live volume/mute).
 
 ## 8. What is NOT built yet (in order)
 
-1. **M10.2 Phase 4 — audio** (active): rodio backend + ADR + allow-list amendment, nine synthesized cues, null fallback, mute + volume, rate limiter. Then the owner's re-test.
-2. **M10.2 Phase 5 — closeout** and scheduling of the A14 playtest.
-3. **A14 — the human playtest** (the declaration's one open gate): `docs/PLAYTEST.md` is the instrument; ≥5 testers run the loop unaided; a failed tester is a finding, never a wave-through. The same sessions close DEBT-008 and arm DEBT-011/012 triggers.
-4. **Declare the Alpha (or file the findings):** flip A14 in `docs/ALPHA_DECLARATION.md`, README badge, decide the LICENSE (the owner's call).
-5. **Known limitations to carry forward:** formation-less jams (A-040), staircase paths, stalled construction sites when the builder dies (A-045; the scripted AI shares the hole), O(N·V) per-tick fog recompute, scripted-AI sight-verification latency (A-062), and the AI's scriptedness itself.
+1. **M10.2 Phase 4 owner re-test on real hardware** (sounds play; the nine moments sound distinct; volume changes loudness live, mute silences, both persist; a big fight is a heartbeat, not noise), then **Phase 5 — closeout** and scheduling of the A14 playtest.
+2. **A14 — the human playtest** (the declaration's one open gate): `docs/PLAYTEST.md` is the instrument; ≥5 testers run the loop unaided; a failed tester is a finding, never a wave-through. The same sessions close DEBT-008 and arm the DEBT-012 trigger (DEBT-011's audio half is the Phase 4 re-test above).
+3. **Declare the Alpha (or file the findings):** flip A14 in `docs/ALPHA_DECLARATION.md`, README badge, decide the LICENSE (the owner's call).
+4. **Known limitations to carry forward:** formation-less jams (A-040), staircase paths, stalled construction sites when the builder dies (A-045; the scripted AI shares the hole), O(N·V) per-tick fog recompute, scripted-AI sight-verification latency (A-062), and the AI's scriptedness itself.
 
 ## 9. Sharp edges and gotchas
 
@@ -151,6 +150,9 @@ types, wall-clock reads, and floating-point type names.
 - `Silhouette` is not `Copy`; the kind→shape mapping resolves once at startup (`main.rs::kind_shapes`) — a content kind-id rename silently changes shapes (DEBT-016).
 - **Menu-first app (Phase 3):** every host access is guarded on `Option<MatchHost>`; a menu-only session never panics, records, or submits a command. A menu owns the input (world input dead, held-key set cleared). The state machine starts every entered screen on focus row 0. Esc's exhausted rung opens the pause menu (Esc at the main menu quits; on the end screen does nothing).
 - **Config is hand-rolled and forgiving** (A-108/A-109): per-key salvage, unknown keys ignored, range clamps, std-env config dir; no dir → in-memory defaults, never a panic. Done saves, Esc leaves without saving (A-115).
+- **Phase 4 audio: the rodio stream owner lives in the sink — dropping it silences everything.** `Sound`'s device arm owns `MixerDeviceSink` (rodio 0.22's `OutputStream` successor), boxed in the arm enum (clippy's large-variant lint), constructed ONCE per run (the probe is startup-only, never per match); `reset_match_state` calls `Sound::reset()` (counters + limiter windows), never a fresh `Sound`. Its `log_on_drop(false)` is load-bearing — rodio's default drop notice prints to stderr.
+- **Client-side cues arrive through `on_cue`, NOT `cue_for`; the limiter sits between the wiring and the arm.** CommandAck fires in `submit_order` after `host.submit` (submitted, not non-rejected — A-120; behind the spectate gate), SelectionClick on a membership change (one `set_selection` gate; the match reset bypasses it), UiClick in one `menu_activate` core (Enter, mouse click, and the end-screen R shortcut all share it — A-121). `NullAudioSink::client_cues` counts POST-limiter — rapid-fire wiring tests use one call per fresh app, or the pre-limiter `Sound::client_cues` counter.
+- **The machine cannot hear — audio evidence lines claim counting, never sound.** No device under Xvfb/CI: `device_plausible()`'s `/dev/snd` pre-check short-circuits the probe before libasound's chatty config parser wakes (A-124), the null arm counts, and the evidence says the arm first ("active (rodio, 44100 Hz)" / "null fallback (no device)" [+ "muted"]) then the cues' fed/voiced/dropped fates. "Sounds good" is only the owner's re-test claim. The limiter is 80 ms PER CUE (an AttackLanded storm does not silence UnitLost); per-voice work after the limiter is one Vec clone + one channel send.
 - **A zero-entity frame needs the camera bind group re-bound** before the entity draw (wgpu validates even zero-instance draws).
 - The embedded font is an ASCII subset (`text.rs`) — on-screen labels are ASCII only. fontdue metrics are y-up (`bearing_y`); the glyph-atlas buffer must be built with `resize`, not `truncate`.
 

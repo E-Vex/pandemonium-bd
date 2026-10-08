@@ -166,9 +166,14 @@ tester.
 1. **Placement guess (DEBT-012):** did any build-placement preview say **legal**
    when the order was then refused, or **illegal** when it should have
    succeeded? (yes/no; if yes — seed + tick, or an F8 dump)
-2. **Audio absence (DEBT-011):** did the absence of sound hurt your read of the
-   game? (yes/no — this is the debt's declared trigger: a "yes" argues for
-   pulling the audible backend forward)
+2. **Audio (DEBT-011, repaid in M10.2 Phase 4 — the probe lives on as
+   the re-test's sound check):** do the nine cues fire at their moments
+   and sound distinct from each other? Does a big fight read as a
+   heartbeat rather than noise (the per-cue rate limiter)? Does volume
+   change loudness live, does mute silence everything, and do both
+   survive a restart? A muddled cue, a noise-fight, or a dead volume row
+   is a finding — the machine proved the wiring and the counting; only
+   ears can prove the sound.
 3. **Feel (A8):** did orders feel instant? Any input that felt dead?
 
 ## 6. Bug-report procedure
@@ -192,6 +197,7 @@ tester.
 | owner (playtest-1) | 2026-10 (post-M10.1) | desktop, real display | bdf1266 | **no** — controls unusable (finding #1, detail below) | not reached | feel: the four findings below | none filed (findings went to `docs/PLAN-M10.2.md` instead) |
 | owner (re-test) | 2026-10 (post-M10.2 Phase 1) | desktop, real display | d84203e | **pass, with notes** — the loop is playable with the new controls card; the notes arrive after the Phase 2 delivery (A-101: the owner re-tests on their machine and reports any issue with its exact location; a reported issue becomes a finding row here) | not reached | feel: pending specifics | none filed yet |
 | owner (re-test 2) | 2026-10-08 (post-M10.2 Phase 2) | desktop, real display | 404e906 | **pass** — the Phase 2 visual pass cleared the way for Phase 3 (the owner's go-ahead: "Great now write the task P3 to the next AI agent"; A-107); any residual visual notes fold into the next re-test | not reached | feel: unchanged from the Phase 1 notes | none filed |
+| owner (re-test 3) | 2026-10-08 (post-M10.2 Phase 3) | desktop, real display | 1210cbd | **pass** — the Phase 3 menus/settings re-test cleared the way for Phase 4 (the owner's go registered as A-119); the menu-first flow, the three modes, and settings persistence judged right | not reached | feel: carried into the Phase 4 re-test | none filed |
 | | | | | | | | |
 | | | | | | | | |
 | | | | | | | | |
@@ -284,3 +290,25 @@ command center, a worker, and a tank on sight, without a legend? Can you
 tell the sides apart at a glance? Can you read the minimap and the health
 state?** Report anything that does not read — a failed read is a finding,
 not a wave-through.
+
+### Phase 4 delivery note (audio — the re-test's fourth target)
+
+M10.2 Phase 4 landed the audio pass (DEBT-011 repaid): nine synthesized
+cues behind the engine's `AudioSink` seam on rodio (ADR-0002) — attack
+landed (a low thud), unit lost (a descending two-step), unit ready (a
+rising chirp), structure done (a low chord), delivery (a bright ding),
+match ended (a three-tone fanfare), command ack / selection click / UI
+click (three distinct short blips) — each rate-limited to one voice per
+80 ms, with live volume and mute in settings (row 4 and row 5) and a
+silent null fallback where no device exists. The machine pass (Xvfb)
+proved the wiring and the counting only: this environment cannot hear,
+and its evidence lines say "null fallback" and count cues — they never
+claim sound. **The re-test for this row is therefore entirely about
+ears:** on real hardware, play a match and confirm each of the nine
+moments makes its distinct sound, the volume row changes loudness live,
+mute silences everything, both survive a restart (Done saves, Esc
+discards), and a big fight reads as a heartbeat rather than noise. Any
+cue that muddles with another, any moment that stays silent, or a fight
+that turns into mush is a finding for the results table above — the
+per-cue recipes in `crates/client/src/sound.rs` are one match arm each
+and re-tunable in isolation.
