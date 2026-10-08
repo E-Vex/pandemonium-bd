@@ -12,7 +12,7 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 [![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
 ![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
-![stage](https://img.shields.io/badge/stage-M10.2_playtest_fixes_done_(A14_playtest_pending)-9E6A03?labelColor=21262D)
+![stage](https://img.shields.io/badge/stage-M10.2_complete_(A14_playtest_pending)-9E6A03?labelColor=21262D)
 ![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
 
 <picture>
@@ -180,8 +180,14 @@ synthesized cues (combat, losses, production, construction, deliveries,
 the match end, plus command acks, selection and UI clicks) through the
 `AudioSink` seam on rodio, rate-limited per cue, with a silent null
 fallback where no device exists and live volume + mute in settings. The
-same rule as ever: presentation only, goldens untouched. The live status
-board is [`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated
+same rule as ever: presentation only, goldens untouched. Phase 5 closed the
+milestone out — the full gate green in dev and release with the goldens
+bit-identical, the Xvfb + XTEST machine pass re-ran the M10.2 paths
+(controls, menus/settings, the audio evidence lines), and the owner's
+real-hardware audio re-test came back **clean** (A-126, 2026-10-09); the
+A14 playtest — five first-time tester slots — is scheduled in
+[`docs/PLAYTEST.md`](docs/PLAYTEST.md). The live status board is
+[`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated
 as a bug.
 
 Built and verified through M9:
@@ -268,13 +274,15 @@ Built and verified through M9:
   law holds.
 - **CI** — fmt, clippy with `-D warnings`, and the test suite in dev *and*
   release on Linux, Windows, and macOS, plus the replay round-trip and a
-  binaries-run check. **352 tests green in dev, 347 in release** (5 should-panic
-  invariant-checker tests are debug-only by nature).
+  binaries-run check. **546 tests green in dev, 541 in release** at the
+  M10.2 closeout (5 should-panic invariant-checker tests are debug-only by
+  nature).
 
 Not built yet — on purpose, in milestone order:
 
 - The A14 human playtest (≥ 5 testers, `docs/PLAYTEST.md`) — the one open
-  finding in the Alpha declaration; only humans can close it.
+  finding in the Alpha declaration; the five first-time tester slots are
+  scheduled there (three waves to 2026-10-31), and only humans can close it.
 - No multiplayer: the hooks are designed in (`Command.tick`, hashed checkpoints
   for desync detection), the netcode is not.
 
