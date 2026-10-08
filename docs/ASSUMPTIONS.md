@@ -1033,3 +1033,53 @@ confirms or rejects it.
   work (ADR-0002). DEBT-015's remaining scope ("Phase 4 only") is therefore
   spent; the A14 declaration stays blocked on the >=5-tester playtest gate,
   which is the owner's to run.
+
+- **A-120 (PLAN-M10.2 §4.2, M10.2 Phase 4).** The command acknowledgment
+  cue fires at *submission*: the order was stamped, accepted into the
+  host's queue, and (when it had a ground point) pinged. "Acknowledged"
+  means submitted, NOT non-rejected — the sim's own verdict is a later,
+  separate fact that surfaces through the refusal feedback when it is
+  bad, and nothing retracts the ack. A-113's spectate silence carries
+  over: a spectator's idle orders are not acknowledgments (the cue is
+  behind the same orders-layer gate).
+
+- **A-121 (PLAN-M10.2 §4.2, M10.2 Phase 4).** "Menu activation" is any
+  row activation of the screens state machine — Enter on the focused
+  row, a mouse click on a row, and the end screen's R shortcut all
+  funnel through one `menu_activate` core in the wiring layer, and that
+  core fires the UiClick cue. Left/Right value adjustments and arrow
+  navigation are not activations and stay silent; the pure machine
+  itself never owns a sink.
+
+- **A-122 (PLAN-M10.2 §4.2, M10.2 Phase 4).** The selection click cue
+  fires exactly when the selection's *membership* changes (one
+  `set_selection` gate every user-driven change funnels through): a
+  redundant re-select of the same members is not a click, while a
+  clear, a shift-toggle-off, a control-group recall, a box select, and
+  a single/double click are. The match reset bypasses the gate — a
+  fresh match's empty selection is not a click.
+
+- **A-123 (PLAN-M10.2 §4.4, M10.2 Phase 4).** The rate limiter sits
+  between the cue source and the sink *arm*: event-derived and
+  client-side cues of the same kind share that kind's 80 ms window, and
+  the fallback arm counts only what passed (post-limiter), matching
+  what the device arm would have played — so the null arm's counters
+  and the evidence line stay directly comparable across arms. Evidence
+  counters are match-scoped (reset per match, like the commands
+  counter) except the client-side *wiring* count, which the wiring
+  layer's own pre-limiter counter reports (fed is a wiring fact, voiced
+  is an arm fact).
+
+- **A-124 (PLAN-M10.2 §4.3, M10.2 Phase 4).** The Linux device probe is
+  preceded by a `/dev/snd` existence check: without it there is no
+  kernel sound stack at all, and libasound's config parser would print
+  a stderr burst on its way to the same "no device" conclusion — the
+  pre-check keeps the fallback path silent (the pass's no-spam rule),
+  and the null arm is taken without waking the C library. The accepted
+  corner: a socket-forwarded Pulse server without local `/dev/snd`
+  reads as no-device (the CI/headless class dwarfs it; the owner's
+  desktop has `/dev/snd`). Mid-session device loss is detected through
+  rodio's stream error callback (a polled flag, one degrade line, no
+  panic); a device that dies without an error callback firing stays
+  "active" but silent — inherent to the backend, and honest because
+  the evidence line claims the arm, never audible sound.

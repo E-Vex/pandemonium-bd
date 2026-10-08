@@ -18,6 +18,7 @@ mod render;
 mod report;
 mod screens;
 mod silhouette;
+mod sound;
 mod text;
 mod ui;
 
@@ -31,7 +32,7 @@ use feedback::FeedbackState;
 use input::{RightButton, RightRelease};
 use pandemonium_ai::Controller;
 use pandemonium_content::{ContentBundle, ContentTree};
-use pandemonium_engine::audio::{AudioSink, NullAudioSink};
+use pandemonium_engine::audio::{AudioCue, AudioSink};
 use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
 use pandemonium_engine::{
@@ -323,10 +324,12 @@ struct App {
     /// a menu-end state: "no match" and "a match that was dropped" are
     /// different facts).
     matches_started: u32,
-    /// M9 (plan §11.5): the audio sink fed by the step's events — the null
-    /// implementation (cue-counting; a mixer swaps in post-Alpha behind the
-    /// same trait).
-    audio: NullAudioSink,
+    /// M10.2 Phase 4 (PLAN §4, the audio pass): the sink that voices the
+    /// nine cues — rodio behind the engine's `AudioSink` seam when the
+    /// startup probe found a device, the null counting arm when it did
+    /// not (ADR-0002; FD-9: fed after the step from the presentation
+    /// layer, feeds nothing back).
+    audio: sound::Sound,
     /// M9 (plan §11.2/§11.5, the feel pass): event-driven feedback — hit
     /// flashes, command acknowledgment pings, and the counters the smoke
     /// summary reports.
@@ -420,6 +423,14 @@ impl App {
         );
         camera.focus(start_anchor.0, start_anchor.1, START_CAMERA_DISTANCE);
         let settings = config::load();
+        // PLAN-M10.2 §4.1/§4.3 (the Phase 4 audio pass): probe the audio
+        // device ONCE at startup — a live device takes the rodio arm (the
+        // stream owner lives in the sink for the App's whole lifetime,
+        // ADR-0002), any failure takes the null arm silently, and either
+        // way one honest startup line says which (the machine cannot hear:
+        // under Xvfb/CI the probe finds nothing and the run exercises the
+        // fallback).
+        let audio = sound::Sound::new(settings.master_volume);
         Ok(Self {
             tree,
             screen: AppState::at_main_menu(),
@@ -465,7 +476,7 @@ impl App {
             frames_budget: None,
             frames_presented: 0,
             commands_submitted: 0,
-            audio: NullAudioSink::new(),
+            audio,
             feedback: FeedbackState::default(),
             view_interp: Interpolator::new(),
             fog_tick: u64::MAX,
@@ -628,8 +639,11 @@ impl App {
             START_CAMERA_DISTANCE,
         );
         // M9: the feel pass's state resets with the match — a fresh match
-        // starts with clean feedback (no stale flashes or pings).
-        self.audio = NullAudioSink::new();
+        // starts with clean feedback (no stale flashes or pings). The
+        // Phase 4 sink resets its counters and rate-limit windows with it;
+        // the device, the cue bank, and the volume persist (the audio
+        // outlives matches — a fresh match is not a fresh probe).
+        self.audio.reset();
         self.feedback = FeedbackState::default();
     }
 
@@ -706,8 +720,10 @@ impl App {
     /// has been wired since Phase 1), the zoom limits re-clamp the camera
     /// now, the debug overlay follows (it is also the match-start default),
     /// fullscreen toggles the window, and pan speed is read live from the
-    /// struct already. Master volume stores for Phase 4 (the sink is
-    /// null-backed, DEBT-011).
+    /// struct already. M10.2 Phase 4: master volume now goes straight to
+    /// the sink (every later voice uses it — DEBT-011's repayment made the
+    /// row real; the volume semantics are A-115's: live now, Done saves,
+    /// Esc leaves this run's value unsaved).
     fn adjust_setting(&mut self, row: usize, dir: i32) {
         self.settings = config::adjust_setting(self.settings, row, dir);
         match row {
@@ -715,6 +731,7 @@ impl App {
             2 | 3 => self
                 .camera
                 .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max),
+            4 => self.audio.set_volume(self.settings.master_volume),
             6 => self.debug_overlay = self.settings.debug_overlay,
             5 => self.apply_fullscreen(),
             _ => {}
@@ -925,6 +942,10 @@ impl App {
     /// The one place orders enter the host: stamps the seq, pings the
     /// acknowledgment, and remembers the order for rejection feedback
     /// (M9.1 — the last two are the "the control works" cues).
+    /// M10.2 Phase 4 (PLAN §4.2, A-120): "acknowledged" means SUBMITTED —
+    /// stamped, accepted into the host's queue, pinged on the ground. The
+    /// sim's own verdict is a later, separate fact: a rejection surfaces
+    /// through the refusal feedback and does not retract the ack cue.
     fn submit_order(&mut self, kind: CommandKind, ping_at: Option<Vec2Fx>) {
         // PLAN-M10.2 §3.3 (A-113): spectate silences the human's order path
         // at the orders layer — a hidden-but-live path would inject P1
@@ -945,6 +966,8 @@ impl App {
             self.last_order = Some((self.command_seq, at));
         }
         host.submit(Command::new(HUMAN, 0, self.command_seq, kind));
+        // The submission's own sound (PLAN §4.2's command acknowledgment).
+        self.audio.on_cue(AudioCue::CommandAck);
     }
 
     /// M9.1 (plan §11.3): the right-click context command — what is under
@@ -1110,11 +1133,26 @@ impl App {
             .iter()
             .map(|entity| entity.id)
             .collect();
-        self.selection = self.control_groups[index]
+        let next = self.control_groups[index]
             .iter()
             .copied()
             .filter(|id| live.contains(id))
             .collect();
+        self.set_selection(next);
+    }
+
+    /// M10.2 Phase 4 (PLAN §4.2, A-122): the one selection gate — every
+    /// user-driven selection change funnels through here so the selection
+    /// click cue fires exactly when the membership actually changes (a
+    /// redundant re-select of the same members is not a change; a clear,
+    /// a toggle-off, a recall, and a box-select are). The match reset
+    /// bypasses this gate on purpose — a fresh match's empty selection is
+    /// not a click.
+    fn set_selection(&mut self, next: Vec<EntityId>) {
+        if next != self.selection {
+            self.selection = next;
+            self.audio.on_cue(AudioCue::SelectionClick);
+        }
     }
 }
 
@@ -1357,13 +1395,15 @@ impl ApplicationHandler for App {
                             if dragged {
                                 // Box select (M10.2 PLAN §1.3: shift+box
                                 // ADDS to the selection instead of
-                                // replacing it).
+                                // replacing it). The one selection gate
+                                // (A-122) cues the change.
                                 let picked = self.box_pick(start_ndc, ndc);
-                                self.selection = if shift {
+                                let next = if shift {
                                     input::union_selection(&self.selection, &picked)
                                 } else {
                                     picked
                                 };
+                                self.set_selection(next);
                             } else {
                                 // A click. M10.2 (PLAN §1.3): a double click
                                 // (two clicks inside the window) selects
@@ -1382,17 +1422,19 @@ impl ApplicationHandler for App {
                                             picked,
                                         )
                                         .unwrap_or_default();
-                                        self.selection = if shift {
+                                        let next = if shift {
                                             input::union_selection(&self.selection, &same_kind)
                                         } else {
                                             same_kind
                                         };
+                                        self.set_selection(next);
                                     } else if shift {
                                         // Shift+click toggles membership.
-                                        self.selection =
+                                        let next =
                                             input::shift_click_selection(&self.selection, picked);
+                                        self.set_selection(next);
                                     } else {
-                                        self.selection = vec![picked];
+                                        self.set_selection(vec![picked]);
                                     }
                                 }
                                 // else: a click on empty ground. PLAN §1.1:
@@ -1701,7 +1743,10 @@ impl ApplicationHandler for App {
                                     self.placement = None;
                                 }
                                 input::EscapeAction::ClearSelection => {
-                                    self.selection.clear();
+                                    // Through the selection gate (A-122):
+                                    // a clear of a non-empty selection is a
+                                    // change, and it clicks.
+                                    self.set_selection(Vec::new());
                                 }
                                 // PLAN-M10.2 §3.5: the ladder's exhausted
                                 // rung opens the pause menu (it quit the
@@ -1869,6 +1914,9 @@ impl App {
                 self.frames_presented,
                 self.screen.name()
             );
+            // PLAN-M10.2 §4.5: what the audio did this run — the arm and the
+            // cues' fates, the same evidence line the match branch prints.
+            println!("pandemonium client — audio: {}", self.audio.evidence_line());
             return;
         };
         let outcome = match host.outcome() {
@@ -1893,6 +1941,11 @@ impl App {
             outcome,
             self.screen.name()
         );
+        // PLAN-M10.2 §4.5: what the audio did this match segment — the arm
+        // (active or fallback) and the cues' three fates. Under Xvfb this
+        // always reads the null fallback (the machine cannot hear; the
+        // counters are the claim, never "audio ok").
+        println!("pandemonium client — audio: {}", self.audio.evidence_line());
     }
 
     /// Menu pointer hover (PLAN-M10.2 §3.6): the hit-test against the menu
@@ -1912,6 +1965,16 @@ impl App {
         }
     }
 
+    /// M10.2 Phase 4 (PLAN §4.2, A-121): activates a menu row — the shared
+    /// core of the click path, the Enter path, and the end screen's R
+    /// shortcut, wrapped so the UI click cue fires on every activation of
+    /// the screens state machine (thin wiring over the pure machine; the
+    /// machine itself never owns a sink).
+    fn menu_activate(&mut self, index: usize, ctx: &KeyContext) -> (AppState, Effect) {
+        self.audio.on_cue(AudioCue::UiClick);
+        self.screen.activate_index(index, ctx)
+    }
+
     /// Menu click: activate the hovered/clicked button (the mouse path over
     /// the machine's `activate_index`).
     fn menu_click(&mut self, event_loop: &ActiveEventLoop) {
@@ -1925,7 +1988,7 @@ impl App {
         else {
             return; // a click off every button: nothing (menus never order)
         };
-        let (next, effect) = self.screen.activate_index(index, &self.menu_ctx());
+        let (next, effect) = self.menu_activate(index, &self.menu_ctx());
         self.screen = next;
         self.apply_effect(effect, event_loop);
     }
@@ -1937,7 +2000,7 @@ impl App {
                            // The end screen keeps the card's R shortcut (rematch).
         if matches!(self.screen.screen, Screen::EndScreen) && code == winit::keyboard::KeyCode::KeyR
         {
-            let (next, effect) = self.screen.activate_index(0, &self.menu_ctx());
+            let (next, effect) = self.menu_activate(0, &self.menu_ctx());
             self.screen = next;
             self.apply_effect(effect, event_loop);
             return;
@@ -1984,6 +2047,16 @@ impl App {
             }
             _ => return, // every other key is inert at a menu
         };
+        // PLAN §4.2 (A-121): Enter activates the focused row — routed
+        // through the same activation core the mouse path uses, so the UI
+        // click cue fires on both (Left/Right adjust values; they are not
+        // activations and do not click).
+        if matches!(key, NavKey::Enter) {
+            let (next, effect) = self.menu_activate(self.screen.focus, &self.menu_ctx());
+            self.screen = next;
+            self.apply_effect(effect, event_loop);
+            return;
+        }
         let (next, effect) = self.screen.on_key(key, &self.menu_ctx());
         self.screen = next;
         self.apply_effect(effect, event_loop);
@@ -2766,10 +2839,13 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
     // flow's Player vs AI mode builds exactly this host (A-112).
     let mut host = App::build_host(bundle, setup, MatchMode::PlayerVsAi);
     let mut null_renderer = NullRenderer::new();
-    // M9: the smoke run exercises the feel pass's event wiring too — the
-    // same sink + feedback state the windowed draw feeds, driven without a
-    // display (their counters are the printed evidence).
-    let mut audio = NullAudioSink::new();
+    // M10.2 Phase 4 (PLAN §4.3): the smoke constructs the REAL sink — the
+    // startup probe runs here (on a machine with no audio device: the null
+    // arm, the same silent fallback the windowed client takes under
+    // Xvfb/CI; the probe's one honest line prints above), and the counters
+    // below are the audio evidence. Whatever arm this machine's probe
+    // found, the smoke asserts counting, never audible sound.
+    let mut audio = sound::Sound::new(config::load().master_volume);
     let mut feedback = FeedbackState::default();
     // M9.1: the smoke also exercises the refusal wiring — one deliberately
     // invalid order (a Move naming a unit that does not exist) must come
@@ -2843,17 +2919,146 @@ fn headless_smoke(bundle: &ContentBundle) -> anyhow::Result<()> {
         hud.tick, hud.paused, hud.population, hud.population_cap
     );
     println!(
-        "  feedback wiring: {} events fed the audio sink ({} cues), {} attacks flashed on screen, \
-         {} refused orders surfaced",
-        audio.fed, audio.cues, feedback.hits_seen, feedback.refusals_seen
+        "  feedback wiring: {} attacks flashed on screen, {} refused orders surfaced",
+        feedback.hits_seen, feedback.refusals_seen
     );
+    // PLAN-M10.2 §4.5: what the audio did — the arm (fallback vs active —
+    // this machine's probe result, stated as a fact, never claimed as
+    // audible sound) and the cues' three fates.
+    println!("  audio wiring: {}", audio.evidence_line());
     assert!(
         refusal_surfaced && feedback.refusals_seen > 0,
         "the invalid order must have surfaced as a refusal cue"
     );
+    // The audio wiring ran: the deliberate rejection is itself an event,
+    // so a zero count would mean the sink was never fed (counting is the
+    // claim — audible sound is never claimed on a machine that cannot
+    // hear).
+    assert!(
+        audio.events_fed() > 0,
+        "the audio sink was fed at least the rejection event"
+    );
     println!("  content hash:    {:#018x}", bundle.content_hash());
     println!("pandemonium client — smoke PASS (windowed M3 verification requires a display)");
     Ok(())
+}
+
+#[cfg(test)]
+mod audio_wiring {
+    //! PLAN-M10.2 §4.2's wiring pins: the three client-side moments reach
+    //! the sink's direct path. The oracle is the null arm's counter (the
+    //! engine's `NullAudioSink` counting what reached `on_cue`), so every
+    //! test FORCES the null arm first — this machine's probe result is a
+    //! fact about the machine, never a test input. One call per fresh app:
+    //! the first cue of a kind always passes the rate limiter, so the
+    //! oracle count is deterministic.
+
+    use super::*;
+
+    /// An app over the repo content with the null audio arm forced (the
+    /// wiring oracle's precondition).
+    fn app() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        let mut app = App::new(tree, bundle, Some(7), None).expect("the app constructs");
+        // The forced null arm: what the no-device constructor yields, so
+        // the oracle counter exists whatever this machine can hear.
+        app.audio = sound::Sound::without_device(1.0);
+        app
+    }
+
+    #[test]
+    fn a_submitted_order_acknowledges_on_the_direct_path() {
+        let mut app = app();
+        // No order leaves a menu (the belt under the routing): no ack.
+        app.submit_order(
+            CommandKind::Move {
+                units: vec![EntityId(1)],
+                target: Vec2Fx::from_ints(10, 10),
+            },
+            Some(Vec2Fx::from_ints(10, 10)),
+        );
+        assert_eq!(app.audio.null_client_cues(), 0, "no host, no submission");
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        assert_eq!(app.audio.client_cues(), 0, "begin_match itself is silent");
+        // A-120: "acknowledged" = submitted (stamped and handed to the
+        // host), not non-rejected — the cue fires at submission.
+        app.submit_order(
+            CommandKind::Move {
+                units: vec![EntityId(1)],
+                target: Vec2Fx::from_ints(10, 10),
+            },
+            Some(Vec2Fx::from_ints(10, 10)),
+        );
+        assert_eq!(
+            app.audio.null_client_cues(),
+            1,
+            "the submission's ack reached the sink"
+        );
+    }
+
+    #[test]
+    fn a_spectators_order_path_stays_silent() {
+        // A-113's carry into audio: spectate silences the human order path
+        // at the orders layer — a spectator's idle orders are not
+        // acknowledgments.
+        let mut app = app();
+        app.begin_match(MatchMode::AiVsAi, 7, 0);
+        app.submit_order(
+            CommandKind::Move {
+                units: vec![EntityId(1)],
+                target: Vec2Fx::from_ints(10, 10),
+            },
+            Some(Vec2Fx::from_ints(10, 10)),
+        );
+        assert_eq!(app.audio.client_cues(), 0, "the wiring never fired");
+    }
+
+    #[test]
+    fn a_selection_membership_change_clicks_but_a_redundant_one_does_not() {
+        // A-122: the cue is the *change* — a redundant re-select of the
+        // same membership is not a click.
+        let mut app = app();
+        app.set_selection(vec![EntityId(1)]);
+        assert_eq!(app.audio.null_client_cues(), 1);
+        assert_eq!(app.selection, vec![EntityId(1)]);
+        app.set_selection(vec![EntityId(1)]); // same membership: no cue at all
+        assert_eq!(app.audio.client_cues(), 1, "the wiring never fired");
+    }
+
+    #[test]
+    fn clearing_a_selection_through_the_escape_ladder_clicks() {
+        // Escape's ClearSelection rung routes through the same gate (the
+        // clear of a non-empty selection is a change).
+        let mut app = app();
+        app.set_selection(vec![EntityId(2)]);
+        assert_eq!(app.audio.null_client_cues(), 1);
+    }
+
+    #[test]
+    fn activating_a_menu_row_clicks_the_ui_cue() {
+        // A-121: every row activation — Enter, click, or the end screen's
+        // R — funnels through one core that cues the UI click. Pinned here
+        // at the core (menu_activate); the input paths route through it.
+        let mut app = app();
+        let (next, effect) = app.menu_activate(1, &app.menu_ctx());
+        assert!(matches!(next.screen, Screen::Settings { .. }));
+        assert_eq!(effect, Effect::None);
+        assert_eq!(
+            app.audio.null_client_cues(),
+            1,
+            "the activation reached the sink"
+        );
+    }
 }
 
 #[cfg(test)]
