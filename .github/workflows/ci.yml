@@ -92,7 +92,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: binaries-${{ hashFiles('Cargo.lock') }}
-      - name: Every binary starts (plan §0: the game must build and run)
+      - name: "Every binary starts (plan §0 - the game must build and run)"
         run: |
           cargo run -p pandemonium-tools -- headless --seed 1 --ticks 30
           cargo run -p pandemonium-tools -- headless --seed 1 --ticks 60 --p1 ai --p2 ai
