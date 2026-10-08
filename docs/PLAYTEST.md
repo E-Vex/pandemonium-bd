@@ -166,14 +166,15 @@ tester.
 1. **Placement guess (DEBT-012):** did any build-placement preview say **legal**
    when the order was then refused, or **illegal** when it should have
    succeeded? (yes/no; if yes — seed + tick, or an F8 dump)
-2. **Audio (DEBT-011, repaid in M10.2 Phase 4 — the probe lives on as
-   the re-test's sound check):** do the nine cues fire at their moments
+2. **Audio (DEBT-011, repaid in M10.2 Phase 4; the owner's re-test came
+   back clean — A-126 — so the probe now guards against regression):**
+   do the nine cues fire at their moments
    and sound distinct from each other? Does a big fight read as a
    heartbeat rather than noise (the per-cue rate limiter)? Does volume
    change loudness live, does mute silence everything, and do both
    survive a restart? A muddled cue, a noise-fight, or a dead volume row
-   is a finding — the machine proved the wiring and the counting; only
-   ears can prove the sound.
+   is a finding — the machine proved the wiring and the counting, the
+   owner proved the sound; the testers prove it keeps working.
 3. **Feel (A8):** did orders feel instant? Any input that felt dead?
 
 ## 6. Bug-report procedure
@@ -198,12 +199,39 @@ tester.
 | owner (re-test) | 2026-10 (post-M10.2 Phase 1) | desktop, real display | d84203e | **pass, with notes** — the loop is playable with the new controls card; the notes arrive after the Phase 2 delivery (A-101: the owner re-tests on their machine and reports any issue with its exact location; a reported issue becomes a finding row here) | not reached | feel: pending specifics | none filed yet |
 | owner (re-test 2) | 2026-10-08 (post-M10.2 Phase 2) | desktop, real display | 404e906 | **pass** — the Phase 2 visual pass cleared the way for Phase 3 (the owner's go-ahead: "Great now write the task P3 to the next AI agent"; A-107); any residual visual notes fold into the next re-test | not reached | feel: unchanged from the Phase 1 notes | none filed |
 | owner (re-test 3) | 2026-10-08 (post-M10.2 Phase 3) | desktop, real display | 1210cbd | **pass** — the Phase 3 menus/settings re-test cleared the way for Phase 4 (the owner's go registered as A-119); the menu-first flow, the three modes, and settings persistence judged right | not reached | feel: carried into the Phase 4 re-test | none filed |
-| | | | | | | | |
-| | | | | | | | |
-| | | | | | | | |
+| owner (re-test 4) | 2026-10-09 (post-M10.2 Phase 4) | desktop, real hardware | 652f6cf | **pass, clean** — the Phase 4 audio re-test (A-126): the nine cues fire at their moments and sound distinct; volume changes loudness live, mute silences everything, both survive Done + relaunch; a big fight reads as a heartbeat, not noise. The go for the M10.2 closeout and the A14 scheduling below | not reached (the A14 sessions carry it) | audio: clean end to end; feel: unchanged from the Phase 3 notes | none filed |
 
-Five rows, ready to fill. A failed tester is a finding — record them anyway;
-they are often the most valuable row in the table.
+### The A14 schedule (set at the M10.2 Phase 5 closeout)
+
+Five first-time-player slots, three waves, honest rows — the declaration's
+bar (plan §13) does not move: **a failed tester is a finding, never a
+wave-through**, and when the table below holds five honest rows the owner
+flips A14 in `docs/ALPHA_DECLARATION.md` (or records the finding) citing
+this file. Fill the row as the session runs: date, OS, build commit (the
+`master` HEAD you cloned), the loop verdict per section 3, the spectator
+verdict per section 4, the section-5 probes, and any F8 incidents.
+
+| Slot | Wave / target date | Focus (the session stays unaided — this only steers the report) |
+|---|---|---|
+| T1 | 1 — by 2026-10-19 | the full unaided loop, controls under load (spam-click, box select, right-drag scroll) |
+| T2 | 1 — by 2026-10-19 | the full unaided loop, economy legibility (train / build / queue / rally without asking) |
+| T3 | 2 — by 2026-10-26 | the spectator half (section 4: watch 60 seconds of a fight) plus the placement probe (DEBT-012) |
+| T4 | 2 — by 2026-10-26 | the audio and settings probes (section 5: the nine cues, volume/mute live + persistence) |
+| T5 | 3 — by 2026-10-31 | the full unaided loop on a second OS (Windows or macOS — the quickstart is three commands) |
+
+| Tester | Date | OS | Build commit | Loop completed (unaided?) | Spectator verdict | Probes (placement / audio / feel) | Incidents (seed + tick + dump filenames) |
+|---|---|---|---|---|---|---|---|
+| T1 | | | | | | | |
+| T2 | | | | | | | |
+| T3 | | | | | | | |
+| T4 | | | | | | | |
+| T5 | | | | | | | |
+
+Recruit first-time players (the declaration's own words: *first-time
+players complete the loop unaided*). The owner's re-test rows above are
+not substitutes — they steered the fixes; these five honest T-rows are
+the gate. A failed tester is a finding — record them anyway; they are
+often the most valuable row in the table.
 
 ### Result #1 in detail — the owner's playtest-1 (M10.2's source)
 
@@ -312,3 +340,35 @@ cue that muddles with another, any moment that stays silent, or a fight
 that turns into mush is a finding for the results table above — the
 per-cue recipes in `crates/client/src/sound.rs` are one match arm each
 and re-tunable in isolation.
+
+### Phase 5 delivery note (verification and handoff — the closeout)
+
+M10.2 Phase 5 verified the milestone and closed it out; no code moved.
+The full gate ran green in dev **and** release (fmt, clippy `-D warnings`,
+546 / 541 tests — the five should-panic invariants are debug-only), the
+three goldens came back bit-identical (demo `0xb6fff6659cfb7709`,
+flagship `0x6e9a18bd7c5f699f`, content `0x9bc18c521107b262`), the replay
+round-trip (A2) passed, and the headless smoke printed its audio
+evidence line.
+
+The Xvfb + XTEST machine pass re-ran the M10.2 paths on the windowed
+client (llvmpipe GL, no audio device — the null arm; the recipe is
+AI-Handoff §9): a seed-7 Player-vs-AI match driven end to end (menu →
+New Match → Start; a drag-box selection of the five start entities; one
+right-click ground order — the only way to command; a right-drag scroll
+that moved the camera ~85 % of the frame and issued **no** order — the
+6 px threshold; the Esc ladder through clear-selection → pause menu →
+Resume; the selection re-held at exit), a menu-only session whose New
+Match row was mouse-activated (the focused row's plate located from the
+screenshot), the settings persistence pair (volume Left to 0.95, mute
+on, Done saves; the relaunch loads the file and the audio evidence line
+reports `[muted]`), and the Esc-discard run (no file written). The audio
+evidence lines stated the arm every time and counted the match's cues —
+fed/voiced/dropped 24/21/3 with 5 client-side — the machine counts, it
+never claims sound.
+
+**The verdict row above (re-test 4, A-126) is the owner's:** the sounds
+play, the nine moments are distinct, volume is live, mute silences, both
+persist, and a big fight is a heartbeat. With that, M10.2 is complete
+and the A14 schedule above is live — the five T-rows are the only thing
+standing between this repo and the Alpha declaration.
