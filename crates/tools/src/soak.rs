@@ -12,12 +12,25 @@
 //! runner drives.
 //!
 //! A7 (plan §13): "1000 seeded AI-vs-AI matches complete with no panics,
-//! no stuck matches (> 20 min game time), no invariant violations". This
-//! runner reports exactly those three signals — panics surface as `Err`
-//! per match; stuck matches surface as "unresolved (ran the tick budget)";
-//! invariant violations surface as the A12 debug-assert panic from inside
-//! `Sim::step`. The caller passes `--release` for the real A7 run, since
-//! the A12 checker is debug-only by design.
+//! no stuck matches (> 20 min game time), no invariant violations". Where
+//! each signal is actually observable:
+//!
+//! - **Panics** are isolated per match: [`run_soak`] wraps every match in
+//!   `catch_unwind`, so a panic becomes a `crashed` count carrying the seed
+//!   and the panic message instead of an abort (pre-isolation, one panic
+//!   destroyed the whole run's report and every later match's telemetry).
+//!   Isolation is observability, never recovery — the tool still exits
+//!   non-zero at the end when anything crashed (see the soundness note on
+//!   [`isolate_panic`]).
+//! - **Stuck matches** surface as "unresolved (ran the tick budget)".
+//! - **Invariant violations** are A12 debug-assert panics, and the A12
+//!   checker is debug-only by design (plan §13) — so only a *dev-profile*
+//!   soak observes them, where the isolation counts each violation as one
+//!   `crashed` match with its seed. The release nightly is the
+//!   panics/stuck/resolution/throughput tier; the nightly's dev-profile
+//!   tier is the invariant sweep. (Before the isolation existed, a dev
+//!   soak was useless at scale: the first violation aborted the run and
+//!   took the evidence with it.)
 //!
 //! Determinism: each match's seed is `seed_base + index`, so two soak
 //! runs over the same range produce byte-identical checkpoints per match.
@@ -32,7 +45,7 @@ use clap::Args;
 use pandemonium_content::ContentBundle;
 use pandemonium_sim_api::PlayerId;
 
-use crate::ai_match::{run_ai_match, MatchSummary, Slot};
+use crate::ai_match::{run_ai_match, AiMatch, MatchSummary, Slot};
 
 /// The soak subcommand's CLI shape (plan §12 `tools soak`).
 #[derive(Args, Clone, Debug)]
@@ -76,6 +89,11 @@ pub struct SoakReport {
     pub unresolved: u32,
     /// How many produced a panic or host error (A7's "crash" signal).
     pub crashed: u32,
+    /// The crash evidence, one entry per crashed match: `(seed, reason)`
+    /// (match order = ascending seed, deterministic). Panic reasons carry
+    /// a `panic:` prefix so the report distinguishes a runtime panic or A12
+    /// violation from a load-stage anyhow error.
+    pub crashes: Vec<(u64, String)>,
     /// Per-player wins (index 0 = player 0, etc.).
     pub wins: Vec<u32>,
     /// End tick of each resolved match (the tick MatchEnded fired).
@@ -121,21 +139,38 @@ impl SoakReport {
 }
 
 /// Runs the soak: `matches` AI-vs-AI matches, seeds `seed_base + i`,
-/// aggregated into one report. Per-match errors (panics, host failures)
-/// are recorded in the report rather than aborting the run — A7 wants
-/// exactly that signal.
+/// aggregated into one report. Per-match failures — host errors *and
+/// panics* — are isolated, recorded with their seed, and counted in
+/// `crashed` rather than aborting the run: A7 wants exactly that signal,
+/// and a report that survives the first crash is the evidence. `main`
+/// still exits non-zero afterwards when anything crashed.
 pub fn run_soak(cli: &SoakCli) -> Result<SoakReport> {
     let bundle = ContentBundle::load_dir(&cli.content)
         .with_context(|| format!("loading content from {}", cli.content.display()))?;
+    let starts = bundle.map.starts.len();
+    let ticks = cli.ticks;
+    Ok(sweep_matches(cli, starts, |seed| {
+        run_ai_match(&bundle, seed, ticks, Slot::Ai, Slot::Ai)
+    }))
+}
+
+/// The sweep loop behind [`run_soak`], over an injectable per-seed match
+/// driver (the seam the crash-isolation tests use): every driver call is
+/// panic-isolated, a panic or error is recorded with its seed, and the
+/// loop continues to the next match.
+fn sweep_matches<F>(cli: &SoakCli, starts: usize, driver: F) -> SoakReport
+where
+    F: Fn(u64) -> Result<AiMatch>,
+{
     let mut report = SoakReport {
         matches: cli.matches,
-        wins: vec![0; bundle.map.starts.len()],
+        wins: vec![0; starts],
         ..SoakReport::default()
     };
     let start = Instant::now();
     for index in 0..cli.matches {
         let seed = cli.seed_base + index as u64;
-        match run_ai_match(&bundle, seed, cli.ticks, Slot::Ai, Slot::Ai) {
+        match isolate_panic(|| driver(seed)) {
             Ok(match_result) => {
                 // The match's own end tick when it resolved; the budget when
                 // it ran out (the runner simulates on after MatchEnded, so
@@ -161,16 +196,52 @@ pub fn run_soak(cli: &SoakCli) -> Result<SoakReport> {
                     );
                 }
             }
-            Err(error) => {
+            Err(reason) => {
                 report.crashed += 1;
+                report.crashes.push((seed, reason.clone()));
                 if cli.verbose {
-                    println!("  match {index:>4} (seed {seed:>4}): CRASH — {error:#}");
+                    println!("  match {index:>4} (seed {seed:>4}): CRASH — {reason}");
                 }
             }
         }
     }
     report.wall_seconds = start.elapsed().as_secs_f64();
-    Ok(report)
+    report
+}
+
+/// Runs one match driver call with panic isolation: `Ok` passes through,
+/// an anyhow error keeps its full chain (`{error:#}`), and a panic unwinds
+/// into this boundary and becomes a `panic:`-prefixed reason string
+/// instead of an aborted process.
+///
+/// Soundness (why `AssertUnwindSafe` is correct here): the driver's
+/// arguments are shared references and copies; every mutable value a match
+/// owns — host, sim, world, controllers — is constructed inside the call
+/// and dropped while unwinding, so no half-updated state survives the
+/// boundary into the next match. The catch exists to *observe* the crash
+/// (count it, attribute the seed, keep the report alive); the caller never
+/// reuses suspect state, and `main` still exits non-zero afterwards. A
+/// `panic = "abort"` profile makes this a no-op by construction — the
+/// process aborts exactly as it did before the isolation existed.
+fn isolate_panic<T>(run: impl FnOnce() -> Result<T>) -> Result<T, String> {
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+    match caught {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(format!("{error:#}")),
+        Err(payload) => Err(format!("panic: {}", panic_reason(payload))),
+    }
+}
+
+/// The message inside a panic payload: `&'static str`, `String`, or a
+/// generic line for any other payload type.
+fn panic_reason(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "a non-string panic payload".to_string()
+    }
 }
 
 /// Records one match's outcome into the report.
@@ -206,6 +277,26 @@ fn outcome_label(summary: &MatchSummary) -> &'static str {
     }
 }
 
+/// The per-crash evidence lines for the report: one line per crashed match
+/// (seed + reason), capped at ten with an overflow pointer — a systematic
+/// failure firing in every match must not bury the summary under a
+/// thousand identical lines (the run order is the seed order, so the
+/// dropped entries are exactly the later matches).
+fn crash_lines(report: &SoakReport) -> Vec<String> {
+    const CAP: usize = 10;
+    let mut lines: Vec<String> = report
+        .crashes
+        .iter()
+        .take(CAP)
+        .map(|(seed, reason)| format!("    seed {seed}: {reason}"))
+        .collect();
+    let overflow = report.crashes.len().saturating_sub(CAP);
+    if overflow > 0 {
+        lines.push(format!("    ... and {overflow} more crashed match(es)"));
+    }
+    lines
+}
+
 /// Prints the soak report (the non-verbose summary line).
 pub fn print_report(report: &SoakReport) {
     println!("pandemonium soak — sequential AI-vs-AI run");
@@ -222,6 +313,9 @@ pub fn print_report(report: &SoakReport) {
         report.unresolved
     );
     println!("  crashed:        {} (A7 crash signal)", report.crashed);
+    for line in crash_lines(report) {
+        println!("{line}");
+    }
     println!(
         "  end tick:       avg {:.0}, max {} (resolved matches only)",
         report.avg_end_tick(),
@@ -241,7 +335,11 @@ pub fn print_report(report: &SoakReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pandemonium_sim_api::PlayerId;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
+    use pandemonium_sim_api::{ControllerKind, PlayerId, PlayerSetup};
 
     fn summary(winner: Option<PlayerId>) -> MatchSummary {
         MatchSummary {
@@ -292,5 +390,185 @@ mod tests {
             "mutual destruction"
         );
         assert_eq!(outcome_label(&summary(None)), "unresolved");
+    }
+
+    // --- Panic isolation (the A7 crash telemetry) --------------------------
+    //
+    // The regression this section pins: before the isolation existed, a
+    // panic inside any match aborted the whole soak — the report, the
+    // win-rate telemetry, and every later match were lost, and the
+    // documented "crashed: N" line was unreachable for panics (only
+    // pre-simulation anyhow errors could reach it). These tests print the
+    // default panic hook's stderr lines on purpose — that output is the
+    // debugging evidence; the reason string is the report's.
+
+    /// A minimal well-formed match result for the sweep seam's tests.
+    fn canned_match(winner: PlayerId, ended_tick: u32) -> AiMatch {
+        AiMatch {
+            replay: ReplayFile {
+                format_version: FORMAT_VERSION,
+                content_hash: 0,
+                map_id: 0,
+                seed: 0,
+                player_setup: vec![
+                    PlayerSetup {
+                        player: PlayerId(0),
+                        controller: ControllerKind::Ai,
+                    },
+                    PlayerSetup {
+                        player: PlayerId(1),
+                        controller: ControllerKind::Ai,
+                    },
+                ],
+                commands: vec![],
+                checkpoints: vec![Checkpoint { tick: 0, hash: 0 }],
+                final_hash: 0,
+            },
+            summary: MatchSummary {
+                commands: 1,
+                delivered: vec![0, 0],
+                trained: vec![0, 0],
+                built: vec![0, 0],
+                attack_hits: vec![0, 0],
+                deaths: vec![0, 0],
+                winner: Some(winner),
+                ended_tick: Some(ended_tick),
+            },
+        }
+    }
+
+    fn sweep_cli(matches: u32) -> SoakCli {
+        SoakCli {
+            matches,
+            seed_base: 100,
+            ticks: 10,
+            content: PathBuf::new(),
+            verbose: false,
+        }
+    }
+
+    fn repo_content() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .to_path_buf()
+            .join("content")
+    }
+
+    #[test]
+    fn ok_passes_through_and_errors_keep_their_chain() {
+        assert_eq!(isolate_panic(|| Ok(7)), Ok(7));
+        let reason = isolate_panic::<()>(|| {
+            Err(anyhow::anyhow!("load failed").context("the content directory"))
+        })
+        .expect_err("the error arm maps to a reason");
+        assert!(
+            reason.contains("the content directory"),
+            "chain kept: {reason}"
+        );
+        assert!(reason.contains("load failed"), "root kept: {reason}");
+        assert!(
+            !reason.contains("panic"),
+            "an error is not a panic: {reason}"
+        );
+    }
+
+    #[test]
+    fn string_panics_carry_their_message() {
+        // `panic!("literal")` payloads are `&'static str`; formatted panics
+        // are `String` — both must surface verbatim behind the `panic:` tag.
+        let literal = isolate_panic::<()>(|| panic!("A12 population: player 0 usage drifted"))
+            .expect_err("a panic is a crash reason");
+        assert_eq!(literal, "panic: A12 population: player 0 usage drifted");
+        let formatted = isolate_panic::<()>(|| panic!("beta broke at seed {}", 101))
+            .expect_err("a panic is a crash reason");
+        assert_eq!(formatted, "panic: beta broke at seed 101");
+    }
+
+    #[test]
+    fn non_string_panics_are_counted_with_a_generic_reason() {
+        let reason = isolate_panic::<()>(|| std::panic::panic_any(7usize))
+            .expect_err("any payload type is a crash reason");
+        assert_eq!(reason, "panic: a non-string panic payload");
+    }
+
+    #[test]
+    fn a_panicking_match_is_counted_and_the_sweep_continues() {
+        // THE regression: with the pre-isolation loop, this driver's panic
+        // propagated out of the sweep and aborted the run (the report and
+        // both surviving matches' telemetry were lost). Isolated, it is one
+        // crashed match attributed to its seed, and the sweep finishes.
+        let report = sweep_matches(&sweep_cli(3), 2, |seed| {
+            if seed == 101 {
+                panic!("the invariant broke in match 1");
+            }
+            Ok(canned_match(PlayerId(0), 4321))
+        });
+        assert_eq!(report.matches, 3);
+        assert_eq!(report.crashed, 1, "the panic is counted: {report:?}");
+        assert_eq!(
+            report.crashes,
+            vec![(101, "panic: the invariant broke in match 1".to_string())],
+            "the crash is attributed to its seed"
+        );
+        assert_eq!(report.resolved, 2, "the sweep continued past the crash");
+        assert_eq!(report.end_ticks, vec![4321, 4321]);
+        assert_eq!(report.wins, vec![2, 0]);
+        assert_eq!(report.total_ticks, 8_642);
+    }
+
+    #[test]
+    fn an_erroring_match_is_counted_with_its_chain() {
+        // The pre-isolation Err arm (load-stage anyhow failures) keeps its
+        // exact semantics: counted, attributed, sweep continues.
+        let report = sweep_matches(&sweep_cli(2), 2, |seed| {
+            if seed == 100 {
+                anyhow::bail!("the host refused to advance");
+            }
+            Ok(canned_match(PlayerId(1), 999))
+        });
+        assert_eq!(report.crashed, 1);
+        assert_eq!(
+            report.crashes,
+            vec![(100, "the host refused to advance".to_string())]
+        );
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.wins, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_crash_list_is_capped_so_a_storm_cannot_bury_the_report() {
+        let report = SoakReport {
+            crashes: (0..12).map(|i| (i, format!("reason {i}"))).collect(),
+            ..SoakReport::default()
+        };
+        let lines = crash_lines(&report);
+        assert_eq!(lines.len(), 11, "ten seeds plus the overflow line");
+        assert!(lines[0].contains("seed 0: reason 0"));
+        assert!(lines[9].contains("seed 9: reason 9"));
+        assert!(lines[10].contains("2 more"), "overflow line: {}", lines[10]);
+    }
+
+    #[test]
+    fn run_soak_over_the_real_content_reports_zero_crashes() {
+        // The real path end-to-end, through the isolation boundary: two
+        // short real matches over the shipped content stay green and the
+        // report's crash accounting lands on zero.
+        let cli = SoakCli {
+            matches: 2,
+            seed_base: 7,
+            ticks: 60,
+            content: repo_content(),
+            verbose: false,
+        };
+        let report = run_soak(&cli).expect("the real soak runs");
+        assert_eq!(report.matches, 2);
+        assert_eq!(report.crashed, 0);
+        assert!(report.crashes.is_empty());
+        assert_eq!(
+            report.resolved + report.mutual_destruction + report.unresolved,
+            2
+        );
     }
 }
