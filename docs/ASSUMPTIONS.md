@@ -1106,3 +1106,30 @@ confirms or rejects it.
   slots now live in `docs/PLAYTEST.md` §7, and the audio probe there
   stays armed as a regression guard for the A14 sessions rather than an
   open question.
+
+- **A-127 (plan §13 A7/A12, post-M10.2 instrument pass).** The soak
+  runner's crash telemetry is observability, never recovery: each match
+  runs inside `catch_unwind` (`tools/src/soak.rs::isolate_panic`), a
+  panic becomes one `crashed` count carrying its seed and panic message
+  (the `panic:` prefix distinguishes it from a load-stage anyhow error),
+  the sweep continues, the report prints, and `main` still exits
+  non-zero at the end — the isolation must never become a license to
+  run a broken sim green. `AssertUnwindSafe` is sound here because every
+  mutable value a match owns (host, sim, world, controllers) is
+  constructed inside the isolated call and dropped while unwinding, so
+  no half-updated state crosses the boundary; the caught panic's
+  evidence (count, seed, message, and the default hook's stderr
+  backtrace) is the product, not the surviving state. The panic hook's
+  stderr output stays enabled deliberately — it is the debugging
+  evidence; the report's reason line is the summary. A `panic =
+  "abort"` profile would make the isolation a no-op by construction
+  (the process aborts as before); no such profile exists in this
+  workspace. Tier semantics: the release nightly observes panics,
+  stuck matches, resolution, and throughput; only a *dev-profile* soak
+  observes A12 invariant violations (the checker is `debug_assert`-only
+  by plan §13's letter), which the nightly's new `soak-dev` tier sweeps
+  over 16 rotating seeds per night. The dev tier's count (16) balances
+  dev-profile cost (an order of magnitude slower than release) against
+  coverage (~240 fresh seeds a month) — a calibration guess, revisitable
+  by evidence if the tier's runtime lands far from its 45-minute
+  timeout.

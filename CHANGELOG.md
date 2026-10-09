@@ -7,6 +7,59 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [Post-M10.2] — the soak instrument: A7's crash telemetry made real
+
+An engineering pass between milestones (the A14 playtest is scheduled and
+remains the owner's; nothing here touches the simulation, the content, or
+the goldens — the tree under `crates/sim`, `sim_api`, `fx`, `ai`, and
+`content/` is byte-identical, and all three golden hashes re-verified
+bit-identical). The target: the soak runner's module docs promised crash
+telemetry that did not exist — "panics surface as `Err` per match" was
+false (no `catch_unwind` anywhere: one panic aborted the whole run, took
+the report and every later match's telemetry with it, and left the
+`crashed: N` line reachable only by pre-simulation load errors), and the
+claim that the A12 checker's invariant violations surface in the
+`--release` soak was self-contradictory (the checker is `debug_assert`-only,
+compiled out of exactly the profile the docs told you to run).
+
+- **the fix (tools)**: every soak match now runs inside
+  `catch_unwind` (`soak.rs::isolate_panic`, with the written soundness
+  argument for `AssertUnwindSafe`): a panic becomes one `crashed` count
+  attributed to its seed, the panic message lands in the report behind a
+  `panic:` prefix (the default hook's stderr backtrace stays on — that is
+  the debugging evidence), the sweep continues, the report prints, and
+  `main` still exits non-zero at the end. Isolation is observability,
+  never recovery (A-127). The report gained a `crashes` field (seed +
+  reason per crash) and a capped crash list so a systematic storm cannot
+  bury the summary.
+- **the regression proof**: seven new tools tests (24 total, from 17) —
+  the sweep-seam test injects a panicking match and asserts it is
+  counted, attributed, and *survived*; run against the pre-fix loop
+  (temporarily reverted locally, not in the tree), that test aborts —
+  the exact original defect. Payload extraction, error-chain passthrough,
+  the crash-list cap, and an end-to-end real-content soak are pinned
+  alongside.
+- **the nightly's evidence contract (CI)**: the aggregate job now carries
+  job-level `!cancelled()` — its own comment always claimed it "runs even
+  when a shard failed", but a plain `needs:` skips dependents on failure,
+  which dropped the evidence concatenation and the crashed gate on
+  precisely the failure paths they exist for. A new `soak-dev` tier runs
+  16 rotating matches per night in the **dev profile** — the only profile
+  where the A12 checker exists, so "no invariant violations" is finally
+  *measured* at soak scale (~240 fresh seeds a month) instead of resting
+  on the per-push fixed-seed suites alone.
+- **the registers**: A-127 (the isolation contract and tier semantics),
+  DEBT-018 (a found-but-deliberately-not-fixed robustness gap:
+  `ReplayFile::decode` pre-allocates from untrusted length prefixes — out
+  of the declared threat model today, repay when replays are ever
+  exchanged between parties), AI-Handoff/ARCHITECTURE/README caught up.
+- **the gate**: fmt and clippy `-D warnings` clean; **553 dev / 548
+  release tests green**; demo `0xb6fff6659cfb7709`, flagship
+  `0x6e9a18bd7c5f699f`, content `0x9bc18c521107b262` all bit-identical;
+  the replay round-trip PASS; real soaks green through the isolation
+  boundary in both profiles (dev 4×900 ticks at 1118 t/s with the A12
+  checker live; release 8×4000 ticks at 5497 t/s).
+
 ## [M10.2 Phase 5] — verification and handoff (the closeout)
 
 The final phase of the milestone: prove it, don't extend it. Delivered as

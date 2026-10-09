@@ -30,8 +30,8 @@
 | Presentation | **3D perspective over the 2D logical ground plane** — the sim stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md)) |
 | Status | **M10.2 (playtest-1 findings): COMPLETE — all five phases.** Phase 4 (audio) delivered and re-tested **clean on real hardware** (A-126, 2026-10-09); Phase 5 (verification & handoff) closed the milestone: full gate green in dev and release, the three goldens bit-identical, the Xvfb+XTEST machine pass re-ran the M10.2 paths (controls, menus/settings, the audio evidence lines), and the A14 playtest is scheduled — five first-time tester slots in `docs/PLAYTEST.md` §7. Next: the A14 human playtest → Alpha declaration |
 | Goldens (never move) | demo `0xb6fff6659cfb7709` (seed 7, 300 ticks) · flagship `0x6e9a18bd7c5f699f` (seed 7, 7200 ticks AI-vs-AI; tick-0 `0x71a924ad5799e4b3`) · content `0x9bc18c521107b262` (map id `0xd38136401ab02ff1`) |
-| Tests | 546 dev / 541 release (5 should-panic invariant tests are debug-only) |
-| Registers | ASSUMPTIONS last = A-126. Key open debt: DEBT-008 (the human visual pass — the A14 sessions close it), DEBT-013 (client monoliths), DEBT-016, DEBT-017. M10.2 fully repaid DEBT-011 (the audible backend **and** the owner's clean re-test) and closed DEBT-015 (A14's ≥5-tester gate is the owner's, not milestone scope) |
+| Tests | 553 dev / 548 release (5 should-panic invariant tests are debug-only) |
+| Registers | ASSUMPTIONS last = A-127. Key open debt: DEBT-008 (the human visual pass — the A14 sessions close it), DEBT-013 (client monoliths), DEBT-016, DEBT-017, DEBT-018 (replay decode pre-allocation, out of the declared threat model). M10.2 fully repaid DEBT-011 (the audible backend **and** the owner's clean re-test) and closed DEBT-015 (A14's ≥5-tester gate is the owner's, not milestone scope) |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires |
 
 M10.2 in one paragraph: **Phase 1** controls (Generals ZH-style right-button state machine, middle-drag rotate, edge scroll, Escape ladder) re-tested pass-with-notes (A-101). **Phase 2** visual legibility (per-kind silhouettes, blue/orange teams, health bars, tooltips, minimap markers) re-tested pass (A-107). **Phase 3** menus/settings — pure state machine `client/src/screens.rs`, host built on Start (game opens at the menu), `client/src/config.rs` settings file (no serde), pause menu, end screen with Rematch/Main Menu — Xvfb+XTEST machine-verified, re-tested (A-119). **Phase 4** audio — rodio 0.22.2 playback-only behind the `AudioSink` seam (ADR-0002), `client/src/sound.rs`'s two-arm sink (a silent null fallback when there is no device), nine synthesized cues (six event-mapped + three client-side through `on_cue`), per-cue 80 ms rate limiter, live volume + `muted` eighth key — machine-verified on Xvfb (the null arm; evidence lines count cues). Registers A-107..A-125. **Phase 5** (verification & handoff) closed the milestone out: the full gate green in dev **and** release (546/541), the three goldens bit-identical, a five-session Xvfb+XTEST machine pass over the M10.2 paths (29 checks, all green — the match session, the menu-only session, the settings persistence pair, the Esc-discard run), the owner's audio re-test clean (A-126), and the A14 playtest scheduled. Registers A-107..A-126.
@@ -54,13 +54,15 @@ cargo test --workspace --release             # determinism must hold in release 
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300                    # ends 0xb6fff6659cfb7709
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 7200 --p1 ai --p2 ai   # ends 0x6e9a18bd7c5f699f
 cargo run -p pandemonium-tools -- content-validate content                         # PASS, content hash above
+cargo run -p pandemonium-tools -- soak --matches 4 --ticks 900                # dev: the A12 invariant sweep, crash-isolated per match
+cargo run --release -p pandemonium-tools -- soak --matches 8 --ticks 4000     # release: the panics/stuck/resolution tier
 cargo run -p pandemonium-client                    # window on a desktop; headless smoke without a display
 cargo run -p pandemonium-client -- --frames 900    # windowed smoke: auto-exit + evidence summary
 cargo run -p pandemonium-client -- --seed 42 --record run.pdrp && \
 cargo run -p pandemonium-tools -- replay-verify run.pdrp                           # A2
 ```
 
-Expected: everything succeeds; 546 tests pass in dev (541 release); all three goldens bit-identical.
+Expected: everything succeeds; 553 tests pass in dev (548 release); all three goldens bit-identical.
 `--p1 ai --p2 ai --ticks 27000` shows a full match resolving naturally. The headless smoke drives the
 windowed path's exact hosting seam (AI opponent included) and, since M10.2 Phase 4, constructs the real audio sink — the exit evidence says what audio did (the arm: active or null fallback; the cues' fed/voiced/dropped fates) alongside the feedback-wiring line. The same run that is silent under Xvfb/CI is audible on real hardware.
 The windowed path is verified on Xvfb + llvmpipe (recipe in §9 / DEBT-008); the *human* visual pass is the
@@ -78,7 +80,7 @@ owner's. CI runs fmt + clippy + tests on Linux/Windows/macOS in dev and release,
 | `replay` | Canonical LE byte codec + checksummed replay record/validate |
 | `engine` | FixedTimestep, Interpolator, `MatchHost` (+ pause/step, AI controllers, log, outcome), `RtsCamera`, terrain mesh, Renderer trait, `ai_host`, **`audio.rs`** (`AudioSink` + `on_cue`, `cue_for`, the nine-cue enum with ALL/index/name, `NullAudioSink` — also the client-cue oracle) |
 | `client` | winit + wgpu 3D renderer, fontdue text, HUD/overlay, input (`input.rs`, `orders.rs`), `feedback.rs`, `ui.rs`, `report.rs` (F8 bug report), `silhouette.rs`, `screens.rs`, `config.rs`, `sound.rs` (two-arm audio sink). `main.rs`/`render.rs` are monoliths (DEBT-013) |
-| `tools` | `headless`, `replay-verify`, `content-validate`, `soak`, `bench` (clap CLI) |
+| `tools` | `headless`, `replay-verify`, `content-validate`, `soak` (A7: per-match panic-isolated crash telemetry — a panic is counted with its seed instead of aborting the run; a *dev-profile* soak is the only tier that observes A12 violations), `bench` (clap CLI) |
 | `tests/` | `pandemonium-tests` package: architecture_law (A13), determinism, content_pipeline, movement, economy, combat, vision, ai, match_rules, alpha_loop. New acceptance tests need an explicit `[[test]]` entry in `tests/Cargo.toml` |
 
 The dependency law is **enforced by tests**: `tests/architecture_law.rs` checks the internal edge
@@ -121,6 +123,11 @@ types, wall-clock reads, and floating-point type names.
 3. **Known limitations to carry forward:** formation-less jams (A-040), staircase paths, stalled construction sites when the builder dies (A-045; the scripted AI shares the hole), O(N·V) per-tick fog recompute, scripted-AI sight-verification latency (A-062), and the AI's scriptedness itself.
 
 ## 9. Sharp edges and gotchas
+
+**Sim, tools, and the A7 instrument**
+- **The soak's crash telemetry is real since the post-M10.2 instrument pass**: every match runs inside `catch_unwind`, a panic becomes `crashed: N` with the seed and panic message in the report (the `panic:` prefix marks it), the sweep continues, and `main` exits non-zero at the end. Isolation is observability, never recovery (A-127) — never widen it into "keep going with suspect state".
+- **Tier semantics matter**: the A12 checker is `debug_assert`-only, so a *release* soak observes panics/stuck/resolution/throughput, and only a *dev* soak observes invariant violations (each violation is one isolated, counted crash). The nightly's release tiers are the 1000-match sweep; `soak-dev` (16 rotating matches) is the invariant tier; the aggregate job runs on tier failure (`!cancelled()`).
+- `cargo test --workspace` runs the tests in dev — the A12 checker is live in every dev-profile match the suites drive.
 
 **Determinism and the sim**
 - **Presentation direction is invisible to the sim's test wall** (M9.1): hashes pin behavior, not feel — the camera's right axis was negated from M3 until a human pressed D. Camera/feel primitives need direction-pinned tests (yaw 0 and 90°) AND the human pass.

@@ -274,9 +274,9 @@ Built and verified through M9:
   law holds.
 - **CI** — fmt, clippy with `-D warnings`, and the test suite in dev *and*
   release on Linux, Windows, and macOS, plus the replay round-trip and a
-  binaries-run check. **546 tests green in dev, 541 in release** at the
-  M10.2 closeout (5 should-panic invariant-checker tests are debug-only by
-  nature).
+  binaries-run check. **553 tests green in dev, 548 in release** at the
+  post-M10.2 instrument pass (5 should-panic invariant-checker tests are
+  debug-only by nature).
 
 Not built yet — on purpose, in milestone order:
 

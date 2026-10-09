@@ -395,7 +395,16 @@ budget)") — plus `replay-verify` — re-simulation with checkpoint comparison
 directory). M2 added `content-validate` — strict validation of a content
 directory plus its content identity. The AI match driver and the
 re-simulation both run through the engine's hosting and
-`sim::run_command_log` respectively.
+`sim::run_command_log` respectively. M10 added `soak` and `bench`; the
+post-M10.2 instrument pass hardened the soak's A7 crash telemetry: every
+match runs inside `catch_unwind`, a panic becomes a `crashed` count with
+its seed and message in the report instead of an aborted run (the exit code
+stays non-zero — isolation is observability, never recovery; A-127), and
+the report's crash list names the seeds. The A12 checker being
+debug-only means a *release* soak observes panics/stuck/resolution while
+only a *dev-profile* soak observes invariant violations — the nightly runs
+both tiers (release shards + the 16-match `soak-dev` invariant sweep), and
+its aggregate job concatenates the evidence even when a tier fails.
 
 `tests/determinism.rs` carries the A1/A2 suite with pinned golden hashes
 (encoding v4 — A-056); `tests/content_pipeline.rs` carries the M2 suite
