@@ -4,10 +4,21 @@ name: nightly
 # matches — no panics, no stuck matches, no invariant violations, win-rate
 # telemetry — plus the plan §15 performance budgets in release.
 #
+# The tier semantics (the A12 checker is debug-only by design, plan §13):
+#   * The release tiers (smoke + the 1000-match shards) are the
+#     panics/stuck/resolution/throughput sweep — `tools soak` isolates a
+#     panicking match per-match (counts it, attributes the seed, keeps the
+#     report) and exits non-zero at the end when anything crashed.
+#   * The dev tier (soak-dev) is the invariant sweep: a dev-profile soak
+#     runs the A12 checker inside every tick, and the same per-match
+#     isolation turns a violation into a counted crash with its seed
+#     instead of an aborted run — the only way a violation is observable
+#     at soak scale at all.
+#
 # The 1000-match count from A7 runs nightly rather than per-push: at Alpha
 # sizes a full sweep takes hours, and CI-per-push is the green gate's job
 # (ci.yml). Crashes fail the workflow (`tools soak` exits non-zero when any
-# match crashes).
+# match crashes or panics).
 #
 # M10.1 — sharding, timeouts, and evidence artifacts (plan §12's "in parallel
 # processes" is satisfied at the process level, exactly as the plan words it:
@@ -133,12 +144,59 @@ jobs:
           name: soak-${{ matrix.tier }}
           path: soak-${{ matrix.tier }}.txt
 
+  # The dev tier: the A12 invariant sweep. The A12 checker is
+  # #[cfg(debug_assertions)] (plan §13's letter — it runs inside every
+  # Sim::step in debug builds), so only this tier observes invariant
+  # violations at soak scale. The per-match panic isolation in `tools soak`
+  # is what makes this tier possible at all: pre-isolation, the first
+  # violation aborted the run and destroyed the night's evidence. Sixteen
+  # rotating matches a night (dev is an order of magnitude slower than
+  # release; 16 keeps the job comfortably inside its timeout while
+  # sweeping ~240 fresh seeds a month through the checker).
+  soak-dev:
+    name: soak-dev (A12 invariant sweep, dev profile)
+    runs-on: ubuntu-latest
+    # A hang must fail loudly, not consume the runner day.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: soak-dev-${{ hashFiles('Cargo.lock') }}
+      - name: Build (dev — the A12 checker is debug-only)
+        run: cargo build -p pandemonium-tools
+      - name: Soak (16 AI-vs-AI matches under the A12 checker)
+        run: |
+          set -o pipefail
+          BASE=$(( $(date +%s) / 86400 * 1000 ))
+          cargo run -p pandemonium-tools -- soak \
+            --matches 16 \
+            --seed-base $BASE \
+            --content content \
+            | tee soak-dev.txt
+      - name: Upload the dev-tier summary (evidence)
+        # Upload even on failure — a crashing tier's summary is exactly
+        # the evidence the aggregate and the declaration want to see.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-dev
+          path: soak-dev.txt
+
   aggregate:
     name: aggregate (evidence + crashed gate)
-    # Needs every shard (matrix jobs complete as one job name; this waits
-    # for all 11 entries) — and runs even when a shard failed, so the
-    # concatenated evidence lands regardless.
-    needs: soak
+    # Needs every tier (the release shards and the dev invariant sweep)
+    # and runs even when one of them failed — `!cancelled()` keeps the
+    # evidence landing on exactly the failure paths it exists for (a
+    # plain `needs:` skips dependents on failure, which would drop the
+    # concatenation and the crashed gate precisely when a tier crashed).
+    if: ${{ !cancelled() }}
+    needs: [soak, soak-dev]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -165,10 +223,12 @@ jobs:
             total_crashed=$(( total_crashed + crashed ))
           done
           if [ "$total_crashed" -ne 0 ]; then
-            echo "::error::soak shards reported $total_crashed crashed match(es)"
+            echo "::error::soak tiers reported $total_crashed crashed match(es)"
             exit 1
           fi
-          # Win-rate totals, summed across the shards' `resolved:` lines.
+          # Win-rate totals, summed across the tiers' `resolved:` lines
+          # (the dev tier's 16 matches included — the label says tiers,
+          # not shards, because the dev sweep adds its own sample).
           # Each line carries five numbers: resolved, "0", wins0, "1", wins1.
           grep -h '^  resolved:' * | grep -oE '[0-9]+' | awk '
             NR % 5 == 1 { resolved += $1 }
@@ -178,7 +238,7 @@ jobs:
               printf "  matches resolved: %d (player 0: %d, player 1: %d)\n", \
                 resolved, wins0, wins1
             }'
-          echo "aggregate: 0 crashed across all shards"
+          echo "aggregate: 0 crashed across all tiers (release shards + dev invariant sweep)"
       - name: Upload the concatenated evidence
         if: always()
         uses: actions/upload-artifact@v4
