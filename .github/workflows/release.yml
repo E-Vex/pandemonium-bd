@@ -230,7 +230,7 @@ jobs:
               worst="$NEED"
             fi
           done
-          echo "GLIBC floor evidence: linux-${{ matrix.slug }} archive requires $worst, floor $FLOOR — PASS"
+          echo "GLIBC floor evidence: ${{ matrix.slug }} archive requires $worst, floor $FLOOR — PASS"
       - name: macOS deployment floor evidence (otool)
         # A-004: LC_BUILD_VERSION's minos is the load command the macOS
         # loader enforces — a binary whose minos exceeds 11.0 will not open
@@ -266,7 +266,7 @@ jobs:
               worst="$MINOS"
             fi
           done
-          echo "MACOSX floor evidence: macos-${{ matrix.slug }} archive minos $worst, floor $FLOOR — PASS"
+          echo "MACOSX floor evidence: ${{ matrix.slug }} archive minos $worst, floor $FLOOR — PASS"
       - name: The version stamp (evidence)
         id: ver
         shell: bash
