@@ -1,0 +1,16 @@
+// Guardian (plan §10.4): slow, heavy, long range.
+(
+    schema_version: 1,
+    id: "guardian",
+    display_name: "Guardian",
+    capabilities: [
+        Health(( max: 220 )),
+        Move(( speed_milli_tiles_per_s: 1600, radius_milli_tiles: 500 )),
+        Attack(( damage: 30, range_milli_tiles: 8000, cooldown_ms: 2000, acquire_range_milli_tiles: 9000 )),
+        Vision(( radius_milli_tiles: 9000 )),
+    ],
+    cost: ( ore: 200 ),
+    build_time_ms: 25000,
+    population: 3,
+    requires: [ "barracks" ],
+)

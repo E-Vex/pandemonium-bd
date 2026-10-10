@@ -1,0 +1,12 @@
+// The Alpha ruleset (plan §10.4): one resource, base population cap 0,
+// elimination victory with resignation enabled.
+(
+    schema_version: 1,
+    id: "alpha",
+    display_name: "Alpha Ruleset",
+    resources: [
+        ( id: "ore", display_name: "Ore", starting: 200 ),
+    ],
+    base_population_cap: 0,
+    victory: ( kind: "elimination", allow_resignation: true ),
+)
