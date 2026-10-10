@@ -226,3 +226,47 @@ jobs:
             fi
           done
           exit $status
+
+  ci-required:
+    # The single required status check (B-002R): branch protection requires
+    # exactly this job and nothing else, so the inner jobs above can be
+    # renamed, reshaped, or matrixed without ever breaking protection — the
+    # required name never moves. It needs every other job in this workflow,
+    # runs even when one of them failed (`if: always()`, so a plain `needs:`
+    # cannot skip it on failure), and exits non-zero unless every needed
+    # job's result is `success`. A matrix job's result is `success` only
+    # when every leg of the matrix succeeded, so the two test/goldens
+    # matrices are covered leg-by-leg without naming a single leg.
+    name: required gate (every job green)
+    needs: [lint, test, replay, binaries, cross-os, cross-os-gate]
+    if: always()
+    runs-on: ubuntu-24.04
+    # This job only reads the `needs` context; a hang would still burn the
+    # runner, so it gets the house timeout too.
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every needed job succeeded
+        env:
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+          REPLAY: ${{ needs.replay.result }}
+          BINARIES: ${{ needs.binaries.result }}
+          CROSS_OS: ${{ needs.cross-os.result }}
+          CROSS_OS_GATE: ${{ needs.cross-os-gate.result }}
+        run: |
+          status=0
+          check() {
+            if [ "$2" != "success" ]; then
+              echo "::error::$1 did not succeed (result: $2)"
+              status=1
+            else
+              echo "$1: success"
+            fi
+          }
+          check lint "$LINT"
+          check test "$TEST"
+          check replay "$REPLAY"
+          check binaries "$BINARIES"
+          check cross-os "$CROSS_OS"
+          check cross-os-gate "$CROSS_OS_GATE"
+          exit $status
