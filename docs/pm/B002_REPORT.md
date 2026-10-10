@@ -1,7 +1,7 @@
 # B-002 — Task Report
 
 **TASK ID:** B-002 (A11 premise fix, CI hygiene, scale proof) · PRODUCT PHASE
-**STATUS:** done — except two CI-side evidence items blocked on push access (see §11 and DEBT-201)
+**STATUS:** done — the CI-side evidence landed after the token re-supply: audit green, nightly dispatch re-verified 14/14, CI 11/13 with only the two pre-existing Windows client-crash legs red (§3 Part 2, §11)
 **Agent:** Agent B (lane per docs/pm/STANDING_ORDERS.md §3)
 **Branch:** `b/B-002-a11-ci-scale` (base: master `9d3874a`, not moved — no rebase needed)
 **Date:** 2026-10-10
@@ -10,11 +10,11 @@
 
 ## 1. Summary
 
-The A11 fuzz is re-founded on states that are actually equivalent (label swap over one identical world), with the old premise's failure pinned as an explicit deterministic test; the battery and A5 audits are untouched. All three workflows carry pinned runner images and current node-24 action majors, ci.yml gained workflow_dispatch, and the audit red is triaged to two unmaintained-informational advisories with documented dispositions. The §15 scale proof exists end to end: a data-only 128×128 proving ground, `bench --scale`, the eleven-stage profile, and the memory row — the 10× row is honestly **NOT MET** (34.1 ms vs ≤ 8 ms), with ranked, not-implemented optimization proposals.
+The A11 fuzz is re-founded on states that are actually equivalent (label swap over one identical world), with the old premise's failure pinned as an explicit deterministic test; the battery and A5 audits are untouched. All three workflows carry pinned runner images and current node-24 action majors — now **run-verified live on the pushed branch** (§3 Part 2) — ci.yml gained workflow_dispatch (dispatch acceptance proven), and the audit red is triaged to two unmaintained-informational advisories with documented dispositions; the audit workflow is green again. The §15 scale proof exists end to end: a data-only 128×128 proving ground, `bench --scale`, the eleven-stage profile, and the memory row — the 10× row is honestly **NOT MET** (34.1 ms vs ≤ 8 ms), with ranked, not-implemented optimization proposals.
 
 ## 2. Changes
 
-Branch `b/B-002-a11-ci-scale`, 8 commits (+2 doc commits on top: this report and the scale report), 26 files, +2634/−72.
+Branch `b/B-002-a11-ci-scale`, 8 code commits + 4 doc commits (the scale report, this report, the registers, and the CI-evidence update) = 12 commits, one logical change each; 30 files, +2915/−72 against master.
 
 | Commit | One logical change |
 |---|---|
@@ -27,6 +27,7 @@ Branch `b/B-002-a11-ci-scale`, 8 commits (+2 doc commits on top: this report and
 | `ec6401d` | `content_scale/` — the data-only proving ground (map + swarm faction + verbatim copies) |
 | `f42178f` | `tools` — `bench --scale` (scenario, stage profile, memory, pathfinding row, 5 tests) |
 | (docs) | `docs/pm/SCALE_REPORT.md`, `docs/pm/B002_REPORT.md`, registers A-200..A-202 / DEBT-200..DEBT-202 |
+| (docs) | the CI-evidence update — run URLs for the three pinned workflows, the live runner-label and Node-20-absence verification, DEBT-201 closed |
 
 No sim gameplay code, goldens, client, README, handoff, or plan changes. The sim change is an instrumentation seam only (`step` delegates to `step_observed` with `None`; goldens re-verified bit-identical in both profiles — §5).
 
@@ -41,11 +42,11 @@ No sim gameplay code, goldens, client, README, handoff, or plan changes. The sim
 6. *STOP check:* the divergence is **not** genuine issuer-dependent behavior — proven by the pin test itself (identical outcomes under every label arrangement; the difference is occupancy: p0's translated worker at (16,16) sits inside p1's mirrored footprint region). No sim patch needed or made.
 
 **Part 2 — CI hygiene:**
-1. *Runner pins:* every job in all three workflows: `ubuntu-latest`→`ubuntu-24.04`, `windows-latest`→`windows-2025`, `macos-latest`→`macos-26` — exactly the `-latest` resolutions of 2026-10-10 (verified against the actions/runner-images table; the annotation's Ubuntu-26 migration is 2026-10-19). Each workflow carries the why-and-when comment. **Real-run verification blocked on push access — DEBT-201.**
-2. *Action majors:* `checkout@v4`→`@v7` (7.0.1), `upload-artifact@v4`→`@v7` (7.0.2), `download-artifact@v4`→`@v8` (8.0.2) — all node24 (verified in each release's `action.yml`); `rust-cache@v2` stays (v2.9.2 already runs node24). Lint: **actionlint 1.7.12 clean** (1.7.7's `macos-26` complaint is its stale label list — current actionlint knows the label), plus strict YAML parse (no duplicate keys, no tabs). One YAML trap caught and fixed in audit.yml (unquoted colon in a step name — B-001's hex lesson re-applied). **Real-run verification blocked — DEBT-201.**
-3. *Audit triage (the red 6/6):* **real advisories, but informational — not vulnerabilities.** `cargo audit --deny warnings` (cargo-audit 0.22.2, the workflow's own install path) against the lockfile: `paste` 1.0.15 (RUSTSEC-2024-0436, unmaintained; via wgpu 26.0.1→wgpu-hal→metal 0.32.0, Apple target only; 1.0.15 is the final release — no fix exists) and `ttf-parser` 0.25.1 (RUSTSEC-2026-0192, unmaintained; via fontdue 0.9.4 and winit 0.30.13→sctk-adwaita→ab_glyph→owned_ttf_parser; no fix in current majors). Zero vulnerability advisories. Fix applied: `.cargo/audit.toml` ignores both by ID with reasons (committed, reviewed — not silenced; any new advisory still fails), verified **green locally** with the exact command the workflow runs; the auditor is pinned (`--version 0.22.2`) so the gate cannot drift with cargo-audit releases.
-4. *workflow_dispatch on ci.yml:* added (B-001 P4).
-5. *Nightly dispatch re-verify after pinning:* **BLOCKED — no push token** (the sandbox was reset between engagements; the token did not survive, only a redacted fragment in the session summary). Exact commands for the owner are in §11. Standing orders §4's "if you cannot push, say so and give the owner exact commands" applies; DEBT-201 tracks it.
+1. *Runner pins:* every job in all three workflows: `ubuntu-latest`→`ubuntu-24.04`, `windows-latest`→`windows-2025`, `macos-latest`→`macos-26` — exactly the `-latest` resolutions of 2026-10-10 (verified against the actions/runner-images table; the annotation's Ubuntu-26 migration is 2026-10-19). Each workflow carries the why-and-when comment. **Run-verified live on the pushed branch** — every job's actual runner label (read from the run APIs) is its pinned image: ci https://github.com/E-Vex/pandemonium-bd/actions/runs/38049743047 (`ubuntu-24.04` on lint/goldens/replay/builds/its test legs, `windows-2025`, `macos-26` — 13 jobs); audit https://github.com/E-Vex/pandemonium-bd/actions/runs/38049743044 (`ubuntu-24.04`); nightly https://github.com/E-Vex/pandemonium-bd/actions/runs/38049761220 (`ubuntu-24.04` on all 14 jobs).
+2. *Action majors:* `checkout@v4`→`@v7` (7.0.1), `upload-artifact@v4`→`@v7` (7.0.2), `download-artifact@v4`→`@v8` (8.0.2) — all node24 (verified in each release's `action.yml`); `rust-cache@v2` stays (v2.9.2 already runs node24). Lint: **actionlint 1.7.12 clean** (1.7.7's `macos-26` complaint is its stale label list — current actionlint knows the label), plus strict YAML parse (no duplicate keys, no tabs). One YAML trap caught and fixed in audit.yml (unquoted colon in a step name — B-001's hex lesson re-applied). **Run-verified live:** checkout@v7 / upload-artifact@v7 / download-artifact@v8 executed on real runners in all three runs above, and the "Node.js 20 is deprecated … actions/checkout@v4" warning that still fires on master's pre-pin runs (present in job 114190333629's log tail) is **absent from every job log of this branch's runs**.
+3. *Audit triage (the red 6/6):* **real advisories, but informational — not vulnerabilities.** `cargo audit --deny warnings` (cargo-audit 0.22.2, the workflow's own install path) against the lockfile: `paste` 1.0.15 (RUSTSEC-2024-0436, unmaintained; via wgpu 26.0.1→wgpu-hal→metal 0.32.0, Apple target only; 1.0.15 is the final release — no fix exists) and `ttf-parser` 0.25.1 (RUSTSEC-2026-0192, unmaintained; via fontdue 0.9.4 and winit 0.30.13→sctk-adwaita→ab_glyph→owned_ttf_parser; no fix in current majors). Zero vulnerability advisories. Fix applied: `.cargo/audit.toml` ignores both by ID with reasons (committed, reviewed — not silenced; any new advisory still fails), verified **green locally** with the exact command the workflow runs; the auditor is pinned (`--version 0.22.2`) so the gate cannot drift with cargo-audit releases. **Run-verified green on the pushed branch:** https://github.com/E-Vex/pandemonium-bd/actions/runs/38049743044 — job "cargo audit" on `ubuntu-24.04`, 337 crate dependencies scanned, zero advisories firing (the two dispositions ignored by ID, visible in the committed `.cargo/audit.toml`); the workflow's red streak ends.
+4. *workflow_dispatch on ci.yml:* added (B-001 P4) — and the trigger is proven live: the dispatch API accepts the branch (HTTP 204) and created run 38051409659 (event `workflow_dispatch`), which was then deliberately cancelled — the acceptance itself is the evidence; the full gate ran via the push trigger (URLs above).
+5. *Nightly dispatch re-verify after pinning:* **DONE — 14/14 jobs green in ~24 min** (11:49:24→12:13:20 UTC; B-001's dispatch precedent: 25:54): dispatched with `shard_matches=4` on the pushed branch — https://github.com/E-Vex/pandemonium-bd/actions/runs/38049761220 — all 14 jobs on pinned `ubuntu-24.04`: ten release shards, smoke-32, the §15 perf-budget bench, the dev-profile A12 invariant sweep (soak-dev), and the aggregate evidence job. Only the release shards shrank (4 matches each); smoke and the invariant tier kept their sizes, per the workflow's own input contract.
 
 **Part 3 — Scale-budget proof (plan §15):** full report with method, tables, and analysis in **`docs/pm/SCALE_REPORT.md`**. Summary of the acceptance items:
 1. *Deterministic scale scenario, data-only, no sim changes in the scenario:* `content_scale/` (128×128 symmetric proving ground + swarm faction; `content-validate content_scale` PASS, symmetry declared+verified) + `bench --scale N` (forces truncated to 100·N per side; scale 10 = 2020 entities). ~2000 entities on a data-only large map, as the brief allows. Determinism test: `scale::tests::the_scale_scenario_is_deterministic` — identical command stream, entity count, and final hash run-to-run at both tiers; green in both profiles.
@@ -74,13 +75,13 @@ No sim gameplay code, goldens, client, README, handoff, or plan changes. The sim
 - **A-200** — the scale tiers are tools-authored selection from content (like the scripted commands); the proving ground is an instrument, not a product map.
 - **A-201** — runner pins freeze the 2026-10-10 `-latest` resolutions; migration only by brief.
 - **A-202** — controller labels are hashed match identity, never behavior; the A11 equivalence proof is snapshot+outcome equality, not identity-hash equality.
-- Deviation (report-level): the brief's Part 2 acceptance ("run URLs", nightly dispatch re-verify) could not be executed without push access — the honest blocker, not a silent skip (§11, DEBT-201).
+- Deviation (report-level), since resolved: the brief's Part 2 acceptance ("run URLs", nightly dispatch re-verify) was blocked at report-writing time by the missing push token — the honest blocker, not a silent skip; the token was then re-supplied, the branch pushed, and every run-URL item now carries live evidence (§3 Part 2). Closed, not dropped.
 - Note: `cargo-audit` (0.22.2) reads `.cargo/audit.toml` (not `cargo-audit.toml`); the ignore entries are plain IDs with reasons in comments — the file-schema reality of the pinned version, discovered and verified locally.
 
 ## 7. New debt
 
 - **DEBT-200** — the two unmaintained-advisory ignores (paste, ttf-parser): documented dispositions, revisit on the next wgpu/winit/fontdue bump.
-- **DEBT-201** — CI-side acceptance unverified without push access (pinned-workflow run URLs, nightly dispatch re-verify); lint-clean + local-audit-green is the achieved state.
+- **DEBT-201 — CLOSED**: token re-supplied, branch pushed, all three pinned workflows ran live — audit green, nightly dispatch 14/14, CI 11/13 with the two pre-existing Windows client-crash legs (see §10); the register row carries the closure evidence.
 - **DEBT-202** — the §15 10× row not met; four ranked optimization proposals await a PM brief (two are golden-preserving, two need authorized golden moves).
 
 ## 8. Risks and surprises
@@ -99,19 +100,11 @@ No sim gameplay code, goldens, client, README, handoff, or plan changes. The sim
 
 ## 10. Cross-lane requests
 
-- **Agent A (client):** unchanged from B-001 P2 — the Windows client test-binary `STATUS_ACCESS_VIOLATION` keeps the full-CI green run off the table; also, the §15 render and client-memory rows need a windowed machine.
+- **Agent A (client):** unchanged from B-001 P2 — the Windows client test-binary `STATUS_ACCESS_VIOLATION` keeps the full-CI green run off the table, now with evidence on both sides of the lane boundary: master @ `9d3874a` fails the same two legs (run 38044206117), and this branch's run fails them with the **byte-identical test binary** (`pandemonium_client-841d54467a05de16.exe` — same cargo build-id as master's failing run; this branch touches no client code), so the red is inherited from the base, not introduced by B-002. Agent A's `a/A-002-green-windows-and-release` (unmerged at this writing) carries the fix ("unit tests never touch the machine's hardware"). Also, the §15 render and client-memory rows still need a windowed machine.
 - None new for engine: the per-stage profile was designed to need zero engine changes (the observer rides `Sim::step_observed` directly from `tools`).
 
 ## 11. Needs from owner
 
-1. **Re-supply the repo token** (the previous engagement's token was lost in the sandbox reset — only a redacted fragment survives in the session summary; it should be rotated anyway per B-001's note). Then, to publish and verify this branch:
-   ```bash
-   cd pandemonium-bd
-   git remote set-url origin https://<TOKEN>@github.com/E-Vex/pandemonium-bd.git
-   git push -u origin b/B-002-a11-ci-scale
-   # read the ci run URLs from the push, then the small-sweep nightly dispatch:
-   gh workflow run nightly.yml --ref b/B-002-a11-ci-scale -f shard_matches=4
-   gh run watch   # expect 14/14 jobs green (B-001's dispatch precedent)
-   ```
-2. Merge decision for `b/B-002-a11-ci-scale` (10 commits; one logical change each).
+1. **Rotate the repo token** — the one used for this push transited the chat; B-001's rotation note applies (rotate after merge). The previous §11's publish-and-verify steps are DONE, executed verbatim: branch pushed (`b/B-002-a11-ci-scale`, 12 commits), ci + audit ran from the push, nightly dispatched with `shard_matches=4` — all run URLs in §3 Part 2; DEBT-201 closed.
+2. Merge decision for `b/B-002-a11-ci-scale` (12 commits; one logical change each). Order note: merging this before Agent A's A-002 leaves the two Windows test legs red on master's CI exactly as they are today (the crash is pre-existing at the base sha); merging after — or together — turns them green. The lanes do not conflict: A-002 touches no workflow files, B-002 touches no client files.
 3. PM routing for DEBT-202 (the 10× optimization brief — two of the four proposals move goldens and need §7 authorization).
