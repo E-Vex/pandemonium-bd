@@ -1142,3 +1142,35 @@ confirms or rejects it.
   rather than placed in the README's conventional `readme-assets/` (outside the
   acceptance line). Reversible by moving three files plus two paths if the PM
   prefers the conventional home.
+- **A-200 (B-002 Part 3, product phase).** The scale scenario's tiers are a
+  tools-authored *selection* from authored content, not a content edit:
+  `bench --scale N` truncates each side's starting forces to the first
+  `100 * N` of the proving-ground faction (the command center leads the list,
+  so every tier keeps it) exactly as the scripted command waves are
+  tools-authored inputs. The proving ground (`content_scale/`) is a
+  measurement instrument, not a product map: §15 verdicts for product maps
+  stay anchored to the real Crossroads bench (0.246 ms avg), and the scale
+  tiers' numbers are stress evidence — `docs/pm/SCALE_REPORT.md` owns the
+  distinction, including the finding that the Alpha-size budget is
+  workload-shaped (198 simultaneous gatherers miss it at 220 entities) rather
+  than entity-count-shaped.
+- **A-201 (B-002 Part 2, product phase).** Runner images are pinned to the
+  exact versions the `-latest` labels resolved to on 2026-10-10
+  (ubuntu-24.04, windows-2025, macos-26; resolutions verified against the
+  actions/runner-images table) because GitHub's annotations say ubuntu-latest
+  migrates to Ubuntu 26 on 2026-10-19 and the cross-OS hash evidence must not
+  shift under a silent runner bump. Migrating to newer images happens by
+  brief, never by drift; the pins carry the date and the reason in every
+  workflow that uses them.
+- **A-202 (B-002 Part 1, product phase).** Controller labels (Human/Ai in the
+  match setup) are canonical *match identity*, not behavior: `hash.rs`'s
+  `controller_tag` writes them into the state hash, so two label arrangements
+  of the same world hash differently by design — while producing identical
+  validation outcomes and identical world states. This is why the re-founded
+  A11 fuzz proves equivalence by snapshot equality + outcome equality (never
+  identity-hash equality), and why "same command from 'player' and 'AI'
+  issuer" (plan §13 A11) is faithfully read as the label swap over one
+  identical world. The old mirror-position fuzz's premise — that mirrored
+  positions are equivalent states — was false because starting *units*
+  translate (anchor-relative offsets) while *structures* mirror; the failing
+  Build case is pinned as a named deterministic test in `tests/ai.rs`.
