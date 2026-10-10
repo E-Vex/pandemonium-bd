@@ -589,7 +589,16 @@ fn add_a_unit_is_data_only() {
     // 2. Faction edits: roster, the barracks' production list, and one
     //    starting skirmisher per player (data-only spawn for this scaffold).
     let faction_path = root.join("factions/legion.ron");
-    let mut faction = std::fs::read_to_string(&faction_path).unwrap();
+    // Git's Windows checkouts can give CRLF (Git-for-Windows defaults to
+    // core.autocrlf=true; the repo pins no .gitattributes), and two of the
+    // needles below span line breaks — normalize before matching so the
+    // edit lands identically on every checkout. This was the last red cell
+    // of A-002's Windows legs: the barracks needle (single-line) matched,
+    // the roster needle (multi-line) silently didn't, and the loader then
+    // correctly rejected the half-edited faction.
+    let mut faction = std::fs::read_to_string(&faction_path)
+        .unwrap()
+        .replace("\r\n", "\n");
     faction = faction.replace(
         "    roster: [\n        \"worker\",",
         "    roster: [\n        \"skirmisher\",\n        \"worker\",",
