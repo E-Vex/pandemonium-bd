@@ -186,8 +186,11 @@ jobs:
     # A hang must fail loudly, not consume the runner hour.
     timeout-minutes: 10
     env:
-      GOLDEN_DEMO: 0xb6fff6659cfb7709
-      GOLDEN_FLAGSHIP: 0x6e9a18bd7c5f699f
+      # Quoted: unquoted 0x… scalars resolve as YAML 1.1 hex integers — the
+      # demo value overflows int64 (GitHub rejects the whole workflow file)
+      # and the flagship value would silently lose its 0x form.
+      GOLDEN_DEMO: "0xb6fff6659cfb7709"
+      GOLDEN_FLAGSHIP: "0x6e9a18bd7c5f699f"
     steps:
       - name: Download every OS leg's hash evidence
         uses: actions/download-artifact@v4
