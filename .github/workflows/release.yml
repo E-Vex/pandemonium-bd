@@ -18,15 +18,23 @@ name: release
 # The release channel builds on the older baseline of each family while
 # ci.yml verifies on the current fleet (windows-2025/macos-26; CI leads,
 # release lags — the archives inherit the older toolchain baseline and so
-# load on a wider player fleet). The full per-OS rationale, the CPU
-# architecture of each archive, and the migration rule live in
-# docs/product/RELEASING.md ("Pinned runner images"):
-#   ubuntu-24.04  -> x86_64-unknown-linux-gnu  (x86-64)
+# load on a wider player fleet). A-004 moves the Linux build leg one
+# baseline further down, to ubuntu-22.04: the archive's glibc floor becomes
+# 2.35, so Debian 12 and Ubuntu 22.04 players can run it. The full per-OS
+# rationale, the CPU architecture of each archive, and the platform floors
+# live in docs/product/RELEASING.md ("Pinned runner images", "Platform
+# floors"):
+#   ubuntu-22.04  -> x86_64-unknown-linux-gnu  (x86-64, glibc 2.35 floor)
 #   windows-2022  -> x86_64-pc-windows-msvc    (x86-64)
 #   macos-15      -> aarch64-apple-darwin      (ARM64, Apple silicon)
-# The macOS leg pins MACOSX_DEPLOYMENT_TARGET=11.0 in the build job —
-# the aarch64 floor (Big Sur, the first macOS on Apple silicon), written
-# down so an image/SDK bump can never silently narrow it.
+# The Linux floor is checked, not assumed: the build job prints the highest
+# GLIBC symbol version the binaries require (the evidence line) and FAILS
+# if either binary exceeds 2.35. The Linux archive is then smoked on BOTH
+# ubuntu-22.04 (its build floor) and ubuntu-24.04 (a strictly newer glibc):
+# an archive built on 22.04 must run on both. The macOS leg pins
+# MACOSX_DEPLOYMENT_TARGET=11.0 in the build job — the aarch64 floor (Big
+# Sur, the first macOS on Apple silicon), written down so an image/SDK bump
+# can never silently narrow it.
 #
 # Windows binaries carry the .exe suffix (EXT below); checksums use
 # sha256sum where it exists and shasum -a 256 elsewhere (macOS).
@@ -143,7 +151,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             slug: linux-x86_64
             ext: ""
@@ -178,9 +186,51 @@ jobs:
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock') }}
+          # A-004: the runner image is part of the key — a cache saved on one
+          # image (glibc/toolchain baseline) must not be restored onto
+          # another; native artifacts are not portable across the images the
+          # way pure-Rust ones are across rustc versions.
+          key: release-${{ matrix.os }}-${{ matrix.slug }}-${{ hashFiles('Cargo.lock') }}
       - name: Build the client and tools (release)
         run: cargo build --release -p pandemonium-client -p pandemonium-tools --target ${{ matrix.target }}
+      - name: GLIBC floor evidence (Linux binaries)
+        # A-004: the player floor of the Linux archive is the highest GLIBC_
+        # symbol version its binaries import — nothing else limits it. A
+        # binary built on ubuntu-24.04 (glibc 2.39) genuinely fails to load
+        # on 22.04/Debian 12: the linker records every versioned import it
+        # resolves (e.g. pidfd_getpid at GLIBC_2.39), and an older loader
+        # refuses the whole process. Building on ubuntu-22.04 caps the
+        # requirement at the builder's own libc — but the floor is CHECKED,
+        # not assumed: this step prints each binary's requirement (the
+        # evidence line) and fails the job if either exceeds 2.35, the
+        # Debian 12 / Ubuntu 22.04 floor the PM approved in A-004.
+        # NB: no ": " in step names (YAML plain-scalar rule; see 50e8156).
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLOOR="GLIBC_2.35"
+          worst="(none)"
+          for BIN in \
+            "target/${{ matrix.target }}/release/pandemonium-client${{ matrix.ext }}" \
+            "target/${{ matrix.target }}/release/pandemonium-tools${{ matrix.ext }}"; do
+            NEED=$(objdump -T "$BIN" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)*' | sort -uV | tail -1 || true)
+            if [ -z "$NEED" ]; then
+              echo "GLIBC requirement: $(basename "$BIN") — none (no versioned glibc imports)"
+              continue
+            fi
+            echo "GLIBC requirement: $(basename "$BIN") — $NEED"
+            TOP=$(printf '%s\n' "$NEED" "$FLOOR" | sort -V | tail -1)
+            if [ "$TOP" != "$FLOOR" ]; then
+              echo "FAIL: $(basename "$BIN") requires $NEED, above the $FLOOR floor"
+              exit 1
+            fi
+            if [ "$worst" = "(none)" ] \
+              || [ "$(printf '%s\n' "$worst" "$NEED" | sort -V | tail -1)" = "$NEED" ]; then
+              worst="$NEED"
+            fi
+          done
+          echo "GLIBC floor evidence: linux-${{ matrix.slug }} archive requires $worst, floor $FLOOR — PASS"
       - name: The version stamp (evidence)
         id: ver
         shell: bash
@@ -262,7 +312,12 @@ jobs:
     # so this is the content/packaging canary, not the hardware one — the
     # product-level probe-on-endpoint-less-Windows proof was the A-002
     # diagnostics matrix, cell M5.)
-    name: packaged-archive smoke (${{ matrix.slug }})
+    #
+    # A-004: the Linux archive is smoked TWICE — on ubuntu-22.04 (its build
+    # floor: the archive's own glibc world) and on ubuntu-24.04 (a strictly
+    # newer glibc): an archive built on 22.04 must run on both, and the two
+    # smoke legs prove the floor and forward compatibility in one matrix.
+    name: packaged-archive smoke (${{ matrix.slug }} on ${{ matrix.os }})
     needs: build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -270,6 +325,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: ubuntu-22.04
+            slug: linux-x86_64
+            ext: ""
           - os: ubuntu-24.04
             slug: linux-x86_64
             ext: ""
