@@ -91,12 +91,44 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let seed_flag = seed_flag_from_args(&args);
     let record_path = record_from_args(&args);
-    let content = content_path();
+    // A-002 Part 2.1: the content tree resolves at RUNTIME now — the flag,
+    // then the executable's own directory (the release archive layout:
+    // binary and content/ side by side, content external so the bundle hash
+    // is untouched), then the compile-time workspace path (cargo run's dev
+    // layout). `CARGO_MANIFEST_DIR` alone was dev-only: a binary run from
+    // any other directory (or any other machine) could never find it.
+    let content_result = content_dir_from(&args);
+    // A-002 Part 2.2: `--version` answers even on a broken install — the
+    // version line is the support affordance, the content hash joins it
+    // when the content tree loads and says so honestly when it cannot.
+    if version_requested_from_args(&args) {
+        let content_hash = match &content_result {
+            Ok(content) => ContentBundle::load_dir(content)
+                .ok()
+                .map(|bundle| format!("{:#018x}", bundle.content_hash())),
+            Err(candidates) => {
+                eprintln!("pandemonium client — {}", content_search_error(candidates));
+                None
+            }
+        }
+        .unwrap_or_else(|| "unavailable (content did not load)".to_string());
+        println!(
+            "pandemonium-client {} (git {}, content {})",
+            env!("CARGO_PKG_VERSION"),
+            git_sha(),
+            content_hash
+        );
+        return Ok(());
+    }
+    let content = content_result.unwrap_or_else(|candidates| {
+        eprintln!("pandemonium client — {}", content_search_error(&candidates));
+        std::process::exit(1);
+    });
     // PLAN-M10.2 §3.3: the whole tree loads — the New Match screen lists its
     // maps, and a match bundles the selected one. The Alpha ships one map;
     // the default bundle (its first map) backs the menu's backdrop and the
     // headless smoke pass.
-    let tree = ContentTree::load_dir(content)
+    let tree = ContentTree::load_dir(&content)
         .with_context(|| format!("loading content from {}", content.display()))?;
     let default_bundle = tree
         .bundle(
@@ -229,6 +261,85 @@ fn record_from_args(args: &[String]) -> Option<PathBuf> {
 /// binary works from any working directory.
 fn content_path() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"))
+}
+
+/// A-002 Part 2.1: the runtime content search. Order: the `--content <dir>`
+/// flag (the player's explicit word — the only candidate when present), then
+/// `<exe_dir>/content` (the release archive layout: binary and content side
+/// by side, content external, the bundle hash unaffected), then the
+/// compile-time workspace path (the cargo-run dev layout; last, because a
+/// binary built elsewhere points at another machine's filesystem).
+///
+/// Pure function over its inputs so the law is unit-testable; the wrapper
+/// below is the only part that touches the real argv and executable.
+fn resolve_content_dir(explicit: Option<&Path>, exe: &Path) -> Result<PathBuf, Vec<PathBuf>> {
+    let candidates: Vec<PathBuf> = match explicit {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => {
+            let exe_dir = exe.parent().unwrap_or_else(|| Path::new("."));
+            vec![exe_dir.join("content"), PathBuf::from(content_path())]
+        }
+    };
+    for candidate in &candidates {
+        if candidate.is_dir() {
+            return Ok(candidate.clone());
+        }
+    }
+    Err(candidates)
+}
+
+/// The one-line human form of a failed search (A-002 Part 2.1: "print a
+/// precise error listing paths searched").
+fn content_search_error(candidates: &[PathBuf]) -> String {
+    let mut message = String::from("content directory not found. Searched:");
+    for candidate in candidates {
+        message.push_str(&format!("\n  {}", candidate.display()));
+    }
+    message.push_str("\nPass --content <dir> to name the tree explicitly.");
+    message
+}
+
+/// Resolves the content directory for THIS process (flag, then executable,
+/// then dev path). A failed search is an `Err` of every path tried — main
+/// turns it into the precise error and exit 1, and `--version` degrades
+/// around it (the version line must answer on a broken install too).
+fn content_dir_from(args: &[String]) -> Result<PathBuf, Vec<PathBuf>> {
+    let explicit = content_flag_from_args(args);
+    let exe = std::env::current_exe().unwrap_or_else(|error| {
+        // An exotic failure (deleted binary, /proc-less container): fall
+        // back to a pathless probe — the search then tries the compiled-in
+        // dev path, and the error (if any) will still be precise.
+        eprintln!(
+            "pandemonium client — could not locate the own executable ({error}); trying the \
+             compiled-in dev path"
+        );
+        PathBuf::from(".")
+    });
+    resolve_content_dir(explicit.as_deref(), &exe)
+}
+
+/// Parses the content override `--content <dir>` (A-002 Part 2.1). A missing
+/// or malformed value is a parse failure — an override the player typed must
+/// be honored exactly or refused loudly, never silently ignored.
+fn content_flag_from_args(args: &[String]) -> Option<PathBuf> {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--content" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+/// Parses the version affordances `--version` / `-V` (A-002 Part 2.2).
+fn version_requested_from_args(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--version" || arg == "-V")
+}
+
+/// The git short SHA stamped by build.rs at compile time ("unknown" for a
+/// build from a tarball — an honest string, never a failure).
+fn git_sha() -> &'static str {
+    env!("PANDEMONIUM_GIT_SHA")
 }
 
 /// The windowed application state.
@@ -509,6 +620,19 @@ impl App {
             record_written: false,
             checkpoints: Vec::new(),
         })
+    }
+
+    /// A-002 Part 2.2: the F3 overlay's first line — the build identity plus
+    /// the CURRENT bundle's content hash (a cached u64 read; a started match
+    /// on another map shows that map's bundle, so the overlay never lies
+    /// about which content is running).
+    fn version_line(&self) -> String {
+        format!(
+            "pandemonium {} git {}  content {:#018x}",
+            env!("CARGO_PKG_VERSION"),
+            git_sha(),
+            self.bundle.content_hash()
+        )
     }
 
     /// Builds a fresh `MatchHost` for a mode (M8 + PLAN-M10.2 §3.3, A-112):
@@ -2340,6 +2464,9 @@ impl App {
             })
         };
         let maps = self.map_list(); // before the renderer borrow
+                                    // A-002 Part 2.2: composed before the renderer borrow too (the
+                                    // overlay's first line: build identity + live bundle's content hash).
+        let version_line = self.version_line();
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -2453,6 +2580,7 @@ impl App {
             log_len: self.host.as_ref().map_or(0, |host| host.log().len()),
             viewport,
             armed: self.attack_move_armed,
+            version: &version_line,
             notice: self
                 .feedback
                 .refusal_notice
@@ -2655,6 +2783,11 @@ struct OverlayInput<'a> {
     armed: bool,
     /// M9.1: the refusal notice line, when a recent order was refused.
     notice: Option<&'a str>,
+    /// A-002 Part 2.2: the version prefix line ("pandemonium X.Y git Z") —
+    /// the F3 overlay's first line names the build (the A14 bug-report
+    /// promise, automatic); the content hash joins it per frame from the
+    /// live bundle.
+    version: &'a str,
 }
 
 /// Builds the overlay quads for one frame: the resource/population HUD
@@ -2673,6 +2806,7 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
         viewport,
         armed,
         notice,
+        version,
     } = input;
     /// Screen margin between panels and the window edge.
     const MARGIN: f32 = 8.0;
@@ -2747,6 +2881,11 @@ fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
     // The debug overlay (§11.6), below the notice lines.
     if debug {
         let lines = [
+            // A-002 Part 2.2: the build identity + the LIVE bundle's content
+            // hash (the match's own — a started match on another map shows
+            // that map's bundle hash; the overlay never lies about which
+            // content is running). The caller composes the whole line.
+            version.to_string(),
             format!("tick {}", hud.tick),
             format!("hash {:#018x}", hud.state_hash),
             format!("entities {entities}  selected {selected}  log {log_len}"),
@@ -3178,7 +3317,10 @@ mod mode_pins {
 
 #[cfg(test)]
 mod tests {
-    use super::{frames_budget_arg, random_seed, record_from_args, seed_flag_from_args};
+    use super::{
+        content_flag_from_args, frames_budget_arg, random_seed, record_from_args,
+        seed_flag_from_args, version_requested_from_args,
+    };
 
     /// `args(["--seed", "42"])` — the standard helper spelling.
     fn args(parts: &[&str]) -> Vec<String> {
@@ -3262,5 +3404,130 @@ mod tests {
             Some(180)
         );
         assert_eq!(frames_budget_arg(&args(&["pandemonium-client"])), None);
+    }
+
+    #[test]
+    fn content_parser_reads_the_path() {
+        assert_eq!(
+            content_flag_from_args(&args(&["--content", "/opt/pandemonium/content"])),
+            Some(std::path::PathBuf::from("/opt/pandemonium/content"))
+        );
+        assert_eq!(
+            content_flag_from_args(&args(&["--content", "content"])),
+            Some(std::path::PathBuf::from("content"))
+        );
+    }
+
+    #[test]
+    fn content_parser_is_none_without_the_flag_or_value() {
+        assert_eq!(content_flag_from_args(&args(&["pandemonium-client"])), None);
+        assert_eq!(content_flag_from_args(&args(&["--seed", "42"])), None);
+        // A missing value is NOT a silent default: the override was typed,
+        // so the search below proceeds without it and the error (or the
+        // found tree) is the user's feedback.
+        assert_eq!(content_flag_from_args(&args(&["--content"])), None);
+    }
+
+    #[test]
+    fn version_flag_is_recognized_in_both_spellings() {
+        assert!(version_requested_from_args(&args(&["--version"])));
+        assert!(version_requested_from_args(&args(&["-V"])));
+        assert!(!version_requested_from_args(&args(&["pandemonium-client"])));
+        assert!(!version_requested_from_args(&args(&["--seed", "7"])));
+    }
+}
+
+#[cfg(test)]
+mod content_resolution {
+    //! A-002 Part 2.1: the runtime content search, pinned as a pure function
+    //! (the flag's precedence, the executable-relative candidate, and the
+    //! precise listing of every path a failed search tried).
+
+    use super::*;
+    use std::path::PathBuf;
+
+    /// A throwaway directory tree (std-only: temp dir + process id).
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pandemonium-a002-content-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir creates");
+        dir
+    }
+
+    #[test]
+    fn the_explicit_flag_is_the_only_candidate_and_wins_when_it_exists() {
+        let root = scratch("explicit");
+        let named = root.join("my-content");
+        std::fs::create_dir_all(&named).expect("named tree creates");
+        // The executable-relative candidate exists too — the flag still wins.
+        std::fs::create_dir_all(root.join("content")).expect("default tree creates");
+        let resolved = resolve_content_dir(Some(&named), &root.join("game.exe"));
+        assert_eq!(resolved.as_deref(), Ok(named.as_path()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_executable_relative_layout_resolves_before_the_dev_path() {
+        let root = scratch("exe-relative");
+        // The release archive layout: binary and content/ side by side.
+        std::fs::create_dir_all(root.join("content")).expect("archive tree creates");
+        let exe = root.join("pandemonium-client");
+        let resolved = resolve_content_dir(None, &exe).expect("the archive layout resolves");
+        assert_eq!(resolved, root.join("content"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_dev_fallback_resolves_when_the_executable_sits_elsewhere() {
+        // The cargo-run layout: the binary sits in target/, no content tree
+        // next to it, and the compiled-in workspace path answers — exactly
+        // what happens on every dev machine and CI checkout. (The full
+        // "nothing anywhere" failure can only exist on a machine without the
+        // dev tree — the packaged-archive smoke exercises it there.)
+        let root = scratch("dev-fallback");
+        let exe = root.join("target").join("debug").join("pandemonium-client");
+        std::fs::create_dir_all(exe.parent().unwrap()).expect("target dir creates");
+        let resolved = resolve_content_dir(None, &exe)
+            .expect("the compiled-in dev tree resolves from anywhere in the repo");
+        assert_eq!(resolved, PathBuf::from(content_path()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_failed_search_error_names_every_candidate() {
+        // The error's shape, pinned on a synthetic candidate list (a real
+        // failed search happens only where no dev tree exists — the archive
+        // smoke covers that half).
+        let candidates = vec![
+            PathBuf::from("/opt/install/content"),
+            PathBuf::from("/home/dev/repo/content"),
+        ];
+        let message = content_search_error(&candidates);
+        for candidate in &candidates {
+            assert!(
+                message.contains(&candidate.display().to_string()),
+                "the error names {candidate:?}"
+            );
+        }
+        assert!(
+            message.contains("--content"),
+            "the error teaches the escape hatch"
+        );
+    }
+
+    #[test]
+    fn a_missing_explicit_flag_path_fails_with_only_that_candidate() {
+        let root = scratch("explicit-missing");
+        // The default tree exists next to the binary, but the flag said
+        // otherwise: the player's word is exact, no silent fallback.
+        std::fs::create_dir_all(root.join("content")).expect("default tree creates");
+        let named = root.join("typed-but-absent");
+        let candidates =
+            resolve_content_dir(Some(&named), &root.join("game.exe")).expect_err("typo named");
+        assert_eq!(candidates, vec![named.clone()], "no silent fallback");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
