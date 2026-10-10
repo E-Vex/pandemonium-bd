@@ -1,4 +1,4 @@
-PANDEMONIUM — STANDING ORDERS v1 (from the PM; apply to every task until superseded)
+PANDEMONIUM — STANDING ORDERS v1.1 (from the PM; apply to every task until superseded)
 
 1. CHAIN OF COMMAND
 The PM assigns work via written briefs relayed by the owner. Do only what the brief says; never self-assign. You do not talk to the other agent. If you need something from their lane, list it under "Cross-lane requests" in your report and the PM will route it.
@@ -34,3 +34,13 @@ Discoveries outside the brief go under "Proposals"; do not implement them. STOP 
 10. REPORT FORMAT (every task)
 TASK ID / STATUS (done | partial | blocked)
 1 Summary (max 5 lines) · 2 Changes (branch, commits, files) · 3 Evidence per acceptance criterion · 4 Gate results (test counts, both profiles) · 5 Goldens (unchanged, or moved + why) · 6 Deviations and assumptions (IDs) · 7 New debt (IDs) · 8 Risks and surprises · 9 Proposals (not implemented) · 10 Cross-lane requests · 11 Needs from owner
+
+11. MERGE PROTOCOL (added in v1.1; binds every branch, every rebase, and every PR)
+MP-1 Touch list: every brief declares the files it may modify. The report ends with the actual touch list (`git diff --name-only master...HEAD`) set against the declared one.
+MP-2 Parallel briefs run only if their touch lists are disjoint; otherwise the PM serializes them and states the merge order.
+MP-3 Registers and shared docs (DEBT, ASSUMPTIONS, CHANGELOG, AI-Handoff, plan, the ADR index) change only if the brief authorizes it, in ONE final commit, redone — not merged — after any rebase.
+MP-4 Rebase; never merge master into the branch. Conflicts are resolved only on the agent's own branch, and force-push goes only with --force-with-lease to that branch. Never resolve anything in GitHub's web editor.
+MP-5 One PR merges at a time. After each merge the PM names which open branches must rebase before merging. Reports state the master SHA they are rebased on.
+MP-6 Push early: the first push right after branch creation, then after every commit that passes fmt+clippy. A failed push means STOP and report.
+MP-7 No edits to the other lane's files unless the brief names the file. Cross-lane needs go in report section 11.
+MP-8 The only required status check on master is `ci-required`.
