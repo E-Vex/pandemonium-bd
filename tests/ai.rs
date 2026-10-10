@@ -13,9 +13,13 @@
 //!   "player" issuer and an "AI" issuer produces the same validation outcome.
 //!   A battery of mirrored command pairs over the real content exercises
 //!   every rejection class the gate can produce at match start (plus the
-//!   valid ones); a proptest fuzz generates random mirrored commands; and
-//!   controller *labels* (Human/Ai in the setup) never change an outcome —
-//!   they are recorded match identity, not behavior.
+//!   valid ones); a proptest fuzz submits random commands to two
+//!   label-swapped sims (Human/Ai arrangements exchanged — states proven
+//!   identical by hash, the equivalence the claim actually needs; B-002
+//!   re-founded it after the mirror-position premise proved false — see the
+//!   pinned case in the A11 property section); and controller *labels*
+//!   (Human/Ai in the setup) never change an outcome — they are recorded
+//!   match identity, not behavior.
 //! - **AI-vs-AI headless matches complete** — several seeded matches over the
 //!   real Alpha content run to their tick budget under the debug invariant
 //!   checker, with real economies (deliveries), real infrastructure
@@ -828,7 +832,21 @@ fn a11_command_outcomes_are_issuer_blind() {
 
 // ---------------------------------------------------------------------------
 // A11: the property test (plan §13: "same command from 'player' and 'AI'
-// issuer produces same outcome" — a fuzz over random mirrored commands)
+// issuer produces same outcome") — on states that are actually equivalent.
+//
+// B-002 re-founded this fuzz. The original mirrored player 1's command
+// positions 180 degrees and assumed the two commands were structurally
+// identical. That premise was half false, and the half that was false is
+// pinned below: the map's structures and ore layout DO mirror under rotation
+// (the content validator verifies it), but starting UNITS TRANSLATE —
+// `starting_forces` offsets are anchor-relative for every player
+// (content/factions/legion.ron), so player 1's workers stand at
+// anchor1 + offset, never at the mirror of player 0's workers. A mirrored
+// position therefore sits in a different occupancy state, and a different
+// validation outcome there is correct issuer-blind behavior, not an A11
+// violation. The equivalence the claim actually needs — and this fuzz now
+// proves — is the label swap: one world, one command set, with the 'player'
+// (Human) and 'AI' (Ai) controller labels exchanged between the player slots.
 // ---------------------------------------------------------------------------
 
 /// Side-relative entity slots the fuzz can reference.
@@ -879,15 +897,111 @@ fn slots_for(sim: &Sim, side: u8) -> Slots {
     }
 }
 
+/// The old fuzz's failing case, written out — the regression knowledge B-001
+/// §3 diagnosed, now an explicit, deterministic pin (B-002 Part 1; proptest's
+/// persisted seed is deliberately not relied on, per
+/// docs/pm/PROPTEST_REGRESSIONS_POLICY.md).
+///
+/// The drawn case: variant Build, own worker (slot 1), `ore_node` (kind 3,
+/// footprint 2x2, cost 0), at (47, 46) for player 0.
+///
+/// * Player 0's Build is **accepted**: tiles [47..48]x[46..47] are buildable
+///   ground and unoccupied — player 1's workers stand at y=52 (translated
+///   anchor offsets), so no mover is on them.
+/// * Player 1's Build at the footprint-mirrored (15, 16) is
+///   **`PlacementBlocked`**: tiles [15..16]x[16..17] contain player 0's
+///   worker standing at (16, 16) — the `mover_on_tile` check in the Build
+///   gate (crates/sim/src/command.rs) refuses placement under any unit.
+///
+/// The two commands were never structurally identical, so their divergent
+/// outcomes never violated A11. The pin asserts both halves: (a) the
+/// asymmetry is real (it is terrain/occupancy, authored data, not issuer
+/// identity), and (b) it is not issuer-dependent — every controller label
+/// arrangement produces the same pair of outcomes.
+#[test]
+fn a11_mirror_positions_are_not_equivalent_states_units_translate() {
+    let world = bundle().world();
+    for labels in [
+        [ControllerKind::Human, ControllerKind::Ai],
+        [ControllerKind::Ai, ControllerKind::Human],
+        [ControllerKind::Human, ControllerKind::Human],
+        [ControllerKind::Ai, ControllerKind::Ai],
+    ] {
+        let mut sim = Sim::new(&world, ai_setup(31, labels));
+        let snapshot = sim.snapshot();
+        let worker_of = |player: u8| {
+            snapshot
+                .entities
+                .iter()
+                .find(|entity| entity.owner == PlayerId(player) && entity.kind.0 == kinds::WORKER)
+                .expect("each side starts with workers")
+                .id
+        };
+        // The written-out case: p0 builds an ore node at (47, 46); p1 builds
+        // at the 180-degree footprint mirror (15, 16).
+        let commands = [
+            Command::new(
+                PlayerId(0),
+                0,
+                1,
+                CommandKind::Build {
+                    worker: worker_of(0),
+                    structure: pandemonium_sim_api::KindId(kinds::ORE_NODE),
+                    at: TilePos { x: 47, y: 46 },
+                },
+            ),
+            Command::new(
+                PlayerId(1),
+                0,
+                1,
+                CommandKind::Build {
+                    worker: worker_of(1),
+                    structure: pandemonium_sim_api::KindId(kinds::ORE_NODE),
+                    at: TilePos { x: 15, y: 16 },
+                },
+            ),
+        ];
+        let out = sim.step(&commands);
+        let outcomes = outcomes_of(&out.events);
+        assert_eq!(
+            outcomes.get(&(0, 1)),
+            None,
+            "p0's ore node at (47,46) is accepted under every labeling"
+        );
+        assert_eq!(
+            outcomes.get(&(1, 1)),
+            Some(&RejectReason::PlacementBlocked),
+            "p1's mirrored (15,16) is blocked by p0's translated worker at (16,16) \n             under every labeling — the divergence is occupancy, not issuer identity"
+        );
+    }
+}
+
 proptest::proptest! {
-    /// Random mirrored commands, both issuers, one fresh match per case: the
-    /// player-0 instance references its own slots and a position; the player-1
-    /// instance (the AI-labeled issuer) references the mirrored slots and the
-    /// 180-degree-mirrored position. The Crossroads content is symmetric and
-    /// the spawns mirror, so every generated pair is structurally identical —
-    /// and structurally identical commands must validate identically.
+    #![proptest_config(ProptestConfig::with_cases(4096))]
+
+    /// The A11 claim as written (plan §13), on states that are actually
+    /// equivalent: the SAME command set generated once, submitted to two
+    /// sims built from the same seed and content, whose only difference is
+    /// which player slot carries the Human label and which carries the Ai
+    /// label. Each side's command references that side's own slots at the
+    /// same absolute position — no mirroring. If any outcome differs between
+    /// the two arrangements, a controller label leaked into validation, the
+    /// one thing A11 forbids.
+    ///
+    /// The states' equivalence is proven, not assumed: the snapshots (the
+    /// world the gate validates against) are asserted identical below. The
+    /// canonical *identity* hash deliberately differs — controller labels
+    /// are hashed match identity (hash.rs's `controller_tag`; "recorded
+    /// match identity, not behavior") — so the fuzz compares outcomes and
+    /// world state, never the identity hash.
+    ///
+    /// Why this replaced the mirror-position fuzz: see the pinned case above
+    /// — mirrored positions sit in different occupancy states (units
+    /// translate; structures mirror), so mirror pairs were never equivalent
+    /// states. The label swap is: same world, same commands, the 'player' and
+    /// 'AI' roles exchanged.
     #[test]
-    fn a11_fuzz_mirrored_commands_validate_identically(
+    fn a11_fuzz_label_swapped_commands_validate_identically(
         variant in 0usize..9,
         slot_a in 0u8..6,
         slot_b in 0u8..6,
@@ -897,8 +1011,25 @@ proptest::proptest! {
         index in 0u16..4,
     ) {
         let world = bundle().world();
-        let mut sim = Sim::new(&world, ai_setup(31, [ControllerKind::Human, ControllerKind::Ai]));
-        let slots = [slots_for(&sim, 0), slots_for(&sim, 1)];
+        // The two equivalent states — world-identical, proven below; only
+        // the recorded controller labels differ.
+        let mut player_labeled = Sim::new(
+            &world,
+            ai_setup(31, [ControllerKind::Human, ControllerKind::Ai]),
+        );
+        let mut ai_labeled = Sim::new(
+            &world,
+            ai_setup(31, [ControllerKind::Ai, ControllerKind::Human]),
+        );
+        prop_assert_eq!(
+            player_labeled.snapshot(),
+            ai_labeled.snapshot(),
+            "the two label arrangements must start as the identical world"
+        );
+        // One command set, both issuers: each side references its own slots
+        // (own CC / own worker / the enemy's worker / own and enemy nodes /
+        // an unknown id) at the same absolute position and tile.
+        let slots = [slots_for(&player_labeled, 0), slots_for(&player_labeled, 1)];
         let resolve = |side: usize, slot: u8| -> EntityId {
             let s = &slots[side];
             match slot {
@@ -910,42 +1041,33 @@ proptest::proptest! {
                 _ => EntityId(999),
             }
         };
-        // The mirrored position; build placements mirror footprint-aware so
-        // the two candidates cover mirrored ground.
-        let footprint = bundle()
-            .entities
-            .get(kind as usize)
-            .and_then(|entity| entity.footprint())
-            .unwrap_or((1, 1));
         let kind_of = |side: usize| -> CommandKind {
             let pos = Vec2Fx::from_ints(x, y);
-            let mirrored = Vec2Fx::from_ints(63 - x, 63 - y);
             let at = TilePos { x, y };
-            let mirrored_at = TilePos {
-                x: 63 - x - footprint.0 as i32 + 1,
-                y: 63 - y - footprint.1 as i32 + 1,
-            };
             match variant {
-                0 => CommandKind::Move { units: vec![resolve(side, slot_a)], target: if side == 0 { pos } else { mirrored } },
-                1 => CommandKind::AttackMove { units: vec![resolve(side, slot_a)], target: if side == 0 { pos } else { mirrored } },
+                0 => CommandKind::Move { units: vec![resolve(side, slot_a)], target: pos },
+                1 => CommandKind::AttackMove { units: vec![resolve(side, slot_a)], target: pos },
                 2 => CommandKind::Stop { units: vec![resolve(side, slot_a)] },
                 3 => CommandKind::Gather { units: vec![resolve(side, slot_a)], node: resolve(side, slot_b) },
                 4 => CommandKind::Attack { units: vec![resolve(side, slot_a)], target: resolve(side, slot_b) },
-                5 => CommandKind::Build { worker: resolve(side, slot_a), structure: pandemonium_sim_api::KindId(kind), at: if side == 0 { at } else { mirrored_at } },
+                5 => CommandKind::Build { worker: resolve(side, slot_a), structure: pandemonium_sim_api::KindId(kind), at },
                 6 => CommandKind::Train { producer: resolve(side, slot_a), unit: pandemonium_sim_api::KindId(kind) },
                 7 => CommandKind::CancelQueueItem { producer: resolve(side, slot_a), index },
-                _ => CommandKind::SetRally { producer: resolve(side, slot_a), target: if side == 0 { pos } else { mirrored } },
+                _ => CommandKind::SetRally { producer: resolve(side, slot_a), target: pos },
             }
         };
         let commands = vec![
             Command::new(PlayerId(0), 0, 1, kind_of(0)),
             Command::new(PlayerId(1), 0, 1, kind_of(1)),
         ];
-        let out = sim.step(&commands);
-        let outcomes = outcomes_of(&out.events);
-        let out0 = outcomes.get(&(0, 1)).copied();
-        let out1 = outcomes.get(&(1, 1)).copied();
-        prop_assert!(out0 == out1, "mirror pair diverged (out0={out0:?} out1={out1:?}): {:?} (slots {}/{} kind {} at ({},{}))", commands[0].kind, slot_a, slot_b, kind, x, y);
+        let out_player = player_labeled.step(&commands);
+        let out_ai = ai_labeled.step(&commands);
+        prop_assert_eq!(
+            outcomes_of(&out_player.events),
+            outcomes_of(&out_ai.events),
+            "label-swapped pair diverged: {:?} (slots {}/{} kind {} at ({},{}))",
+            commands, slot_a, slot_b, kind, x, y
+        );
     }
 }
 
