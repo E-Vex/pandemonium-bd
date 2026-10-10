@@ -18,6 +18,13 @@ name: a002-diagnostics
 #                                      adapter request ran earlier.
 #   - master (pre-fix) crashed with 5 probes in parallel and NO wgpu use.
 #
+# Round 2, attempt 1 (run 38050523384) validated M1a/M1b/M1c (each hardware
+# cell alone exits 0) but M2/M3 died on a harness CLI error —
+# "Option 'exact' given more than once" (the filters must be positional
+# under ONE --exact), and the runner's default bash -e aborted the step
+# chain, starving M4/M5. Attempt 2 fixes both: single --exact with two
+# positional filters, set +e in every script, if: always() on every cell.
+#
 # The discriminating hypotheses:
 #   H-count: >=2 real rodio WASAPI probe rounds in ONE process crash it
 #            (master: 5 probes -> crash; branch default: 1 -> green;
@@ -59,52 +66,61 @@ jobs:
           cargo test -p pandemonium-client --no-run
           cargo build -p pandemonium-client
       - name: "M1a. audio canary alone (one probe, gate open)"
+        if: always()
         shell: bash
         run: |
-          set -uo pipefail
+          set -uo pipefail ; set +e
           BIN=$(ls target/debug/deps/pandemonium_client-*.exe 2>/dev/null | grep -v '\.d$' | head -1)
           "$BIN" --exact "sound::tests::the_device_probe_runs_behind_the_hardware_gate" --test-threads=1 --nocapture > m1a.log 2>&1
           echo "M1A_EXIT=$?" | tee -a m1a.log
       - name: "M1b. Sound::new probe alone (the round-1 crash site, gate open)"
+        if: always()
         shell: bash
         run: |
-          set -uo pipefail
+          set -uo pipefail ; set +e
           BIN=$(ls target/debug/deps/pandemonium_client-*.exe 2>/dev/null | grep -v '\.d$' | head -1)
           "$BIN" --exact "sound::tests::the_no_device_constructor_takes_the_null_arm_without_panicking" --test-threads=1 --nocapture > m1b.log 2>&1
           echo "M1B_EXIT=$?" | tee -a m1b.log
       - name: "M1c. wgpu adapter request alone (gate open)"
+        if: always()
         shell: bash
         run: |
-          set -uo pipefail
+          set -uo pipefail ; set +e
           BIN=$(ls target/debug/deps/pandemonium_client-*.exe 2>/dev/null | grep -v '\.d$' | head -1)
           "$BIN" --exact "render::tests::wgpu_adapter_enumeration_runs_behind_the_hardware_gate" --test-threads=1 --nocapture > m1c.log 2>&1
           echo "M1C_EXIT=$?" | tee -a m1c.log
       - name: "M2. TWO probes, no wgpu (canary then Sound::new; H-count)"
+        if: always()
         shell: bash
         run: |
-          set -uo pipefail
+          set -uo pipefail ; set +e
           BIN=$(ls target/debug/deps/pandemonium_client-*.exe 2>/dev/null | grep -v '\.d$' | head -1)
-          "$BIN" --exact "sound::tests::the_device_probe_runs_behind_the_hardware_gate" --exact "sound::tests::the_no_device_constructor_takes_the_null_arm_without_panicking" --test-threads=1 --nocapture > m2.log 2>&1
+          # Two positional filters under ONE --exact (libtest rejects a
+          # repeated --exact flag — round-2 attempt 1's lesson).
+          "$BIN" --exact "sound::tests::the_device_probe_runs_behind_the_hardware_gate" "sound::tests::the_no_device_constructor_takes_the_null_arm_without_panicking" --test-threads=1 --nocapture > m2.log 2>&1
           echo "M2_EXIT=$?" | tee -a m2.log ; tail -8 m2.log
       - name: "M3. wgpu request then ONE probe (H-order)"
+        if: always()
         shell: bash
         run: |
-          set -uo pipefail
+          set -uo pipefail ; set +e
           BIN=$(ls target/debug/deps/pandemonium_client-*.exe 2>/dev/null | grep -v '\.d$' | head -1)
-          "$BIN" --exact "render::tests::wgpu_adapter_enumeration_runs_behind_the_hardware_gate" --exact "sound::tests::the_no_device_constructor_takes_the_null_arm_without_panicking" --test-threads=1 --nocapture > m3.log 2>&1
+          "$BIN" --exact "render::tests::wgpu_adapter_enumeration_runs_behind_the_hardware_gate" "sound::tests::the_no_device_constructor_takes_the_null_arm_without_panicking" --test-threads=1 --nocapture > m3.log 2>&1
           echo "M3_EXIT=$?" | tee -a m3.log ; tail -8 m3.log
       - name: "M4. reproduce round 1: whole suite, serial, gate open"
+        if: always()
         shell: bash
         run: |
-          set -uo pipefail
+          set -uo pipefail ; set +e
           BIN=$(ls target/debug/deps/pandemonium_client-*.exe 2>/dev/null | grep -v '\.d$' | head -1)
           "$BIN" --test-threads=1 --nocapture > m4.log 2>&1
           echo "M4_EXIT=$?" | tee -a m4.log ; tail -8 m4.log
       - name: "M5. the PRODUCT's own sequence: windowed client on this runner"
+        if: always()
         shell: bash
         timeout-minutes: 5
         run: |
-          set -uo pipefail
+          set -uo pipefail ; set +e
           # The real binary, the real startup order: content -> Sound::new
           # probe (null arm here: no endpoint) -> EventLoop -> wgpu init on
           # WARP -> 30 presented frames -> clean exit. This is exactly the
@@ -116,6 +132,7 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -uo pipefail ; set +e
           echo "cell | exit" ; echo "-----+-----"
           for m in m1a m1b m1c m2 m3 m4 m5; do
             e=$(grep -oE "M[0-9][A-C]?_EXIT=[0-9]+" $m.log | tail -1)
