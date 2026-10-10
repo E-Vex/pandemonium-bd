@@ -70,6 +70,17 @@ cargo run -p pandemonium-client
 cargo run -p pandemonium-client -- --frames 900
 
 # no display? the client says so honestly and runs a headless smoke pass instead
+# (or ask for it directly — CI runners have desktop sessions)
+cargo run -p pandemonium-client -- --headless
+
+# the build identity: version, the exact git commit, and the content hash
+cargo run -p pandemonium-client -- --version
+#   pandemonium-client 0.1.0 (git <sha>, content 0x9bc18c521107b262)
+# the same line is the F3 debug overlay's first line while you play
+
+# content resolves at runtime: --content names a tree explicitly (the
+# release archives instead find content/ next to the binary)
+cargo run -p pandemonium-client -- --content /path/to/content
 
 # headless scripted match — prints every checkpoint hash and the final hash
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300   # 0xb6fff6659cfb7709
@@ -89,6 +100,10 @@ runs (`edge_scroll`, `pan_speed`, `zoom_min`, `zoom_max`, `master_volume`,
 config directory; see `docs/product/GAP_ANALYSIS.md` §11 for the exact
 per-OS locations). `--seed N` pre-fills the New Match screen's seed field;
 without it the seed is random and shown, so you can still report it.
+
+Audio degrades, never blocks: a machine with no output device (or a probe
+that misbehaves — set `PANDEMONIUM_AUDIO_PROBE=0` to skip it) gets one
+honest startup line and a silent game; every other system runs normally.
 
 ## Build it
 
