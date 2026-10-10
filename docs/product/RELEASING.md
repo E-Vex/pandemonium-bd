@@ -26,20 +26,21 @@ never pushes a tag itself; the release exists only because the PM did.
 ## The gates, in order of authority
 
 1. **The licence gate** (`licence-gate`): cargo-deny (pinned 0.20.2) checks
-   the dependency graph against `docs/product/deny.toml` — the brief's
-   allow-list exactly (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, MPL-2.0).
-   Anything outside fails the run. **It blocks publishing** (`publish` needs
-   it) but not artifact production — a red gate still yields inspectable
-   archives in the dispatch channel, because a licence decision is the
-   PM's, and evidence beats silence.
+   the dependency graph against `docs/product/deny.toml` — the allow-list
+   (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, MPL-2.0, and CC0-1.0 by the
+   PM's A-003 ruling). Anything outside fails the run. **It blocks
+   publishing** (`publish` needs it) but not artifact production — a red
+   gate still yields inspectable archives in the dispatch channel, because
+   a licence decision is the PM's, and evidence beats silence.
 
-   **Current open flag:** `hexf-parse 0.2.1` (pulled by `naga` ← `wgpu` ←
-   `pandemonium-client`) is **CC0-1.0**, which is not on the allow-list. The
-   gate is red until the PM either adds CC0-1.0 to `deny.toml`'s `allow`
-   (recommended: it is a permissive public-domain dedication, standard in
-   the Rust graphics stack, no copyleft, no attribution requirement) or
-   rules otherwise. **Only the PM edits the allow-list or the exceptions
-   block** — that is the point of the gate.
+   **The A-003 ruling (flag closed):** `hexf-parse 0.2.1` (pulled by `naga`
+   ← `wgpu` ← `pandemonium-client`) is **CC0-1.0**; the PM approved adding
+   CC0-1.0 to `deny.toml`'s `allow` — a permissive public-domain dedication,
+   standard in the Rust graphics stack, no copyleft, no attribution
+   requirement. With it in place the gate runs green (the A-003 report
+   carries the run URL). **Only the PM edits the allow-list or the
+   exceptions block** — that is the point of the gate; the next
+   out-of-list licence reopens this paragraph.
 
 2. **The build matrix** — release builds on pinned runners, with the
    version stamp (`--version` prints semver + git short SHA + content hash)
@@ -110,8 +111,8 @@ dispatch build carries the commit (`pandemonium-git-<sha>-…`).
 
 ## The release checklist (PM)
 
-1. Decide any open licence flag (today: hexf-parse/CC0-1.0 — the gate is
-   red until then).
+1. Decide any open licence flag (none open today — hexf-parse/CC0-1.0 was
+   ruled in by brief A-003; a new out-of-list licence reopens this line).
 2. Run a `workflow_dispatch` dry run on the release commit; read the smoke
    jobs' output — all three OSes green, `--version` line correct.
 3. Download the three artifacts (or spot-check one) — unpack somewhere
