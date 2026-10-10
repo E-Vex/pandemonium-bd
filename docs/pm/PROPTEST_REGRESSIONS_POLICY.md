@@ -47,6 +47,25 @@ process that found it is gone.
   appears in `git status`, that is the signal to apply this policy, not to
   sweep it in.
 
+## Premises that do not imply the claim (the B-004 defect class)
+
+A property test carries two things: a **premise** (the input ranges, plus any
+`if` guard in the body) and a **claim** (what is asserted). The premise must
+*imply* the claim — every input the premise admits must be one where the
+claim is mathematically true — otherwise the property is a lottery ticket:
+random draws eventually land in the gap and the gate goes red on code that is
+honouring its contracts. The fx CI #77 flake was exactly this: the guard was
+`b != 0` (with raws drawn from ±2^20) but the claim was
+`checked_div == Some(div)`, which is true only where the quotient
+`a·2^16/b` fits in i32 — roughly `|a| ≤ 32768·|b|` — so the guard admitted
+inputs the claim could not survive. When re-founding a property, prefer an
+**independent oracle** (recompute the expected answer in wider integer math,
+e.g. i128, and branch on *that*) over an input-range premise: the oracle
+decides every branch, so no untested gap exists. CI #77's red is now the
+`checked_div_is_exact_or_none_against_the_i128_quotient_oracle` fuzz plus the
+`checked_div_pins_the_flake_and_representability_boundaries` deterministic
+test (B-004).
+
 ## History of record
 
 - The A11 mirror fuzz (pre-B-002) drew a rare failing case; its persisted
@@ -55,6 +74,14 @@ process that found it is gone.
 - B-002 Part 1 converted that case into the named deterministic test above
   and re-founded the fuzz on label-swapped equivalent states, so no seed
   remains to pin and nothing is committed here.
+- CI #77 (master c876174, run 38076181010): the fx
+  `checked_div_agrees_in_range` property drew a rare failing case
+  (a=-393216, b=-1 raw) — a false premise, not an fx bug (the true quotient
+  25_769_803_776 raw is unrepresentable, so `None` was the documented
+  behaviour). B-004 re-founded the fuzz on the i128 quotient oracle, pinned
+  the case and the representability boundaries as the deterministic test
+  above, and reverted the seed that the local red appended to the tracked
+  `crates/fx/tests/properties.proptest-regressions` — no new seed committed.
 
 ## Rationale in one line
 
