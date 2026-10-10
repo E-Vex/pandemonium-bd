@@ -59,6 +59,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A hang must fail loudly, not consume the runner hour.
     timeout-minutes: 45
+    # B-005 (P-1): the proptest seed is a pinned, documented constant on CI.
+    # proptest 1.11.0 reads PROPTEST_RNG_SEED as a u64 into Config::rng_seed
+    # (config.rs: RNG_SEED -> RngSeed::Fixed) and applies it after any in-file
+    # config (contextualize_config), and TestRunner::new builds the case RNG
+    # from it (ChaChaRng::seed_from_u64) — so with the seed set, every leg of
+    # every run draws the identical case stream for every property: a red leg
+    # is a property of the code under the pinned seed, never a lottery (the
+    # CI #77 class, B-004). Local runs stay random: the variable exists only
+    # in this job, never in the repo's committed test config. The value is
+    # one of B-004's five verified-green seeds (10,000 cases per property,
+    # dev and release, fx + ai fuzz; re-verified at the committed 256/4096
+    # counts on master 88ea689 in both profiles). Rotate only by brief,
+    # exactly like the runner pins (A-201) — never by drift. The policy of
+    # record: docs/pm/PROPTEST_REGRESSIONS_POLICY.md, "The seed policy".
+    env:
+      PROPTEST_RNG_SEED: "20261011"
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +98,9 @@ jobs:
         with:
           key: test-${{ matrix.os }}-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
       - name: Run the test suite
-        run: cargo test --workspace ${{ matrix.profile == 'release' && '--release' || '' }}
+        run: |
+          echo "proptest seed in force: PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED (pinned for PR CI; reproduce locally with the same env var — docs/pm/PROPTEST_REGRESSIONS_POLICY.md)"
+          cargo test --workspace ${{ matrix.profile == 'release' && '--release' || '' }}
 
   replay:
     # A2: a recorded match replays to an identical final hash (plan §13).
