@@ -2132,6 +2132,34 @@ mod tests {
         }
     }
 
+    /// A-002 Part 1(a): adapter enumeration is the deepest wgpu call that
+    /// does not need a window, and it runs ONLY behind the hardware gate.
+    /// Headless CI (the usual case) sees the skip line; under
+    /// `PANDEMONIUM_HW_TESTS=1` this is the deliberate canary for the
+    /// Windows-crash isolation: if instance/adapter creation can kill the
+    /// process on a GPU-less machine, this is the test it dies in.
+    #[test]
+    fn wgpu_adapter_enumeration_runs_behind_the_hardware_gate() {
+        if !crate::hw::enabled(crate::hw::Scope::Gpu) {
+            println!(
+                "skipped: GPU hardware not positively plausible (set PANDEMONIUM_HW_TESTS=1 to \
+                 force enumeration)"
+            );
+            return;
+        }
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        // wgpu 26: `request_adapter` yields an adapter directly (the
+        // software fallback counts) or an error — either way, RETURNING is
+        // the claim under test.
+        let _adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("enumerating an adapter on a positively-plausible GPU must not error");
+        println!("probe: an adapter answered (wgpu enumeration returned)");
+    }
+
     /// The instanced pipelines (decal + entity) draw with two vertex buffer
     /// slots: slot 0 geometry, slot 1 per-instance data. wgpu validates slot
     /// bindings at draw time, so a pipeline left with its instance slot unset

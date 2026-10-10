@@ -99,60 +99,66 @@ fn main() -> anyhow::Result<()> {
             p1,
             p2,
             content,
-        } => match (p1, p2) {
-            (Slot::Demo, Slot::Demo) => {
-                // The M1 scripted demo over the trivial world — unchanged,
-                // including its pinned final hash.
-                let replay = record_replay(seed, ticks);
-                println!("pandemonium headless — scripted trivial-world match");
-                println!("  seed:        {}", replay.seed);
-                println!("  ticks:       {ticks}");
-                println!("  content:     {:#018x}", replay.content_hash);
-                println!("  map id:      {}", replay.map_id);
-                println!(
-                    "  commands:    {} (rejections included, all deterministic)",
-                    replay.commands.len()
-                );
-                println!("  checkpoints:");
-                for cp in &replay.checkpoints {
-                    println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
-                }
-                println!("  final hash:  {:#018x}", replay.final_hash);
-                if let Some(path) = record {
-                    let bytes = replay.encode();
-                    std::fs::write(&path, &bytes)
-                        .with_context(|| format!("writing replay to {}", path.display()))?;
+        } => {
+            // A-002 Part 2.1: the default `content` resolves at runtime
+            // (CWD, then the executable's directory — the release archive
+            // layout — then the compiled-in workspace path); an explicit
+            // path is the player's word and is used as-is.
+            let content = resolve_content_dir(&content)?;
+            match (p1, p2) {
+                (Slot::Demo, Slot::Demo) => {
+                    // The M1 scripted demo over the trivial world — unchanged,
+                    // including its pinned final hash.
+                    let replay = record_replay(seed, ticks);
+                    println!("pandemonium headless — scripted trivial-world match");
+                    println!("  seed:        {}", replay.seed);
+                    println!("  ticks:       {ticks}");
+                    println!("  content:     {:#018x}", replay.content_hash);
+                    println!("  map id:      {}", replay.map_id);
                     println!(
-                        "  replay file: {} ({} bytes, checksummed)",
-                        path.display(),
-                        bytes.len()
+                        "  commands:    {} (rejections included, all deterministic)",
+                        replay.commands.len()
                     );
+                    println!("  checkpoints:");
+                    for cp in &replay.checkpoints {
+                        println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
+                    }
+                    println!("  final hash:  {:#018x}", replay.final_hash);
+                    if let Some(path) = record {
+                        let bytes = replay.encode();
+                        std::fs::write(&path, &bytes)
+                            .with_context(|| format!("writing replay to {}", path.display()))?;
+                        println!(
+                            "  replay file: {} ({} bytes, checksummed)",
+                            path.display(),
+                            bytes.len()
+                        );
+                    }
                 }
-            }
-            (p1, p2) => {
-                if p1 == Slot::Demo || p2 == Slot::Demo {
-                    bail!("`demo` mixes with nothing: choose it for both slots or neither");
-                }
-                let bundle = load_content(&content)?;
-                let slot_name = |slot: Slot| match slot {
-                    Slot::Ai => "ai",
-                    Slot::Idle => "idle",
-                    Slot::Demo => "demo",
-                };
-                let match_result = run_ai_match(&bundle, seed, ticks, p1, p2)?;
-                println!("pandemonium headless — controller-driven match");
-                println!("  seed:        {}", seed);
-                println!("  ticks:       {ticks}");
-                println!("  slots:       {} vs {}", slot_name(p1), slot_name(p2));
-                println!("  content:     {:#018x}", match_result.replay.content_hash);
-                println!("  map id:      {}", match_result.replay.map_id);
-                println!(
-                    "  commands:    {} (rejections included, all deterministic)",
-                    match_result.replay.commands.len()
-                );
-                let summary = &match_result.summary;
-                for (index, player) in match_result.replay.player_setup.iter().enumerate() {
+                (p1, p2) => {
+                    if p1 == Slot::Demo || p2 == Slot::Demo {
+                        bail!("`demo` mixes with nothing: choose it for both slots or neither");
+                    }
+                    let bundle = load_content(&content)?;
+                    let slot_name = |slot: Slot| match slot {
+                        Slot::Ai => "ai",
+                        Slot::Idle => "idle",
+                        Slot::Demo => "demo",
+                    };
+                    let match_result = run_ai_match(&bundle, seed, ticks, p1, p2)?;
+                    println!("pandemonium headless — controller-driven match");
+                    println!("  seed:        {}", seed);
+                    println!("  ticks:       {ticks}");
+                    println!("  slots:       {} vs {}", slot_name(p1), slot_name(p2));
+                    println!("  content:     {:#018x}", match_result.replay.content_hash);
+                    println!("  map id:      {}", match_result.replay.map_id);
                     println!(
+                        "  commands:    {} (rejections included, all deterministic)",
+                        match_result.replay.commands.len()
+                    );
+                    let summary = &match_result.summary;
+                    for (index, player) in match_result.replay.player_setup.iter().enumerate() {
+                        println!(
                         "  player {}:    deliveries {}, trained {}, built {}, hits {}, deaths {}",
                         player.player.0,
                         summary.delivered.get(index).copied().unwrap_or(0),
@@ -161,36 +167,38 @@ fn main() -> anyhow::Result<()> {
                         summary.attack_hits.get(index).copied().unwrap_or(0),
                         summary.deaths.get(index).copied().unwrap_or(0),
                     );
-                }
-                println!("  checkpoints:");
-                for cp in &match_result.replay.checkpoints {
-                    println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
-                }
-                println!("  final hash:  {:#018x}", match_result.replay.final_hash);
-                match match_result.summary.winner {
-                    Some(winner) if winner == PlayerId::NEUTRAL => {
-                        println!("  match ended: mutual destruction (no winner)");
                     }
-                    Some(winner) => {
-                        println!("  match ended: player {} wins", winner.0);
+                    println!("  checkpoints:");
+                    for cp in &match_result.replay.checkpoints {
+                        println!("    tick {:>4}: {:#018x}", cp.tick, cp.hash);
                     }
-                    None => {
-                        println!("  match ended: unresolved (ran the tick budget)");
+                    println!("  final hash:  {:#018x}", match_result.replay.final_hash);
+                    match match_result.summary.winner {
+                        Some(winner) if winner == PlayerId::NEUTRAL => {
+                            println!("  match ended: mutual destruction (no winner)");
+                        }
+                        Some(winner) => {
+                            println!("  match ended: player {} wins", winner.0);
+                        }
+                        None => {
+                            println!("  match ended: unresolved (ran the tick budget)");
+                        }
                     }
-                }
-                if let Some(path) = record {
-                    let bytes = match_result.replay.encode();
-                    std::fs::write(&path, &bytes)
-                        .with_context(|| format!("writing replay to {}", path.display()))?;
-                    println!(
-                        "  replay file: {} ({} bytes, checksummed)",
-                        path.display(),
-                        bytes.len()
-                    );
+                    if let Some(path) = record {
+                        let bytes = match_result.replay.encode();
+                        std::fs::write(&path, &bytes)
+                            .with_context(|| format!("writing replay to {}", path.display()))?;
+                        println!(
+                            "  replay file: {} ({} bytes, checksummed)",
+                            path.display(),
+                            bytes.len()
+                        );
+                    }
                 }
             }
-        },
+        }
         Command::ReplayVerify { file, content } => {
+            let content = resolve_content_dir(&content)?;
             let bytes = std::fs::read(&file)
                 .with_context(|| format!("reading replay {}", file.display()))?;
             let replay = pandemonium_replay::ReplayFile::decode(&bytes)
@@ -214,9 +222,14 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::ContentValidate { path } => {
+            let path = resolve_content_dir(&path)?;
             validate_content(&path)?;
         }
-        Command::Soak(cli) => {
+        Command::Soak(mut cli) => {
+            // A-002 Part 2.1: same runtime resolution, threaded through the
+            // subcommand's own field (the soak's evidence lines quote the
+            // resolved path).
+            cli.content = resolve_content_dir(&cli.content)?;
             let report = run_soak(&cli)?;
             print_report(&report);
             // A7's "no stuck matches" gate: a non-zero `unresolved` count
@@ -229,10 +242,72 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
-        Command::Bench(cli) => {
+        Command::Bench(mut cli) => {
+            cli.content = resolve_content_dir(&cli.content)?;
             let report = run_bench(&cli)?;
             print_bench_report(&report);
         }
     }
     Ok(())
+}
+
+/// A-002 Part 2.1: the runtime content search for the packaged tools. The
+/// CLI's value is either an explicit path (used as-is — the player's word)
+/// or the default `content`, which resolves: the working directory (today's
+/// behavior, preserved), then `<exe_dir>/content` (the release archive
+/// layout — binary and content side by side), then the compile-time
+/// workspace path (the dev layout, last). A failed search prints every path
+/// tried and teaches the flag.
+fn resolve_content_dir(given: &std::path::Path) -> anyhow::Result<PathBuf> {
+    const DEFAULT: &str = "content";
+    if given != std::path::Path::new(DEFAULT) {
+        return Ok(given.to_path_buf());
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_dir = exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the tools crate sits two levels under the workspace root")
+        .join("content");
+    let candidates = [cwd.join(DEFAULT), exe_dir.join(DEFAULT), dev];
+    for candidate in &candidates {
+        if candidate.is_dir() {
+            return Ok(candidate.clone());
+        }
+    }
+    let mut message = String::from("content directory not found. Searched:");
+    for candidate in &candidates {
+        message.push_str(&format!("\n  {}", candidate.display()));
+    }
+    message.push_str("\nPass --content <dir> (or the positional path) to name it explicitly.");
+    Err(anyhow::anyhow!(message))
+}
+
+#[cfg(test)]
+mod content_resolution_tests {
+    //! A-002 Part 2.1: the resolution law's testable half. The search order
+    //! (CWD, executable-relative, dev path) is environment-shaped and is
+    //! verified by the packaged-archive smoke runs; the passthrough law is
+    //! pure and pinned here.
+
+    use super::resolve_content_dir;
+
+    #[test]
+    fn an_explicit_path_passes_through_unchanged() {
+        // Anything other than the default `content` is the player's word —
+        // used exactly as typed, never silently redirected.
+        for named in ["/somewhere/my-tree", "content-custom", "../content"] {
+            let path = std::path::Path::new(named);
+            assert_eq!(
+                resolve_content_dir(path).unwrap(),
+                path,
+                "{named} must pass through"
+            );
+        }
+    }
 }
