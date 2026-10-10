@@ -683,6 +683,31 @@ mod tests {
         }
     }
 
+    /// A-002 Part 2.6: audio initialization failure is NON-FATAL, by test, on
+    /// every OS — the env kill-switch forces the worst case (init never even
+    /// attempted), and the sink still constructs, still counts, still
+    /// answers. A player whose audio stack is broken gets a silent, running
+    /// game; nothing here may panic or hang.
+    #[test]
+    fn a_failed_audio_init_never_blocks_the_game() {
+        // Env mutation is safe here: this is the only test that constructs
+        // `Sound::new` (the wiring tests build the null arm directly), so no
+        // concurrent test reads the variable mid-flight.
+        std::env::set_var("PANDEMONIUM_AUDIO_PROBE", "0");
+        let mut sound = Sound::new(0.5, false);
+        std::env::remove_var("PANDEMONIUM_AUDIO_PROBE");
+        assert!(!sound.is_active(), "the disabled probe means the null arm");
+        // The arm is live: cues reach the counter through the whole seam.
+        sound.on_cue(AudioCue::UiClick);
+        assert_eq!(
+            sound.client_cues(),
+            1,
+            "the null arm still counts what it was fed"
+        );
+        // And the evidence line states the arm honestly.
+        assert!(sound.evidence_line().contains("null fallback"));
+    }
+
     #[test]
     fn the_rate_limiter_first_passes_repeats_drop_and_reopens() {
         let mut limiter = RateLimiter::new(Duration::from_millis(80));
