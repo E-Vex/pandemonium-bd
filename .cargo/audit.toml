@@ -1,0 +1,26 @@
+# cargo-audit configuration (B-002 Part 2 triage).
+#
+# The audit workflow runs `cargo audit --deny warnings`, which fails on
+# advisory *warnings* (unmaintained/informational) as well as real
+# vulnerabilities. As of B-002 the lockfile has ZERO vulnerability advisories;
+# the red audit workflow (6/6 runs) was these two unmaintained notices:
+#
+# 1. RUSTSEC-2024-0436 - paste 1.0.15 (unmaintained, informational):
+#    transitive via wgpu 26.0.1 -> wgpu-hal -> metal 0.32.0 (Apple target
+#    only). No fixed version exists: paste 1.0.15 is its final release.
+#    Revisit on the next wgpu/metal bump.
+# 2. RUSTSEC-2026-0192 - ttf-parser 0.25.1 (unmaintained, informational):
+#    transitive via fontdue 0.9.4 (client text rasterization) and via
+#    winit 0.30.13 -> sctk-adwaita -> ab_glyph -> owned_ttf_parser. No fixed
+#    version exists within the current winit/fontdue generations. Revisit on
+#    the next winit or fontdue bump.
+#
+# Both are reported in the B-002 report (audit triage) with severity and
+# recommendations. These ignores are the documented disposition - not a
+# silence: the file is reviewed in git, and any NEW advisory (vulnerability
+# or otherwise) still fails the workflow.
+[advisories]
+ignore = [
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2026-0192",
+]
