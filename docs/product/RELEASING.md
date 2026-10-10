@@ -52,19 +52,59 @@ never pushes a tag itself; the release exists only because the PM did.
    smoke runs the real audio device probe (no endpoint on a runner — the
    documented silent fallback, or the crash the pipeline must name).
 
-## Pinned runner images
+## Pinned runner images, CPU architectures, and the macOS deployment floor
 
-| Leg | Image | Target | Archive |
-|---|---|---|---|
-| Linux | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | `tar.gz` |
-| Windows | `windows-2022` | `x86_64-pc-windows-msvc` | `zip` |
-| macOS | `macos-15` | `aarch64-apple-darwin` | `tar.gz` |
+| Leg | Image | Target triple | CPU arch of the archive | Archive |
+|---|---|---|---|---|
+| Linux | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | **x86-64** (AMD64) | `tar.gz` |
+| Windows | `windows-2022` | `x86_64-pc-windows-msvc` | **x86-64** (AMD64) | `zip` |
+| macOS | `macos-15` | `aarch64-apple-darwin` | **ARM64** (Apple silicon) | `tar.gz` |
 
 Pins are deliberate (B-002's rule): a `-latest` label is a moving fleet, and
 a release build should be reproducible to the runner image it was built on.
 Bumping a pin is a normal review line in the workflow file, not an ambient
 surprise. The macOS build is **aarch64 only** (Apple silicon; Intel Macs are
 not served by this pipeline today — flag to the PM if a tester needs one).
+
+**Why these pins differ from ci.yml's** (ci: `ubuntu-24.04` / `windows-2025`
+/ `macos-26`; release: `ubuntu-24.04` / `windows-2022` / `macos-15`). Both
+channels pin — neither drifts — but they face opposite directions:
+
+- **CI leads.** The verification channel should catch breakage against the
+  *current* fleet as early as possible, so ci.yml pins what `-latest`
+  resolved to on 2026-10-10 (A-201: `windows-2025`, `macos-26`, with
+  ubuntu-latest migrating to Ubuntu 26 on 19 Oct 2026).
+- **Release lags, on the older baseline of each family.** A player's OS is a
+  fact we cannot upgrade, so the distribution channel builds against the
+  older toolchain baseline and the archives inherit it. Per family
+  (availability verified against the actions/runner-images table,
+  2026-10-11): **windows-2022** is the oldest Windows Server image in the
+  fleet — rustc statically links the CRT, so the practical player floor
+  (Windows 10+) is unchanged either way and the pin buys toolset and SDK
+  reproducibility; **macos-15** is the oldest non-deprecated macOS image
+  (macos-14 is deprecated) — building on the macOS 15 SDK under the
+  explicit deployment target below keeps the aarch64 archive loadable from
+  macOS 11 up; and **ubuntu-24.04** is where both channels agree today (the
+  Linux archive's glibc floor is therefore 24.04's 2.39 — ubuntu-22.04,
+  glibc 2.35, is still listed in the fleet, and pinning release to it would
+  widen the Linux floor to match; that is a PM decision for a future brief,
+  listed in the A-003 report's proposals, not taken here).
+- **They move independently, by review.** CI migrated to the 2025/26 images
+  in B-002 and release did not follow; when release migrates it will be a
+  brief with the player-floor argument stated, never an ambient bump — and
+  CI may keep leading.
+
+**`MACOSX_DEPLOYMENT_TARGET=11.0`** is now set explicitly in the build job
+(release.yml, the macOS leg only, exported before the build so rustc and
+every C/ObjC compile in the tree sees it). 11.0 (Big Sur) is the floor of
+the *entire* aarch64 player fleet — Apple silicon Macs cannot run older —
+and it is rustc's default for the triple; the explicit pin exists so the
+floor is a written decision instead of a toolchain default. Without it, a
+future runner/SDK bump could raise the effective minimum OS version
+silently and narrow the player fleet with no review line anywhere. The
+smoke job proves the packaged binary runs on the runner (macOS 15); the
+floor *below* the runner's version is a build-time property (the linker's
+`-mmacosx-version-min`) that a runner cannot re-verify — stated honestly.
 
 Toolchain: 1.98.1 exactly, per `rust-toolchain.toml`. Tools in the pipeline
 are version-pinned too (cargo-deny 0.20.2, cargo-about 0.9.2) — same rule,
