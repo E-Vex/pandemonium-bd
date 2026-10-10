@@ -164,12 +164,15 @@ jobs:
       - name: Linux system deps (ALSA dev for the client's audio stack)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Pin the macOS deployment target (the aarch64 floor: macOS 11)
+      - name: Pin the macOS deployment target (the aarch64 floor, macOS 11)
         # Set before the build so rustc and every C/ObjC compile in the
         # dependency tree see it. 11.0 is the whole aarch64 player fleet's
         # floor (Big Sur, the first macOS on Apple silicon) and rustc's
         # default for the triple; pinning it explicitly makes the floor a
         # written decision, immune to a future SDK's default drifting up.
+        # NB: no ": " in this step's name — a colon-space inside a YAML
+        # plain scalar is a parse error ("mapping values are not allowed"),
+        # which cost the startup-failure run at 96e5900.
         if: runner.os == 'macOS'
         run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
       - name: Cache cargo registry + target
