@@ -68,12 +68,37 @@ proptest! {
         prop_assert_eq!(got, want);
     }
 
-    /// Checked division is Some exactly where the quotient fits in i32.
+    /// Checked division is exact or honestly absent, decided by an independent
+    /// oracle: the true Q16.16 quotient, recomputed in i128 straight from the
+    /// raw values (128-bit headroom, truncation toward zero — the same
+    /// integer-division semantics, no range ceiling). Where the quotient fits
+    /// in i32, `checked_div` returns it exactly and the saturating `div`
+    /// carries the same value (its clamp is a no-op in-range — the old
+    /// "agrees" claim, now guarded by the oracle instead of a premise);
+    /// where it does not fit, `checked_div` is `None`. No input-range
+    /// precondition at all: every branch is decided by the oracle, so the
+    /// flake region that killed `checked_div_agrees_in_range` on CI #77
+    /// (tiny |b| with large |a|, where `a·2^16/b` leaves i32) is exercised,
+    /// not excluded. The pinned boundary inputs live in the deterministic
+    /// test below; the diagnosis is docs/pm/reports/B-004.md.
     #[test]
-    fn checked_div_agrees_in_range(a in -(1 << 20)..(1 << 20), b in -(1 << 20)..(1 << 20)) {
+    fn checked_div_is_exact_or_none_against_the_i128_quotient_oracle(
+        a in proptest::num::i32::ANY,
+        b in proptest::num::i32::ANY,
+    ) {
         let (fa, fb) = (Fx::from_raw(a), Fx::from_raw(b));
-        if b != 0 {
-            prop_assert_eq!(fa.checked_div(fb), Some(fa.div(fb)));
+        let oracle = if b == 0 {
+            None
+        } else {
+            let q = ((a as i128) << 16) / (b as i128);
+            i32::try_from(q).ok().map(Fx::from_raw)
+        };
+        match oracle {
+            Some(exact) => {
+                prop_assert_eq!(fa.checked_div(fb), Some(exact));
+                prop_assert_eq!(fa.div(fb), exact);
+            }
+            None => prop_assert_eq!(fa.checked_div(fb), None),
         }
     }
 
@@ -266,4 +291,68 @@ proptest! {
         let b = Vec2Fx::new(Fx::from_raw(bx), Fx::from_raw(by));
         prop_assert_eq!(Vec2Fx::dist(a, b), (a - b).len());
     }
+}
+
+/// The CI #77 flake and the representability boundaries, written out — the
+/// regressions policy's honest conversion of a red case: a named,
+/// deterministic test with the inputs spelled out, never a committed seed.
+/// The old `checked_div_agrees_in_range` premise (any `b != 0`, both raws in
+/// ±2^20) never implied its claim `checked_div == Some(div)`: the quotient
+/// `a·2^16/b` leaves i32 whenever |a| > 32768·|b|, so rare draws failed the
+/// property while fx honoured its documented contracts exactly — `checked_div`
+/// is "`None` on a zero divisor or a quotient that does not fit", and `div`
+/// "saturates when the quotient does not fit". These pins keep that boundary
+/// visible forever; the fuzz above keeps it covered everywhere else.
+#[test]
+fn checked_div_pins_the_flake_and_representability_boundaries() {
+    // The CI #77 case (run 38076181010, master c876174): -6.0 / (-1/65536)
+    // = 393216.0 = 25_769_803_776 raw — far above i32::MAX. Unrepresentable,
+    // so checked_div is None and div saturates up to MAX.
+    assert_eq!(Fx::from_raw(-393_216).checked_div(Fx::from_raw(-1)), None);
+    assert_eq!(Fx::from_raw(-393_216).div(Fx::from_raw(-1)), Fx::MAX);
+    // The locally reproduced twin (PROPTEST_RNG_SEED=777): a positive
+    // dividend over a tiny negative divisor — the quotient leaves through
+    // the bottom, so div saturates down to MIN.
+    assert_eq!(Fx::from_raw(294_913).checked_div(Fx::from_raw(-1)), None);
+    assert_eq!(Fx::from_raw(294_913).div(Fx::from_raw(-1)), Fx::MIN);
+
+    // Quotient exactly at the representable edges: MAX/ONE and MIN/ONE are
+    // exact (the left shift and the divisor cancel), so both are Some.
+    assert_eq!(Fx::MAX.checked_div(Fx::ONE), Some(Fx::MAX));
+    assert_eq!(Fx::MIN.checked_div(Fx::ONE), Some(Fx::MIN));
+    // MIN / -1, the classic signed-overflow quotient in Q16.16: the true
+    // quotient is 2^31 raw — one past i32::MAX — so None, div saturates up.
+    assert_eq!(Fx::MIN.checked_div(-Fx::ONE), None);
+    assert_eq!(Fx::MIN.div(-Fx::ONE), Fx::MAX);
+
+    // |b| = 1 raw, the tiniest divisor and the heart of the flake region:
+    // the exact edge is |a| = 32768 raw, where the quotient is 2^31 —
+    // representable only when the signs send it to MIN, not to MAX.
+    assert_eq!(
+        Fx::from_raw(32_767).checked_div(Fx::from_raw(1)),
+        Some(Fx::from_raw(2_147_418_112))
+    );
+    assert_eq!(Fx::from_raw(32_768).checked_div(Fx::from_raw(1)), None);
+    assert_eq!(
+        Fx::from_raw(32_768).checked_div(Fx::from_raw(-1)),
+        Some(Fx::MIN)
+    );
+    assert_eq!(
+        Fx::from_raw(-32_768).checked_div(Fx::from_raw(1)),
+        Some(Fx::MIN)
+    );
+    assert_eq!(Fx::from_raw(-32_768).checked_div(Fx::from_raw(-1)), None);
+
+    // Large |a| with tiny |b| (the amplification region) against the same
+    // |a| over a whole unit: only the whole-unit divisor keeps the quotient
+    // in range.
+    assert_eq!(Fx::from_raw(1_048_575).checked_div(Fx::from_raw(2)), None);
+    assert_eq!(Fx::from_raw(1_048_575).checked_div(Fx::from_raw(-2)), None);
+    assert_eq!(
+        Fx::from_raw(1_048_575).checked_div(Fx::ONE),
+        Some(Fx::from_raw(1_048_575))
+    );
+
+    // Zero divisor: None by contract, whatever the dividend.
+    assert_eq!(Fx::MAX.checked_div(Fx::ZERO), None);
 }
