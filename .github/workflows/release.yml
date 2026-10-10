@@ -238,9 +238,10 @@ jobs:
     # A-002 Part 2.5: the packaged artifact must run from a CLEAN directory
     # on its own OS — unpack, run the client's headless smoke and the tools'
     # content-validate against the packaged content, verify the checksum.
-    # On Windows this is also the product-level access-violation canary: the
-    # real audio probe runs here (a runner has no endpoint — the documented
-    # non-fatal fallback, or the crash the pipeline must name).
+    # (The headless path returns before the audio probe and the GPU stack,
+    # so this is the content/packaging canary, not the hardware one — the
+    # product-level probe-on-endpoint-less-Windows proof was the A-002
+    # diagnostics matrix, cell M5.)
     name: packaged-archive smoke (${{ matrix.slug }})
     needs: build
     runs-on: ${{ matrix.os }}
@@ -271,7 +272,14 @@ jobs:
           set -euo pipefail
           CLEAN="$RUNNER_TEMP/pandemonium-smoke-clean"
           rm -rf "$CLEAN" && mkdir -p "$CLEAN"
-          ARCHIVE=$(ls pandemonium-*.tar.gz pandemonium-*.zip 2>/dev/null | grep -v '\.sha256$' | head -1)
+          # A bare `ls` cannot exit nonzero; the previous two-pattern form
+          # (`ls pandemonium-*.tar.gz pandemonium-*.zip`) killed this step on
+          # every OS — each OS ships exactly one archive type, and the
+          # unmatched literal made ls exit 2 under pipefail before the
+          # assignment could land. (Run 38051964535's three smoke
+          # failures: this line, never the archives.)
+          ARCHIVE=$(ls | grep -E '^pandemonium-.*\.(tar\.gz|zip)$' | head -1)
+          [ -n "$ARCHIVE" ] || { echo "no archive in $(pwd):"; ls -la; exit 1; }
           if [[ "$ARCHIVE" == *.zip ]]; then
             powershell.exe -NoProfile -Command "Expand-Archive -Path '$ARCHIVE' -DestinationPath '$CLEAN' -Force" ||
               unzip -q "$ARCHIVE" -d "$CLEAN"
@@ -311,9 +319,14 @@ jobs:
         run: |
           set -euo pipefail
           rm -f checksums.txt
+          # Collect the archives with the [ -e ] guard (a bare glob in the
+          # gh command line would pass the unmatched literal through and
+          # fail the release on any OS mix that lacks one archive type).
+          FILES=()
           for archive in pandemonium-*.tar.gz pandemonium-*.zip; do
             [ -e "$archive" ] || continue
             sha256sum "$archive" >> checksums.txt
+            FILES+=("$archive")
           done
           cat checksums.txt
           TAG="${GITHUB_REF_NAME}"
@@ -321,4 +334,4 @@ jobs:
             --prerelease \
             --title "Pandemonium $TAG (Alpha playtest)" \
             --notes "Unsigned Alpha build. Start with QUICKSTART.md (Gatekeeper/SmartScreen bypass, controls, troubleshooting). Verify a download against checksums.txt. Audio degrades silently without a device; Linux needs libasound2." \
-            pandemonium-*.tar.gz pandemonium-*.zip checksums.txt
+            "${FILES[@]}" checksums.txt
