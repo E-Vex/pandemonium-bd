@@ -34,7 +34,19 @@ name: nightly
 on:
   schedule:
     - cron: "0 3 * * *" # 03:00 UTC daily
-  workflow_dispatch: {} # manual trigger for on-demand sweeps
+  # Manual trigger for on-demand sweeps. `shard_matches` shrinks the ten
+  # release shards for a small dispatch (the scheduled default stays 100 =
+  # the full 1000-match A7 tier); the smoke tier and the dev invariant tier
+  # keep their own sizes regardless. Seeds stay disjoint for any per-shard
+  # count <= 100 (the sharding arithmetic note below still holds: shard k's
+  # seeds are [BASE + 100k, BASE + 100k + count), and 100-wide spacing keeps
+  # the intervals disjoint).
+  workflow_dispatch:
+    inputs:
+      shard_matches:
+        description: "Matches per release shard (scheduled default: 100)"
+        required: false
+        default: "100"
 
 env:
   CARGO_TERM_COLOR: always
@@ -73,45 +85,47 @@ jobs:
             matches: 32
             seed_offset: 0
             timeout: 30
-          # The full A7 tier, sharded 10 ways.
+          # The full A7 tier, sharded 10 ways. The per-shard match count is
+          # dispatch-shrinkable (workflow_dispatch input, scheduled default
+          # 100); on schedule and default dispatches this is exactly 100.
           - tier: shard-0
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 0
             timeout: 90
           - tier: shard-1
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 100
             timeout: 90
           - tier: shard-2
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 200
             timeout: 90
           - tier: shard-3
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 300
             timeout: 90
           - tier: shard-4
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 400
             timeout: 90
           - tier: shard-5
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 500
             timeout: 90
           - tier: shard-6
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 600
             timeout: 90
           - tier: shard-7
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 700
             timeout: 90
           - tier: shard-8
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 800
             timeout: 90
           - tier: shard-9
-            matches: 100
+            matches: ${{ inputs.shard_matches || '100' }}
             seed_offset: 900
             timeout: 90
     steps:
