@@ -1174,3 +1174,16 @@ confirms or rejects it.
   positions are equivalent states — was false because starting *units*
   translate (anchor-relative offsets) while *structures* mirror; the failing
   Build case is pinned as a named deterministic test in `tests/ai.rs`.
+- **A-129 (brief A-003, product phase).** The release pipeline's macOS
+  deployment floor is pinned at `MACOSX_DEPLOYMENT_TARGET=11.0`
+  (release.yml's build job, the macOS leg only, exported before the build so
+  rustc and every C/ObjC compile in the tree sees it). 11.0 (Big Sur) is the
+  floor of the entire aarch64 player fleet — Apple silicon Macs cannot run
+  older — and it already is rustc's default for `aarch64-apple-darwin`, so
+  the pin changes no output today; it exists so the floor is a written
+  decision in the workflow instead of a toolchain default, immune to a
+  future SDK/runner image raising its default minimum silently. The smoke
+  job can only prove the archive runs on the runner's own macOS (15); the
+  floor below the runner is a build-time property (the linker's
+  `-mmacosx-version-min`) that a runner cannot re-verify — recorded as a
+  limit, not a claim. Reversible to any floor >= 11.0 by editing one line.
