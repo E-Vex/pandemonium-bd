@@ -14,8 +14,13 @@ runtime-deps appendix, `QUICKSTART.md`, `THIRD_PARTY_NOTICES.md`), records
 SHA-256 sidecars, then a separate smoke job unpacks each archive into a
 clean directory **on that archive's own OS** and runs the packaged client's
 `--headless` smoke plus `pandemonium-tools content-validate` against the
-packaged content, and verifies the checksum. Artifacts land under the run's
-Artifacts section (`release-linux-x86_64`, `release-windows-x86_64`,
+packaged content, and verifies the checksum. Since A-004 the Linux archive
+is smoked on **both** ubuntu-22.04 (its build floor) and ubuntu-24.04 (a
+strictly newer glibc), and every smoke leg re-checks the packaged goldens
+**exactly** — the content hash + map id, the demo hash, and the flagship
+hash must match the registered values bit-identically from the unpacked
+archive. Artifacts land under the run's Artifacts section
+(`release-linux-x86_64`, `release-windows-x86_64`,
 `release-macos-aarch64`, `release-notices`). Nothing is published.
 
 **A `v*` tag push (the PM's trigger — no one else pushes tags).** Same
@@ -48,15 +53,21 @@ never pushes a tag itself; the release exists only because the PM did.
 
 3. **The packaged-archive smoke** — an archive that does not *run from a
    clean directory on its own OS* is not a deliverable, whatever built it.
-   On Windows this is also the product-level access-violation canary: the
-   smoke runs the real audio device probe (no endpoint on a runner — the
-   documented silent fallback, or the crash the pipeline must name).
+   The Linux archive is smoked twice, on ubuntu-22.04 and ubuntu-24.04: an
+   archive built on the former must run on both (the floor and forward
+   compatibility in one matrix). Every leg also re-checks the packaged
+   goldens exactly — the content hash + map id from the packaged tree, and
+   the demo and flagship sim hashes re-run by the packaged binaries — a
+   mismatch is a STOP condition, not a warning. On Windows this is also the
+   product-level access-violation canary: the smoke runs the real audio
+   device probe (no endpoint on a runner — the documented silent fallback,
+   or the crash the pipeline must name).
 
-## Pinned runner images, CPU architectures, and the macOS deployment floor
+## Pinned runner images, CPU architectures, and the platform floors
 
 | Leg | Image | Target triple | CPU arch of the archive | Archive |
 |---|---|---|---|---|
-| Linux | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | **x86-64** (AMD64) | `tar.gz` |
+| Linux | `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | **x86-64** (AMD64) | `tar.gz` |
 | Windows | `windows-2022` | `x86_64-pc-windows-msvc` | **x86-64** (AMD64) | `zip` |
 | macOS | `macos-15` | `aarch64-apple-darwin` | **ARM64** (Apple silicon) | `tar.gz` |
 
@@ -67,7 +78,7 @@ surprise. The macOS build is **aarch64 only** (Apple silicon; Intel Macs are
 not served by this pipeline today — flag to the PM if a tester needs one).
 
 **Why these pins differ from ci.yml's** (ci: `ubuntu-24.04` / `windows-2025`
-/ `macos-26`; release: `ubuntu-24.04` / `windows-2022` / `macos-15`). Both
+/ `macos-26`; release: `ubuntu-22.04` / `windows-2022` / `macos-15`). Both
 channels pin — neither drifts — but they face opposite directions:
 
 - **CI leads.** The verification channel should catch breakage against the
@@ -78,33 +89,80 @@ channels pin — neither drifts — but they face opposite directions:
   fact we cannot upgrade, so the distribution channel builds against the
   older toolchain baseline and the archives inherit it. Per family
   (availability verified against the actions/runner-images table,
-  2026-10-11): **windows-2022** is the oldest Windows Server image in the
-  fleet — rustc statically links the CRT, so the practical player floor
-  (Windows 10+) is unchanged either way and the pin buys toolset and SDK
-  reproducibility; **macos-15** is the oldest non-deprecated macOS image
+  2026-10-11): **ubuntu-22.04** is the oldest Linux image in the fleet —
+  A-004 moved the release build leg to it (the PM approved the A-003
+  report's proposal) so the Linux archive's glibc floor is 2.35, covering
+  Debian 12 (bookworm, glibc 2.36) and Ubuntu 22.04 (jammy, 2.35) players;
+  the build job prints the highest GLIBC symbol version the binaries
+  require and fails above 2.35, so the floor is checked, not assumed, and
+  the smoke runs the archive on 22.04 *and* 24.04 to prove it loads on both
+  sides of the floor. **windows-2022** is the oldest Windows Server image
+  in the fleet — rustc statically links the CRT, so the practical player
+  floor (Windows 10+) is unchanged either way and the pin buys toolset and
+  SDK reproducibility; **macos-15** is the oldest non-deprecated macOS image
   (macos-14 is deprecated) — building on the macOS 15 SDK under the
   explicit deployment target below keeps the aarch64 archive loadable from
-  macOS 11 up; and **ubuntu-24.04** is where both channels agree today (the
-  Linux archive's glibc floor is therefore 24.04's 2.39 — ubuntu-22.04,
-  glibc 2.35, is still listed in the fleet, and pinning release to it would
-  widen the Linux floor to match; that is a PM decision for a future brief,
-  listed in the A-003 report's proposals, not taken here).
+  macOS 11 up.
 - **They move independently, by review.** CI migrated to the 2025/26 images
-  in B-002 and release did not follow; when release migrates it will be a
-  brief with the player-floor argument stated, never an ambient bump — and
-  CI may keep leading.
+  in B-002 and release did not follow; release moved its Linux leg down to
+  22.04 in A-004 and CI did not follow it down; when either migrates again
+  it will be a brief with the player-floor argument stated, never an
+  ambient bump — and CI may keep leading.
 
-**`MACOSX_DEPLOYMENT_TARGET=11.0`** is now set explicitly in the build job
+### Platform floors (what a player's machine needs)
+
+| Archive | CPU arch | Floor | How it is enforced |
+|---|---|---|---|
+| `linux-x86_64` | x86-64 | **glibc 2.35 or newer** (Ubuntu 22.04, Debian 12) + `libasound2` at load time | built on ubuntu-22.04; the build job's **GLIBC evidence line** prints the highest GLIBC symbol version both binaries require and fails the job above 2.35; smoke legs run on 22.04 and 24.04 |
+| `windows-x86_64` | x86-64 | **Windows 10 or newer** | stated from toolchain facts, not proven by the pipeline — see the honest note below |
+| `macos-aarch64` | ARM64 (Apple silicon) | **macOS 11.0 (Big Sur) or newer** | `MACOSX_DEPLOYMENT_TARGET=11.0` at build; the build job's **LC_BUILD_VERSION minos evidence line** (`otool -l`) prints both binaries' minos and fails the job above 11.0 |
+
+The **Windows row is honest, not proven**: rustc's MSVC toolchain statically
+links the CRT (no VCRedist for a player to install), and the graphics stack
+(wgpu → DX12, with a Vulkan fallback) requires Windows 10 — so "Windows 10+
+on x86-64" is the floor we state. But a PE binary has no GLIBC/minos
+equivalent the pipeline can read back, so there is no automated floor gate
+for Windows; the smoke proves the archive runs on the windows-2022 runner
+(Server 2022), not on a Windows 10 machine. If a tester on Windows 10
+cannot start the archive, that report is the evidence — file it, and this
+row moves from "stated" to "measured" or "wrong".
+
+**The ubuntu-22.04 retirement risk, stated plainly.** The Linux release leg
+is hosted on GitHub's `ubuntu-22.04` image, and every GitHub-hosted image is
+eventually retired (20.04 and 18.04 went before it). When that happens the
+release build stops scheduling — the job cannot find a runner for the label,
+no Linux archive is produced, and the channel is broken until the pin moves.
+Moving it (to `ubuntu-24.04`, glibc 2.39) would **narrow the Linux floor
+from 2.35 to 2.39** — Debian 12 and Ubuntu 22.04 players would stop being
+able to run the archive — unless the PM picks a mitigation first: building
+inside an `ubuntu:22.04` container on a newer host runner (keeps the 2.35
+floor, changes the job's plumbing), a self-hosted 22.04 runner (keeps the
+floor, costs the owner a machine), or a musl/static build (widens the floor
+past every glibc, but is a toolchain and audio-stack change — cpal/ALSA does
+not survive a naive switch). Whichever it is, it is a PM brief with the
+player-floor argument stated, not an ambient pin bump by whichever agent
+notices the queue first. The 24.04 smoke leg survives any of these choices
+unchanged and keeps proving forward compatibility.
+
+**`MACOSX_DEPLOYMENT_TARGET=11.0`** is set explicitly in the build job
 (release.yml, the macOS leg only, exported before the build so rustc and
 every C/ObjC compile in the tree sees it). 11.0 (Big Sur) is the floor of
 the *entire* aarch64 player fleet — Apple silicon Macs cannot run older —
 and it is rustc's default for the triple; the explicit pin exists so the
 floor is a written decision instead of a toolchain default. Without it, a
 future runner/SDK bump could raise the effective minimum OS version
-silently and narrow the player fleet with no review line anywhere. The
-smoke job proves the packaged binary runs on the runner (macOS 15); the
-floor *below* the runner's version is a build-time property (the linker's
-`-mmacosx-version-min`) that a runner cannot re-verify — stated honestly.
+silently and narrow the player fleet with no review line anywhere. Since
+A-004 the floor is also *checked*: the build job reads the resulting
+`LC_BUILD_VERSION` minos back out of both binaries with `otool -l` (the
+evidence line) and fails the job if either exceeds 11.0 — a future image or
+SDK bump that raises the linker's effective minimum now breaks the build
+loudly instead of narrowing the fleet silently. The smoke job proves
+the packaged binary runs on the runner (macOS 15); the floor *below* the
+runner's version is a build-time property (the linker's
+`-mmacosx-version-min`) that a runner cannot re-verify — the otool line
+narrows that gap to "the load command says 11.0", which a Big Sur loader
+would enforce. Stated honestly, that is as far as a GitHub-hosted pipeline
+can reach.
 
 Toolchain: 1.98.1 exactly, per `rust-toolchain.toml`. Tools in the pipeline
 are version-pinned too (cargo-deny 0.20.2, cargo-about 0.9.2) — same rule,
@@ -154,7 +212,10 @@ dispatch build carries the commit (`pandemonium-git-<sha>-…`).
 1. Decide any open licence flag (none open today — hexf-parse/CC0-1.0 was
    ruled in by brief A-003; a new out-of-list licence reopens this line).
 2. Run a `workflow_dispatch` dry run on the release commit; read the smoke
-   jobs' output — all three OSes green, `--version` line correct.
+   jobs' output — all four legs green (Linux on ubuntu-22.04 **and**
+   ubuntu-24.04, Windows, macOS), `--version` line correct, the packaged
+   goldens exact, and the two floor evidence lines (GLIBC, minos) within
+   bounds.
 3. Download the three artifacts (or spot-check one) — unpack somewhere
    clean, run it, feel the SmartScreen/Gatekeeper flow once yourself.
 4. Push `v<semver>` on master (your trigger, your tag — the workflow
