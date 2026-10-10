@@ -12,6 +12,8 @@
 
 mod config;
 mod feedback;
+#[cfg(test)]
+mod hw;
 mod input;
 mod orders;
 mod render;
@@ -138,7 +140,25 @@ fn main() -> anyhow::Result<()> {
              disabled)"
         ),
     }
-    let mut app = App::new(tree, default_bundle, seed_flag, record_path)?;
+    // A-002 (BRIEF Part 1): the settings load ONCE here and both the audio
+    // probe and the App consume it. The App no longer probes the device in
+    // its constructor — the wiring layer owns WHEN (if ever) the probe runs.
+    // Unit tests construct the App with `Sound::without_device`, so a test
+    // binary never opens an audio output stream (five concurrent
+    // `audio_wiring` apps each used to probe the real device under cargo
+    // test: a leak of the machine into the test environment, and — on a
+    // Windows runner with an unusual audio stack — the prime suspect for the
+    // STATUS_ACCESS_VIOLATION the CI legs have shown since run #38).
+    let settings = config::load();
+    let audio = sound::Sound::new(settings.master_volume, settings.muted);
+    let mut app = App::new(
+        tree,
+        default_bundle,
+        seed_flag,
+        record_path,
+        settings,
+        audio,
+    )?;
     app.frames_budget = frames_budget_arg(&args);
     event_loop
         .run_app(&mut app)
@@ -396,6 +416,8 @@ impl App {
         default_bundle: ContentBundle,
         seed_prefill: Option<u64>,
         record_path: Option<PathBuf>,
+        settings: config::Settings,
+        audio: sound::Sound,
     ) -> anyhow::Result<Self> {
         let resource_names: Vec<String> = tree
             .rules
@@ -422,16 +444,12 @@ impl App {
             16.0 / 9.0,
         );
         camera.focus(start_anchor.0, start_anchor.1, START_CAMERA_DISTANCE);
-        let settings = config::load();
-        // PLAN-M10.2 §4.1/§4.3 (the Phase 4 audio pass): probe the audio
-        // device ONCE at startup — a live device takes the rodio arm (the
-        // stream owner lives in the sink for the App's whole lifetime,
-        // ADR-0002), any failure takes the null arm silently, and either
-        // way one honest startup line says which (the machine cannot hear:
-        // under Xvfb/CI the probe finds nothing and the run exercises the
-        // fallback). The settings' volume and mute ride in (Phase 4 made
-        // them live rows).
-        let audio = sound::Sound::new(settings.master_volume, settings.muted);
+        // PLAN-M10.2 §4.1/§4.3's "probe once at startup" now happens in the
+        // WIRING layer (main / the headless smoke) — A-002 Part 1: the App
+        // receives its sink instead of building one, so a unit test can
+        // construct a full App over `Sound::without_device` without ever
+        // touching the machine's audio hardware. The product behavior is
+        // unchanged: main() probes exactly once before the first frame.
         Ok(Self {
             tree,
             screen: AppState::at_main_menu(),
@@ -1214,11 +1232,20 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes().with_title("Pandemonium"))
-                .expect("creating the window"),
-        );
+        // A-002 Part 1(b): a player whose windowing environment cannot create
+        // the window gets a logged, precise error and a clean exit — the
+        // same contract the GPU path below already honours (never a panic,
+        // never an abort).
+        let window = match event_loop
+            .create_window(Window::default_attributes().with_title("Pandemonium"))
+        {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                eprintln!("pandemonium client — window creation failed: {error:#}");
+                event_loop.exit();
+                return;
+            }
+        };
         self.camera.set_aspect(
             window.inner_size().width as f32 / window.inner_size().height.max(1) as f32,
         );
@@ -2958,8 +2985,10 @@ mod audio_wiring {
 
     use super::*;
 
-    /// An app over the repo content with the null audio arm forced (the
-    /// wiring oracle's precondition).
+    /// An app over the repo content with the null audio arm (the wiring
+    /// oracle's precondition). A-002 Part 1: the null arm is CONSTRUCTED,
+    /// not forced after the fact — the App never probes this machine's
+    /// audio hardware from a unit test.
     fn app() -> App {
         let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
         let tree = ContentTree::load_dir(path).expect("the repo content loads");
@@ -2972,11 +3001,17 @@ mod audio_wiring {
                     .expect("the tree lists a map"),
             )
             .expect("the default map bundles");
-        let mut app = App::new(tree, bundle, Some(7), None).expect("the app constructs");
-        // The forced null arm: what the no-device constructor yields, so
-        // the oracle counter exists whatever this machine can hear.
-        app.audio = sound::Sound::without_device(1.0, false);
-        app
+        App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            // The forced null arm: what the no-device constructor yields, so
+            // the oracle counter exists whatever this machine can hear.
+            sound::Sound::without_device(1.0, false),
+        )
+        .expect("the app constructs")
     }
 
     #[test]

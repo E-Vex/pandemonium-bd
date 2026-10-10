@@ -538,7 +538,20 @@ fn device_plausible() -> bool {
 /// owner with a silent error callback (the default one prints to stderr —
 /// this pass's rule is one honest line, no spam) that flags the shared
 /// `degraded` bit the sink polls per cue. `None` is any failure at all.
+///
+/// A-002 Part 1: `PANDEMONIUM_AUDIO_PROBE=0` skips the probe entirely — the
+/// documented escape hatch for a machine whose audio stack crashes or
+/// misbehaves in the probe (the game runs silent, the counters keep
+/// counting). It is also the diagnostics lever for the Windows CI crash:
+/// the workflow can flip the real probe ON or OFF on a runner and watch
+/// which way the access violation moves.
 fn probe_device() -> Option<(MixerDeviceSink, Arc<AtomicBool>)> {
+    if audio_probe_disabled_by_env() {
+        println!(
+            "pandemonium client — audio: probe disabled (PANDEMONIUM_AUDIO_PROBE=0) — null fallback"
+        );
+        return None;
+    }
     if !device_plausible() {
         return None; // the silent short-circuit (see `device_plausible`)
     }
@@ -555,6 +568,12 @@ fn probe_device() -> Option<(MixerDeviceSink, Arc<AtomicBool>)> {
     // lines say everything this pass claims.
     sink.log_on_drop(false);
     Some((sink, degraded))
+}
+
+/// Whether `PANDEMONIUM_AUDIO_PROBE=0` is set (the probe's off switch —
+/// one exact spelling, anything else means "probe as usual").
+fn audio_probe_disabled_by_env() -> bool {
+    std::env::var_os("PANDEMONIUM_AUDIO_PROBE").as_deref() == Some(std::ffi::OsStr::new("0"))
 }
 
 impl AudioSink for Sound {
@@ -638,6 +657,30 @@ mod tests {
         // Pure synthesis: two runs generate identical banks (no entropy
         // anywhere — the noise burst's xorshift is seeded by a constant).
         assert_eq!(CueBank::generate().buffers, CueBank::generate().buffers);
+    }
+
+    /// A-002 Part 1(a): the real device probe runs ONLY behind the hardware
+    /// gate — on this machine that usually means the skip line below (headless
+    /// CI, no `/dev/snd`), and under `PANDEMONIUM_HW_TESTS=1` it is the
+    /// deliberate canary: if probing the platform's audio stack can kill the
+    /// process (the STATUS_ACCESS_VIOLATION class the Windows legs showed),
+    /// this is the test it dies in, and the suite names it.
+    #[test]
+    fn the_device_probe_runs_behind_the_hardware_gate() {
+        if !crate::hw::enabled(crate::hw::Scope::Audio) {
+            println!(
+                "skipped: audio hardware not positively plausible (set PANDEMONIUM_HW_TESTS=1 to \
+                 force the probe)"
+            );
+            return;
+        }
+        // Any answer is a PASS — the probe returning AT ALL is the claim
+        // under test (degradation, not success: a machine whose probe finds
+        // nothing is exercising the documented null arm, not failing).
+        match probe_device() {
+            Some(_) => println!("probe: a device answered (the rodio arm is live)"),
+            None => println!("probe: no device (the null arm's own path)"),
+        }
     }
 
     #[test]
