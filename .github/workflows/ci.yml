@@ -26,6 +26,13 @@ jobs:
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustup default 1.98.1
+      # clippy checks every workspace member, and the client's rodio -> cpal ->
+      # alsa-sys build script probes pkg-config for alsa even under `cargo
+      # check` — ubuntu-latest runners ship no libasound2-dev (run #41's clippy
+      # failure: "The system library `alsa` required by crate `alsa-sys` was
+      # not found"). macOS (CoreAudio) and Windows (WASAPI) need no system lib.
+      - name: Linux system deps (ALSA dev for the client's audio stack)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
@@ -49,6 +56,13 @@ jobs:
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component clippy
           rustup default 1.98.1
+      # Only the Linux legs build the client binary (rodio -> cpal -> alsa-sys
+      # needs libasound2-dev); the Windows legs fail for a different, known
+      # reason (the client test binary's STATUS_ACCESS_VIOLATION, filed for
+      # the client's lane) and the macOS legs need no system audio lib.
+      - name: Linux system deps (ALSA dev for the client's audio stack)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
@@ -88,6 +102,12 @@ jobs:
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component clippy
           rustup default 1.98.1
+      # `cargo run -p pandemonium-client` builds and links the client binary —
+      # rodio -> cpal -> alsa-sys needs libasound2-dev (run #41's binaries
+      # failure). On the headless runner the client takes its documented
+      # no-display fallback: the headless smoke pass over the real content.
+      - name: Linux system deps (ALSA dev for the client's audio stack)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
