@@ -140,6 +140,16 @@ fn main() -> anyhow::Result<()> {
         )
         .with_context(|| "bundling the default map")?;
 
+    // A-002 Part 2.3: `--headless` forces the smoke pass without consulting
+    // the display — CI runners and display-less machines say what they want
+    // instead of discovering the M3 fallback by accident (a Windows runner
+    // HAS a desktop session, so the natural fallback would never trigger
+    // there — and a windowed run without --frames would never exit).
+    if headless_requested_from_args(&args) {
+        println!("pandemonium client — headless requested (--headless); running the smoke pass");
+        return headless_smoke(&default_bundle);
+    }
+
     let event_loop = match EventLoop::builder().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
@@ -334,6 +344,12 @@ fn content_flag_from_args(args: &[String]) -> Option<PathBuf> {
 /// Parses the version affordances `--version` / `-V` (A-002 Part 2.2).
 fn version_requested_from_args(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--version" || arg == "-V")
+}
+
+/// Parses the headless affordance `--headless` (A-002 Part 2.3): force the
+/// smoke pass — no display probing, no window, no event loop.
+fn headless_requested_from_args(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--headless")
 }
 
 /// The git short SHA stamped by build.rs at compile time ("unknown" for a
@@ -3318,8 +3334,8 @@ mod mode_pins {
 #[cfg(test)]
 mod tests {
     use super::{
-        content_flag_from_args, frames_budget_arg, random_seed, record_from_args,
-        seed_flag_from_args, version_requested_from_args,
+        content_flag_from_args, frames_budget_arg, headless_requested_from_args, random_seed,
+        record_from_args, seed_flag_from_args, version_requested_from_args,
     };
 
     /// `args(["--seed", "42"])` — the standard helper spelling.
@@ -3434,6 +3450,15 @@ mod tests {
         assert!(version_requested_from_args(&args(&["-V"])));
         assert!(!version_requested_from_args(&args(&["pandemonium-client"])));
         assert!(!version_requested_from_args(&args(&["--seed", "7"])));
+    }
+
+    #[test]
+    fn headless_flag_is_recognized() {
+        assert!(headless_requested_from_args(&args(&["--headless"])));
+        assert!(!headless_requested_from_args(&args(&[
+            "pandemonium-client"
+        ])));
+        assert!(!headless_requested_from_args(&args(&["--seed", "7"])));
     }
 }
 
