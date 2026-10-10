@@ -1,0 +1,30 @@
+# A-002 Part 2.4: cargo-about's config for THIRD_PARTY_NOTICES generation
+# (feeds the release archives). The ACCEPTED list is deliberately broader
+# than the gate's allow-list: cargo-about documents what IS in the binary
+# (a notice is a fact); cargo-deny (deny.toml) decides what is ALLOWED to
+# be (a gate is a decision). The gate stays strict; the notices stay honest.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CC0-1.0",
+    "CDLA-Permissive-1.0",
+    "0BSD",
+    # NOT an approval of the value for the gate (the gate is deny.toml and
+    # stays strict): cargo-about synthesizes "(Bitstream-Vera)" for
+    # pandemonium-client from the embedded font's licence file
+    # (crates/client/assets/fonts/LICENSE.txt). Accepting the string here
+    # only lets the NOTICES generate; the template's post-filter drops our
+    # own crates from the final document.
+    "Bitstream-Vera",
+]
+# NOTE: cargo-about 0.9 accepts only `accepted` and `clarify` here. The
+# project's own workspace crates (no licence field — the owner's decision is
+# pending) are filtered out of the notices by the packaging template instead.

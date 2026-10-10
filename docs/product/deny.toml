@@ -1,0 +1,44 @@
+# A-002 Part 2.4: the dependency licence gate for the release pipeline.
+# The allow-list is the brief's exact set (MIT, Apache-2.0, BSD, ISC, Zlib,
+# Unicode, MPL-2.0); anything outside it fails the pipeline and is flagged
+# to the PM — a new dependency with a new licence is a decision, not an
+# accident. ("BSD" spells both common clauses; "Unicode" spells both its
+# SPDX identifiers — the old and the current.)
+#
+# Location: docs/product/ (Agent A's lane); the workflow passes --config
+# explicitly, so this file is the one source of truth for the gate.
+
+[graph]
+# The three shipped targets only — licence law follows what we actually
+# distribute (the per-OS dep trees differ: cpal's WASAPI arm exists only on
+# windows, CoreAudio only on macOS, alsa only on linux).
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+# The project's own crates carry no SPDX expression (publish = false, no
+# licence field — the owner has not decided one yet, per the README's licence
+# line). They are OURS, not third-party: exempt by name, counted nowhere in
+# the notices.
+private = { ignore = true }
+
+# [[licenses.exceptions]] is deliberately ABSENT: any exception must be added
+# by the PM's explicit sign-off (a brief or ADR that authorized the out-of-list
+# licence), never by the agent that hit the failure.
