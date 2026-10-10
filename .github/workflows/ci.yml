@@ -12,25 +12,34 @@ name: ci
 on:
   push:
   pull_request:
+  # Manual re-run without a push (B-002): the gate is dispatchable exactly
+  # like nightly, so a red leg can be re-proven on demand.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Runner images are pinned to explicit versions (B-002): GitHub's
+  # annotations say ubuntu-latest migrates to Ubuntu 26 on 19 Oct 2026, and
+  # the cross-OS hash evidence must not shift under a silent runner bump
+  # (resolutions verified 2026-10-10: ubuntu-latest -> 24.04,
+  # windows-latest -> windows-2025, macos-latest -> macos-26). Migrate later
+  # by brief, never by drift.
   lint:
     name: fmt + clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail loudly, not consume the runner hour (nightly's rule).
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustup default 1.98.1
       # clippy checks every workspace member, and the client's rodio -> cpal ->
       # alsa-sys build script probes pkg-config for alsa even under `cargo
-      # check` — ubuntu-latest runners ship no libasound2-dev (run #41's clippy
+      # check` — the ubuntu runners ship no libasound2-dev (run #41's clippy
       # failure: "The system library `alsa` required by crate `alsa-sys` was
       # not found"). macOS (CoreAudio) and Windows (WASAPI) need no system lib.
       - name: Linux system deps (ALSA dev for the client's audio stack)
@@ -53,10 +62,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-2025, macos-26]
         profile: [dev, release]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component clippy
@@ -66,7 +75,7 @@ jobs:
       # reason (the client test binary's STATUS_ACCESS_VIOLATION, filed for
       # the client's lane) and the macOS legs need no system audio lib.
       - name: Linux system deps (ALSA dev for the client's audio stack)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
@@ -78,11 +87,11 @@ jobs:
   replay:
     # A2: a recorded match replays to an identical final hash (plan §13).
     name: replay round-trip (A2)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail loudly, not consume the runner hour.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component clippy
@@ -102,11 +111,11 @@ jobs:
 
   binaries:
     name: workspace builds and runs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail loudly, not consume the runner hour.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component clippy
@@ -140,9 +149,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-2025, macos-26]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal
@@ -167,7 +176,7 @@ jobs:
       # the gate wants to preserve for the diagnosis.
       - name: Upload the per-OS hash evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: goldens-${{ matrix.os }}
           path: |
@@ -182,7 +191,7 @@ jobs:
     # values and first diverging checkpoint are then reported, never patched.
     name: cross-OS golden gate (A1)
     needs: cross-os
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail loudly, not consume the runner hour.
     timeout-minutes: 10
     env:
@@ -193,7 +202,7 @@ jobs:
       GOLDEN_FLAGSHIP: "0x6e9a18bd7c5f699f"
     steps:
       - name: Download every OS leg's hash evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: goldens
           pattern: goldens-*
@@ -201,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           status=0
-          for os in ubuntu-latest windows-latest macos-latest; do
+          for os in ubuntu-24.04 windows-2025 macos-26; do
             demo=$(grep 'final hash' "goldens/goldens-$os/demo.log" 2>/dev/null | head -1 | awk '{print $NF}' || true)
             flagship=$(grep 'final hash' "goldens/goldens-$os/flagship.log" 2>/dev/null | head -1 | awk '{print $NF}' || true)
             demo=${demo:-MISSING}
@@ -216,4 +225,48 @@ jobs:
               status=1
             fi
           done
+          exit $status
+
+  ci-required:
+    # The single required status check (B-002R): branch protection requires
+    # exactly this job and nothing else, so the inner jobs above can be
+    # renamed, reshaped, or matrixed without ever breaking protection — the
+    # required name never moves. It needs every other job in this workflow,
+    # runs even when one of them failed (`if: always()`, so a plain `needs:`
+    # cannot skip it on failure), and exits non-zero unless every needed
+    # job's result is `success`. A matrix job's result is `success` only
+    # when every leg of the matrix succeeded, so the two test/goldens
+    # matrices are covered leg-by-leg without naming a single leg.
+    name: required gate (every job green)
+    needs: [lint, test, replay, binaries, cross-os, cross-os-gate]
+    if: always()
+    runs-on: ubuntu-24.04
+    # This job only reads the `needs` context; a hang would still burn the
+    # runner, so it gets the house timeout too.
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every needed job succeeded
+        env:
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+          REPLAY: ${{ needs.replay.result }}
+          BINARIES: ${{ needs.binaries.result }}
+          CROSS_OS: ${{ needs.cross-os.result }}
+          CROSS_OS_GATE: ${{ needs.cross-os-gate.result }}
+        run: |
+          status=0
+          check() {
+            if [ "$2" != "success" ]; then
+              echo "::error::$1 did not succeed (result: $2)"
+              status=1
+            else
+              echo "$1: success"
+            fi
+          }
+          check lint "$LINT"
+          check test "$TEST"
+          check replay "$REPLAY"
+          check binaries "$BINARIES"
+          check cross-os "$CROSS_OS"
+          check cross-os-gate "$CROSS_OS_GATE"
           exit $status

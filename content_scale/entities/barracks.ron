@@ -1,0 +1,17 @@
+// Barracks (plan §10.4, §7.4): 3x3; trains Rifleman, Raider, Guardian
+// (the trainable list is faction data — factions/legion.ron).
+(
+    schema_version: 1,
+    id: "barracks",
+    display_name: "Barracks",
+    capabilities: [
+        Health(( max: 600 )),
+        Vision(( radius_milli_tiles: 8000 )),
+        Footprint(( w: 3, h: 3 )),
+        Produce(()),
+    ],
+    cost: ( ore: 150 ),
+    build_time_ms: 25000,
+    population: 0,
+    requires: [ "command_center" ],
+)

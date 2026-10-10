@@ -49,6 +49,15 @@ pub struct BenchCli {
     /// AI-driven match for a representative Alpha-scale workload.
     #[arg(long)]
     pub no_ai: bool,
+    /// Run the plan §15 scale scenario (B-002 Part 3) instead of the
+    /// AI-driven Alpha bench: the deterministic proving ground in
+    /// `content_scale/` (a sibling of `--content`), forces truncated to
+    /// `100 * N` per side. `--scale 1` is the Alpha-size tier (~220
+    /// entities), `--scale 10` the 10x tier (~2020 entities, plan §15's
+    /// 10x row). Prints per-tick aggregates, the eleven-stage profile,
+    /// the memory row, and the real-map pathfinding row.
+    #[arg(long)]
+    pub scale: Option<u32>,
 }
 
 /// One tick's measured cost (microseconds).

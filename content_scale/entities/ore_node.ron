@@ -1,0 +1,15 @@
+// Ore Node (plan §10.4, §7.4): 2x2; finite resource body placed by maps.
+// No Health — nodes deplete, they are not destroyed (economy systems: M5).
+(
+    schema_version: 1,
+    id: "ore_node",
+    display_name: "Ore Node",
+    capabilities: [
+        Resource(( resource: "ore", amount: 1500 )),
+        Footprint(( w: 2, h: 2 )),
+    ],
+    cost: ( ore: 0 ),
+    build_time_ms: 0,
+    population: 0,
+    requires: [],
+)

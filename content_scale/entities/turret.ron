@@ -1,0 +1,16 @@
+// Turret (plan §10.4, §7.4): 2x2; static defense, no movement.
+(
+    schema_version: 1,
+    id: "turret",
+    display_name: "Turret",
+    capabilities: [
+        Health(( max: 350 )),
+        Vision(( radius_milli_tiles: 9000 )),
+        Footprint(( w: 2, h: 2 )),
+        Attack(( damage: 10, range_milli_tiles: 7000, cooldown_ms: 1000, acquire_range_milli_tiles: 8000 )),
+    ],
+    cost: ( ore: 125 ),
+    build_time_ms: 20000,
+    population: 0,
+    requires: [ "command_center" ],
+)

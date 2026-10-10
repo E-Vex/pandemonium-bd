@@ -491,6 +491,59 @@ pub enum Event {
     },
 }
 
+/// One of the eleven fixed pipeline stages of the simulation tick (plan
+/// §6.3's update order, verbatim). The stages exist as an enum so an
+/// instrumentation seam ([`StageObserver`]) can name them without depending
+/// on simulation internals.
+///
+/// The enum is vocabulary, not behavior: `Sim::step` runs the stages in this
+/// order whether or not anyone is watching, and stages whose milestone slice
+/// currently lives inside another system's function (Orders, Acquisition)
+/// are reported as the boundaries they are — their own row in a profile is
+/// the honest measure of "no direct code yet".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stage {
+    /// Stage 1 — apply commands: sorted, validated, applied (plan §6.3.1).
+    Commands,
+    /// Stage 2 — orders: resolve each entity's current order into intents.
+    Orders,
+    /// Stage 3 — production & construction: queues, sites, scheduled spawns.
+    Production,
+    /// Stage 4 — economy: gather timers, cargo, deliveries, depletion.
+    Economy,
+    /// Stage 5 — target acquisition (plan §9.2's acquire step).
+    Acquisition,
+    /// Stage 6 — movement: path requests, following, steering, push-apart.
+    Movement,
+    /// Stage 7 — combat: attacks, damage, `AttackHit` (plan §9.2).
+    Combat,
+    /// Stage 8 — death & cleanup: health, lifecycle events, removal.
+    Cleanup,
+    /// Stage 9 — vision: incremental per-player visibility update (§9.5).
+    Vision,
+    /// Stage 10 — match rules: defeat/victory evaluation (§9.7).
+    MatchRules,
+    /// Stage 11 — finalize: tick increment, event flush, periodic hash.
+    Finalize,
+}
+
+/// An optional read-only instrumentation seam over the tick pipeline
+/// (B-002's per-stage profiling): `Sim::step_observed` calls [`stage`]
+/// (Self::stage) once per pipeline stage, in pipeline order, immediately
+/// before that stage's work.
+///
+/// The observer is presentation-only telemetry by contract: it must not
+/// mutate anything it can reach, and it can never change simulation state —
+/// the same rule `tools bench` already obeys for its per-tick samples
+/// (FD-6). Timing collectors live outside the determinism crates (tools),
+/// which is why this trait carries no clock of its own.
+///
+/// [`stage`]: StageObserver::stage
+pub trait StageObserver {
+    /// A pipeline stage is about to run.
+    fn stage(&mut self, stage: Stage);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,7 +9,7 @@
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
     Command, EntityId, EntityView, Event, MatchSetup, PlayerId, PlayerView, QueueItemView,
-    QueueView, Snapshot, Tick, TileFog, Vec2Fx, ViewResource,
+    QueueView, Snapshot, Stage, StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
 };
 
 use crate::command::apply_commands;
@@ -377,9 +377,37 @@ impl Sim {
     /// **The only way state advances** (FD-2). All commands must target
     /// `self.tick` — mismatches are rejected as events, never silently dropped.
     /// Returns that tick's events and the periodic hash when due.
+    ///
+    /// The golden path: no observer. Delegates to [`Sim::step_observed`]
+    /// with `None` — byte-identical behavior to the pre-B-002 pipeline.
     pub fn step(&mut self, commands: &[Command]) -> StepOutput {
+        self.step_observed(commands, None)
+    }
+
+    /// The same fixed pipeline as [`Sim::step`], with an optional
+    /// [`StageObserver`] notified at each of the eleven stage boundaries, in
+    /// pipeline order, immediately before that stage's work (B-002's
+    /// per-stage profiling seam).
+    ///
+    /// The observer is read-only telemetry by contract: it receives stage
+    /// boundaries and can never reach simulation state, so its presence or
+    /// absence cannot change an outcome, an event stream, or a checkpoint
+    /// hash. Timing collectors (which need a clock) are implemented outside
+    /// the determinism crates, in `tools`.
+    ///
+    /// All commands must target `self.tick` — mismatches are rejected as
+    /// events, never silently dropped. Returns that tick's events and the
+    /// periodic hash when due.
+    pub fn step_observed(
+        &mut self,
+        commands: &[Command],
+        mut observer: Option<&mut dyn StageObserver>,
+    ) -> StepOutput {
         // Stage 1 — Apply commands: sorted by (issuer, seq), validated, applied;
         //           invalid ones emit CommandRejected (plan §6.3.1).
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Commands);
+        }
         apply_commands(
             &mut self.world,
             &self.fixture,
@@ -394,12 +422,19 @@ impl Sim {
         //           intents. M5's slice: the economy travel targets (stage 6
         //           consumes them through `movement_target`) and the gather
         //           phase machine (stage 4). Richer resolution arrives with
-        //           combat (M6).
+        //           combat (M6). No direct call — the slice lives inside the
+        //           systems below; the boundary is reported all the same.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Orders);
+        }
         // Stage 3 — Production & construction: advance queues and construction
         //           progress; spawn/complete (plan §9.4, M5). The fixture's
         //           scheduled spawns (the M1 stand-in) run first, then the
         //           production queues, then the construction sites; the
         //           population usage and cap settle at the stage's end.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Production);
+        }
         self.run_scheduled_spawns();
         crate::production::advance_production(
             &mut self.world,
@@ -414,23 +449,42 @@ impl Sim {
         //           effects (M5, plan §9.3): the worker gather loop — travel
         //           (through stage 6's shared travel targets), gather timers,
         //           cargo, deposits, depletion with auto-seek.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Economy);
+        }
         crate::economy::advance_economy(&mut self.world, &mut self.nav, &mut self.events);
 
-        // Stage 5 — Target acquisition (M6).
+        // Stage 5 — Target acquisition (M6). No direct call — the acquire
+        //           step runs inside the combat system (plan §9.2); the
+        //           boundary is reported for the profile's honest zero row.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Acquisition);
+        }
         // Stage 6 — Movement: path requests → path following → steering →
         //           collision push-apart, entities in id order (plan §6.3.6,
         //           §9.1). M4's three-layer mover: A* over the nav grid with
         //           deterministic tie-breaks, waypoint steering, spatial-hash
         //           push-apart, and stuck detection ending in MoveFailed.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Movement);
+        }
         advance_movement(&mut self.world, &self.nav, &mut self.events);
 
         // Stage 7 — Combat: resolve attacks, apply damage, fire AttackHit (M6,
         //           plan §9.2). Damage subtracts from Health.hp; stage 8
         //           detects the resulting deaths and removes the entities.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Combat);
+        }
         crate::combat::advance_combat(&mut self.world, &mut self.events);
 
         // Stage 8 — Death & cleanup: advance health, fire lifecycle events,
-        //           remove the dead. Ids are never reused (plan §6.3.8).
+        //           remove the dead. Ids are never reused (plan §6.3.8). The
+        //           A12 checker below runs at this stage's end in debug
+        //           builds — its cost lands in this stage's profile row.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Cleanup);
+        }
         self.advance_health_and_cleanup();
 
         // A12 (plan §13): every invariant, every tick, debug builds only —
@@ -442,6 +496,9 @@ impl Sim {
         //           plan §9.5). The fog state is derived (A-059: not part of
         //           the canonical hash — it is a pure function of positions +
         //           Vision radii, both of which ARE hashed).
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Vision);
+        }
         crate::vision::advance_vision(&mut self.fog, &self.world);
 
         // Stage 10 — Match rules: defeat/victory evaluation (M8, plan §9.7).
@@ -452,10 +509,16 @@ impl Sim {
         //            a pure function of the entity set and `resigned` flags,
         //            both of which ARE hashed), so toggling evaluation on/off
         //            cannot change a checkpoint.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::MatchRules);
+        }
         crate::match_rules::evaluate(&self.world, self.tick, &mut self.outcome, &mut self.events);
 
         // Stage 11 — Finalize: increment the tick, flush events, compute the
         //            periodic hash.
+        if let Some(observer) = observer.as_mut() {
+            observer.stage(Stage::Finalize);
+        }
         self.tick = self.tick.wrapping_add(1);
         let hash = if self.tick.is_multiple_of(crate::CHECKPOINT_INTERVAL) {
             Some(self.state_hash())

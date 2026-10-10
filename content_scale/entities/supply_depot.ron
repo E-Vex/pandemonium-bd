@@ -1,0 +1,16 @@
+// Supply Depot (plan §10.4, §7.4): 2x2; provides +10 population cap.
+(
+    schema_version: 1,
+    id: "supply_depot",
+    display_name: "Supply Depot",
+    capabilities: [
+        Health(( max: 300 )),
+        Vision(( radius_milli_tiles: 6000 )),
+        Footprint(( w: 2, h: 2 )),
+        ProvidesPopulation(( amount: 10 )),
+    ],
+    cost: ( ore: 100 ),
+    build_time_ms: 15000,
+    population: 0,
+    requires: [ "command_center" ],
+)

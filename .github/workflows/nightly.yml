@@ -52,9 +52,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Runner images are pinned to ubuntu-24.04 (B-002): ubuntu-latest migrates
+  # to Ubuntu 26 on 19 Oct 2026 and soak evidence must not shift under a
+  # silent runner bump. Migrate later by brief, never by drift.
   soak:
     name: soak (${{ matrix.tier }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail loudly, not consume the runner day.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -129,7 +132,7 @@ jobs:
             seed_offset: 900
             timeout: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal
@@ -153,7 +156,7 @@ jobs:
         # Upload even on failure — a crashing shard's summary is exactly
         # the evidence the aggregate and the declaration want to see.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: soak-${{ matrix.tier }}
           path: soak-${{ matrix.tier }}.txt
@@ -169,11 +172,11 @@ jobs:
   # sweeping ~240 fresh seeds a month through the checker).
   soak-dev:
     name: soak-dev (A12 invariant sweep, dev profile)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail loudly, not consume the runner day.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal
@@ -197,7 +200,7 @@ jobs:
         # Upload even on failure — a crashing tier's summary is exactly
         # the evidence the aggregate and the declaration want to see.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: soak-dev
           path: soak-dev.txt
@@ -211,11 +214,11 @@ jobs:
     # concatenation and the crashed gate precisely when a tier crashed).
     if: ${{ !cancelled() }}
     needs: [soak, soak-dev]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Download every shard summary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: soak-summaries
           pattern: soak-*
@@ -255,17 +258,17 @@ jobs:
           echo "aggregate: 0 crashed across all tiers (release shards + dev invariant sweep)"
       - name: Upload the concatenated evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: soak-aggregate
           path: soak-all.txt
 
   bench:
     name: bench (§15 perf budgets)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal

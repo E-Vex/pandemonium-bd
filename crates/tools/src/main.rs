@@ -19,6 +19,7 @@ use pandemonium_sim_api::PlayerId;
 mod ai_match;
 mod bench;
 mod demo;
+mod scale;
 mod soak;
 mod validate_content;
 mod verify;
@@ -244,8 +245,15 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Bench(mut cli) => {
             cli.content = resolve_content_dir(&cli.content)?;
-            let report = run_bench(&cli)?;
-            print_bench_report(&report);
+            if let Some(scale) = cli.scale {
+                // The plan §15 scale scenario (B-002 Part 3): prints its own
+                // full report — per-tick aggregates, the stage profile, the
+                // memory row, and the real-map pathfinding row.
+                crate::scale::run_and_print(scale, cli.ticks, &cli.content, cli.seed)?;
+            } else {
+                let report = run_bench(&cli)?;
+                print_bench_report(&report);
+            }
         }
     }
     Ok(())

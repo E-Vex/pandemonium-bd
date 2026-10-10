@@ -5,11 +5,19 @@ name: audit
 # dependency allow-list (plan §3.2) is strict — no rand/getrandom/ECS/game-
 # engine crates — but transitive vulnerabilities in serde/ron/wgpu/…
 # would otherwise go undetected. This job is the alarm, not the fix.
+#
+# B-002 triage: the 6/6 red runs were two UNMAINTAINED-informational
+# advisories (paste via wgpu->metal; ttf-parser via fontdue and
+# winit->ab_glyph), zero vulnerabilities — see .cargo/audit.toml for the
+# documented dispositions. The auditor itself is version-pinned so the
+# gate's behavior cannot drift with cargo-audit releases; the advisory DB
+# still updates on every run, so new findings fail loudly.
 
 on:
   push:
     paths:
       - Cargo.lock
+      - .cargo/audit.toml
       - .github/workflows/audit.yml
   schedule:
     # nightly at 06:00 UTC — catches advisories filed between pushes
@@ -19,10 +27,12 @@ on:
 jobs:
   audit:
     name: cargo audit
-    runs-on: ubuntu-latest
+    # Runner pinned (B-002): ubuntu-latest migrates to Ubuntu 26 on
+    # 19 Oct 2026; migrate later by brief, never by drift.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - uses: actions/checkout@v7
+      - name: "Install cargo-audit (pinned: 0.22.2, verified locally in B-002)"
+        run: cargo install cargo-audit --locked --version 0.22.2
       - name: Audit Cargo.lock for known vulnerabilities
         run: cargo audit --deny warnings
