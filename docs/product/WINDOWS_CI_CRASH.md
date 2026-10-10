@@ -1,9 +1,12 @@
 # The Windows CI crash — root cause, proven (A-002 Part 1)
 
-Status: **closed on this branch.** Both Windows legs of ci.yml are green
-(run [38050523319](https://github.com/E-Vex/pandemonium-bd/actions/runs/38050523319),
+Status: **closed.** Proven on the A-002 branch (run
+[38050523319](https://github.com/E-Vex/pandemonium-bd/actions/runs/38050523319),
 sha `7e4cd1e`: `tests (windows-latest, dev)` and `tests (windows-latest,
-release)` both pass, 194/194 client tests, alongside every other job).
+release)` both pass, 194/194 client tests, alongside every other job), and
+re-proven on the merged master by A-003 (the section below): the gate run
+plus three re-runs, all four attempts green in every job, both Windows
+test legs included.
 The root cause is named below, with the evidence chain that named it.
 
 ## The root cause, in one paragraph
@@ -127,3 +130,56 @@ it is the oldest Windows red in the repo's history.
    of machine-leak cannot silently return.
 4. **`7e4cd1e` — the CRLF fix** (test scaffolding, `tests/
    content_pipeline.rs`).
+
+---
+
+## A-003 close-out — the stability evidence on the merged master (2026-10-11)
+
+The question this section closes: does the merged master's Windows CI stay
+green, or was the A-002 close-out a lucky pass? The merged master is
+`2c94a9b` (PR #4, the B-002 runner pinning). Its push-triggered gate run —
+[38071980300](https://github.com/E-Vex/pandemonium-bd/actions/runs/38071980300)
+— was green in all fourteen jobs; that run was then re-run three more times
+back-to-back (the Actions re-run API re-runs a whole run, so every attempt
+below re-ran all fourteen jobs; the two Windows test legs are the ones this
+document tracks, and they were green in every single attempt):
+
+| attempt | `tests (windows-2025, dev)` | `tests (windows-2025, release)` | every other job |
+|---|---|---|---|
+| 1 (the merge push, 17:29 UTC) | green — 573/573 | green — 568/568 | all green |
+| 2 (re-run, 17:43) | green — 573/573 | green — 568/568 | all green ([dev](https://github.com/E-Vex/pandemonium-bd/actions/runs/38071980300/job/114273456621), [release](https://github.com/E-Vex/pandemonium-bd/actions/runs/38071980300/job/114273456497)) |
+| 3 (re-run, 17:49) | green — 573/573 | green — 568/568 | all green ([dev](https://github.com/E-Vex/pandemonium-bd/actions/runs/38071980300/job/114275274199), [release](https://github.com/E-Vex/pandemonium-bd/actions/runs/38071980300/job/114275274171)) |
+| 4 (re-run, 17:57) | green — 573/573 | green — 568/568 | all green ([dev](https://github.com/E-Vex/pandemonium-bd/actions/runs/38071980300/job/114276905627), [release](https://github.com/E-Vex/pandemonium-bd/actions/runs/38071980300/job/114276905633)) |
+
+Counts are summed from each leg's `test result:` lines (29 test binaries
+per leg); `573 dev / 568 release` is the workspace count on master (the
+debug-only 5 are the `#[should_panic]` invariant tier; the 2 ignored are
+the content crate's two doctests, pinned `ignore` in their fences) —
+identical numbers in all four attempts, zero flakiness, zero red. The
+counts were extracted from each attempt's job logs, not from the run's
+summary page.
+
+**Was the pre-rodio crash ever named? Plainly: there was no pre-rodio
+crash, and the crash that did exist was named.** The "predates rodio"
+reading came from failure *conclusions* rather than failure *logs*: run #38
+at `08748d9` (before rodio existed) was red on the Windows legs because of
+the CRLF test bug — `exit 1`, no crash signature — while the actual
+`STATUS_ACCESS_VIOLATION` appeared exactly when the five probing tests
+landed with rodio and disappeared exactly when they stopped probing (the
+corrected timeline above, read from the primary job logs). Windows did not
+"simply go green after the test/probe changes" by accident: the changes
+removed the cause the isolation round and the interaction matrix had
+already named — two or more real WASAPI probe rounds in one process on an
+endpoint-less machine (a test-architecture defect, never a product
+defect). Both fixes (tests-never-probe `a2bc546`, CRLF `7e4cd1e`) are on
+the merged master, and the four attempts above are the stability proof
+that neither has regressed.
+
+**The diagnostics workflow is gone, as briefed.** `a002-diagnostics.yml`
+was removed in dedicated commit `b16b414` ("retire the a002-diagnostics
+workflow — the matrix is in, the evidence chain is complete") on the
+A-002 branch, merged to master via PR #5; this session verified it is
+absent on master (`git log --follow` shows the deletion; nothing under
+`.github/workflows/` and no reference anywhere in the tree remains), so no
+removal commit was possible or needed here. The evidence it produced lives
+on in this document's isolation and matrix sections.
