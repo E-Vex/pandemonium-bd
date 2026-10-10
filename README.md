@@ -24,298 +24,55 @@ checksum must match, tick for tick. Units may scatter. The simulation does not.
 
 ---
 
-## What is Pandemonium
+## Status — accurate as of M10.2 (October 2026)
 
-Pandemonium is not yet a game — it is the foundation a game grows from. The
-repository holds a nine-crate Rust workspace implementing a deterministic
-fixed-tick simulation (30 ticks per second), an intent-only command interface, a
-checksummed replay codec, and the developer tooling to prove all three. The
-content pipeline, the windowed client, and the AI opponent are specified and
-scheduled, and are built in that order. Nothing here is aspirational hand-waving:
-the operating contract says "prove, don't assert," and the technical claims on
-this page are backed by tests that exist in the repository.
+Milestones M0 through M10.2 are complete and green: **553 tests pass in dev,
+548 in release** (5 should-panic invariant tests are debug-only), on Linux,
+Windows, and macOS in CI, with the three golden hashes bit-identical across
+every change. The windowed client plays a full match against the scripted AI
+opponent — menus, settings that persist, audio, fog, minimap, replays.
 
-"Own engine" is meant literally. We write the game loop and timing, the
-entity and capability stores, the simulation core, the fixed-point math library,
-the deterministic RNG, pathfinding and steering, the command and replay systems,
-the content loader and validators, the renderer abstraction, the camera, the
-input mapping, and the UI toolkit. Only low-level crates for OS and GPU access
-(winit, wgpu) are used at the edges. Game engines, ECS frameworks, physics and
-pathfinding crates, and the `rand` ecosystem are not merely avoided — they are
-forbidden by name, and adding one fails the build.
+The Alpha is **not yet declared**: one acceptance criterion is open by design —
+**A14, the human playtest** (five first-time tester slots, scheduled in
+[`docs/PLAYTEST.md`](docs/PLAYTEST.md)). The Alpha's *system* properties are
+declared proven with evidence in
+[`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md); the playtest decides
+the human half. The live status board is [`AI-Handoff.md`](AI-Handoff.md); an
+out-of-date handoff is treated as a bug.
 
-The design rests on four blocks, chosen so that everything later grows through
-them instead of around them:
+The product surface is being audited for the first release: the journey map and
+R1 gap list live in
+[`docs/product/GAP_ANALYSIS.md`](docs/product/GAP_ANALYSIS.md).
 
-- **The simulation loop** — a fixed 30 Hz tick that is the only way state advances.
-- **The entity model** — one base record plus composable capabilities, 64-bit IDs
-  that are never reused, systems that iterate by capability rather than by name.
-- **The command system** — every player, AI, and replay action enters as a
-  validated `Command` applied at a tick boundary, through one shared gate.
-- **The data boundary** — stats, costs, maps, and factions are versioned data
-  files; tick order and command semantics are code, and never vary per item.
+## What it looks like
 
-## Why this exists
+Real captures from the client (Xvfb + software GL, `master` `23012bf`) — the
+main menu, the match setup screen, and a match in progress with the HUD,
+command card, and standing controls line:
 
-The governing question (plan §1): *are we building a game, or a foundation that
-can become a much larger game?* The second. Early Minecraft had few features,
-but its block abstraction absorbed years of growth; Pandemonium's equivalent
-abstractions are the four blocks above. The long arc — new units, new armies,
-new maps, new mechanics, better AI, expanded multiplayer — only stays cheap if
-each arrow passes through the architecture instead of fighting it.
+<p align="center">
+<img src="docs/product/screenshots/menu.png" alt="The Pandemonium main menu: a panel titled PANDEMONIUM with New Match, Settings, and Quit rows, over the default map backdrop" width="32%">
+<img src="docs/product/screenshots/new-match.png" alt="The New Match screen: mode (Player vs AI), seed field, map (Crossroads), Start and Back" width="32%">
+<img src="docs/product/screenshots/match.png" alt="A match in progress: terrain with fog, units, the Ore/POP HUD, and the controls help line" width="32%">
+</p>
 
-Rigor is spent where change is expensive: the simulation, the commands, entity
-identity, and the data boundary. Visuals, UI layout, and balance numbers stay
-deliberately lightweight — placeholder art is policy, not poverty. The Alpha is
-explicitly *not* judged on unit count, graphics, campaign, online features, or
-balance depth; a proposal that mostly improves those is out of scope by rule,
-not by mood.
-
-## Frozen decisions
-
-Ten foundational decisions are frozen (plan §2). Changing one requires a written
-ADR with evidence in `docs/adr/` — never a silent edit. Together they are the
-difference between "deterministic" as a buzzword and determinism as a property
-you can test.
-
-| | Decision | Consequence |
-|---|---|---|
-| **FD-1** | Deterministic fixed-tick simulation, 30 ticks/s, decoupled from rendering | A match = seed + content hash + ordered command log; replays, soak tests, and lockstep follow |
-| **FD-2** | All intent enters as validated `Command` records at tick boundaries | Only the tick function may mutate simulation state |
-| **FD-3** | Unified entity model: base record + composable capabilities; monotonic 64-bit IDs | New entity types are data; systems iterate by capability |
-| **FD-4** | Strict data/code boundary; versioned, validated content files | Add-a-unit and add-a-map require zero engine changes |
-| **FD-5** | No floating point in the simulation or in content | Bit-identical results across OS, CPU, and compiler |
-| **FD-6** | The simulation depends on nothing above it — no renderer, clock, or I/O | The renderer and UI can be replaced without touching rules |
-| **FD-7** | The AI plays through commands and a fog-filtered view, like everyone else | Parity is structural — cheating is a compile error, not a policy |
-| **FD-8** | Fog filters information; it never alters the simulation | Replays and AI stay honest; hidden entities behave identically |
-| **FD-9** | Events flow outward; presentation never polls simulation internals | The feedback layer grows without simulation changes |
-| **FD-10** | Content schema only moves forward | Content survives years of growth |
-
-Determinism is enforced mechanically, not ceremonially: no floating-point types,
-no unordered maps in state or state-affecting iteration, no wall-clock reads, no
-OS entropy, no pointer-width values in hashed state — each banned by clippy
-lints *and* a line-by-line source scan that runs with the test suite. Randomness
-is allowed, but it is seeded, owned by the simulation, and advanced in a fixed
-order. No entropy without paperwork.
-
-## Architecture
-
-Dependencies point downward only. This is not a convention enforced by review —
-`tests/architecture_law.rs` parses every member manifest on every test run,
-checks the internal edge allow-list and the per-crate external allow-list, fails
-on the forbidden-crate list, and scans the determinism crates' sources for
-banned types. Breaking the architecture is a build failure, not a conversation.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-  <img src="assets/architecture-light.svg" alt="Layered dependency diagram: client, engine, content, ai, replay, sim, sim_api, fx, tools, and tests. Solid arrows show dependencies pointing downward; a dashed red crossed arrow marks that ai may never depend on sim; milestone status tags mark sim, sim_api, replay, fx, and tools as complete at M1. A legend states that the full edge list is machine-checked by tests/architecture_law.rs." width="100%">
-</picture>
-
-The shape the whole design hangs on is FD-2: `Sim::step(commands)` is the only
-mutator of simulation state, and the simulation knows nothing above itself.
-Everything the outside world learns — snapshots, events, fog-filtered
-`PlayerView`s — flows out through typed boundaries. The client never touches the
-simulation directly; it submits commands and renders snapshots. Because every
-issuer goes through the same gate, the player, the AI, and a replay share one
-code path by construction — and so would a future network peer.
-
-### The shape of time
-
-The simulation is a clock, not a frame counter. It advances at exactly 30 Hz;
-rendering runs at display rate and interpolates between the previous and current
-snapshots. Time originates in the engine and the client — never inside the
-simulation.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="readme-assets/timestep-dark.svg">
-  <img src="readme-assets/timestep-light.svg" alt="Two timelines: the simulation track ticks at a fixed 30 Hz with 33.33 ms intervals; the render track runs denser at display rate. A highlighted band shows the client interpolating between two snapshots by alpha = accumulator / tick duration. A note marks the catch-up cap of five ticks per frame." width="100%">
-</picture>
-
-### Inside a tick
-
-The fixed update order inside `step()` never varies per content item (plan §6.3).
-At M8 all eleven stages went live; M9 fixed the one behavior bug the live loop exposed
-(chase orders now die with their targets) and tuned the AI that drives them:
-
-| # | Stage | State |
-|---|---|---|
-| 1 | Apply commands — sort by (issuer, seq), validate, apply or reject | **live** |
-| 2 | Orders — resolve current orders into system intents | **live** (M4/M5/M6) |
-| 3 | Production & construction — queues, progress, spawns | **live** (M5) |
-| 4 | Economy — gathering, delivery, storage, spending | **live** (M5) |
-| 5 | Target acquisition — combat auto-acquire within `acquire_range` | **live** (M6) |
-| 6 | Movement — path requests, steering, collision | **live** (M4) |
-| 7 | Combat — immediate-hit pipeline: acquire → validate → hit → mitigate → apply → credit | **live** (M6) |
-| 8 | Death & cleanup — health advance, lifecycle events, removal, clear dead targets | **live** |
-| 9 | Vision — per-player per-tile three-state fog (Hidden/Explored/Visible) | **live** (M6) |
-| 10 | Match rules — defeat/victory/resignation evaluation; `MatchEnded` fires once (idempotent) | **live** (M8) |
-| 11 | Finalize — tick++, flush events, periodic hash every 30 ticks | **live** |
-
-## Current status
-
-**Milestones M0 through M10 are complete: the Alpha is declared.** The
-acceptance sweep lives in
-[`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md) — thirteen of the
-fifteen criteria pass with automated evidence (the pinned golden hashes are
-unchanged through every improvement below), and one (A14, the human playtest
-bar) is recorded as an honest finding: only humans can answer it.
-
-M10 opened with a review-driven playability and visual pass — the first human
-playtest's verdict ("not playable yet; the visuals are very weak") taken
-seriously as a work order. The windowed client gained the missing economy
-half (a command card: train from producers, build structures through a
-placement ghost with a legality preview, cancel queued items, set rally
-points), fog-of-war rendering through the player's own view, a minimap with
-fog, entity dots, a viewport indicator, click-to-move-camera and orders,
-directional lighting, shaded terrain, per-kind silhouettes, blob shadows,
-ground selection rings, and death fades. All of it is client/engine
-presentation: the simulation's golden hashes never moved.
-
-M10.2 then worked the playtest's four findings in order — controls (the
-Generals ZH card: right-click orders, right-drag scroll, selection parity,
-the Escape ladder), visual legibility (multi-part silhouettes, team colors,
-tooltips, the minimap), menus/settings (the game starts at a menu; matches
-start in three modes; settings persist), and finally **audio**: nine
-synthesized cues (combat, losses, production, construction, deliveries,
-the match end, plus command acks, selection and UI clicks) through the
-`AudioSink` seam on rodio, rate-limited per cue, with a silent null
-fallback where no device exists and live volume + mute in settings. The
-same rule as ever: presentation only, goldens untouched. Phase 5 closed the
-milestone out — the full gate green in dev and release with the goldens
-bit-identical, the Xvfb + XTEST machine pass re-ran the M10.2 paths
-(controls, menus/settings, the audio evidence lines), and the owner's
-real-hardware audio re-test came back **clean** (A-126, 2026-10-09); the
-A14 playtest — five first-time tester slots — is scheduled in
-[`docs/PLAYTEST.md`](docs/PLAYTEST.md). The live status board is
-[`AI-Handoff.md`](AI-Handoff.md); an out-of-date handoff is treated
-as a bug.
-
-Built and verified through M9:
-
-- **`fx`** — Q16.16 fixed-point math with 64-bit intermediates, round-toward-zero
-  and saturating contracts (identical in debug and release), exact integer square
-  root over the full u64 range, PCG32 RNG with canonical seeding, xxHash64 as
-  the canonical hasher
-  hashing — all property-tested.
-- **`sim`** — the tick pipeline (all 11 stages live, including M8's match rules);
-  entity and capability stores kept in ascending-ID order by construction
-  (12 capability types); the shared command gate covering all command kinds
-  including Attack/AttackMove/Stop with rejection events and zero state change
-  on refusal; canonical little-endian state hash (v4); snapshots and
-  fog-filtered player views backed by the per-tick three-state fog cache;
-  `outcome()` / `is_finished()` surfacing stage 10's `MatchEnded` (M8 — derived
-  state, not hashed, so the M7 goldens stay pinned). **M9**: a chase order whose
-  commanded target died now pops (combat stage 1) — the frozen-army bug that
-  kept AI matches from resolving.
-- **`content`** — strict RON schema with versioned loaders and forward migration
-  (map v1→v2), precise validators at file and placement level, `ContentBundle`
-  with canonical content hash and map id, `world()` seam producing the plain
-  `TrivialWorld` the simulation receives with **zero changes under sim/sim_api/fx/ai**
-  (all 12 capabilities mapped).
-- **`replay`** — a checksummed canonical little-endian codec (record, load,
-  validate) with typed errors. No serde: the dependency law forbids it here.
-- **`engine`** — `FixedTimestep` (30 Hz, 5-tick catch-up cap), `Interpolator`
-  (snapshot blending, spawn/death handling), `MatchHost` (owns `Sim` privately,
-  `submit` + `advance` are the only mutation paths; M8 adds `with_controllers`
-  for AI hosting, `log()` for the command log, `outcome()` / `is_finished()`
-  for the end screen), `AiMatchHost` (headless controller hosting), `RtsCamera`
-  (perspective orbit, ground picking, box select), terrain mesh, `Renderer`
-  trait + `NullRenderer`. **M9**: the `AudioSink` seam — a pure event → cue
-  mapping, a null counter sink, the placeholder cue set (plan §11.5).
-  **M10.2 Phase 4**: `on_cue` (the client-side direct path) and the
-  three UI cues on the enum — the seam itself, unchanged otherwise.
-- **`client`** — winit 0.30 + wgpu 26 windowed 3D renderer (depth buffer, terrain
-  mesh with heightmap displacement, instanced placeholder entity boxes), selection
-  + right-click context orders, fontdue text atlas + HUD/debug overlay, `--frames N`
-  windowed smoke, headless fallback for CI. **M8**: hosts the AI opponent through
-  `MatchHost::with_controllers`, renders the end-screen panel (VICTORY/DEFEAT/
-  MUTUAL DESTRUCTION), supports restart (R), control groups (1-9), and
-  Stop/AttackMove hotkeys (S/A). **M9**: the feel pass — hit flashes (entities
-  flash toward hot white when hit), health bars over damaged units,
-  command-acknowledgment pings at the clicked ground, the audio sink wired into
-  the draw loop, and the restart resetting all of it. **M9.1**: the input layer
-  actually works — the camera's pan axes were mirrored since M3 (D panned left,
-  W retreated), the mouse could not move the camera at all, and no attack order
-  existed; now WASD/arrows/edge/middle-drag pan with frame-rate-independent
-  speed, the wheel zooms toward the cursor, right-click resolves
-  attack/gather/move from what is under the cursor, 'A' arms attack-move for
-  the next click, refused orders flash red with their reason, selection draws
-  corner brackets, and the match opens framed on the player's base.
-  **M10.2 Phase 4 (audio)**: `sound.rs` — the two-arm sink behind the
-  seam. A startup probe picks the arm: a live device gets rodio 0.22.2
-  (ADR-0002) with the stream living for the app's whole run; no device
-  (CI, Xvfb) silently falls back to the counting null sink — one honest
-  line either way. The nine cues are synthesized PCM at startup (mono
-  44100 Hz, all under a second, pairwise distinct — no asset files);
-  each cue is rate-limited to one voice per 80 ms so a big fight stays
-  a heartbeat; the settings screen's volume and mute rows drive it live
-  (mute wins); order acks, selection clicks, and menu clicks round out
-  the six event moments. Machine runs claim counting, never sound —
-  "sounds good" is the owner's re-test to make.
-- **`tools`** — headless runner (demo + `--p1/--p2 ai` controller matches; M8
-  adds a `match ended:` line printing the winner), `replay-verify`,
-  `content-validate` subcommands.
-- **`tests/`** — determinism acceptance A1/A2 with pinned golden hashes, movement
-  acceptance (M4), economy acceptance (M5: divergent openings, soak, invariants),
-  combat acceptance (M6: composition + position matter, bit-identical, turret,
-  A12 soak, legibility), vision acceptance (M6: A10 fog integrity, targeting both
-  directions, three-state transition, FD-8), content pipeline acceptance (M2 +
-  M5 train extension + M6 fight half — the data-defined kind now trains AND fights),
-  AI acceptance (M7: A5 parity, A11 issuer-blindness, AI-vs-AI determinism,
-  golden pin, log-alone replay), match-rules acceptance (M8: `MatchEnded` fires
-  on resignation and surfaces through the host; A15 restart cleanliness — two
-  fresh hosts from the same seed produce identical hashes, and with AI
-  controllers identical logs too; stage 10 is hash-neutral vs the M7 golden),
-  architecture law (A13), alpha-loop acceptance (M9: AI-vs-AI matches resolve
-  with a declared winner inside the fifteen-minute budget; resolution is
-  deterministic end to end; the windowed host's vs-AI loop closes naturally),
-  plus proofs that IDs are never reused, iteration order
-  is strictly ascending, invalid commands change no state, and the dependency
-  law holds.
-- **CI** — fmt, clippy with `-D warnings`, and the test suite in dev *and*
-  release on Linux, Windows, and macOS, plus the replay round-trip and a
-  binaries-run check. **553 tests green in dev, 548 in release** at the
-  post-M10.2 instrument pass (5 should-panic invariant-checker tests are
-  debug-only by nature).
-
-Not built yet — on purpose, in milestone order:
-
-- The A14 human playtest (≥ 5 testers, `docs/PLAYTEST.md`) — the one open
-  finding in the Alpha declaration; the five first-time tester slots are
-  scheduled there (three waves to 2026-10-31), and only humans can close it.
-- No multiplayer: the hooks are designed in (`Command.tick`, hashed checkpoints
-  for desync detection), the netcode is not.
-
-## Repository structure
-
-```text
-pandemonium-bd/
-├─ crates/
-│  ├─ fx/         fixed-point math (Fx, Vec2Fx, isqrt), PCG32 RNG, xxHash64 hasher
-│  ├─ sim_api/    boundary vocabulary: Command, Event, Snapshot, PlayerView, Reject
-│  ├─ sim/        the simulation: tick pipeline, stores, command gate, state hash
-│  ├─ content/    RON schema, versioned loaders, validators, ContentBundle
-│  ├─ ai/         the scripted Alpha opponent (Controller trait)
-│  ├─ replay/     checksummed replay codec: record, load, verify
-│  ├─ engine/     game loop, interpolation, MatchHost, camera, mesh, renderer
-│  ├─ client/     the playable binary: wgpu 26 + winit, 3D renderer, HUD
-│  └─ tools/      headless runner (demo + AI matches), replay verifier, content validator
-├─ tests/         cross-crate acceptance tests (A1–A15)
-├─ content/       data-only game content: rules, entities, factions, maps
-├─ docs/          ARCHITECTURE · DEBT · ASSUMPTIONS · CONTENT_GUIDE · adr/
-├─ plan.md        the authoritative specification (v2.0)
-└─ AI-Handoff.md  live status board and resume protocol
-```
-
-## Quick start
+## Run it
 
 The toolchain is pinned to an exact Rust version in
-[`rust-toolchain.toml`](rust-toolchain.toml); rustup installs it automatically on
-first use.
+[`rust-toolchain.toml`](rust-toolchain.toml); rustup installs it automatically
+on first use.
 
 ```bash
-# run the scripted demo match headlessly — prints every checkpoint and the final hash
-cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
+# the windowed client — opens at the main menu on a desktop
+cargo run -p pandemonium-client
+
+# windowed smoke: auto-exit after N frames with an evidence summary
+cargo run -p pandemonium-client -- --frames 900
+
+# no display? the client says so honestly and runs a headless smoke pass instead
+
+# headless scripted match — prints every checkpoint hash and the final hash
+cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300   # 0xb6fff6659cfb7709
 
 # record a replay, then re-simulate it and compare every checkpoint
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300 --record demo.pdrp
@@ -323,22 +80,37 @@ cargo run -p pandemonium-tools -- replay-verify demo.pdrp
 
 # validate the content bundle (prints content hash + map id, exits 0 on PASS)
 cargo run -p pandemonium-tools -- content-validate content
-
-# the windowed 3D client — opens at the main menu on a desktop; headless runs a smoke pass
-cargo run -p pandemonium-client
-# windowed smoke: auto-exit after N frames with evidence summary
-cargo run -p pandemonium-client -- --frames 900
 ```
 
-The main menu starts a match (Player vs AI / AI vs AI spectate / Sandbox),
-remembers the seed and map you pick, and remembers your settings across runs
-(`edge_scroll`, `pan_speed`, `zoom_min`, `zoom_max`, `master_volume`,
-`muted`, `fullscreen`, `debug_overlay` — a small `key=value` file in your user config
-directory). `--seed N` pre-fills the New Match screen's seed field; without
-it the seed is random (and shown, so you can still report it).
+The main menu starts a match (**Player vs AI / AI vs AI spectate / Sandbox**),
+keeps your seed and map choices within the run, and persists settings across
+runs (`edge_scroll`, `pan_speed`, `zoom_min`, `zoom_max`, `master_volume`,
+`muted`, `fullscreen`, `debug_overlay` — a small `key=value` file in your user
+config directory; see `docs/product/GAP_ANALYSIS.md` §11 for the exact
+per-OS locations). `--seed N` pre-fills the New Match screen's seed field;
+without it the seed is random and shown, so you can still report it.
 
-Controls (Generals: Zero Hour muscle memory — see `docs/PLAYTEST.md`'s card
-for the tester-facing copy):
+## Build it
+
+```bash
+cargo build --workspace               # debug
+cargo build --workspace --release     # the profile benchmarks and soaks run in
+```
+
+The full verification gate — the same one CI runs on every push, on all three
+OSes, in both profiles:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test --workspace --release   # determinism must hold in release too
+```
+
+Same seed, same ticks — same hashes, on any machine, in either profile. If
+those hashes ever differ between two runs, that is not a feature. File it.
+
+## Controls (Generals: Zero Hour muscle memory)
 
 **Selecting** — **left-click** selects, **left-drag** box-selects; left never
 issues an order, and a click on empty ground does nothing (Esc clears the
@@ -352,108 +124,107 @@ travel orders; **right-drag** beyond that grabs and scrolls the map (the
 release then orders nothing). **A** arms attack-move for the next left-click,
 **S** stops.
 
-**Camera** — **right-drag** scrolls (the main way to move the map),
-**middle-drag** rotates, **WASD / arrows / screen edges** pan (the edge is a
-14 px band whose speed scales with depth), **Q / E** rotate, the **wheel**
-zooms toward the cursor, **Ctrl+wheel** tilts the pitch.
+**Camera** — **right-drag** scrolls, **middle-drag** rotates, **WASD /
+arrows / screen edges** pan, **Q / E** rotate, the **wheel** zooms toward the
+cursor, **Ctrl+wheel** tilts the pitch.
 
 **Groups & jumps** — **1–9** recall control groups, **Ctrl+1–9** assigns,
-double-tapping a digit recalls and centers the camera on the group. **Space**
-jumps to the last death (or your base). **Esc** climbs one rung per press:
-armed command → placement → selection → **pause menu**. **P** pauses without
-the menu, **F3** toggles the debug overlay, **F8** writes the bug-report
-dump, **R** restarts after the match ends.
+double-tap centers on the group. **Space** jumps to the last death (or your
+base). **Esc** climbs one rung per press: armed command → placement →
+selection → **pause menu**. **P** pauses without the menu, **F3** toggles the
+debug overlay, **F8** writes the bug-report dump, **R** restarts after the
+match ends.
 
-The full verification gate — the same one CI runs:
+The tester-facing copy of this card (and the playtest protocol around it) is
+[`docs/PLAYTEST.md`](docs/PLAYTEST.md).
 
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace             # dev profile
-cargo test --workspace --release   # determinism must hold in release too
+## Architecture in five lines
+
+1. `sim` advances the world in a fixed 30 Hz tick — `Sim::step(commands)` is the
+   **only** mutator, and the simulation depends on nothing above it (FD-2/FD-6).
+2. All intent — player, AI, replay, future network — enters as validated
+   `Command` records through one gate (FD-2/FD-7); parity is a compile error, not
+   a policy.
+3. `content` turns strict, versioned RON data into plain structs; units, maps,
+   and factions are data, and adding one touches no engine code (FD-4/FD-10).
+4. `engine` hosts matches (`MatchHost`), interpolates snapshots, and defines the
+   renderer/audio seams; `client` is one swappable presentation above it all.
+5. No floating point, no unordered maps, no wall-clock, no OS entropy anywhere
+   in the simulation — enforced by lints *and* a source-scanning test (FD-5).
+
+Dependencies point downward only, and
+[`tests/architecture_law.rs`](tests/architecture_law.rs) makes breaking that a
+build failure, not a conversation. The full specification is
+[`plan.md`](plan.md); the code-as-built map is
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Repository structure
+
+```text
+pandemonium-bd/
+├─ crates/
+│  ├─ fx/         fixed-point math (Fx, Vec2Fx, isqrt), PCG32 RNG, xxHash64 hasher
+│  ├─ sim_api/    boundary vocabulary: Command, Event, Snapshot, PlayerView, Reject
+│  ├─ sim/        the simulation: 11-stage tick pipeline, stores, command gate, state hash
+│  ├─ content/    RON schema, versioned loaders, validators, ContentBundle
+│  ├─ ai/         the scripted Alpha opponent (Controller trait, commands-only)
+│  ├─ replay/     checksummed replay codec: record, load, verify
+│  ├─ engine/     game loop, interpolation, MatchHost, camera, mesh, renderer + audio seams
+│  ├─ client/     the playable binary: wgpu + winit, 3D renderer, HUD, menus, audio
+│  └─ tools/      headless runner, replay verifier, content validator, soak, bench
+├─ tests/         cross-crate acceptance tests (A1–A15)
+├─ content/       data-only game content: rules, entities, factions, maps
+├─ docs/          ARCHITECTURE · DEBT · ASSUMPTIONS · product/ · adr/ · …
+├─ plan.md        the authoritative specification (v2.0)
+└─ AI-Handoff.md  live status board and resume protocol — start here
 ```
-
-Same seed, same ticks — same hashes, on any machine, in either profile. If those
-hashes ever differ between two runs, that is not a feature. File it.
-
-## Development workflow
-
-Every change passes the green gate before commit: formatting, clippy with zero
-tolerance, and the full test suite in both profiles. One logical change per
-commit. Milestones are never skipped, and M(N+1) does not start until every exit
-test of M(N) is green in CI. Deliberate simplifications are logged in
-[`docs/DEBT.md`](docs/DEBT.md) with a repayment trigger; guessed decisions are
-logged in [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md); challenges to frozen
-decisions go through an ADR in `docs/adr/`.
-
-The process is strict because the product is trust. A deterministic engine is a
-promise, and promises are kept by boring discipline — the operating contract in
-[plan.md §0](plan.md) is short, and worth reading before the first commit.
 
 ## Documentation
 
 | Document | Role |
 |---|---|
-| [`plan.md`](plan.md) | the authoritative specification: frozen decisions, determinism rules, milestones M0–M10, acceptance criteria A1–A15 |
-| [`AI-Handoff.md`](AI-Handoff.md) | live status board, verification commands, and hard-won gotchas — start here to pick up development |
+| [`AI-Handoff.md`](AI-Handoff.md) | **start here** — live status board, verification commands, hard-won gotchas |
+| [`plan.md`](plan.md) | the authoritative spec: frozen decisions FD-1..10, determinism rules, milestones, acceptance A1–A15 |
+| [`docs/product/GAP_ANALYSIS.md`](docs/product/GAP_ANALYSIS.md) | the product-surface audit: the player journey vs the shipped client, and the ordered R1 gap list |
+| [`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md) | the acceptance sweep A1–A15 with evidence; A14's open finding |
+| [`docs/PLAYTEST.md`](docs/PLAYTEST.md) | the A14 instrument: protocol, controls card, tester schedule and results |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | the working map of the code as built |
 | [`docs/DEBT.md`](docs/DEBT.md) | every deliberate simplification, each with a repayment trigger |
 | [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) | every interpretation that had to be guessed, numbered and cited |
-| [`docs/CONTENT_GUIDE.md`](docs/CONTENT_GUIDE.md) | content authoring reference (expands in M2; plan §10 governs meanwhile) |
-| [`docs/adr/`](docs/adr/README.md) | the process for proposing changes to frozen decisions |
+| [`docs/CONTENT_GUIDE.md`](docs/CONTENT_GUIDE.md) | content authoring reference |
+| [`docs/adr/`](docs/adr/README.md) | the process for changing frozen decisions (ADR-0001 3D presentation, ADR-0002 audio backend, ADR-0100 app shell — proposed) |
+| [`CHANGELOG.md`](CHANGELOG.md) | one entry per milestone |
+| [`SECURITY.md`](SECURITY.md) | the declared threat model |
 
-## Roadmap
+## Bug reports are reproducible incidents
 
-Milestones are gates, not dates — the calendar (~26 weeks for a small human team)
-is a reference, the exit criteria are the truth. Each prototype gate P1–P5 asks
-one question and refuses to move on until it is answered.
+A report that includes the seed and the tick is a reproducible incident;
+anything else is a war story. The windowed client writes the report for you:
+press **F8** at (or right after) the moment of the problem and it drops a replay
+record (`pandemonium-report-<seed>-tick<tick>.pdrp`) plus a sidecar `…-info.txt`
+carrying the seed, the tick, and the content identity — attach both files to
+the issue; the replay re-verifies headlessly
+(`cargo run -p pandemonium-tools -- replay-verify <file>`).
 
-| Milestone | Delivers | Exit gate | Status |
-|---|---|---|---|
-| **M0** — Skeleton & guardrails | Workspace, toolchain pin, guardrails, `fx` crate | fmt, clippy, fx property tests, architecture law | ✔ **Complete** |
-| **M1** — Simulation core | Tick pipeline, entity/capability stores, command gate, state hash, replay, determinism proofs | A1/A2 green, pinned golden hashes, replay round-trip | ✔ **Complete** |
-| **M2** — Content pipeline | RON schemas, versioned loaders, validators, map loader, content hash, `content-validate` tool | All Alpha content loads from data; add-a-unit scaffold proves the boundary | ✔ **Complete** |
-| **M3** — Engine shell | Window, wgpu 26 3D renderer, camera, snapshot interpolation, fixed loop, input → commands, HUD/debug overlay | Windowed build shows live simulation; Move commands work; `--frames` smoke pass | ✔ **Complete** |
-| **M4** — Movement *(P1: do multiple units move responsibly?)* | Nav grid, deterministic A*, path execution, collision, push-apart, stuck detection | 50 units respond within 2 ticks under spam-clicked orders; nobody permanently stuck | ✔ **Complete** |
-| **M5** — Economy & production *(P3: do openings diverge?)* | Resource ledger, gather loop (depletion + auto-seek), production queues (Train/Cancel/SetRally), construction lifecycle, population cap, requirements, footprints blocking tiles, A12 invariant checker | Scripted openings produce measurably different timelines; economy soak holds all invariants | ✔ **Complete** |
-| **M6** — Combat & vision *(P2: is combat legible and meaningful?)* | Immediate-hit attack pipeline (acquire → validate → hit → mitigate → apply → credit), Attack/AttackMove/Stop semantics, three-state fog (Hidden/Explored/Visible per player per tile), turret (no Move, Attack+Footprint), A12 combat invariants | Composition and position matter; fog integrity proven (A10); bit-identical run-to-run | ✔ **Complete** |
-| **M7** — AI through commands *(P4: is parity real?)* | `Controller` trait, scripted opponent, parity audit | AI-vs-AI headless matches complete; parity is compile-time | ✔ **Complete** |
-| **M8** — Match rules *(P5: do all systems work together?)* | Stage 10 defeat/victory/resignation evaluation, `MatchEnded` event (idempotent), `MatchHost` AI hosting + command log + outcome, windowed client end screen + restart (R) + control groups + Stop/AttackMove hotkeys | A15 restart cleanliness (two fresh hosts, same seed → identical hashes; with AI → identical logs too); stage 10 is hash-neutral (M7 golden holds) | ✔ **Complete** |
-| **M9** — Alpha content & feel *(the Alpha starts feeling like a game)* | Chase-order pop fix (the frozen-army bug), wave machine re-march cadence + CC focus + waves of ten (matches resolve in 5–13 min across a 32-seed sweep), hit flashes, health bars, command pings, `AudioSink` + placeholder cues | AI-vs-AI resolves inside the 15-minute budget across seeds, deterministically; the vs-AI loop closes on the windowed host (`tests/alpha_loop.rs`) | ✔ **Complete** |
-| **M10** — Stabilization & declaration | Full acceptance suite A1–A15, nightly soak, benchmark baselines, the command card + visual pass | 13 criteria pass with evidence (`docs/ALPHA_DECLARATION.md`); A14 recorded as a finding pending the human playtest | ✔ **Complete** (A14 pending) |
+## Development workflow
 
-Beyond the Alpha, the expansion sequence is already audited against the
-architecture: new unit, new building, new map, stat rebalance, second faction —
-all data-only — then abilities, tech tree, and evaluative AI above the command
-interface. Multiplayer rides on hooks that exist from day one: `Command.tick` is
-the input-delay field for lockstep, and hashed checkpoints are the desync alarm.
-The Alpha is declared only when every criterion is verified; one that cannot be
-met honestly is recorded as a finding, never waved through.
+Every change passes the green gate before commit (formatting, clippy with zero
+tolerance, the full suite in both profiles). One logical change per commit.
+Milestones are gates, not dates: M(N+1) does not start until every exit test of
+M(N) is green in CI. Deliberate simplifications go to
+[`docs/DEBT.md`](docs/DEBT.md) with a repayment trigger; guessed interpretations
+go to [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md); challenges to frozen
+decisions go through an ADR. Read [plan.md §0](plan.md) (the operating
+contract) before the first commit — the process is strict because the product
+is trust.
 
-## Contributing
-
-Contributions follow the same law as the code. Read
-[plan.md §0](plan.md) (the operating contract) and
-[`AI-Handoff.md`](AI-Handoff.md) first, then work within a milestone: one logical
-change per commit, the green gate before every commit, and automated proof for
-any claim the code makes. Simplifications go to the debt register; guesses go to
-the assumptions log; frozen decisions change only through an ADR.
-
-Gameplay content is not accepted yet — the content pipeline is **complete** (M2), but the Alpha content manifest is locked per the plan; content is data, so the door opens when the data boundary exists and the Alpha declares. Bug reports, however,
-are welcome now, and this project makes them unusually actionable: a report that
-includes the seed and the tick is a reproducible incident. Anything else is a war
-story. The windowed client writes that report for you: press **F8** at (or right
-after) the moment of the problem and it drops a replay record
-(`pandemonium-report-<seed>-tick<tick>.pdrp`) plus a sidecar `…-info.txt`
-carrying the seed, the tick, and the content identity — attach both files to the
-issue; the replay re-verifies headlessly (`tools replay-verify`).
+Contributions follow the same law as the code. Gameplay content is not
+accepted while the Alpha content manifest is locked; bug reports (with seed and
+tick) are welcome now and unusually actionable.
 
 ## License
 
-No license has been published yet. Without a LICENSE file, standard copyright
-defaults apply: you are welcome to read, study, and link to the code, but formal
-reuse and redistribution terms have not been granted. This section will be
-updated the moment that changes.
+To be decided by the owner.
 
 ---
 
