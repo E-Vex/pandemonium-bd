@@ -1133,3 +1133,12 @@ confirms or rejects it.
   coverage (~240 fresh seeds a month) — a calibration guess, revisitable
   by evidence if the tier's runtime lands far from its 45-minute
   timeout.
+- **A-128 (brief A-001 acceptance, product phase).** The brief's README item says
+  "include screenshots only if you can capture real ones" while its acceptance
+  criterion says "nothing outside docs/ and README.md changed" — read together, the
+  real captures (Xvfb + llvmpipe, commit 23012bf) are stored under
+  `docs/product/screenshots/` (inside docs/, where they double as the gap
+  analysis' "observed" evidence) and referenced from README.md by relative path,
+  rather than placed in the README's conventional `readme-assets/` (outside the
+  acceptance line). Reversible by moving three files plus two paths if the PM
+  prefers the conventional home.
