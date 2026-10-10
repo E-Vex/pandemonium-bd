@@ -126,3 +126,91 @@ jobs:
           cargo run -p pandemonium-tools -- headless --seed 1 --ticks 30
           cargo run -p pandemonium-tools -- headless --seed 1 --ticks 60 --p1 ai --p2 ai
           cargo run -p pandemonium-client
+
+  cross-os:
+    # A1's cross-OS half (plan §13, FD-5): each OS runs the two headless
+    # goldens in release and emits the final hashes. The gate job below fails
+    # unless all three OSes agree with each other AND with the committed
+    # goldens. Deliberately independent of the test matrix: the hash property
+    # gets its own unambiguous signal (tools only — no client, no ALSA dep).
+    name: goldens (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A hang must fail loudly, not consume the runner hour.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: goldens-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Demo golden (seed 7, 300 ticks, release)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo run --release -p pandemonium-tools -- headless --seed 7 --ticks 300 2>&1 | tee demo.log
+          grep 'final hash' demo.log
+      - name: Flagship golden (seed 7, 7200 ticks AI-vs-AI, release)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo run --release -p pandemonium-tools -- headless --seed 7 --ticks 7200 --p1 ai --p2 ai 2>&1 | tee flagship.log
+          grep 'final hash' flagship.log
+      # Upload even on failure — a diverging leg's log is exactly the evidence
+      # the gate wants to preserve for the diagnosis.
+      - name: Upload the per-OS hash evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldens-${{ matrix.os }}
+          path: |
+            demo.log
+            flagship.log
+
+  cross-os-gate:
+    # The A1 gate proper: all three OSes must agree with each other AND with
+    # the committed goldens (docs/AI-Handoff.md §2 "Goldens (never move)"; the
+    # same values are pinned by tests/determinism.rs and tests/ai.rs). Any
+    # divergence fails here with the values printed — per the brief, the
+    # values and first diverging checkpoint are then reported, never patched.
+    name: cross-OS golden gate (A1)
+    needs: cross-os
+    runs-on: ubuntu-latest
+    # A hang must fail loudly, not consume the runner hour.
+    timeout-minutes: 10
+    env:
+      GOLDEN_DEMO: 0xb6fff6659cfb7709
+      GOLDEN_FLAGSHIP: 0x6e9a18bd7c5f699f
+    steps:
+      - name: Download every OS leg's hash evidence
+        uses: actions/download-artifact@v4
+        with:
+          path: goldens
+          pattern: goldens-*
+      - name: All three OSes agree with each other and the committed goldens
+        run: |
+          set -euo pipefail
+          status=0
+          for os in ubuntu-latest windows-latest macos-latest; do
+            demo=$(grep 'final hash' "goldens/goldens-$os/demo.log" 2>/dev/null | head -1 | awk '{print $NF}' || true)
+            flagship=$(grep 'final hash' "goldens/goldens-$os/flagship.log" 2>/dev/null | head -1 | awk '{print $NF}' || true)
+            demo=${demo:-MISSING}
+            flagship=${flagship:-MISSING}
+            printf '  %-14s demo=%s flagship=%s\n' "$os" "$demo" "$flagship"
+            if [ "$demo" != "$GOLDEN_DEMO" ]; then
+              echo "::error::demo golden diverged on $os: $demo (committed: $GOLDEN_DEMO)"
+              status=1
+            fi
+            if [ "$flagship" != "$GOLDEN_FLAGSHIP" ]; then
+              echo "::error::flagship golden diverged on $os: $flagship (committed: $GOLDEN_FLAGSHIP)"
+              status=1
+            fi
+          done
+          exit $status
