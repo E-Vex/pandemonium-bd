@@ -317,6 +317,9 @@ jobs:
     # floor: the archive's own glibc world) and on ubuntu-24.04 (a strictly
     # newer glibc): an archive built on 22.04 must run on both, and the two
     # smoke legs prove the floor and forward compatibility in one matrix.
+    # Every OS also re-checks the packaged goldens exactly (content + map
+    # id, demo, flagship) from the unpacked archive — a mismatch is a STOP
+    # condition for the release channel, not a warning.
     name: packaged-archive smoke (${{ matrix.slug }} on ${{ matrix.os }})
     needs: build
     runs-on: ${{ matrix.os }}
@@ -367,8 +370,19 @@ jobs:
           PKG_DIR=$(ls -d "$CLEAN"/pandemonium-*/ | head -1)
           # 1. the packaged client's headless smoke pass
           "$PKG_DIR/pandemonium-client${BIN_EXT}" --headless
-          # 2. the packaged tools validate the packaged content
-          (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" content-validate)
+          # 2. the packaged goldens, EXACT (A-004): the unpacked tools must
+          #    print the registered hashes bit-identically — the content
+          #    hash + map id first, then the demo and flagship sim goldens
+          #    re-run from the packaged binaries and packaged content.
+          (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" content-validate) | tee content-validate.out
+          grep -q "content hash: 0x9bc18c521107b262, map id: 0xd38136401ab02ff1" content-validate.out \
+            || { echo "FAIL: packaged content golden mismatch (expected content 0x9bc18c521107b262, map 0xd38136401ab02ff1)"; exit 1; }
+          (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" headless --seed 7 --ticks 300) | tee demo.out
+          grep -q "0xb6fff6659cfb7709" demo.out \
+            || { echo "FAIL: packaged demo golden mismatch (expected final hash 0xb6fff6659cfb7709)"; cat demo.out; exit 1; }
+          (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" headless --seed 7 --ticks 7200 --p1 ai --p2 ai) | tee flagship.out
+          grep -q "0x6e9a18bd7c5f699f" flagship.out \
+            || { echo "FAIL: packaged flagship golden mismatch (expected final hash 0x6e9a18bd7c5f699f)"; cat flagship.out; exit 1; }
           # 3. the archive is what the checksum recorded
           expected=$(awk '{print $1}' "$ARCHIVE.sha256")
           actual=$(sha256sum "$ARCHIVE" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$ARCHIVE" | awk '{print $1}')
