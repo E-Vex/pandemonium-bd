@@ -231,6 +231,42 @@ jobs:
             fi
           done
           echo "GLIBC floor evidence: linux-${{ matrix.slug }} archive requires $worst, floor $FLOOR — PASS"
+      - name: macOS deployment floor evidence (otool)
+        # A-004: LC_BUILD_VERSION's minos is the load command the macOS
+        # loader enforces — a binary whose minos exceeds 11.0 will not open
+        # on Big Sur, whatever the runner built it on. MACOSX_DEPLOYMENT_
+        # TARGET=11.0 (pinned above) drives the linker's -mmacosx-version-
+        # min; this step reads the RESULT back out of both binaries with
+        # otool -l (the evidence line) and fails the job if either binary's
+        # minos exceeds 11.0 — the floor is checked, not assumed, so a
+        # future image/SDK bump cannot silently narrow the player fleet.
+        # NB: no ": " in step names (YAML plain-scalar rule; see 50e8156).
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLOOR="11.0"
+          worst="(none)"
+          for BIN in \
+            "target/${{ matrix.target }}/release/pandemonium-client${{ matrix.ext }}" \
+            "target/${{ matrix.target }}/release/pandemonium-tools${{ matrix.ext }}"; do
+            MINOS=$(otool -l "$BIN" | awk '/cmd LC_BUILD_VERSION/ {seen=1} seen && /minos/ {print $2; exit}')
+            if [ -z "$MINOS" ]; then
+              echo "FAIL: $(basename "$BIN") carries no LC_BUILD_VERSION load command"
+              exit 1
+            fi
+            echo "LC_BUILD_VERSION minos: $(basename "$BIN") — $MINOS"
+            TOP=$(printf '%s\n' "$MINOS" "$FLOOR" | sort -V | tail -1)
+            if [ "$TOP" != "$FLOOR" ]; then
+              echo "FAIL: $(basename "$BIN") minos $MINOS exceeds the $FLOOR floor"
+              exit 1
+            fi
+            if [ "$worst" = "(none)" ] \
+              || [ "$(printf '%s\n' "$worst" "$MINOS" | sort -V | tail -1)" = "$MINOS" ]; then
+              worst="$MINOS"
+            fi
+          done
+          echo "MACOSX floor evidence: macos-${{ matrix.slug }} archive minos $worst, floor $FLOOR — PASS"
       - name: The version stamp (evidence)
         id: ver
         shell: bash
