@@ -20,6 +20,8 @@ jobs:
   lint:
     name: fmt + clippy
     runs-on: ubuntu-latest
+    # A hang must fail loudly, not consume the runner hour (nightly's rule).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
@@ -43,8 +45,11 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    # The green gate (plan §0/AI-Handoff §4) on every push and pull request:
     name: tests (${{ matrix.os }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.os }}
+    # A hang must fail loudly, not consume the runner hour.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -74,6 +79,8 @@ jobs:
     # A2: a recorded match replays to an identical final hash (plan §13).
     name: replay round-trip (A2)
     runs-on: ubuntu-latest
+    # A hang must fail loudly, not consume the runner hour.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
@@ -96,6 +103,8 @@ jobs:
   binaries:
     name: workspace builds and runs
     runs-on: ubuntu-latest
+    # A hang must fail loudly, not consume the runner hour.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain
