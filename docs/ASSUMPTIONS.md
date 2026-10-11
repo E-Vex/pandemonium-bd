@@ -1174,6 +1174,37 @@ confirms or rejects it.
   positions are equivalent states — was false because starting *units*
   translate (anchor-relative offsets) while *structures* mirror; the failing
   Build case is pinned as a named deterministic test in `tests/ai.rs`.
+- **A-203 (B-006, product phase).** The differential instrument's coverage
+  premise: a per-commit bit-for-bit check consists of 200 AI-vs-AI seeds at
+  4 500 ticks over the real content plus 6 scale-10 seeds at 1 500 ticks over
+  the proving ground, each digested over the FULL checkpoint hash trail
+  (tick 0, every `CHECKPOINT_INTERVAL` boundary, the forced final — a
+  divergence that cancels by the final hash still moves the line). The tick
+  count is deliberate: probing showed the two scripted AIs do not engage in
+  combat by tick 1 500 (zero hits), while 4 500 covers opening, economy,
+  construction, and real fighting — an instrument that never exercises
+  combat would not guard the combat system this branch touches. This is a
+  sampled seed space, not a proof over all seeds; the pinned goldens, the
+  scale hashes of record, and the two-profile test suites carry the fixed
+  cases, and the differential's job is the unsampled drift net between
+  commits. Re-runnable verbatim: `tools diff-check --matches 200 --ticks
+  4500 --seed-base 0` (and `--scale 10 --matches 6`).
+- **A-204 (B-006, product phase).** The equivalence standard the four
+  optimization commits were held to: each change argues identity at the code
+  level (the fused `walkable` array is a pure function of the two arrays it
+  fuses, recomputed at every mutation point; store indices are computed once
+  per stage and the stores provably gain/lose no entries inside the stage;
+  the counting sort is stable over the ascending-id collection so cell
+  membership and within-cell order are unchanged; the vision walk's integer
+  arithmetic reproduces the `Fx` constructions term for term with saturation
+  unreachable for in-map positions) and is then VERIFIED by measurement —
+  the differential digests, the goldens, and both test profiles must not
+  move. The assumption is that argument-plus-sampled-evidence is the right
+  standard for "same results in the same order, bit for bit" on this
+  codebase (a formal proof would need the semantics mechanized, which plan
+  §0 does not ask for); the standard lives in the B-006 report's per-commit
+  sections so the next scale brief inherits it explicitly.
+
 - **A-129 (brief A-003, product phase).** The release pipeline's macOS
   deployment floor is pinned at `MACOSX_DEPLOYMENT_TARGET=11.0`
   (release.yml's build job, the macOS leg only, exported before the build so

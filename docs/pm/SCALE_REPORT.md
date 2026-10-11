@@ -134,3 +134,36 @@ cargo run -p pandemonium-tools -- content-validate content_scale            # th
 Goldens unchanged throughout: demo `0xb6fff6659cfb7709`, flagship
 `0x6e9a18bd7c5f699f`, content `0x9bc18c521107b262` / map
 `0xd38136401ab02ff1` — bit-identical in dev and release on this branch.
+
+## B-006 update (2026-10-11) — the golden-preserving proposals, implemented
+
+Branch `b/B-006-scale-optimizations` (rebased on master `3a6d0a9`), report
+`docs/pm/reports/B-006.md`. Four golden-preserving changes landed, each with
+the full two-profile gate, all goldens and the scale scenario hashes of record
+bit-identical, and a 200-seed AI-vs-AI + 6-seed scale-10 checkpoint-trail
+differential that never moved a byte:
+
+| change | what it did |
+|---|---|
+| A* inner loop (nav.rs) | fused walkability array + hoisted neighbor walk + pre-sized open heap — ×1.07 per search |
+| combat acquisition (combat.rs) | the candidate scan reads the records it iterates instead of re-looking each up by id — Combat 4 450 → 336 µs (−92 %) |
+| push-apart (movement.rs) | flat counting-sorted cells + store-indexed pair resolution — no 393 KB per-tick rebuild, no per-pair binary searches |
+| vision walk (vision.rs) | integer-form per-tile arithmetic + fused snapshot/clear sweep — Vision 2 128 → 1 358 µs (B-002's incremental-vision proposal itself was stopped by measurement: 94.5/72.3/41.8 % of carriers move per tick at 10x, so the two-walks-per-mover scheme costs more than the batch walk) |
+
+**The refreshed §15 verdicts** (same host class, release, seed 7; details and
+the Alpha before/after rows live in the B-006 report §5):
+
+| §15 row | B-002 measured | B-006 measured | verdict |
+|---|---|---|---|
+| Alpha-size avg (≤ 1 ms) | 0.246 ms | **0.23 ms** | MEETS (improved) |
+| Alpha-size p99 (≤ 4 ms) | 2.21 ms | **2.18 ms** | MEETS |
+| Headless throughput (≥ 1000 t/s) | 4 050 t/s | **4 286 t/s** | MEETS (improved) |
+| 10x scale avg (≤ 8 ms) | 34.1 ms | **26.2 ms** | **NOT MET** — 3.3x over; the remaining ~23 ms is A* search whose count and scope are semantics (scripted waves + crowd-stuck repath churn over blocked-goal full-grid searches); every further lever moves goldens and is listed with its authorization in the B-006 report §4 (path budgeting, crowd-aware gathering, goal-adjacent targeting, scenario re-shape) |
+| Pathfinding (≤ 0.5 ms typical) | 0.313/0.472 ms | **0.299/0.446 ms** | MEETS |
+| Memory (< 200 MB) | 4.4/5.5 MiB | 5.2 MiB | MEETS |
+| Render | not measurable headless | unchanged | NOT MEASURABLE HEADLESS |
+
+The 1x stress tier's order-density finding stands, improved not resolved:
+2.68 → 2.40 ms avg (the tier MISSES the Alpha-shaped budgets by construction —
+198 simultaneously ordered gatherers; A-200 owns the instrument/verdict
+distinction).
