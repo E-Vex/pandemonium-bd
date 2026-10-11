@@ -10,9 +10,9 @@ itself.
 *Run workflow* → pick the ref. Builds client + tools in release on the three
 pinned runners, packages one archive per OS (binaries, `content/` — kept
 external so the bundle hash is untouched — `README.md` with a Linux-only
-runtime-deps appendix, `QUICKSTART.md`, `THIRD_PARTY_NOTICES.md`), records
-SHA-256 sidecars, then a separate smoke job unpacks each archive into a
-clean directory **on that archive's own OS** and runs the packaged client's
+runtime-deps appendix, `QUICKSTART.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`),
+records SHA-256 sidecars, then a separate smoke job unpacks each archive into
+a clean directory **on that archive's own OS** and runs the packaged client's
 `--headless` smoke plus `pandemonium-tools content-validate` against the
 packaged content, and verifies the checksum. Since A-004 the Linux archive
 is smoked on **both** ubuntu-22.04 (its build floor) and ubuntu-24.04 (a
@@ -209,8 +209,12 @@ dispatch build carries the commit (`pandemonium-git-<sha>-…`).
 
 ## The release checklist (PM)
 
-1. Decide any open licence flag (none open today — hexf-parse/CC0-1.0 was
-   ruled in by brief A-003; a new out-of-list licence reopens this line).
+1. Confirm the licence state is unchanged. The project's own licence is
+   decided — MIT, the owner's A-005 ruling; `LICENSE` rides in every archive
+   and every smoke leg gates on it. The dependency gate (`licence-gate`,
+   cargo-deny) now covers third-party licences only (hexf-parse/CC0-1.0 was
+   ruled in by brief A-003); a new out-of-list dependency licence reopens
+   this line with the PM.
 2. Run a `workflow_dispatch` dry run on the release commit; read the smoke
    jobs' output — all four legs green (Linux on ubuntu-22.04 **and**
    ubuntu-24.04, Windows, macOS), `--version` line correct, the packaged
@@ -225,7 +229,5 @@ dispatch build carries the commit (`pandemonium-git-<sha>-…`).
 
 ## Out of scope by design (the owner's decisions)
 
-- The project's own licence text (the README defers to the owner; the
-  archives state nothing about it either).
 - Code-signing certificates (Windows/macOS trust story).
 - Intel-mac or arm-Linux targets.
