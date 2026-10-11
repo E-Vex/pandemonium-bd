@@ -4,6 +4,7 @@
 // (the decal stream included) are born here and stay referenced by the
 // frame pass in `super` — the AI-Handoff §9 ordering gotcha rides on this
 // buffer being one shared, order-dependent stream.
+use super::entities::ENTITY_SHADER_SRC;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
