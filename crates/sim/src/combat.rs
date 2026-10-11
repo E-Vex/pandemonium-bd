@@ -191,7 +191,11 @@ fn acquire_target(
     let acquire_sq = squared(attacker_def.acquire_range);
 
     // Scan candidates ascending id; track the best per category with id
-    // tie-breaking.
+    // tie-breaking. B-006: the scan iterates the store's records directly —
+    // the record in hand IS the candidate (a per-candidate id re-lookup
+    // through the store's binary search measured as most of this stage at
+    // scale, one lookup per entity per attacker per tick), and the Attack
+    // capability is fetched once per candidate instead of twice.
     let mut best_unit_attacking_friendly: Option<(u64, EntityId)> = None;
     let mut best_other_unit: Option<(u64, EntityId)> = None;
     let mut best_structure: Option<(u64, EntityId)> = None;
@@ -201,10 +205,6 @@ fn acquire_target(
         if candidate_id == attacker_id {
             continue;
         }
-        let candidate = world.entity(candidate_id);
-        let Some(candidate) = candidate else {
-            continue;
-        };
         if candidate.owner == attacker_owner {
             continue; // friendlies are never targets
         }
@@ -214,18 +214,18 @@ fn acquire_target(
         }
 
         let is_structure = world.footprint_of(candidate_id).is_some();
-        let is_attacker = world.attack_of(candidate_id).is_some();
+        let candidate_attack = world.attack_of(candidate_id);
 
         // "Units attacking a friendly" = an attacker whose current target is
         // owned by the attacker's owner (the friendly side).
-        let attacks_friendly = world.attack_of(candidate_id).is_some_and(|def| {
+        let attacks_friendly = candidate_attack.is_some_and(|def| {
             def.target
                 .is_some_and(|t| world.entity(t).is_some_and(|te| te.owner == attacker_owner))
         });
 
         if is_structure {
             update_best(&mut best_structure, dist_sq, candidate_id);
-        } else if attacks_friendly && is_attacker {
+        } else if attacks_friendly && candidate_attack.is_some() {
             update_best(&mut best_unit_attacking_friendly, dist_sq, candidate_id);
         } else {
             update_best(&mut best_other_unit, dist_sq, candidate_id);
