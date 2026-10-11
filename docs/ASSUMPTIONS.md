@@ -1218,3 +1218,27 @@ confirms or rejects it.
   floor below the runner is a build-time property (the linker's
   `-mmacosx-version-min`) that a runner cannot re-verify — recorded as a
   limit, not a claim. Reversible to any floor >= 11.0 by editing one line.
+
+- **A-130 (ADR-0100 part c execution, brief A-006).** The split's mechanical
+  interpretation, applied one commit per step: (1) visibility — moving items
+  across sibling-module boundaries (`main.rs`'s `ApplicationHandler` and test
+  modules reaching the `App` struct, `input/`'s translation methods reaching
+  `App` fields) requires `pub(crate)`; the crate is a binary, nothing is
+  externally published, and no function signature (parameter or return type)
+  moved — visibility is the split's plumbing, within the brief's "no
+  signature edits except path/import changes" letter; (2) the map's names are
+  the module layout: `render/{pipeline,terrain,entities,overlay,minimap}`,
+  `app/`, `input/{mod,event,orders}` — `input.rs`/`orders.rs` moved under
+  `input/` as pure file moves and the translation methods landed beside them
+  in `input/event.rs`; (3) shared or borderline pieces stay where the moves
+  prove them shared: `DECAL_LIFT` in `render/mod.rs` (entities' shadows and
+  overlay's rings both read it), the HUD quad builders in `app/` (the frame
+  assembly is app work), the `Renderer` frame pass in `render/mod.rs` (the
+  bind-scan unit test's subject file, so its scanned surface never moved);
+  (4) the unit-test modules that reached moved names through `use super::*`
+  gained one `use` line each naming the new module — the ADR's explicit
+  "path-only import changes" allowance, every assertion byte-identical; and
+  (5) the `--frames` smoke's evidence lines and the three reference captures'
+  structural comparison (window geometry, panel rects, row pitch, HUD/minimap
+  bands — the Phase 5 harness's rules) ran against every step under the
+  Xvfb+llvmpipe recipe and matched the untouched-master baseline exactly.
