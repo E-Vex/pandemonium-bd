@@ -1,9 +1,11 @@
 # Pandemonium — quickstart for playtesters
 
 This archive is a self-contained Alpha build: the game, its data, and the
-licences for everything inside. Unpack it anywhere and run the client —
-no installer, no registry, no dependencies except the one Linux library
-noted below.
+licences for everything inside. The project's own code and data are
+MIT-licensed (see `LICENSE` in this archive); every third-party licence,
+including the embedded font's, is catalogued in `THIRD_PARTY_NOTICES.md`.
+Unpack it anywhere and run the client — no installer, no registry, no
+dependencies except the one Linux library noted below.
 
 ## What is in here
 
@@ -14,6 +16,7 @@ pandemonium-<version>-<os>-<arch>/
 ├─ content/               the game's data tree (units, rules, map, factions) — keep next to the client
 ├─ README.md              the project README (status, build-from-source, architecture)
 ├─ QUICKSTART.md          this card
+├─ LICENSE                the project's own licence (MIT)
 └─ THIRD_PARTY_NOTICES.md every third-party licence shipped in the binaries (incl. the font's)
 ```
 

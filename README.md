@@ -237,9 +237,13 @@ Contributions follow the same law as the code. Gameplay content is not
 accepted while the Alpha content manifest is locked; bug reports (with seed and
 tick) are welcome now and unusually actionable.
 
-## License
+## Licence
 
-To be decided by the owner.
+The project's own code and data are MIT-licensed — see
+[`LICENSE`](LICENSE). Third-party components, including the embedded
+font, keep their own licences; those terms are catalogued in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and ride in every
+release archive.
 
 ---
 
