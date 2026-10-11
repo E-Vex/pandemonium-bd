@@ -50,7 +50,7 @@ const FORCES_PER_SCALE: usize = 100;
 
 /// The second command wave's tick (5 s of game time at 30 t/s): workers
 /// re-gather the nearest live node, riflemen re-target the enemy base.
-const SECOND_WAVE_TICK: Tick = 150;
+pub(crate) const SECOND_WAVE_TICK: Tick = 150;
 
 /// The eleven pipeline stages in plan §6.3 order (the profile's rows).
 const STAGES: [Stage; 11] = [
@@ -113,14 +113,14 @@ impl StageObserver for StageProfiler {
 
 /// The kind indices the scenario references, resolved from the bundle's
 /// entity list (sorted by id — the same indices the sim's `KindId`s use).
-struct Kinds {
+pub(crate) struct Kinds {
     worker: u32,
     rifleman: u32,
     ore_node: u32,
     command_center: u32,
 }
 
-fn kinds_of(bundle: &ContentBundle) -> Kinds {
+pub(crate) fn kinds_of(bundle: &ContentBundle) -> Kinds {
     let find = |id: &str| {
         bundle
             .entities
@@ -140,7 +140,7 @@ fn kinds_of(bundle: &ContentBundle) -> Kinds {
 /// `100 * scale`. Spawn order (and therefore entity ids and the hash) is a
 /// deterministic function of (content, scale): per side, the faction's
 /// authored order, then the map's ore nodes.
-fn scaled_world(bundle: &ContentBundle, scale: u32) -> TrivialWorld {
+pub(crate) fn scaled_world(bundle: &ContentBundle, scale: u32) -> TrivialWorld {
     let per_side = FORCES_PER_SCALE.saturating_mul(scale.max(1) as usize);
     let mut world = bundle.world();
     let mut kept = Vec::with_capacity(2 * per_side + world.initial_spawns.len() / 2);
@@ -167,7 +167,7 @@ fn scaled_world(bundle: &ContentBundle, scale: u32) -> TrivialWorld {
 
 /// A two-player, all-Human setup (the scenario's commands are scripted; no
 /// controller ever runs — the labels are match identity only).
-fn scripted_setup(seed: u64) -> MatchSetup {
+pub(crate) fn scripted_setup(seed: u64) -> MatchSetup {
     MatchSetup {
         seed,
         players: vec![
@@ -186,7 +186,12 @@ fn scripted_setup(seed: u64) -> MatchSetup {
 /// The scripted command wave (see the module docs). `phase` 0 is the opening
 /// wave, 1 the re-issue wave; `seq` carries each player's running sequence
 /// number across waves.
-fn scenario_commands(sim: &Sim, kinds: &Kinds, phase: u8, seq: &mut [u32; 2]) -> Vec<Command> {
+pub(crate) fn scenario_commands(
+    sim: &Sim,
+    kinds: &Kinds,
+    phase: u8,
+    seq: &mut [u32; 2],
+) -> Vec<Command> {
     let snapshot = sim.snapshot();
     let tick = sim.tick();
     let center = Vec2Fx::from_ints(64, 64);

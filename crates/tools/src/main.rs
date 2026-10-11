@@ -19,6 +19,7 @@ use pandemonium_sim_api::PlayerId;
 mod ai_match;
 mod bench;
 mod demo;
+mod diff_check;
 mod scale;
 mod soak;
 mod validate_content;
@@ -27,6 +28,7 @@ mod verify;
 use ai_match::{load_content, resolve_replay_world, run_ai_match, Slot};
 use bench::{print_report as print_bench_report, run_bench, BenchCli};
 use demo::record_replay;
+use diff_check::{print_report as print_diff_report, run_diff_check, DiffCheckCli};
 use soak::{print_report, run_soak, SoakCli};
 use validate_content::validate_content;
 use verify::{verify_replay, Verification};
@@ -88,6 +90,11 @@ enum Command {
     /// §15's perf budgets (M10 prep). Samples each tick with `Instant::now`
     /// (presentation-only telemetry — the sim never sees it, FD-6).
     Bench(BenchCli),
+    /// Run many seeded matches and print one digest per seed over the full
+    /// checkpoint hash trail (B-006: the golden-preservation instrument for
+    /// optimization commits — an empty diff against the recorded baseline is
+    /// the bit-for-bit evidence).
+    DiffCheck(DiffCheckCli),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -254,6 +261,13 @@ fn main() -> anyhow::Result<()> {
                 let report = run_bench(&cli)?;
                 print_bench_report(&report);
             }
+        }
+        Command::DiffCheck(mut cli) => {
+            // The differential baseline records whatever --content resolves
+            // to; an explicit path is used as-is (the same law as bench).
+            cli.content = resolve_content_dir(&cli.content)?;
+            let digests = run_diff_check(&cli)?;
+            print_diff_report(&digests);
         }
     }
     Ok(())
