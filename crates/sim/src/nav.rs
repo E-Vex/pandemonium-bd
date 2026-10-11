@@ -51,6 +51,17 @@ pub(crate) struct NavGrid {
     /// claims it. Counts (not booleans) keep spawn/remove pairing honest in
     /// debug builds.
     occupied: Vec<u32>,
+    /// Fused walkability per tile — exactly `passable[i] != 0 &&
+    /// occupied[i] == 0`, maintained at every mutation point (construction,
+    /// [`occupy`](Self::occupy), [`vacate`](Self::vacate)). The A\* inner loop
+    /// and every `passable()` caller read this one array instead of two
+    /// (B-006: the searches pop ~17 K nodes each on the 128×128 proving
+    /// ground and re-validate the same tiles up to a dozen times per pop, so
+    /// one load where there were two is a measured double-digit share of the
+    /// tick). Semantically a pure function of the two arrays above — it can
+    /// never disagree with them because it is recomputed at each of the three
+    /// places that touch either component.
+    walkable: Vec<bool>,
 }
 
 /// One open-set entry: the total-order key `(f, h, tile)` (plan §9.1.1
@@ -94,11 +105,13 @@ impl NavGrid {
         let mut passable = passability.to_vec();
         passable.resize(expected, 1);
         passable.truncate(expected);
+        let walkable = passable.iter().map(|&b| b != 0).collect::<Vec<_>>();
         Self {
             width,
             height,
             passable,
             occupied: vec![0; expected],
+            walkable,
         }
     }
 
@@ -113,13 +126,14 @@ impl NavGrid {
     }
 
     /// Whether `(x, y)` is inside the grid and walkable: terrain passable and
-    /// no static body claiming the tile.
+    /// no static body claiming the tile. One load of the fused walkability
+    /// array (B-006) — identical result to the previous two-array test by the
+    /// `walkable` maintenance invariant.
     pub(crate) fn passable(&self, x: i32, y: i32) -> bool {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return false;
         }
-        let index = y as usize * self.width as usize + x as usize;
-        self.passable[index] != 0 && self.occupied[index] == 0
+        self.walkable[y as usize * self.width as usize + x as usize]
     }
 
     /// Claims a tile for a static body (structures at site spawn, resource
@@ -128,6 +142,7 @@ impl NavGrid {
     pub(crate) fn occupy(&mut self, x: i32, y: i32) {
         if let Some(index) = self.index(x, y) {
             self.occupied[index] = self.occupied[index].saturating_add(1);
+            self.walkable[index] = self.passable[index] != 0 && self.occupied[index] == 0;
         }
     }
 
@@ -141,6 +156,7 @@ impl NavGrid {
                 "vacating a tile nobody occupies — unbalanced footprint bookkeeping"
             );
             self.occupied[index] = self.occupied[index].saturating_sub(1);
+            self.walkable[index] = self.passable[index] != 0 && self.occupied[index] == 0;
         }
     }
 
@@ -292,11 +308,17 @@ impl NavGrid {
 
         // A*: g-scores as flat arrays indexed by tile; the heap key is the
         // total-order (f, h, tile) so pops are unique and deterministic.
+        // B-006: the open heap starts pre-sized (the frontier on these grids
+        // peaks in the thousands; growing 4→8→…→N copies ~2N entries and
+        // ~15 reallocations per search, a measured few percent of each
+        // full-grid search) — capacity never affects the heap's ordering, so
+        // the push/pop sequence is bit-identical.
         let tiles = self.passable.len();
         let mut g_score = vec![i64::MAX; tiles];
         let mut came_from = vec![u32::MAX; tiles];
         let mut closed = vec![false; tiles];
-        let mut open = std::collections::BinaryHeap::new();
+        let mut open: std::collections::BinaryHeap<NodeKey> =
+            std::collections::BinaryHeap::with_capacity((tiles / 8).max(64));
 
         let start_index = self.index_of(start_tile);
         let goal_index = self.index_of(goal_tile);
@@ -314,6 +336,20 @@ impl NavGrid {
         let mut best_key = (start_h, start_index);
         let mut found = start_index == goal_index;
 
+        // Hoisted loop state (B-006): the neighbor walk touches `walkable`
+        // up to a dozen times per pop (each neighbor, plus the two
+        // corner-cut companions per diagonal), so the loop reads the fused
+        // array through local slices and width/height locals instead of the
+        // `passable()` method's per-call bounds re-derivation. The explicit
+        // ok-x/ok-y tests below are exactly the in-bounds halves of those
+        // bounds checks (x and y are in-grid by construction), so every
+        // decision — blocked skip, corner cut, closed skip, g compare — sees
+        // the same values in the same order as before.
+        let grid_w = self.width as i32;
+        let grid_h = self.height as i32;
+        let row = self.width as usize;
+        let walk = &self.walkable;
+
         while let Some(NodeKey { f, h, tile }) = open.pop() {
             let tile = tile as usize;
             if closed[tile] {
@@ -327,19 +363,43 @@ impl NavGrid {
                 found = true;
                 break;
             }
-            let (x, y) = (
-                tile as i32 % self.width as i32,
-                tile as i32 / self.width as i32,
-            );
+            let y = tile / row;
+            let x = tile - y * row;
+            let (x, y) = (x as i32, y as i32);
             for (dx, dy) in NEIGHBOR_OFFSETS {
-                let nx = x + dx;
-                let ny = y + dy;
-                if !self.passable(nx, ny) {
+                let ok_x = if dx < 0 {
+                    x > 0
+                } else if dx > 0 {
+                    x + 1 < grid_w
+                } else {
+                    true
+                };
+                let ok_y = if dy < 0 {
+                    y > 0
+                } else if dy > 0 {
+                    y + 1 < grid_h
+                } else {
+                    true
+                };
+                if !ok_x || !ok_y {
+                    continue;
+                }
+                let (nx, ny) = (x + dx, y + dy);
+                let next = ny as usize * row + nx as usize;
+                if !walk[next] {
                     continue;
                 }
                 // No corner cutting: a diagonal step needs both orthogonal
-                // neighbors passable too.
-                if dx != 0 && dy != 0 && (!self.passable(x + dx, y) || !self.passable(x, y + dy)) {
+                // neighbors walkable too. In-bounds is already established
+                // (ok_x/ok_y cover exactly these coordinates).
+                if dx != 0
+                    && dy != 0
+                    && (!walk[y as usize * row + nx as usize]
+                        || !walk[ny as usize * row + x as usize])
+                {
+                    continue;
+                }
+                if closed[next] {
                     continue;
                 }
                 let step_cost = if dx != 0 && dy != 0 {
@@ -347,10 +407,6 @@ impl NavGrid {
                 } else {
                     STRAIGHT_COST
                 };
-                let next = ny as usize * self.width as usize + nx as usize;
-                if closed[next] {
-                    continue;
-                }
                 let candidate = match g_score[tile].checked_add(step_cost) {
                     Some(value) => value,
                     None => continue,
