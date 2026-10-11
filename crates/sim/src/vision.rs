@@ -46,7 +46,6 @@
 //! status changed) is DEBT-004's full repayment and waits for the visible-
 //! profile cost call.
 
-use pandemonium_fx::Vec2Fx;
 use pandemonium_sim_api::{EntityId, PlayerId};
 
 use crate::world::World;
@@ -142,28 +141,27 @@ impl FogState {
 /// for a profile-driven need.
 pub(crate) fn advance_vision(fog: &mut FogState, world: &World) {
     // Snapshot which tiles were Visible before this update, so we can demote
-    // the unrefreshed ones to Explored. (Bool is cheaper to scan than the
-    // enum; this is the per-tile working set.)
-    let tile_count = (fog.width as u64 * fog.height as u64) as usize;
-    let player_count = fog.players.len();
-    let was_visible: Vec<Vec<bool>> = (0..player_count)
-        .map(|p| {
-            fog.players[p]
-                .iter()
-                .map(|t| matches!(t, TileVisibility::Visible))
-                .collect::<Vec<_>>()
+    // the unrefreshed ones to Explored, and clear them to Hidden in the SAME
+    // pass (B-006: the snapshot and the clear read and write the same bytes
+    // in the same ascending index order with no cross-tile or cross-player
+    // dependency, so fusing them writes exactly the values the two passes
+    // wrote — one map sweep instead of two per player per tick).
+    let was_visible: Vec<Vec<bool>> = fog
+        .players
+        .iter_mut()
+        .map(|state| {
+            state
+                .iter_mut()
+                .map(|tile| {
+                    let was = matches!(tile, TileVisibility::Visible);
+                    if was {
+                        *tile = TileVisibility::Hidden; // temporarily — promote_visible_to_explored fixes it
+                    }
+                    was
+                })
+                .collect()
         })
         .collect();
-
-    // Clear all Visible markings (the next pass re-marks them). Tiles that
-    // were Visible last tick and don't get re-marked this tick become Explored.
-    for state in &mut fog.players {
-        for tile in state.iter_mut() {
-            if *tile == TileVisibility::Visible {
-                *tile = TileVisibility::Hidden; // temporarily — promote_visible_to_explored fixes it
-            }
-        }
-    }
 
     // Walk vision-carrying entities in ascending id order (the store's
     // invariant) and mark every tile in their radius Visible for their owner.
@@ -181,27 +179,44 @@ pub(crate) fn advance_vision(fog: &mut FogState, world: &World) {
         };
         let radius_raw = def.radius.raw().max(0) as u32;
         // Mark every tile whose center is within the radius. Squared-distance
-        // compare against (radius_raw)^2 in raw Q16.16 units.
+        // compare against (radius_raw)^2 in raw Q16.16 units. B-006: the
+        // per-tile arithmetic is written as the integer math those `Fx`
+        // constructions evaluated — a tile center's raw coordinate is exactly
+        // `tile * 65_536 + 32_768` (`from_int(tile) + from_milli(500)`, both
+        // exact, and every value here is far inside the saturating ranges) —
+        // so each comparison sees the same integers as before, without
+        // constructing two `Fx` values per tile (~340 K tiles per tick at
+        // scale 10x). The row bound hoists out of the inner loop (the skipped
+        // rows are exactly the tiles the per-tile guard rejected).
         let radius_sq = (radius_raw as u64) * (radius_raw as u64);
         let center_tile_x = entity.pos.x.floor_int();
         let center_tile_y = entity.pos.y.floor_int();
+        let pos_x_raw = entity.pos.x.raw() as i64;
+        let pos_y_raw = entity.pos.y.raw() as i64;
         // The radius in tiles is ceil(radius_raw / 65536); we scan a square
         // one tile larger on each side to catch the corners.
         let radius_tiles = (radius_raw.div_ceil(65536)) as i32 + 1;
+        let width = fog.width as i32;
+        let height = fog.height as i32;
+        let row_stride = fog.width as usize;
+        let state = &mut fog.players[player_index];
         for dy in -radius_tiles..=radius_tiles {
+            let ty = center_tile_y + dy;
+            if ty < 0 || ty >= height {
+                continue;
+            }
+            let center_y_raw = ty as i64 * 65_536 + 32_768;
+            let row = (ty as usize) * row_stride;
             for dx in -radius_tiles..=radius_tiles {
                 let tx = center_tile_x + dx;
-                let ty = center_tile_y + dy;
-                if tx < 0 || ty < 0 || tx >= fog.width as i32 || ty >= fog.height as i32 {
+                if tx < 0 || tx >= width {
                     continue;
                 }
-                let tile_center = Vec2Fx::new(
-                    pandemonium_fx::Fx::from_int(tx) + pandemonium_fx::Fx::from_milli(500),
-                    pandemonium_fx::Fx::from_int(ty) + pandemonium_fx::Fx::from_milli(500),
-                );
-                let dist_sq = (entity.pos - tile_center).len_sq_raw();
+                let delta_x = pos_x_raw - (tx as i64 * 65_536 + 32_768);
+                let delta_y = pos_y_raw - center_y_raw;
+                let dist_sq = (delta_x * delta_x + delta_y * delta_y) as u64;
                 if dist_sq <= radius_sq {
-                    fog.mark_visible(player_index, tx, ty);
+                    state[row + tx as usize] = TileVisibility::Visible;
                 }
             }
         }
@@ -213,10 +228,6 @@ pub(crate) fn advance_vision(fog: &mut FogState, world: &World) {
     for (p, was_vis) in was_visible.iter().enumerate() {
         fog.promote_visible_to_explored(p, was_vis);
     }
-
-    // Touch the tile_count so the binding isn't dead-code-flagged when the
-    // build is in a configuration that doesn't run this branch.
-    let _ = tile_count;
 }
 
 /// The player's index in `world.players` (the slot order is ascending by id).
@@ -251,7 +262,7 @@ pub(crate) fn visible_to(
 mod tests {
     use super::*;
     use crate::world::{CapabilityData, HealthDef, VisionDef};
-    use pandemonium_fx::Fx;
+    use pandemonium_fx::{Fx, Vec2Fx};
     use pandemonium_sim_api::{EntityId, PlayerId};
 
     /// A 4x4 world with one player-0 vision-carrier at the center of tile
