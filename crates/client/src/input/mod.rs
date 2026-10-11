@@ -15,6 +15,9 @@
 //! lesson: presentation direction is invisible to the golden hashes, so
 //! only tests can keep it honest).
 
+pub(crate) mod event;
+pub(crate) mod orders;
+
 use pandemonium_engine::RenderEntity;
 use pandemonium_sim_api::EntityId;
 
@@ -341,7 +344,7 @@ pub enum CursorOrderHint {
 /// suppress the marker (the ghost is the placement marker; nothing
 /// selected means nothing to preview).
 pub fn cursor_order_hint(
-    order: Option<crate::orders::ContextOrder>,
+    order: Option<crate::input::orders::ContextOrder>,
     rally: bool,
     armed: bool,
     placing: bool,
@@ -357,9 +360,9 @@ pub fn cursor_order_hint(
         return CursorOrderHint::Rally;
     }
     match order {
-        Some(crate::orders::ContextOrder::Attack { .. }) => CursorOrderHint::Attack,
-        Some(crate::orders::ContextOrder::Gather { .. }) => CursorOrderHint::Gather,
-        Some(crate::orders::ContextOrder::Move { .. }) => CursorOrderHint::Move,
+        Some(crate::input::orders::ContextOrder::Attack { .. }) => CursorOrderHint::Attack,
+        Some(crate::input::orders::ContextOrder::Gather { .. }) => CursorOrderHint::Gather,
+        Some(crate::input::orders::ContextOrder::Move { .. }) => CursorOrderHint::Move,
         None => CursorOrderHint::None,
     }
 }
@@ -709,7 +712,7 @@ mod tests {
         let at = Vec2Fx::from_ints(3, 3);
         let units = vec![EntityId(1)];
         let cases: [(
-            Option<crate::orders::ContextOrder>,
+            Option<crate::input::orders::ContextOrder>,
             bool,
             bool,
             bool,
@@ -717,7 +720,7 @@ mod tests {
             CursorOrderHint,
         ); 8] = [
             (
-                Some(crate::orders::ContextOrder::Move { target: at }),
+                Some(crate::input::orders::ContextOrder::Move { target: at }),
                 false,
                 false,
                 false,
@@ -725,7 +728,7 @@ mod tests {
                 CursorOrderHint::Move,
             ),
             (
-                Some(crate::orders::ContextOrder::Attack {
+                Some(crate::input::orders::ContextOrder::Attack {
                     target: EntityId(9),
                     at,
                 }),
@@ -736,7 +739,7 @@ mod tests {
                 CursorOrderHint::Attack,
             ),
             (
-                Some(crate::orders::ContextOrder::Gather {
+                Some(crate::input::orders::ContextOrder::Gather {
                     node: EntityId(9),
                     at,
                     units,
@@ -752,7 +755,7 @@ mod tests {
             (None, true, false, false, false, CursorOrderHint::Rally),
             // Armed attack-move owns the next click, even over a rally.
             (
-                Some(crate::orders::ContextOrder::Move { target: at }),
+                Some(crate::input::orders::ContextOrder::Move { target: at }),
                 true,
                 true,
                 false,
@@ -763,7 +766,7 @@ mod tests {
             (None, false, false, false, true, CursorOrderHint::None),
             // Placement mode owns the cursor (the ghost is its marker).
             (
-                Some(crate::orders::ContextOrder::Move { target: at }),
+                Some(crate::input::orders::ContextOrder::Move { target: at }),
                 false,
                 false,
                 true,

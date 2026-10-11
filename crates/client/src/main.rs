@@ -16,7 +16,8 @@ mod feedback;
 #[cfg(test)]
 mod hw;
 mod input;
-mod orders;
+use input::event::{digit_to_group_index, set_key};
+
 mod render;
 mod report;
 mod screens;
@@ -25,7 +26,6 @@ mod sound;
 mod text;
 mod ui;
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -354,33 +354,6 @@ fn version_requested_from_args(args: &[String]) -> bool {
 /// smoke pass — no display probing, no window, no event loop.
 fn headless_requested_from_args(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--headless")
-}
-
-/// Tracks a WASD key's state (camera panning).
-fn set_key(keys: &mut BTreeSet<Key<&'static str>>, character: &'static str, pressed: bool) {
-    let key = Key::Character(character);
-    if pressed {
-        keys.insert(key);
-    } else {
-        keys.remove(&key);
-    }
-}
-
-/// M8: maps a DigitN KeyCode to its 1-based group index (1..=9). Used by the
-/// control-group hotkeys.
-fn digit_to_group_index(code: winit::keyboard::KeyCode) -> usize {
-    match code {
-        winit::keyboard::KeyCode::Digit1 => 1,
-        winit::keyboard::KeyCode::Digit2 => 2,
-        winit::keyboard::KeyCode::Digit3 => 3,
-        winit::keyboard::KeyCode::Digit4 => 4,
-        winit::keyboard::KeyCode::Digit5 => 5,
-        winit::keyboard::KeyCode::Digit6 => 6,
-        winit::keyboard::KeyCode::Digit7 => 7,
-        winit::keyboard::KeyCode::Digit8 => 8,
-        winit::keyboard::KeyCode::Digit9 => 9,
-        _ => 0,
-    }
 }
 
 impl ApplicationHandler for App {
