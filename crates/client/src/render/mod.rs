@@ -2171,8 +2171,9 @@ mod tests {
     /// and its first `draw`. `queue.write_buffer` alone does not bind.
     #[test]
     fn every_instanced_pipeline_binds_its_instance_slot_before_drawing() {
-        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/render.rs"))
-            .expect("render.rs sits at the crate's src/");
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/render/mod.rs"))
+                .expect("the render module sits at the crate's src/render/mod.rs");
         // Scan only the rendering code — everything before the first test
         // module, with line comments stripped — so this test's own literals
         // and a commented-out binding cannot satisfy the law.
