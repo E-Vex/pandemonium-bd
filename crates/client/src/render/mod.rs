@@ -17,14 +17,16 @@ use wgpu::util::DeviceExt;
 use crate::text::{TextAtlas, UiQuad};
 
 mod entities;
+mod minimap;
+mod overlay;
 mod pipeline;
 mod terrain;
 
-use entities::{
-    build_instances, build_shadows, death_instance, fallback_shape, team_color, EntityInstance,
-};
+use entities::{build_instances, build_shadows, death_instance, fallback_shape, EntityInstance};
 pub use entities::{DyingCue, PlacementGhost, TEAM_P0, TEAM_P1};
 
+use minimap::{paint_minimap_markers, MinimapVertex};
+use overlay::{build_rings, build_team_rings, DecalInstance};
 use terrain::{FogUniform, GpuTerrainVertex, FOG_SHADER_SRC, TERRAIN_SHADER};
 pub use terrain::{FOG_ALPHA_EXPLORED, FOG_ALPHA_HIDDEN, FOG_ALPHA_VISIBLE};
 
@@ -73,164 +75,6 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32>, @
     return vec4<f32>(in.color.rgb, in.color.a * coverage);
 }
 "#;
-
-/// The fog-of-war pass (plan §11.2's fog visualization): the terrain geometry
-/// drawn a second time, UV-mapped in world space (x/z over the map extent) and
-/// sampling a per-tile fog-alpha texture the client refreshes from its
-/// The ground decal pass: instanced, alpha-blended quads laid flat on the
-/// ground plane — blob shadows under everything, selection rings under the
-/// selected. Depth-tested with writes off and a hair of lift so the decals
-/// ride over the terrain and fog without z-fighting.
-const DECAL_SHADER_SRC: &str = r#"
-struct CameraUniform { view_projection: mat4x4<f32> };
-@group(0) @binding(0) var<uniform> camera: CameraUniform;
-
-struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec4<f32> };
-
-@vertex fn vs_main(
-    @location(0) corner: vec2<f32>,
-    @location(1) instance_position: vec3<f32>,
-    @location(2) instance_scale: vec2<f32>,
-    @location(3) instance_color: vec4<f32>,
-) -> VsOut {
-    var out: VsOut;
-    let world = vec3<f32>(corner.x * instance_scale.x, 0.0, corner.y * instance_scale.y) + instance_position;
-    out.clip = camera.view_projection * vec4<f32>(world, 1.0);
-    out.color = instance_color;
-    return out;
-}
-
-@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return in.color;
-}
-"#;
-
-/// One ground decal instance: center (y = the lift above the terrain),
-/// extent on the two ground axes, and a premultiplied-alpha-friendly RGBA.
-#[derive(Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
-struct DecalInstance {
-    position: [f32; 3],
-    scale: [f32; 2],
-    color: [f32; 4],
-}
-
-/// The unit quad's corners in the XZ plane (two triangles), extent ±0.5.
-fn quad_vertices() -> Vec<[f32; 2]> {
-    let corners = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
-    let (a, b, c, d) = (corners[0], corners[1], corners[2], corners[3]);
-    vec![a, b, c, a, c, d]
-}
-
-/// The unit ring (annulus) in the XZ plane: 24 segments between the inner
-/// and outer radius. Instanced with the same decal pipeline, so the
-/// selection ring is a ground-projected ellipse like a shadow, not a
-/// screen-space bracket.
-fn ring_vertices(segments: usize, inner: f32, outer: f32) -> Vec<[f32; 2]> {
-    let mut vertices = Vec::with_capacity(segments * 6);
-    let point = |angle: f32, radius: f32| [radius * angle.cos(), radius * angle.sin()];
-    for segment in 0..segments {
-        let a0 = (segment as f32) / segments as f32 * std::f32::consts::TAU;
-        let a1 = ((segment + 1) as f32) / segments as f32 * std::f32::consts::TAU;
-        let i0 = point(a0, inner);
-        let i1 = point(a1, inner);
-        let o0 = point(a0, outer);
-        let o1 = point(a1, outer);
-        vertices.extend_from_slice(&[i0, o0, o1, i0, o1, i1]);
-    }
-    vertices
-}
-
-/// The minimap pass: a screen-space quad sampling a small map-sized RGBA
-/// texture the client composites (terrain base + fog + entity dots) every
-/// frame. Drawn through the same pixel-space convention as the UI pass.
-const MINIMAP_SHADER_SRC: &str = r#"
-struct ScreenUniform { size: vec2<f32> };
-@group(0) @binding(0) var<uniform> screen: ScreenUniform;
-@group(0) @binding(1) var samp: sampler;
-@group(0) @binding(2) var tex: texture_2d<f32>;
-
-struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
-
-@vertex fn vs_main(@location(0) pos_uv: vec4<f32>) -> VsOut {
-    var out: VsOut;
-    let ndc = vec2<f32>(
-        pos_uv.x / screen.size.x * 2.0 - 1.0,
-        1.0 - pos_uv.y / screen.size.y * 2.0,
-    );
-    out.clip = vec4<f32>(ndc, 0.0, 1.0);
-    out.uv = pos_uv.zw;
-    return out;
-}
-
-@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return textureSample(tex, samp, in.uv);
-}
-"#;
-
-/// One minimap quad vertex: pixel position + atlas-free uv (16 bytes).
-#[derive(Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
-struct MinimapVertex {
-    pos_uv: [f32; 4],
-}
-
-/// One cube vertex: corner position and its face normal (24 bytes).
-#[derive(Clone, Copy, Pod, Zeroable)]
-#[repr(C)]
-struct CubeVertex {
-    corner: [f32; 3],
-    normal: [f32; 3],
-}
-
-/// The unit cube's 36 vertices (12 triangles, per-face normals), centered at
-/// the origin, half-extent 0.5 on each axis.
-fn cube_vertices() -> Vec<CubeVertex> {
-    const FACES: [[usize; 4]; 6] = [
-        [0, 1, 2, 3], // -Z
-        [5, 4, 7, 6], // +Z
-        [4, 0, 3, 7], // -X
-        [1, 5, 6, 2], // +X
-        [4, 5, 1, 0], // -Y
-        [3, 2, 6, 7], // +Y
-    ];
-    const NORMALS: [[f32; 3]; 6] = [
-        [0.0, 0.0, -1.0],
-        [0.0, 0.0, 1.0],
-        [-1.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [0.0, -1.0, 0.0],
-        [0.0, 1.0, 0.0],
-    ];
-    let corners = [
-        [-0.5, -0.5, -0.5],
-        [0.5, -0.5, -0.5],
-        [0.5, 0.5, -0.5],
-        [-0.5, 0.5, -0.5],
-        [-0.5, -0.5, 0.5],
-        [0.5, -0.5, 0.5],
-        [0.5, 0.5, 0.5],
-        [-0.5, 0.5, 0.5],
-    ];
-    let mut vertices = Vec::with_capacity(36);
-    for (face, quad) in FACES.iter().enumerate() {
-        let corners = [
-            corners[quad[0]],
-            corners[quad[1]],
-            corners[quad[2]],
-            corners[quad[3]],
-        ];
-        for corner in [
-            corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
-        ] {
-            vertices.push(CubeVertex {
-                corner,
-                normal: NORMALS[face],
-            });
-        }
-    }
-    vertices
-}
 
 /// One UI vertex: screen-space pixels, atlas UV, color (32 bytes).
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -503,148 +347,6 @@ impl WgpuRenderer {
 /// The ground lift shared by every decal — enough to clear terrain/fog
 /// rasterization noise, small enough to look glued to the ground.
 const DECAL_LIFT: f32 = 0.02;
-
-/// The selection ring color (own-team green — Generals convention).
-const RING_COLOR: [f32; 4] = [0.35, 1.0, 0.45, 0.85];
-
-/// The team ring's alpha — strong enough to read the owner at a glance,
-/// quieter than the bright green selection ring that draws over it.
-const TEAM_RING_ALPHA: f32 = 0.5;
-
-/// Builds the team-color ground ring stream (PLAN-M10.2 §2.2): one ring
-/// under every *unit* silhouette, in the owner's team color — the
-/// at-a-glance owner read that survives zoom-out. Structures identify by
-/// their band parts instead; ore nodes are neutral and get none.
-fn build_team_rings(
-    snapshot: &pandemonium_engine::RenderSnapshot,
-    kind_specs: &[KindShape],
-    capacity: usize,
-) -> Vec<DecalInstance> {
-    let mut decals = Vec::with_capacity(snapshot.entities.len());
-    for entity in &snapshot.entities {
-        if decals.len() >= capacity {
-            break;
-        }
-        let shape = kind_specs
-            .get(entity.kind.0 as usize)
-            .cloned()
-            .unwrap_or_else(fallback_shape);
-        if !shape.unit {
-            continue;
-        }
-        let team = team_color(entity.owner, false, false);
-        let radius = shape.radius + 0.04;
-        decals.push(DecalInstance {
-            position: [entity.pos.x, DECAL_LIFT * 1.5, entity.pos.z],
-            scale: [radius * 2.0, radius * 2.0],
-            color: [team[0], team[1], team[2], TEAM_RING_ALPHA],
-        });
-    }
-    decals
-}
-
-/// Builds the selection ring stream: one ground ellipse around every
-/// selected entity, sized to its silhouette.
-fn build_rings(
-    snapshot: &pandemonium_engine::RenderSnapshot,
-    selection: &[pandemonium_sim_api::EntityId],
-    kind_specs: &[KindShape],
-    capacity: usize,
-) -> Vec<DecalInstance> {
-    let mut decals = Vec::with_capacity(selection.len());
-    if decals.len() >= capacity {
-        return decals;
-    }
-    for entity in &snapshot.entities {
-        if !selection.contains(&entity.id) {
-            continue;
-        }
-        if decals.len() >= capacity {
-            break;
-        }
-        let shape = kind_specs
-            .get(entity.kind.0 as usize)
-            .cloned()
-            .unwrap_or_else(fallback_shape);
-        let radius = shape.radius + 0.12;
-        decals.push(DecalInstance {
-            position: [entity.pos.x, DECAL_LIFT * 2.0, entity.pos.z],
-            scale: [radius * 2.0, radius * 2.0],
-            color: RING_COLOR,
-        });
-    }
-    decals
-}
-
-/// The minimap marker palette, mirroring [`TEAM_P0`]/[`TEAM_P1`] (A-102):
-/// own blue, enemy orange, ore amber — the colorblind-safe triple.
-const MINIMAP_OWN: [f32; 3] = [70.0, 130.0, 255.0];
-const MINIMAP_ENEMY: [f32; 3] = [255.0, 150.0, 40.0];
-const MINIMAP_ORE: [f32; 3] = [250.0, 190.0, 60.0];
-
-/// Paints the minimap's entity markers into the map-sized RGBA scratch
-/// buffer (one byte quad per tile, row-major). Pure geometry + color: units
-/// one tile, structures a solid 2×2 block (visibly larger — PLAN-M10.2
-/// §2.4), neutral resource nodes a 3×3 amber diamond so the map carries the
-/// world's shapes. Off-map entities paint nothing.
-fn paint_minimap_markers(
-    scratch: &mut [u8],
-    entities: &[pandemonium_engine::RenderEntity],
-    kind_specs: &[KindShape],
-    map_size: (u32, u32),
-) {
-    let (w, h) = map_size;
-    for entity in entities {
-        let tx = entity.pos.x.floor();
-        let ty = entity.pos.z.floor();
-        if tx < 0.0 || ty < 0.0 || tx >= w as f32 || ty >= h as f32 {
-            continue;
-        }
-        let shape = kind_specs
-            .get(entity.kind.0 as usize)
-            .cloned()
-            .unwrap_or_else(fallback_shape);
-        let (color, extent, diamond) = if entity.owner == pandemonium_sim_api::PlayerId::NEUTRAL {
-            (MINIMAP_ORE, 3i32, true)
-        } else if shape.unit {
-            (
-                match entity.owner {
-                    pandemonium_sim_api::PlayerId(0) => MINIMAP_OWN,
-                    _ => MINIMAP_ENEMY,
-                },
-                1i32,
-                false,
-            )
-        } else {
-            (
-                match entity.owner {
-                    pandemonium_sim_api::PlayerId(0) => MINIMAP_OWN,
-                    _ => MINIMAP_ENEMY,
-                },
-                2i32,
-                false,
-            )
-        };
-        let anchor = extent / 2;
-        for dy in -anchor..extent - anchor {
-            for dx in -anchor..extent - anchor {
-                if diamond && dx.abs() + dy.abs() > 1 {
-                    continue; // the diamond trims its own corners
-                }
-                let px = tx as i32 + dx;
-                let py = ty as i32 + dy;
-                if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
-                    continue;
-                }
-                let offset = ((py as u32 * w + px as u32) as usize) * 4;
-                scratch[offset] = color[0] as u8;
-                scratch[offset + 1] = color[1] as u8;
-                scratch[offset + 2] = color[2] as u8;
-                scratch[offset + 3] = 255;
-            }
-        }
-    }
-}
 
 impl Renderer for WgpuRenderer {
     fn render(&mut self, frame: Frame<'_>) {
@@ -1199,7 +901,8 @@ mod silhouette_tests {
 
 #[cfg(test)]
 mod decal_tests {
-    use super::entities::TEAM_NEUTRAL;
+    use super::entities::{team_color, TEAM_NEUTRAL};
+    use super::overlay::{RING_COLOR, TEAM_RING_ALPHA};
     use super::*;
     use glam::Vec3;
     use pandemonium_engine::RenderEntity;
@@ -1377,6 +1080,7 @@ mod death_render_tests {
 
 #[cfg(test)]
 mod minimap_marker_tests {
+    use super::minimap::{MINIMAP_ENEMY, MINIMAP_ORE, MINIMAP_OWN};
     use super::*;
     use glam::Vec3;
     use pandemonium_engine::RenderEntity;

@@ -5,6 +5,8 @@
 // frame pass in `super` — the AI-Handoff §9 ordering gotcha rides on this
 // buffer being one shared, order-dependent stream.
 use super::entities::ENTITY_SHADER_SRC;
+use super::minimap::{cube_vertices, CubeVertex, MinimapVertex, MINIMAP_SHADER_SRC};
+use super::overlay::{quad_vertices, ring_vertices, DecalInstance, DECAL_SHADER_SRC};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 

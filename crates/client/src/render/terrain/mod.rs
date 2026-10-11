@@ -25,6 +25,9 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>
 }
 "#;
 
+/// The fog-of-war pass (plan §11.2's fog visualization): the terrain geometry
+/// drawn a second time, UV-mapped in world space (x/z over the map extent) and
+/// sampling a per-tile fog-alpha texture the client refreshes from its
 /// `PlayerView`. Hidden tiles read nearly opaque, explored tiles half-lit,
 /// visible tiles clear. Same geometry as the terrain means the same depth
 /// values — the pass depth-tests `LessEqual` with writes off, so the fog hugs
