@@ -26,5 +26,7 @@ accepted = [
     "Bitstream-Vera",
 ]
 # NOTE: cargo-about 0.9 accepts only `accepted` and `clarify` here. The
-# project's own workspace crates (no licence field — the owner's decision is
-# pending) are filtered out of the notices by the packaging template instead.
+# project's own workspace crates (no licence field — the project's own code
+# and data are MIT per the repo's LICENSE, the owner's A-005 ruling) are
+# filtered out of the notices by the packaging template instead; their own
+# licence is stated by LICENSE, not by cargo-about.

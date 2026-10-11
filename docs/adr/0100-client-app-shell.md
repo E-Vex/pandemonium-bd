@@ -1,7 +1,8 @@
 # ADR-0100: The client app shell — screen machine, settings format, and the monolith split
 
 - **Date:** 2026-10-10
-- **Status:** proposed (the PM decides)
+- **Status:** Accepted (2026-10-11, the PM's verdicts on brief A-006; part (b)
+  Option 2's trigger pre-approved, Option 3 rejected)
 - **Frozen decision affected:** none directly — part (b) *conditionally* affects the
   plan §3.2 / §4 dependency law (the client's external allow-list) if its option 2 is
   taken. Parts (a) and (c) are design records inside the existing architecture law,
@@ -217,6 +218,14 @@ Target module map (the ARCHITECTURE.md refactor map, made committable):
 
 ## Decision
 
-*(Pending — the PM decides; per this ADR's own framing, part (b) Option 1 needs no
-decision, Option 2's trigger may be pre-approved, and parts (a) and (c) are
-adopted or deferred as the R1 briefs demand.)*
+**Accepted — 2026-10-11, the PM's verdicts relayed with brief A-006:**
+
+- **(a) The screen state machine is approved as the R1 design** — built in later
+  slices, NOT in this brief (A-006 executes part (c) only).
+- **(b) Option 1** (the hand-rolled `key=value` file) is the R1 decision.
+  **Option 2's trigger** (key rebinding, or a settings schema past ~20 structured
+  keys) is **pre-approved by the PM** — the owner's sign-off is still required at
+  the moment it fires. **Option 3 is rejected** (the layering fault stands).
+- **(c) The DEBT-013 split plan is approved as written** — steps 1–8 in order,
+  one commit each, the verification gates per step as stated. Brief A-006
+  executes it.

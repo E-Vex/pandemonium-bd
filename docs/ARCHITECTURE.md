@@ -348,30 +348,41 @@ made structural. The windowed path is machine-verified on Xvfb + llvmpipe
 (selection + right-click Move provably work — A-037); only the human visual
 pass remains (DEBT-008, narrowed).
 
-### Post-alpha refactor map (guidance only — DEBT-013 owns the work)
+### Post-alpha refactor map — BUILT (A-006, ADR-0100 part c; DEBT-013 repaid)
 
-The client grew two monoliths (`render.rs` ~2.5k lines, `main.rs` ~1.8k lines:
-DEBT-013). The split below records the intended module boundaries for the
-post-alpha presentation pass (plan §19 schedules that rewrite on purpose —
-renderer and UI are rewritten then, so no split happens before the Alpha
-declares). Guidance for whoever holds that debt, not a commitment:
+The split below was guidance when DEBT-013 recorded the monoliths; brief
+A-006 executed it behaviour-identically in 2026-10-11's A-006 lane, one commit
+per step, each green under the full gate plus the `--frames` smoke's
+evidence-line contract and the three reference captures' structural
+comparison. The module boundaries below are the code as it stands; plan §19's
+presentation rewrite stays scheduled and starts from these seams:
 
-- `render/` — the wgpu renderer split by pipeline: `pipeline/` (device,
-  surface, common bind groups), `terrain/` (terrain mesh + fog decal),
-  `entities/` (instanced boxes, silhouettes, shadows, death fades),
-  `overlay/` (world-space cues: selection brackets, health bars, pings,
-  refusal squares), `minimap/` (the composite + its textures).
-- `app/` — the non-input application state: `main.rs`'s `App` struct,
-  match hosting + restart, the checkpoint trail, the `--record`/F8 wiring
-  (report.rs stays the pure seam).
-- `input/` — the winit event translation: camera controls, selection,
-  context orders, placement mode, control groups, hotkeys.
-- `screens/` — the end screen and any future menus (§11.4's shell).
+- `render/` — the wgpu renderer split by pipeline: `mod.rs` (the
+  `WgpuRenderer` surface, the `Renderer` frame pass, the shared `DECAL_LIFT`)
+  + `pipeline/` (device, surface, common bind groups — the constructor and
+  the surface lifecycle; the shared decal instance buffer is born here, per
+  the AI-Handoff §9 ordering gotcha), `terrain/` (the terrain shaders, the
+  GPU vertex copy, the fog uniform + alpha consts), `entities/` (the
+  silhouette pass, team palette, shadow stream, death fades),
+  `overlay/` (the decal geometry + the ring streams), `minimap/` (the
+  minimap shader, geometry, and the marker painter).
+- `app/` — the non-input application state: the `App` struct (moved out of
+  `main.rs`), match hosting + restart, the checkpoint trail, the
+  `--record`/F8 wiring (report.rs stays the pure seam), the settings
+  setters, the menu/draw frame assembly, and the HUD quad builders.
+- `input/` — the winit event translation, a directory module: `mod.rs`
+  (the pure `RightButton` machine and edge pan — the former `input.rs`),
+  `event.rs` (the `impl App` translation methods: camera keys, selection,
+  context orders, placement, control groups, hotkeys), `orders.rs` (the
+  context-order routing — the former `orders.rs`).
+- `screens.rs` + `ui.rs` — stayed (already pure / already separate); the
+  menu driving and frame assembly live in `app/`.
 
-The seam to preserve while splitting: everything above `engine` stays above
+The seam preserved by the split: everything above `engine` stays above
 it — `MatchHost::submit`/`advance` remain the only mutation paths, and
 report.rs's pure functions keep the F8/`--record` assembly testable without
-a window.
+a window. `main.rs` remains the winit bootstrap (`main`, arg/content
+resolution, `headless_smoke`, the `ApplicationHandler` impl, the tests).
 
 ## The replay format (M1)
 
