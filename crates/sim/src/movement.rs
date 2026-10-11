@@ -199,36 +199,80 @@ fn consume_waypoint(world: &mut World, id: EntityId) {
     }
 }
 
+/// One mover's stage-6 scratch slot (B-006): the entity's id, its index in
+/// the entity store, its index in the movement store, and its spatial-hash
+/// cell. The indices are computed once at stage entry — the stores gain and
+/// lose no entries inside stage 6 (spawns happen in stage 3, removals in
+/// stage 8), so an indexed read is the same record the by-id binary search
+/// would return, without re-walking ~11 probes per lookup per candidate
+/// pair.
+#[derive(Clone, Copy)]
+struct MoverSlot {
+    id: EntityId,
+    entity_index: usize,
+    move_index: usize,
+    cell_x: i32,
+    cell_y: i32,
+}
+
 /// Layer 3 — deterministic local push-apart (plan §9.1.3): a spatial hash
 /// grid of one-tile cells (cell lists ordered by id, since units are inserted
 /// in ascending id order), every pair `(a, b)` with `a < b` processed exactly
 /// once in a fixed cell scan order, each entity pushed half the overlap along
 /// the separation axis. A half-push whose landing tile is blocked (or off the
 /// map) is skipped, so collision never shoves a unit into terrain.
+///
+/// B-006: the cell grid is a flat counting-sorted array pair (cell-start
+/// offsets + unit ordinals) instead of a `Vec` of per-cell `Vec`s — the old
+/// build zero-filled one `Vec` header per map tile every tick (≈ 393 KB on
+/// the 128×128 proving ground) and heap-allocated every non-empty cell's
+/// first push, before examining a single pair. Membership and within-cell
+/// order are identical (units enter in ascending id order and counting sort
+/// is stable), so every pair is visited in the same order as before.
 fn push_apart(world: &mut World, nav: &NavGrid) {
-    let units: Vec<EntityId> = world
-        .entities
-        .iter()
-        .filter(|entity| world.move_of(entity.id).is_some())
-        .map(|entity| entity.id)
-        .collect();
     let cells_x = ((nav.width() as i64) / (CELL_SIZE as i64)).max(1) as i32;
     let cells_y = ((nav.height() as i64) / (CELL_SIZE as i64)).max(1) as i32;
-    let mut cells: Vec<Vec<EntityId>> =
-        vec![Vec::new(); (cells_x as u64 * cells_y as u64) as usize];
-    let mut unit_cells: Vec<(EntityId, i32, i32)> = Vec::with_capacity(units.len());
-    for id in &units {
-        let Some(entity) = world.entity(*id) else {
-            continue;
-        };
-        let cell_x = (entity.pos.x.floor_int() / CELL_SIZE).clamp(0, cells_x - 1);
-        let cell_y = (entity.pos.y.floor_int() / CELL_SIZE).clamp(0, cells_y - 1);
-        cells[cell_y as usize * cells_x as usize + cell_x as usize].push(*id);
-        unit_cells.push((*id, cell_x, cell_y));
+    let cell_count = (cells_x as u64 * cells_y as u64) as usize;
+
+    // Collect the movers (ascending id — the store's iteration order) with
+    // their store indices and cell assignments in one pass.
+    let mut units: Vec<MoverSlot> = Vec::with_capacity(world.entities.len());
+    for (entity_index, entity) in world.entities.iter().enumerate() {
+        if let Ok(move_index) = world
+            .movement
+            .binary_search_by_key(&entity.id, |(eid, _)| *eid)
+        {
+            let cell_x = (entity.pos.x.floor_int() / CELL_SIZE).clamp(0, cells_x - 1);
+            let cell_y = (entity.pos.y.floor_int() / CELL_SIZE).clamp(0, cells_y - 1);
+            units.push(MoverSlot {
+                id: entity.id,
+                entity_index,
+                move_index,
+                cell_x,
+                cell_y,
+            });
+        }
+    }
+
+    // Counting sort the movers into flat cells: `starts[c] .. starts[c + 1]`
+    // is cell c's list, in ascending id order (stable placement).
+    let mut starts = vec![0u32; cell_count + 1];
+    for slot in &units {
+        starts[slot.cell_y as usize * cells_x as usize + slot.cell_x as usize + 1] += 1;
+    }
+    for cell in 1..=cell_count {
+        starts[cell] += starts[cell - 1];
+    }
+    let mut placed: Vec<u32> = vec![0; units.len()];
+    let mut cursor = starts.clone();
+    for (ordinal, slot) in units.iter().enumerate() {
+        let cell = slot.cell_y as usize * cells_x as usize + slot.cell_x as usize;
+        placed[cursor[cell] as usize] = ordinal as u32;
+        cursor[cell] += 1;
     }
 
     // Fixed neighbor scan order; pairs resolve once with a < b.
-    for (a, cell_x, cell_y) in &unit_cells {
+    for slot in &units {
         for (dy, dx) in [
             (0, -1),
             (0, 0),
@@ -240,34 +284,40 @@ fn push_apart(world: &mut World, nav: &NavGrid) {
             (-1, 0),
             (-1, 1),
         ] {
-            let nx = cell_x + dx;
-            let ny = cell_y + dy;
+            let nx = slot.cell_x + dx;
+            let ny = slot.cell_y + dy;
             if nx < 0 || ny < 0 || nx >= cells_x || ny >= cells_y {
                 continue;
             }
-            let neighbors: &[EntityId] = &cells[ny as usize * cells_x as usize + nx as usize];
-            for b in neighbors {
-                if a >= b {
+            let cell = ny as usize * cells_x as usize + nx as usize;
+            for ordinal in starts[cell]..starts[cell + 1] {
+                let other = &units[placed[ordinal as usize] as usize];
+                if slot.id >= other.id {
                     continue; // each pair once, in ascending order
                 }
-                resolve_pair(world, nav, *a, *b);
+                resolve_pair(world, nav, slot, other);
             }
         }
     }
 }
 
-/// Separates one overlapping pair: symmetric halves, terrain-guarded.
-fn resolve_pair(world: &mut World, nav: &NavGrid, a: EntityId, b: EntityId) {
-    let (Some(entity_a), Some(entity_b)) = (world.entity(a), world.entity(b)) else {
-        return;
-    };
-    let (Some(def_a), Some(def_b)) = (world.move_of(a), world.move_of(b)) else {
-        return;
-    };
-    let radius_sum = def_a.radius + def_b.radius;
+/// Separates one overlapping pair: symmetric halves, terrain-guarded. The
+/// slots carry the store indices, so the reads are indexed — the same records
+/// the by-id lookups returned (indices computed at stage entry; the stores do
+/// not change inside stage 6).
+fn resolve_pair(world: &mut World, nav: &NavGrid, a: &MoverSlot, b: &MoverSlot) {
+    let (pos_a, pos_b) = (
+        world.entities[a.entity_index].pos,
+        world.entities[b.entity_index].pos,
+    );
+    let (radius_a, radius_b) = (
+        world.movement[a.move_index].1.radius,
+        world.movement[b.move_index].1.radius,
+    );
+    let radius_sum = radius_a + radius_b;
     let sum_raw = radius_sum.raw().max(0) as u64;
     let sum_sq = sum_raw * sum_raw;
-    let delta = entity_b.pos - entity_a.pos;
+    let delta = pos_b - pos_a;
     if delta.len_sq_raw() >= sum_sq {
         return; // not overlapping
     }
@@ -282,17 +332,13 @@ fn resolve_pair(world: &mut World, nav: &NavGrid, a: EntityId, b: EntityId) {
     let half = overlap.div(Fx::from_int(2));
     // Terrain-guarded halves: a push that would land on a blocked tile (or
     // outside the map) is skipped for that entity only.
-    let push_a = entity_a.pos - direction.scale(half);
-    let push_b = entity_b.pos + direction.scale(half);
+    let push_a = pos_a - direction.scale(half);
+    let push_b = pos_b + direction.scale(half);
     if nav.passable(push_a.x.floor_int(), push_a.y.floor_int()) {
-        if let Some(entity) = world.entity_mut(a) {
-            entity.pos = push_a;
-        }
+        world.entities[a.entity_index].pos = push_a;
     }
     if nav.passable(push_b.x.floor_int(), push_b.y.floor_int()) {
-        if let Some(entity) = world.entity_mut(b) {
-            entity.pos = push_b;
-        }
+        world.entities[b.entity_index].pos = push_b;
     }
 }
 
