@@ -30,7 +30,7 @@
 | Presentation | **3D perspective over the 2D logical ground plane** — the sim stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md)) |
 | Status | **M10.2 (playtest-1 findings): COMPLETE — all five phases.** Phase 4 (audio) delivered and re-tested **clean on real hardware** (A-126, 2026-10-09); Phase 5 (verification & handoff) closed the milestone: full gate green in dev and release, the three goldens bit-identical, the Xvfb+XTEST machine pass re-ran the M10.2 paths (controls, menus/settings, the audio evidence lines), and the A14 playtest is scheduled — five first-time tester slots in `docs/PLAYTEST.md` §7. Next: the A14 human playtest → Alpha declaration |
 | Goldens (never move) | demo `0xb6fff6659cfb7709` (seed 7, 300 ticks) · flagship `0x6e9a18bd7c5f699f` (seed 7, 7200 ticks AI-vs-AI; tick-0 `0x71a924ad5799e4b3`) · content `0x9bc18c521107b262` (map id `0xd38136401ab02ff1`) |
-| Tests | 553 dev / 548 release (5 should-panic invariant tests are debug-only) |
+| Tests | 574 dev / 569 release (5 should-panic invariant tests are debug-only) |
 | Registers | ASSUMPTIONS last = A-127. Key open debt: DEBT-008 (the human visual pass — the A14 sessions close it), DEBT-013 (client monoliths), DEBT-016, DEBT-017, DEBT-018 (replay decode pre-allocation, out of the declared threat model). M10.2 fully repaid DEBT-011 (the audible backend **and** the owner's clean re-test) and closed DEBT-015 (A14's ≥5-tester gate is the owner's, not milestone scope) |
 | Spirit | The Alpha is judged by system properties (plan §13), not content volume. Do not add what no acceptance test requires |
 
@@ -62,7 +62,7 @@ cargo run -p pandemonium-client -- --seed 42 --record run.pdrp && \
 cargo run -p pandemonium-tools -- replay-verify run.pdrp                           # A2
 ```
 
-Expected: everything succeeds; 553 tests pass in dev (548 release); all three goldens bit-identical.
+Expected: everything succeeds; 574 tests pass in dev (569 release); all three goldens bit-identical.
 `--p1 ai --p2 ai --ticks 27000` shows a full match resolving naturally. The headless smoke drives the
 windowed path's exact hosting seam (AI opponent included) and, since M10.2 Phase 4, constructs the real audio sink — the exit evidence says what audio did (the arm: active or null fallback; the cues' fed/voiced/dropped fates) alongside the feedback-wiring line. The same run that is silent under Xvfb/CI is audible on real hardware.
 The windowed path is verified on Xvfb + llvmpipe (recipe in §9 / DEBT-008); the *human* visual pass is the

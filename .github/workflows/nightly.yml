@@ -281,3 +281,60 @@ jobs:
         run: cargo build --release -p pandemonium-tools
       - name: "Bench (plan §15 budgets: ≤ 1 ms avg, ≤ 4 ms p99, ≥ 1000 t/s)"
         run: cargo run --release -p pandemonium-tools -- bench --ticks 10000 --content content
+
+  # B-005 (P-2): the proptest sweep — random-but-logged exploration at volume.
+  # The PR gate pins one seed (ci.yml, P-1), so per-push runs always draw the
+  # identical cases; this tier is where fresh input regions get explored: the
+  # seed is derived from the run id (github.run_id, a u64 exactly as proptest
+  # parses it), printed at the start of the sweep, and printed again — with
+  # the exact local repro command — in any failure summary. A red here is
+  # first reproduced locally (PROPTEST_RNG_SEED=<run id> + the step's case
+  # count) and then converted to a named deterministic test per
+  # docs/pm/PROPTEST_REGRESSIONS_POLICY.md ("The seed policy"); it is never
+  # silenced by a re-roll.
+  #
+  # Case counts and the time cap (measured 2026-10-11 on the 2-core
+  # verification host; CI runners are faster, so these are conservative):
+  #   fx properties (21, dev):     100,000 cases —  19.6 s test / 27 s wall
+  #   ai fuzz (1, dev):             40,000 cases —  97.9 s test / 98 s wall
+  #   (the A11 fuzz constructs two sims and steps both per case, so it is the
+  #   heavy tier: 40k ≈ the fx suite's total budget at 1/2.5 the cases; the
+  #   committed per-push counts are 256/4096.)
+  # The whole sweep is sized to run in ~2 min of test time; the job cap is
+  # 30 minutes, an order of magnitude of headroom for a cold cache build.
+  proptest:
+    name: proptest sweep (seed = run id)
+    runs-on: ubuntu-24.04
+    # The stated time cap: the sweep (build + both tiers) must fit here.
+    timeout-minutes: 30
+    env:
+      PROPTEST_RNG_SEED: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: proptest-${{ hashFiles('Cargo.lock') }}
+      - name: Announce the sweep seed (printed at start)
+        run: |
+          echo "::notice::nightly proptest sweep seed: PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED (the run id)"
+          echo "Any red reproduces locally with: PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED PROPTEST_CASES=<the failing step's count> cargo test -p <the failing step's crate> --test <its suite> <its filter>"
+      - name: fx property sweep (100000 cases, dev — 21 properties)
+        run: PROPTEST_CASES=100000 cargo test -p pandemonium-fx --test properties
+      - name: ai fuzz sweep (40000 cases, dev — the A11 label-swap fuzz, two sims per case)
+        run: PROPTEST_CASES=40000 cargo test -p pandemonium-tests --test ai a11_fuzz_label_swapped_commands_validate_identically
+      - name: Failure summary (the seed + the exact repro commands)
+        # The failure summary is the contract: a red nightly must carry
+        # everything needed to reproduce it locally — the seed in force and
+        # the exact command per tier (only the failing one matters, but both
+        # are printed so the log is self-contained).
+        if: failure()
+        run: |
+          echo "::error::the nightly proptest sweep failed — seed PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED"
+          echo "Reproduce locally (then convert the case per the regressions policy — docs/pm/PROPTEST_REGRESSIONS_POLICY.md):"
+          echo "  PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED PROPTEST_CASES=100000 cargo test -p pandemonium-fx --test properties"
+          echo "  PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED PROPTEST_CASES=40000 cargo test -p pandemonium-tests --test ai a11_fuzz_label_swapped_commands_validate_identically"

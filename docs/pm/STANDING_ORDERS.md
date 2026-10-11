@@ -1,4 +1,4 @@
-PANDEMONIUM — STANDING ORDERS v1.1 (from the PM; apply to every task until superseded)
+PANDEMONIUM — STANDING ORDERS v1.2 (from the PM; apply to every task until superseded)
 
 1. CHAIN OF COMMAND
 The PM assigns work via written briefs relayed by the owner. Do only what the brief says; never self-assign. You do not talk to the other agent. If you need something from their lane, list it under "Cross-lane requests" in your report and the PM will route it.
@@ -44,3 +44,4 @@ MP-5 One PR merges at a time. After each merge the PM names which open branches 
 MP-6 Push early: the first push right after branch creation, then after every commit that passes fmt+clippy. A failed push means STOP and report.
 MP-7 No edits to the other lane's files unless the brief names the file. Cross-lane needs go in report section 11.
 MP-8 The only required status check on master is `ci-required`.
+MP-9 (added in v1.2, from the B-002R loss) Every report is committed as `docs/pm/reports/<TASK-ID>.md` in the branch's final commit, so the repo is the record. A report that exists only in the chat or the agent's local state does not exist; the B-002R record had to be recovered from CI history because its report was never pushed.
