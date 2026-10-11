@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal
@@ -78,7 +78,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal
@@ -142,7 +142,7 @@ jobs:
           test -s THIRD_PARTY_NOTICES.md
           grep -q 'Pandemonium Sans' THIRD_PARTY_NOTICES.md
       - name: Upload the notices
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-notices
           path: THIRD_PARTY_NOTICES.md
@@ -169,7 +169,7 @@ jobs:
             slug: macos-aarch64
             ext: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the pinned toolchain
         run: |
           rustup toolchain install 1.98.1 --profile minimal
@@ -316,7 +316,7 @@ jobs:
           EOF
           fi
       - name: Download the notices
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-notices
           path: notices-dl
@@ -339,7 +339,7 @@ jobs:
           HASH=$(sha256sum "$ARCHIVE" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$ARCHIVE" | awk '{print $1}')
           echo "$HASH  $ARCHIVE" | tee "$ARCHIVE.sha256"
       - name: Upload the archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.slug }}
           path: |
@@ -386,7 +386,7 @@ jobs:
             ext: ""
     steps:
       - name: Download the archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-${{ matrix.slug }}
       - name: Unpack into a clean directory and smoke it
@@ -454,9 +454,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download every archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           merge-multiple: true
