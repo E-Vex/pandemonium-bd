@@ -37,7 +37,7 @@ assumes — but it is not a product. A player-facing R1 needs something double-c
 |---|---|---|---|---|
 | Binary distribution | None. `.github/workflows/` holds `ci.yml`, `nightly.yml`, `audit.yml` only — no release workflow, no artifacts, no channels | R1's defining deliverable: per-OS builds from tagged commits | **R1-blocker** | M (L if all three OS are first-class) |
 | Versioning | Workspace `version = "0.1.0"` (`Cargo.toml:6`); **zero git tags**; `CHANGELOG.md` keys entries to milestone tags that do not exist in the repo | A shipped build must be identifiable: tag, version string, and a visible build id (see §3) | **R1-blocker** | S |
-| License | "No license has been published yet" (`README.md`, License section); the brief fixes the wording to "to be decided by the owner" | Nothing can be redistributed until the owner decides terms | **R1-blocker** | S (owner's decision; docs follow) |
+| License | ~~"No license has been published yet"~~ **decided — MIT** (the owner's A-005 ruling; `LICENSE` at the repo root, the README Licence section points at it, and `THIRD_PARTY_NOTICES.md` catalogues the third-party terms; third-party components, including the embedded font, keep their own licences) | ~~Nothing can be redistributed until the owner decides terms~~ resolved: the project's own code and data are redistributable under MIT per `LICENSE` | ~~**R1-blocker**~~ closed (A-005) | S (done) |
 | Install footprint | The binary resolves content from the crate manifest (`main.rs:208` `content_path()` walks from `CARGO_MANIFEST_DIR`); run the raw exe elsewhere and it cannot find the content tree | exe-relative (or installed-asset) content discovery | **R1-blocker** (pairs with packaging) | S |
 
 ## 2. Launch
@@ -219,8 +219,10 @@ supportability floor. Sizes are the audit's S/M/L.
 
 1. **Release pipeline** (M) — `.github/workflows/release.yml`, tagged builds, per-OS
    artifacts; the R1-blocker that defines everything else's delivery channel.
-2. **License decision** (S, owner) — "to be decided by the owner"; every
-   redistribution path waits on it.
+2. ~~**License decision** (S, owner) — "to be decided by the owner"; every
+   redistribution path waits on it.~~ **Closed (A-005):** MIT — the owner's
+   ruling; `LICENSE` rides in every release archive and every smoke leg gates
+   on it.
 3. **Exe-relative content discovery + visible startup errors** (S+M) — the packaged
    app must find its content and must *show* the anyhow chain when it cannot; today
    both are console-only (`main.rs:97-107`, `render.rs:499-514`).
