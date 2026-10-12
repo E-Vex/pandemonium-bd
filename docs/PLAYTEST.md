@@ -17,6 +17,93 @@ a finding — write it down.
 
 ## 1. Quickstart (per-OS)
 
+**Primary path — download the archive, unpack, run.** Grab the archive for
+your OS from the
+[v0.1.0 pre-release](https://github.com/E-Vex/pandemonium-bd/releases/tag/v0.1.0),
+optionally verify it against `checksums.txt` (same page), unpack it anywhere,
+and run the binary inside. No compiler, no Rust toolchain — the archive
+carries the client, the tools, the `content/` data tree, the licence, and
+`QUICKSTART.md`.
+
+| OS | Archive | One-time OS bypass | Floor |
+|---|---|---|---|
+| **Linux** | `pandemonium-0.1.0-linux-x86_64.tar.gz` | none | x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12), plus `libasound2` at load time |
+| **Windows** | `pandemonium-0.1.0-windows-x86_64.zip` | SmartScreen → *More info* → *Run anyway* | Windows 10+ x86-64 (stated, not pipeline-proven) |
+| **macOS** | `pandemonium-0.1.0-macos-aarch64.tar.gz` | Gatekeeper — run from Terminal, or `xattr -d com.apple.quarantine pandemonium-client` | macOS 11+ on Apple silicon ONLY |
+
+The full per-OS steps (SmartScreen / Gatekeeper in detail, the Linux
+`libasound2` install line, the troubleshooting table) live in
+[`docs/product/QUICKSTART.md`](product/QUICKSTART.md) — the same card ships
+inside every archive. Linux without `libasound2` cannot start the client at
+all (the loader refuses before the game's own silent audio fallback can
+engage); install it and you are set.
+
+Optional checksum check (`sha256sum` on Linux/macOS, `Get-FileHash` on
+Windows PowerShell):
+
+```bash
+sha256sum -c checksums.txt --ignore-missing
+```
+
+Unpack and run — keep `content/` next to the executable (the client finds it
+there automatically):
+
+```bash
+tar -xzf pandemonium-0.1.0-linux-x86_64.tar.gz     # Windows: unzip
+cd pandemonium-0.1.0-linux-x86_64
+./pandemonium-client                                # Windows: .\pandemonium-client.exe
+```
+
+On a desktop this opens the windowed 3D client **at the main menu**
+(M10.2 Phase 3 — the game no longer drops you straight into a match); on a
+machine with no display it prints a finding and runs a headless smoke pass
+instead (that is expected there, not a failure — but it is not a playtest
+either; use a desktop).
+
+From the menu: **New Match** picks the mode (Player vs AI / AI vs AI
+spectate / Sandbox — no opponent, for testing), the seed, and the map, then
+**Start** drops you into the match. Every screen works by keyboard alone
+(arrows + Enter, Esc backs out) and by mouse alone (hover highlights, click
+activates). **Settings** adjusts edge scroll, pan speed, camera zoom limits,
+master volume and mute, fullscreen, and the debug-overlay
+default; Done saves to the user config directory and the next run remembers
+(A-115). In a match, Esc's final rung opens the **pause menu**
+(Resume / Settings / Restart / Quit to Menu).
+
+**Seeding a match for reproducibility:** the seed field is **random by
+default** and always visible on the New Match screen — type digits to set it
+exactly, Enter re-rolls, and `--seed N` pre-fills it:
+
+```bash
+./pandemonium-client --seed 42
+```
+
+The same seed reproduces the same match bit-for-bit (plan FD-1): identical map,
+identical AI decisions. **Record the seed you played** — with a tick it is a
+complete bug report (section 6).
+
+**Recording a replay of your session** (optional but encouraged):
+
+```bash
+./pandemonium-client --seed 42 --record my-match.pdrp
+```
+
+The replay is written at match end or when you close the window, and it
+re-verifies headlessly:
+
+```bash
+./pandemonium-tools replay-verify my-match.pdrp
+```
+
+A mid-match dump on demand exists too — F8, section 6.
+
+### Build from source (for developers)
+
+The archive above is the playtester path. If you are building from source
+instead — typically a developer working on the code — the same `--seed`,
+`--record`, and `replay-verify` flags work under `cargo run` (e.g.
+`cargo run --release -p pandemonium-client -- --seed 42`).
+
 Prerequisites: **git** and **Rust via rustup** — nothing else.
 [`rust-toolchain.toml`](../rust-toolchain.toml) pins the exact compiler version
 (1.98.1); rustup installs it automatically on first use (one network round-trip,
@@ -34,48 +121,7 @@ cargo run --release -p pandemonium-client
 
 Run **from the repository root** (the clone directory): the client resolves its
 `content/` data relative to the repo, so launching from elsewhere finds no
-content and refuses to start. On a desktop this opens the windowed 3D client
-**at the main menu** (M10.2 Phase 3 — the game no longer drops you straight
-into a match); on a machine with no display it prints a finding and runs a
-headless smoke pass instead (that is expected there, not a failure — but it is
-not a playtest either; use a desktop).
-
-From the menu: **New Match** picks the mode (Player vs AI / AI vs AI
-spectate / Sandbox — no opponent, for testing), the seed, and the map, then
-**Start** drops you into the match. Every screen works by keyboard alone
-(arrows + Enter, Esc backs out) and by mouse alone (hover highlights, click
-activates). **Settings** adjusts edge scroll, pan speed, camera zoom limits,
-master volume and mute, fullscreen, and the debug-overlay
-default; Done saves to the user config directory and the next run remembers
-(A-115). In a match, Esc's final rung opens the **pause menu**
-(Resume / Settings / Restart / Quit to Menu).
-
-**Seeding a match for reproducibility:** the seed field is **random by
-default** and always visible on the New Match screen — type digits to set it
-exactly, Enter re-rolls, and `--seed N` pre-fills it:
-
-```bash
-cargo run --release -p pandemonium-client -- --seed 42
-```
-
-The same seed reproduces the same match bit-for-bit (plan FD-1): identical map,
-identical AI decisions. **Record the seed you played** — with a tick it is a
-complete bug report (section 6).
-
-**Recording a replay of your session** (optional but encouraged):
-
-```bash
-cargo run --release -p pandemonium-client -- --seed 42 --record my-match.pdrp
-```
-
-The replay is written at match end or when you close the window, and it
-re-verifies headlessly:
-
-```bash
-cargo run --release -p pandemonium-tools -- replay-verify my-match.pdrp
-```
-
-A mid-match dump on demand exists too — F8, section 6.
+content and refuses to start.
 
 ## 2. Controls card
 
@@ -210,8 +256,9 @@ bar (plan §13) does not move: **a failed tester is a finding, never a
 wave-through**, and when the table below holds five honest rows the owner
 flips A14 in `docs/ALPHA_DECLARATION.md` (or records the finding) citing
 this file. Fill the row as the session runs: date, OS, build commit (the
-`master` HEAD you cloned), the loop verdict per section 3, the spectator
-verdict per section 4, the section-5 probes, and any F8 incidents.
+full `--version` line — run `pandemonium-client --version`), the loop verdict
+per section 3, the spectator verdict per section 4, the section-5 probes, and
+any F8 incidents.
 
 | Slot | Wave / target date | Focus (the session stays unaided — this only steers the report) |
 |---|---|---|
