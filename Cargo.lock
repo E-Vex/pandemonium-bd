@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-ai"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pandemonium-fx",
  "pandemonium-sim-api",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-content"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pandemonium-fx",
  "pandemonium-sim",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glam",
  "pandemonium-ai",
@@ -1628,14 +1628,14 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-fx"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "pandemonium-replay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pandemonium-fx",
  "pandemonium-sim-api",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-sim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pandemonium-fx",
  "pandemonium-sim-api",
@@ -1652,14 +1652,14 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-sim-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pandemonium-fx",
 ]
 
 [[package]]
 name = "pandemonium-tests"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pandemonium-ai",
  "pandemonium-content",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "pandemonium-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",

@@ -18,6 +18,19 @@ name: release
 # unpacked listing is printed as evidence and the leg FAILS if LICENSE is
 # missing or does not start with "MIT License".
 #
+# A-008: the Windows zip is packaged with Python's zipfile instead of
+# Compress-Archive, which wrote every entry name with "\" separators — the
+# published pandemonium-0.1.0-windows-x86_64.zip carries 23 such entries, so
+# spec-following extractors (unzip, macOS) unpack flat names where Windows'
+# Expand-Archive silently normalises them into directories (why the smoke
+# passed while the published artifact was malformed). The arcnames are now
+# spelled with "/" explicitly and sit under the single root folder
+# pandemonium-<ver>-windows-x86_64/, with the file set unchanged. Two
+# structural gates back the fix, neither willing to normalise separators:
+# the smoke's zip structure gate (Python zipfile namelist, raw stored names)
+# on the Windows leg, and windows-zip-structure — an ubuntu job that takes
+# the Windows artifact and reads it with unzip (spec-following extractor).
+#
 # Runner images are pinned explicitly (B-002's rule — reproducible legs).
 # The release channel builds on the older baseline of each family while
 # ci.yml verifies on the current fleet (windows-2025/macos-26; CI leads,
@@ -329,7 +342,53 @@ jobs:
           PKG="${{ steps.ver.outputs.pkg }}"
           cp notices-dl/THIRD_PARTY_NOTICES.md "staging/$PKG/"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            powershell.exe -NoProfile -Command "Compress-Archive -Path 'staging/$PKG' -DestinationPath '$PKG.zip' -Force"
+            # A-008: Compress-Archive writes every zip entry name with "\"
+            # separators (the published pandemonium-0.1.0-windows-x86_64.zip
+            # carried 23 of them; Expand-Archive normalised them so the smoke
+            # passed, while spec-following extractors see flat malformed
+            # names). Package with the pinned runner image's own Python
+            # instead: each arcname is handed to a ZipInfo constructor — a
+            # string stored VERBATIM in the central directory, separators and
+            # all. (zf.write() would normpath it back to "\" on Windows,
+            # which is exactly why the entries are built by hand.) Every
+            # name uses "/", every entry sits under the single root folder
+            # $PKG/, the file set is unchanged, and the per-entry assert
+            # fails the build the moment either property regresses.
+            python --version
+            python - "$PKG" <<'PY'
+          import os, sys, time, zipfile
+          pkg = sys.argv[1]
+          src = os.path.join("staging", pkg)
+          with zipfile.ZipFile(pkg + ".zip", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              root = zipfile.ZipInfo(pkg + "/", date_time=time.localtime(os.stat(src).st_mtime)[:6])
+              root.compress_type = zipfile.ZIP_STORED
+              root.external_attr = 0o40755 << 16 | 0x10
+              zf.writestr(root, b"")
+              pending = [src]
+              while pending:
+                  d = pending.pop(0)
+                  names = sorted(os.listdir(d))
+                  for n in names:
+                      full = os.path.join(d, n)
+                      rel = os.path.relpath(full, src).replace(os.sep, "/")
+                      arc = pkg + "/" + rel
+                      st = os.stat(full)
+                      if os.path.isdir(full):
+                          zi = zipfile.ZipInfo(arc + "/", date_time=time.localtime(st.st_mtime)[:6])
+                          zi.compress_type = zipfile.ZIP_STORED
+                          zi.external_attr = 0o40755 << 16 | 0x10
+                          zf.writestr(zi, b"")
+                          pending.append(full)
+                      else:
+                          zi = zipfile.ZipInfo(arc, date_time=time.localtime(st.st_mtime)[:6])
+                          zi.compress_type = zipfile.ZIP_DEFLATED
+                          zi.external_attr = 0o644 << 16
+                          with open(full, "rb") as f:
+                              zf.writestr(zi, f.read())
+                      assert "\\" not in arc, "backslash in arcname: %r" % arc
+                      assert arc.startswith(pkg + "/"), "entry outside the root folder: %r" % arc
+          print("packaged", pkg + ".zip", "with forward-slash entry names under", pkg + "/")
+          PY
             ARCHIVE="$PKG.zip"
           else
             tar -czf "$PKG.tar.gz" -C staging "$PKG"
@@ -389,6 +448,44 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: release-${{ matrix.slug }}
+      - name: A-008 zip structure gate (Python zipfile - separator-exact)
+        # The gate the published v0.1.0 zip would have failed: read the
+        # archive's RAW stored entry names with zipfile.namelist() — the
+        # read path performs no separator normalisation, unlike
+        # Expand-Archive, which accepted the "\"-separated names and hid the
+        # malformation. Fails the leg if any entry name contains a backslash
+        # or if any entry sits outside the single pandemonium-*-windows-x86_64
+        # root folder.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version
+          ARCHIVE=$(ls | grep -E '^pandemonium-.*\.zip$' | head -1)
+          [ -n "$ARCHIVE" ] || { echo "no zip in $(pwd):"; ls -la; exit 1; }
+          python - "$ARCHIVE" <<'PY'
+          import sys, zipfile
+          archive = sys.argv[1]
+          with zipfile.ZipFile(archive) as zf:
+              names = zf.namelist()
+          errors = []
+          backslashed = [n for n in names if "\\" in n]
+          if backslashed:
+              errors.append("FAIL: %d zip entry name(s) contain a backslash (first 5: %s)" % (len(backslashed), ", ".join(repr(n) for n in backslashed[:5])))
+          flat = [n for n in names if n and "/" not in n]
+          if flat:
+              errors.append("FAIL: %d zip entry name(s) sit outside a root folder (first 5: %s)" % (len(flat), ", ".join(repr(n) for n in flat[:5])))
+          roots = sorted({n.split("/")[0] for n in names if "/" in n})
+          if not errors and len(roots) != 1:
+              errors.append("FAIL: expected exactly 1 root folder, found %d (%s)" % (len(roots), ", ".join(roots)))
+          if not errors and not (roots[0].startswith("pandemonium-") and roots[0].endswith("-windows-x86_64")):
+              errors.append("FAIL: root folder %r is not pandemonium-*-windows-x86_64" % roots[0])
+          if errors:
+              print("total entries:", len(names))
+              print("\n".join(errors))
+              sys.exit(1)
+          print("A-008 zip structure gate: %d entries, single root %s, no backslash in any entry name — PASS" % (len(names), roots[0]))
+          PY
       - name: Unpack into a clean directory and smoke it
         shell: bash
         env:
@@ -445,12 +542,70 @@ jobs:
           [ "$expected" = "$actual" ] || { echo "checksum mismatch: $ARCHIVE"; exit 1; }
           echo "SMOKE PASS: $ARCHIVE"
 
+  windows-zip-structure:
+    # A-008: the Windows zip is cross-checked by a spec-following extractor
+    # on a non-Windows runner. Expand-Archive tolerates "\"-separated entry
+    # names (the published v0.1.0 zip passed its Windows smoke carrying 23 of
+    # them), so the authoritative structural read happens elsewhere: unzip -l
+    # prints the listing, unzip -Z1 yields the RAW entry names (zipinfo mode,
+    # no separator normalisation), then a clean extraction must show exactly
+    # one root folder and not one filename containing a backslash anywhere.
+    name: windows zip structure cross-check (ubuntu)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download the Windows artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: release-windows-x86_64
+      - name: Unzip the Windows archive and assert the structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(ls | grep -E '^pandemonium-.*\.zip$' | head -1)
+          [ -n "$ARCHIVE" ] || { echo "no zip in $(pwd):"; ls -la; exit 1; }
+          echo "--- unzip -l $ARCHIVE ---"
+          unzip -l "$ARCHIVE"
+          echo "--- raw entry names (unzip -Z1, no separator normalisation) ---"
+          unzip -Z1 "$ARCHIVE" | tee entries.txt
+          if grep -q '\\' entries.txt; then
+            echo "FAIL: zip entry name(s) contain a backslash:"
+            grep -n '\\' entries.txt
+            exit 1
+          fi
+          ROOTS=$(sed 's#/.*##' entries.txt | sort -u)
+          echo "root folder(s): $ROOTS"
+          [ "$(printf '%s\n' "$ROOTS" | wc -l)" -eq 1 ] \
+            || { echo "FAIL: expected exactly one root folder, got:"; printf '%s\n' "$ROOTS"; exit 1; }
+          case "$ROOTS" in
+            pandemonium-*-windows-x86_64) ;;
+            *) echo "FAIL: root folder '$ROOTS' is not pandemonium-*-windows-x86_64"; exit 1 ;;
+          esac
+          CLEAN="$RUNNER_TEMP/pandemonium-zip-cross-clean"
+          rm -rf "$CLEAN" && mkdir -p "$CLEAN"
+          unzip -q "$ARCHIVE" -d "$CLEAN"
+          TOP=$(find "$CLEAN" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          [ "$TOP" = "$ROOTS" ] \
+            || { echo "FAIL: extracted top level ($TOP) does not match the zip root ($ROOTS)"; exit 1; }
+          if find "$CLEAN" -name '*\\*' -print -quit | grep -q .; then
+            echo "FAIL: extracted filename(s) contain a backslash:"
+            find "$CLEAN" -name '*\\*'
+            exit 1
+          fi
+          [ -f "$CLEAN/$ROOTS/pandemonium-client.exe" ] \
+            || { echo "FAIL: pandemonium-client.exe missing under $ROOTS"; exit 1; }
+          [ -f "$CLEAN/$ROOTS/pandemonium-tools.exe" ] \
+            || { echo "FAIL: pandemonium-tools.exe missing under $ROOTS"; exit 1; }
+          echo "windows zip structure cross-check: single root $ROOTS, no backslash in any name, both exes present — PASS"
+
   publish:
     # Only on a tag push (the PM's trigger — this workflow never pushes one).
-    # Publishing needs EVERY gate green: licence gate, builds, smokes.
+    # Publishing needs EVERY gate green: licence gate, builds, smokes, and
+    # (since A-008) the ubuntu cross-check of the Windows zip's structure.
     name: GitHub pre-release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [licence-gate, build, smoke]
+    needs: [licence-gate, build, smoke, windows-zip-structure]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
