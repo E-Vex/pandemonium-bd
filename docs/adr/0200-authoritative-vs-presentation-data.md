@@ -1,7 +1,7 @@
 # ADR-0200: Authoritative vs presentation data — the boundary, the identity, and the content classes
 
 - **Date:** 2026-10-13
-- **Status:** proposed
+- **Status:** accepted
 - **Frozen decision affected:** **FD-1** (plan §2, plan §6.5 — what the content hash
   covers): *clarified* — the content identity is defined as covering authoritative
   content only, and the display-only heightmap is classified as presentation data
@@ -594,6 +594,6 @@ B-008 session:
 
 ## Decision
 
-Not yet made — this ADR is `proposed`. The Decision line is filled when the PM
-and the owner rule; until then the operative rules are the current ones (the
-heightmap stays inside the identity; every deferred item in §8 stays unbuilt).
+Accepted by the owner, 2026-10-13. The operative rules are the current ones
+(the heightmap stays inside the identity; every deferred item in §8 stays
+unbuilt).
