@@ -35,9 +35,10 @@ const CONTENT_ENCODING_VERSION: u32 = 1;
 /// full-bundle hash by construction — different first block).
 const MAP_ID_DOMAIN: u32 = 0x004D_4150;
 
-/// Every validated file of a content directory. Maps, factions, and entities are
-/// plural (a directory may carry several); the ruleset is singular (the resource
-/// registry is global).
+/// Every validated file of a content directory. Maps, factions, entities, and
+/// missions are plural (a directory may carry several; a missions directory
+/// may be absent — the mission-less default, ADR-0201 §3); the ruleset is
+/// singular (the resource registry is global).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ContentTree {
     /// The one ruleset.
@@ -48,6 +49,9 @@ pub struct ContentTree {
     pub factions: Vec<defs::FactionDef>,
     /// Every map, sorted by id.
     pub maps: Vec<defs::MapDef>,
+    /// Every mission, sorted by id (ADR-0201 §3) — empty when the tree carries
+    /// no missions (the mission-less default).
+    pub missions: Vec<defs::MissionDef>,
 }
 
 impl ContentTree {
@@ -97,6 +101,72 @@ impl ContentTree {
         }
         sort_and_check_dups(&mut maps, "maps")?;
 
+        // Missions: any count (zero is legal — the mission-less default),
+        // then sorted by id with duplicate detection (ADR-0201 §3). The
+        // duplicate check runs beside the parse loop so both file names are
+        // at hand — `MissionDef` carries no `file` field (the ADR-0201
+        // contract's exact shape), so the tree assembly is where the names
+        // live.
+        let mut missions = Vec::with_capacity(sources.missions.len());
+        let mut mission_files: BTreeMap<String, String> = BTreeMap::new();
+        for source in &sources.missions {
+            let mission = loader::parse_mission(source, &entities)?;
+            let file = format!("missions/{}", source.name);
+            if let Some(first) = mission_files.get(&mission.id) {
+                return Err(ContentError::DuplicateId {
+                    id: mission.id.clone(),
+                    category: "missions".to_string(),
+                    first: first.clone(),
+                    second: file,
+                });
+            }
+            mission_files.insert(mission.id.clone(), file);
+            missions.push(mission);
+        }
+        missions.sort_by(|a, b| a.id.cmp(&b.id));
+
+        // Mission references are tree-level (ADR-0201 §3's closed reference
+        // set): every mission's map, faction, and rules must exist in the
+        // loaded tree — the same discipline as the faction-level entity and
+        // map-level ore-node checks.
+        for mission in &missions {
+            if !maps.iter().any(|map| map.id == mission.map) {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "mission '{}' references unknown map '{}' (loaded maps: {})",
+                        mission.id,
+                        mission.map,
+                        maps.iter()
+                            .map(|map| map.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                });
+            }
+            if !factions.iter().any(|faction| faction.id == mission.faction) {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "mission '{}' references unknown faction '{}' (loaded factions: {})",
+                        mission.id,
+                        mission.faction,
+                        factions
+                            .iter()
+                            .map(|faction| faction.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                });
+            }
+            if rules.id != mission.rules {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "mission '{}' references unknown rules '{}' (loaded ruleset: {})",
+                        mission.id, mission.rules, rules.id
+                    ),
+                });
+            }
+        }
+
         // Placement-level validation: every faction must sit legally on every
         // map (spawn legality, ore reachability, declared symmetry).
         for map in &maps {
@@ -110,6 +180,7 @@ impl ContentTree {
             entities,
             factions,
             maps,
+            missions,
         })
     }
 

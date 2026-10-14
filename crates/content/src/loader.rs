@@ -11,7 +11,10 @@ use std::path::Path;
 
 use crate::defs;
 use crate::error::ContentError;
-use crate::schema::{self, RawCapability, RawEntity, RawFaction, RawMapV2, RawRules};
+use crate::schema::{
+    self, RawCapability, RawEntity, RawFaction, RawMapV2, RawMission, RawObjective,
+    RawObjectiveParameters, RawRules,
+};
 use crate::validate;
 use crate::version;
 
@@ -52,6 +55,9 @@ pub struct SourceMap {
     pub factions: Vec<Source>,
     /// Map files (any count).
     pub maps: Vec<Source>,
+    /// Mission files (any count; zero is legal — the mission-less default,
+    /// ADR-0201 §3).
+    pub missions: Vec<Source>,
 }
 
 impl SourceMap {
@@ -60,17 +66,21 @@ impl SourceMap {
         Self::default()
     }
 
-    /// Reads a content tree from disk: `root/{rules,entities,factions,maps}/*.ron`.
+    /// Reads a content tree from disk:
+    /// `root/{rules,entities,factions,maps,missions}/*.ron`.
     ///
     /// Files are sorted by name within each category (deterministic load order),
     /// non-`.ron` files are ignored, and subdirectories are refused loudly — a
-    /// surprise must be an error, not a silent skip.
+    /// surprise must be an error, not a silent skip. The missions category is
+    /// the one exception on strictness: the directory itself may be absent
+    /// (see [`read_category_optional`]).
     pub fn from_dir(root: &Path) -> Result<Self, ContentError> {
         Ok(Self {
             rules: read_category(root, "rules")?,
             entities: read_category(root, "entities")?,
             factions: read_category(root, "factions")?,
             maps: read_category(root, "maps")?,
+            missions: read_category_optional(root, "missions")?,
         })
     }
 
@@ -100,6 +110,13 @@ impl SourceMap {
     pub fn map(mut self, name: &str, text: &str) -> Self {
         self.maps.retain(|source| source.name != name);
         self.maps.push(Source::new(name, text));
+        self
+    }
+
+    /// Adds (or replaces) a mission file.
+    pub fn mission(mut self, name: &str, text: &str) -> Self {
+        self.missions.retain(|source| source.name != name);
+        self.missions.push(Source::new(name, text));
         self
     }
 }
@@ -146,6 +163,20 @@ fn read_category(root: &Path, category: &str) -> Result<Vec<Source>, ContentErro
     // OS directory order is not deterministic across platforms — sort.
     sources.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(sources)
+}
+
+/// Reads one category directory whose absence is legal content: an empty
+/// vector instead of an error. Missions use this (ADR-0201 §3) — a tree
+/// without a `missions/` directory is a tree whose matches are all
+/// mission-less (the default match, today's elimination), and trees that
+/// predate the category keep loading unchanged (FD-10's spirit: old content
+/// keeps loading). Present directories follow the exact `read_category`
+/// rules: sorted scan, non-`.ron` ignored, subdirectories refused loudly.
+fn read_category_optional(root: &Path, category: &str) -> Result<Vec<Source>, ContentError> {
+    if !root.join(category).is_dir() {
+        return Ok(Vec::new());
+    }
+    read_category(root, category)
 }
 
 /// The display path of a source within a category (`entities/worker.ron`).
@@ -422,9 +453,390 @@ fn convert_terrain(
     Ok(terrain)
 }
 
+/// Parses and validates one mission file (ADR-0201 §3): the version gate, the
+/// strict parse, the id/stem check, the ASCII display-name rule (the embedded
+/// font constraint, ADR-0201 §5), and the objective conversion — unknown kinds
+/// are loud errors, kind/parameter mismatches are loud errors, and entity
+/// references resolve against the tree's entities exactly like faction rosters
+/// and map ore nodes do. The map/faction/rules references are validated at
+/// tree assembly (they need the whole tree — see `ContentTree::load`).
+pub(crate) fn parse_mission(
+    source: &Source,
+    entities: &[defs::EntityDef],
+) -> Result<defs::MissionDef, ContentError> {
+    let file = display_path("missions", source);
+    let found = version::read_version(&file, &source.text)?;
+    version::check_version(&file, found, schema::MISSION_SCHEMA_VERSION)?;
+    let raw: RawMission = ron::from_str(&source.text).map_err(|error| ContentError::Parse {
+        file: file.clone(),
+        detail: error.to_string(),
+    })?;
+    version::confirm_declared_version(&file, raw.schema_version, found)?;
+    if raw.id != source.stem() {
+        return Err(ContentError::IdMismatch {
+            file,
+            declared: raw.id,
+            stem: source.stem().to_string(),
+        });
+    }
+    if raw.display_name.is_empty() || !raw.display_name.is_ascii() {
+        return Err(ContentError::Parse {
+            file: file.clone(),
+            detail: format!(
+                "display_name must be non-empty ASCII (the embedded font renders \
+                 printable ASCII only — ADR-0201 §5), found '{}'",
+                raw.display_name
+            ),
+        });
+    }
+    let objectives = raw
+        .objectives
+        .into_iter()
+        .enumerate()
+        .map(|(index, objective)| convert_objective(&file, &raw.id, index, objective, entities))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(defs::MissionDef {
+        id: raw.id,
+        display_name: raw.display_name,
+        schema_version: raw.schema_version,
+        map: raw.map,
+        faction: raw.faction,
+        rules: raw.rules,
+        objectives,
+    })
+}
+
+/// Converts one raw objective into its canonical form (ADR-0201 §2): resolves
+/// the kind spelling — the vocabulary is fixed and unknown spellings are loud
+/// errors, never silently mapped — cross-checks the spelling against the
+/// parameters block, and resolves the entity references.
+fn convert_objective(
+    file: &str,
+    mission: &str,
+    index: usize,
+    raw: RawObjective,
+    entities: &[defs::EntityDef],
+) -> Result<defs::ObjectiveDef, ContentError> {
+    let Some(kind) = defs::ObjectiveKind::from_schema(&raw.kind) else {
+        return Err(ContentError::Parse {
+            file: file.to_string(),
+            detail: format!(
+                "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', '{}')",
+                index + 1,
+                mission,
+                raw.kind,
+                defs::ObjectiveKind::Destroy.as_str(),
+                defs::ObjectiveKind::BuildTrain.as_str(),
+            ),
+        });
+    };
+    let (block_kind, parameters) = match raw.parameters {
+        RawObjectiveParameters::Destroy(params) => {
+            if let Some(target) = &params.target_kind {
+                check_objective_entity_ref(
+                    file,
+                    mission,
+                    index,
+                    "Destroy target_kind",
+                    target,
+                    entities,
+                )?;
+            }
+            (
+                defs::ObjectiveKind::Destroy,
+                defs::ObjectiveParameters::Destroy {
+                    target_kind: params.target_kind,
+                },
+            )
+        }
+        RawObjectiveParameters::BuildTrain(params) => {
+            check_objective_entity_ref(
+                file,
+                mission,
+                index,
+                "BuildTrain kind",
+                &params.kind,
+                entities,
+            )?;
+            if params.count == 0 {
+                return Err(ContentError::Parse {
+                    file: file.to_string(),
+                    detail: format!(
+                        "objective {} of mission '{}' has count 0 (build/train objectives \
+                         need at least one)",
+                        index + 1,
+                        mission
+                    ),
+                });
+            }
+            (
+                defs::ObjectiveKind::BuildTrain,
+                defs::ObjectiveParameters::BuildTrain {
+                    kind: params.kind,
+                    count: params.count,
+                },
+            )
+        }
+    };
+    if kind != block_kind {
+        return Err(ContentError::Parse {
+            file: file.to_string(),
+            detail: format!(
+                "objective {} of mission '{}' declares kind '{}' but carries '{}' \
+                 parameters (the kind spelling and the parameters block must agree)",
+                index + 1,
+                mission,
+                kind.as_str(),
+                block_kind.as_str(),
+            ),
+        });
+    }
+    Ok(defs::ObjectiveDef {
+        kind,
+        parameters,
+        optional: raw.optional,
+    })
+}
+
+/// Resolves one objective entity reference against the tree's entities — the
+/// same check faction rosters and map ore nodes get.
+fn check_objective_entity_ref(
+    file: &str,
+    mission: &str,
+    index: usize,
+    what: &str,
+    reference: &str,
+    entities: &[defs::EntityDef],
+) -> Result<(), ContentError> {
+    if entities.iter().any(|entity| entity.id == reference) {
+        return Ok(());
+    }
+    Err(ContentError::UnknownEntityRef {
+        file: file.to_string(),
+        what: format!("{what} of objective {} in mission '{mission}'", index + 1),
+        reference: reference.to_string(),
+    })
+}
+
 /// Plan §10.2's duration conversion, integer-only: milliseconds to whole ticks,
 /// rounding up so a duration is never rounded away — `(ms * 30 + 999) / 1000`,
 /// i.e. the ceiling of `ms * ticks_per_second / 1000`.
 pub fn ms_to_ticks(ms: u32, ticks_per_second: u32) -> u32 {
     ((ms as u64 * ticks_per_second as u64).div_ceil(1000)) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    //! Mission parsing (ADR-0201 §3, B-012 Task 1): the strict schema, the
+    //! loud rejections, and the reference checks. The in-memory shape mirrors
+    //! `tests.rs`'s factory pattern; these live here (not in `tests.rs`) so
+    //! the mission surface is tested in the file that owns it.
+
+    use super::*;
+    use crate::Source;
+
+    /// A minimal entity the objectives can reference.
+    fn test_entity(id: &str) -> defs::EntityDef {
+        defs::EntityDef {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            capabilities: vec![],
+            cost_ore: 0,
+            build_time_ms: 0,
+            build_time_ticks: 0,
+            population: 0,
+            requires: vec![],
+            file: format!("entities/{id}.ron"),
+        }
+    }
+
+    fn entities() -> Vec<defs::EntityDef> {
+        vec![test_entity("command_center"), test_entity("worker")]
+    }
+
+    const MISSION: &str = r#"
+(
+    schema_version: 1,
+    id: "crossroads_01",
+    display_name: "Crossroads",
+    map: "crossroads_64",
+    faction: "legion",
+    rules: "alpha",
+    objectives: [
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: None )),
+            optional: false,
+        ),
+        (
+            kind: "BuildTrain",
+            parameters: BuildTrain(( kind: "worker", count: 4 )),
+            optional: true,
+        ),
+    ],
+)
+"#;
+
+    fn parse(text: &str) -> Result<defs::MissionDef, ContentError> {
+        parse_mission(&Source::new("crossroads_01.ron", text), &entities())
+    }
+
+    #[test]
+    fn a_mission_parses_into_its_canonical_form() {
+        let def = parse(MISSION).expect("the factory mission parses");
+        assert_eq!(def.id, "crossroads_01");
+        assert_eq!(def.display_name, "Crossroads");
+        assert_eq!(def.schema_version, 1);
+        assert_eq!(def.map, "crossroads_64");
+        assert_eq!(def.faction, "legion");
+        assert_eq!(def.rules, "alpha");
+        assert_eq!(def.objectives.len(), 2);
+        assert_eq!(
+            def.objectives[0],
+            defs::ObjectiveDef {
+                kind: defs::ObjectiveKind::Destroy,
+                parameters: defs::ObjectiveParameters::Destroy { target_kind: None },
+                optional: false,
+            }
+        );
+        assert_eq!(
+            def.objectives[1],
+            defs::ObjectiveDef {
+                kind: defs::ObjectiveKind::BuildTrain,
+                parameters: defs::ObjectiveParameters::BuildTrain {
+                    kind: "worker".to_string(),
+                    count: 4,
+                },
+                optional: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_destroy_target_kind_resolves_like_any_entity_reference() {
+        let targeted = MISSION.replace(
+            "Destroy(( target_kind: None ))",
+            "Destroy(( target_kind: Some(\"command_center\") ))",
+        );
+        let def = parse(&targeted).expect("a named target parses");
+        assert_eq!(
+            def.objectives[0].parameters,
+            defs::ObjectiveParameters::Destroy {
+                target_kind: Some("command_center".to_string()),
+            }
+        );
+        let unknown = MISSION.replace(
+            "Destroy(( target_kind: None ))",
+            "Destroy(( target_kind: Some(\"barracks\") ))",
+        );
+        let err = parse(&unknown).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("references unknown entity 'barracks'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_objective_kinds_are_rejected_loudly() {
+        let bad = MISSION.replace("\"BuildTrain\",", "\"Survive\",");
+        let err = parse(&bad).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown kind 'Survive' (known kinds: 'Destroy', 'BuildTrain')"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn kind_and_parameters_must_agree() {
+        let mismatched = MISSION.replace(
+            "kind: \"Destroy\",\n            parameters: Destroy(( target_kind: None )),",
+            "kind: \"BuildTrain\",\n            parameters: Destroy(( target_kind: None )),",
+        );
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'BuildTrain' but carries 'Destroy' parameters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_fields_are_errors_in_strict_mode() {
+        let extra = MISSION.replace(
+            "    rules: \"alpha\",",
+            "    rules: \"alpha\",\n    ai_settings: (),",
+        );
+        let err = parse(&extra).unwrap_err();
+        assert!(matches!(err, ContentError::Parse { .. }), "got: {err}");
+    }
+
+    #[test]
+    fn newer_schema_versions_are_refused() {
+        let future = MISSION.replace("schema_version: 1,", "schema_version: 2,");
+        let err = parse(&future).unwrap_err();
+        assert!(
+            err.to_string().contains("schema_version 2 is not loadable"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn the_id_must_match_the_file_stem() {
+        let renamed = MISSION.replace("id: \"crossroads_01\",", "id: \"crossroads_02\",");
+        let err = parse(&renamed).unwrap_err();
+        assert!(matches!(err, ContentError::IdMismatch { .. }), "got: {err}");
+    }
+
+    #[test]
+    fn display_names_must_be_ascii() {
+        let unicode = MISSION.replace("Crossroads", "Kreuzungen — Süd");
+        let err = parse(&unicode).unwrap_err();
+        assert!(
+            err.to_string().contains("must be non-empty ASCII"),
+            "got: {err}"
+        );
+        let empty = MISSION.replace("display_name: \"Crossroads\",", "display_name: \"\",");
+        let err = parse(&empty).unwrap_err();
+        assert!(
+            err.to_string().contains("must be non-empty ASCII"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_train_counts_must_be_positive() {
+        let zero = MISSION.replace("count: 4", "count: 0");
+        let err = parse(&zero).unwrap_err();
+        assert!(err.to_string().contains("count 0"), "got: {err}");
+    }
+
+    #[test]
+    fn an_absent_missions_directory_loads_as_no_missions() {
+        // read_category_optional's contract (ADR-0201 §3): a tree without
+        // missions/ is valid mission-less content — the FD-10 spirit, proven
+        // against a real directory scan.
+        let root =
+            std::env::temp_dir().join(format!("pandemonium-no-missions-{}", std::process::id()));
+        for category in ["rules", "entities", "factions", "maps"] {
+            std::fs::create_dir_all(root.join(category)).expect("category dir");
+        }
+        assert!(!root.join("missions").exists());
+        let sources = SourceMap::from_dir(&root).expect("a tree without missions loads");
+        assert!(sources.missions.is_empty());
+        // Present but empty: also legal, also empty.
+        std::fs::create_dir_all(root.join("missions")).expect("missions dir");
+        let sources = SourceMap::from_dir(&root).expect("an empty missions dir loads");
+        assert!(sources.missions.is_empty());
+        // And a stray subdirectory inside missions/ is refused loudly, exactly
+        // like every other category.
+        std::fs::create_dir_all(root.join("missions").join("nested")).expect("nested dir");
+        let err = SourceMap::from_dir(&root).unwrap_err();
+        assert!(
+            err.to_string().contains("subdirectories are not supported"),
+            "got: {err}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

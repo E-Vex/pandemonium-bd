@@ -397,3 +397,81 @@ pub(crate) struct RawHeightmap {
     /// The height rows, top to bottom. Each row has exactly `width` entries.
     pub rows: Vec<Vec<u16>>,
 }
+
+// ---------------------------------------------------------------------------
+// Missions (ADR-0201 §3)
+// ---------------------------------------------------------------------------
+
+/// `schema_version` supported by this build for mission files (ADR-0201 §3:
+/// the mission schema is versioned and forward-only like every other kind).
+pub(crate) const MISSION_SCHEMA_VERSION: u32 = 1;
+
+/// A mission file (ADR-0201 §3): a closed reference set into the content tree
+/// — the map, the faction, the rules — plus the ordered objective list
+/// (ADR-0201 §2). Phase 1 carries the destroy and build/train kinds; the
+/// vocabulary grows forward-only with the schema version (survive, reach,
+/// protect and gather are Phase 2 — ADR-0201 §9).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawMission {
+    /// File schema version.
+    pub schema_version: u32,
+    /// Stable mission id (must equal the file name stem).
+    pub id: String,
+    /// Human-facing name (ASCII only — the embedded font constraint,
+    /// ADR-0201 §5).
+    pub display_name: String,
+    /// The map this mission runs on (a map id in the same tree).
+    pub map: String,
+    /// The faction the mission player runs (a faction id in the same tree).
+    pub faction: String,
+    /// The ruleset the mission runs under (a rules id in the same tree).
+    pub rules: String,
+    /// The ordered objective list, AND-composed (ADR-0201 §2).
+    pub objectives: Vec<RawObjective>,
+}
+
+/// One objective as authored: the kind spelling, the parameters block, and
+/// whether the objective is optional. Optional objectives never gate
+/// `MatchEnded`; they feed the end screen and story hooks (ADR-0201 §2).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawObjective {
+    /// The objective kind spelling ("Destroy" or "BuildTrain"; unknown
+    /// spellings are loud errors, never silently mapped).
+    pub kind: String,
+    /// The kind's parameters block.
+    pub parameters: RawObjectiveParameters,
+    /// Whether the objective is optional.
+    pub optional: bool,
+}
+
+/// Objective parameters, one variant per kind — the same authoring shape as
+/// capability blocks (`Health(( max: 500 ))`).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum RawObjectiveParameters {
+    /// Destroy parameters: `None` = all enemy structures (today's elimination
+    /// rule); `Some(kind)` = every enemy structure of that kind.
+    Destroy(RawDestroyParams),
+    /// Build/train parameters: which kind, and how many.
+    BuildTrain(RawBuildTrainParams),
+}
+
+/// Destroy parameters.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawDestroyParams {
+    /// The target structure kind, or `None` for all enemy structures.
+    pub target_kind: Option<String>,
+}
+
+/// Build/train parameters.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawBuildTrainParams {
+    /// The entity kind to build or train.
+    pub kind: String,
+    /// How many must exist.
+    pub count: u32,
+}
