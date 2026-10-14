@@ -946,4 +946,182 @@ mod tests {
             PlayerId(0)
         );
     }
+
+    // -----------------------------------------------------------------------
+    // The Phase 1 byte-equivalence proof (ADR-0201 §2a, B-012 Task 4)
+    // -----------------------------------------------------------------------
+
+    /// Strips the objective-state family from an event stream — the one
+    /// outward difference a mission wrapper may add (FD-9: events are
+    /// unhashed outputs).
+    fn strip_objective_events(events: &[Event]) -> Vec<Event> {
+        events
+            .iter()
+            .filter(|event| !matches!(event, Event::ObjectiveState { .. }))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn the_mission_less_path_is_byte_equivalent_to_today() {
+        // THE proof: the same world, setup, seed, and command stream produce
+        // identical state hashes at every tick with and without a mission
+        // wrapper — while the mission's evaluation is provably live (its
+        // optional objective completes on tick 0 and emits an event). The
+        // mission state is derived (the A-066 pattern): it can add outward
+        // events, never hashed state.
+        let world = two_player_world();
+        let setup = two_player_setup();
+        // The wrapper: a required destroy objective that stays pending (the
+        // enemy stands) plus an optional build/train objective that
+        // completes on tick 0 (player 0 owns one kind-0 structure) — the
+        // evaluation runs and resolves through the whole window.
+        let mission = mission_for(
+            PlayerId(0),
+            &[
+                MissionObjective {
+                    kind: MissionObjectiveKind::Destroy,
+                    parameters: MissionObjectiveParameters::Destroy { target_kind: None },
+                    optional: false,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::BuildTrain,
+                    parameters: MissionObjectiveParameters::BuildTrain {
+                        kind: pandemonium_sim_api::KindId(0),
+                        count: 1,
+                    },
+                    optional: true,
+                },
+            ],
+        );
+        let mut plain = Sim::new(&world, setup.clone());
+        let mut wrapped = Sim::with_mission(&world, setup, mission);
+
+        // The same command stream feeds both sims (deterministically rejected
+        // — the fixture's structures carry no Move capability; rejections are
+        // events, and events are unhashed outputs, so the streams are equal
+        // and the gate's behavior is exercised all the same).
+        let script: Vec<(u32, Command)> = vec![
+            (
+                0,
+                Command::new(
+                    PlayerId(0),
+                    0,
+                    1,
+                    CommandKind::Move {
+                        units: vec![pandemonium_sim_api::EntityId(1)],
+                        target: pandemonium_fx::Vec2Fx::from_ints(4, 4),
+                    },
+                ),
+            ),
+            (
+                5,
+                Command::new(
+                    PlayerId(1),
+                    5,
+                    1,
+                    CommandKind::Move {
+                        units: vec![pandemonium_sim_api::EntityId(2)],
+                        target: pandemonium_fx::Vec2Fx::from_ints(6, 6),
+                    },
+                ),
+            ),
+        ];
+
+        // Tick 0, before any step: identical state by construction.
+        assert_eq!(plain.state_hash(), wrapped.state_hash());
+
+        let mut objective_event_seen = false;
+        let mut other_match_ended = false;
+        for tick in 0..7200u32 {
+            let due: Vec<Command> = script
+                .iter()
+                .filter(|(at, _)| *at == tick)
+                .map(|(_, command)| command.clone())
+                .collect();
+            let plain_out = plain.step(&due);
+            let wrapped_out = wrapped.step(&due);
+            // Every periodic checkpoint hash (each 30 ticks) is identical.
+            assert_eq!(
+                plain_out.hash,
+                wrapped_out.hash,
+                "periodic hash diverged entering tick {}",
+                tick + 1
+            );
+            // The event streams are identical modulo the objective-state
+            // family — the only outward difference a mission may add.
+            assert_eq!(
+                strip_objective_events(&plain_out.events),
+                strip_objective_events(&wrapped_out.events),
+                "event streams diverged entering tick {}",
+                tick + 1
+            );
+            for event in &wrapped_out.events {
+                match event {
+                    Event::ObjectiveState { .. } => objective_event_seen = true,
+                    Event::MatchEnded { .. } => other_match_ended = true,
+                    _ => {}
+                }
+            }
+            // The brief's named ticks, hashed explicitly on top of the
+            // periodic trail.
+            if tick + 1 == 300 || tick + 1 == 7200 {
+                assert_eq!(
+                    plain.state_hash(),
+                    wrapped.state_hash(),
+                    "state hash diverged at tick {}",
+                    tick + 1
+                );
+            }
+        }
+        // The mission's evaluation was live: the optional objective resolved
+        // and surfaced, yet nothing hashed moved.
+        assert!(
+            objective_event_seen,
+            "the wrapper's evaluation ran and emitted"
+        );
+        // The MatchEnded outcome is identical too: both matches are
+        // unresolved at the flagship budget (the enemy stands; nobody
+        // resigned; nothing decays).
+        assert!(!other_match_ended);
+        assert_eq!(plain.outcome(), wrapped.outcome());
+        assert_eq!(plain.outcome(), None);
+        assert_eq!(plain.tick(), wrapped.tick());
+        assert_eq!(plain.next_entity_id(), wrapped.next_entity_id());
+    }
+
+    #[test]
+    fn the_mission_less_path_stays_byte_equivalent_after_the_match_resolves() {
+        // The resolved regime: player 1's structure decays away on tick 0, so
+        // the plain sim ends through elimination and the wrapped sim ends
+        // through the mission's AND-composition — the same winner at the same
+        // tick — and both sims keep stepping their identical post-match
+        // states to the same hashes at every tick afterwards.
+        let world = decaying_enemy_world();
+        let setup = two_player_setup();
+        let mut plain = Sim::new(&world, setup.clone());
+        let mut wrapped = Sim::with_mission(&world, setup, destroy_all(PlayerId(0)));
+        assert_eq!(plain.state_hash(), wrapped.state_hash());
+        for tick in 0..7200u32 {
+            let plain_out = plain.step(&[]);
+            let wrapped_out = wrapped.step(&[]);
+            assert_eq!(
+                plain_out.hash,
+                wrapped_out.hash,
+                "periodic hash diverged entering tick {}",
+                tick + 1
+            );
+            assert_eq!(
+                strip_objective_events(&plain_out.events),
+                strip_objective_events(&wrapped_out.events),
+                "event streams diverged entering tick {}",
+                tick + 1
+            );
+        }
+        // Identical resolution: same winner, same end tick.
+        assert_eq!(plain.outcome(), wrapped.outcome());
+        let outcome = plain.outcome().expect("both resolved on tick 0");
+        assert_eq!(outcome.winner, PlayerId(0));
+        assert_eq!(outcome.ended_tick, 0);
+    }
 }
