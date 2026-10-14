@@ -20,7 +20,10 @@ use pandemonium_sim::TrivialWorld;
 use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
-use pandemonium_sim_api::{PlayerId, ResourceId, Vec2Fx};
+use pandemonium_sim_api::{
+    KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, MissionObjectives,
+    PlayerId, ResourceId, Vec2Fx,
+};
 
 use crate::defs;
 use crate::error::ContentError;
@@ -235,6 +238,95 @@ impl ContentTree {
         h.write_u32(MISSION_ID_DOMAIN);
         encode_mission(&mut h, mission);
         h.finish()
+    }
+
+    /// Resolves a mission's objective set into the simulation's vocabulary
+    /// (ADR-0201 §2a): kind-id strings become `KindId`s through this tree's
+    /// entity order — the exact order [`ContentBundle::world`] builds its
+    /// kinds in, so the ids the objectives carry are the ids the world's
+    /// entities carry. This is the mission data seam beside `world()`
+    /// (FD-6: mission data reaches the simulation only through the content
+    /// seam, and the sim depends on nothing above it).
+    ///
+    /// `player` is the mission player the objectives belong to — runtime
+    /// data, not mission data: the caller picks the slot (Phase 1 tools and
+    /// clients use the first map start's player).
+    pub fn mission_objectives(
+        &self,
+        mission_id_str: &str,
+        player: PlayerId,
+    ) -> Result<MissionObjectives, ContentError> {
+        let Some(mission) = self.mission(mission_id_str) else {
+            return Err(ContentError::Bundle {
+                detail: format!(
+                    "unknown mission '{mission_id_str}' (loaded missions: {})",
+                    self.missions
+                        .iter()
+                        .map(|mission| mission.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        let kind_index: BTreeMap<&str, u32> = self
+            .entities
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| (entity.id.as_str(), index as u32))
+            .collect();
+        let mut objectives = Vec::with_capacity(mission.objectives.len());
+        for objective in &mission.objectives {
+            // The loader guarantees kind/parameters agreement and reference
+            // existence; the missing-lookup arms are unreachable defense that
+            // error loudly rather than emit a wrong or silently-widened id.
+            let parameters = match &objective.parameters {
+                defs::ObjectiveParameters::Destroy { target_kind } => {
+                    let resolved = target_kind.as_ref().map(|id| {
+                        kind_index
+                            .get(id.as_str())
+                            .copied()
+                            .map(KindId)
+                            .ok_or_else(|| ContentError::Bundle {
+                                detail: format!(
+                                    "mission '{}' references kind '{}' that the tree's \
+                                     entities do not carry — the loader rejected this shape, \
+                                     so this is a content-seam bug, please report it",
+                                    mission.id, id
+                                ),
+                            })
+                    });
+                    MissionObjectiveParameters::Destroy {
+                        target_kind: resolved.transpose()?,
+                    }
+                }
+                defs::ObjectiveParameters::BuildTrain { kind, count } => {
+                    let Some(resolved) = kind_index.get(kind.as_str()).copied() else {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "mission '{}' references kind '{}' that the tree's entities do \
+                                 not carry — the loader rejected this shape, so this is a \
+                                 content-seam bug, please report it",
+                                mission.id, kind
+                            ),
+                        });
+                    };
+                    MissionObjectiveParameters::BuildTrain {
+                        kind: KindId(resolved),
+                        count: *count,
+                    }
+                }
+            };
+            let kind = match parameters {
+                MissionObjectiveParameters::Destroy { .. } => MissionObjectiveKind::Destroy,
+                MissionObjectiveParameters::BuildTrain { .. } => MissionObjectiveKind::BuildTrain,
+            };
+            objectives.push(MissionObjective {
+                kind,
+                parameters,
+                optional: objective.optional,
+            });
+        }
+        Ok(MissionObjectives { player, objectives })
     }
 
     /// Builds the bundle for one map. Every faction travels along (the Alpha
@@ -1209,6 +1301,62 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("duplicate id 'testing_01' in category 'missions'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn mission_objectives_resolve_kind_ids_through_the_tree_entity_order() {
+        // The content seam (ADR-0201 §2a): string kind ids become KindIds in
+        // the tree's entity order — base sorts before ore_node before worker
+        // (id order), so worker is KindId(2) — the same index the world's
+        // kinds vector assigns.
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the mission-bearing tree loads");
+        let objectives = tree
+            .mission_objectives("testing_01", PlayerId(0))
+            .expect("the objective set resolves");
+        assert_eq!(objectives.player, PlayerId(0));
+        assert_eq!(objectives.objectives.len(), 2);
+        assert_eq!(
+            objectives.objectives[0],
+            MissionObjective {
+                kind: MissionObjectiveKind::Destroy,
+                parameters: MissionObjectiveParameters::Destroy { target_kind: None },
+                optional: false,
+            }
+        );
+        assert_eq!(
+            objectives.objectives[1],
+            MissionObjective {
+                kind: MissionObjectiveKind::BuildTrain,
+                parameters: MissionObjectiveParameters::BuildTrain {
+                    kind: KindId(2), // "worker" — the third id in sorted order
+                    count: 4,
+                },
+                optional: true,
+            }
+        );
+        // And a named destroy target resolves too.
+        let targeted = MISSION.replace(
+            "Destroy(( target_kind: None ))",
+            "Destroy(( target_kind: Some(\"base\") ))",
+        );
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", &targeted))
+            .expect("the targeted mission loads");
+        let objectives = tree
+            .mission_objectives("testing_01", PlayerId(0))
+            .expect("resolves");
+        assert_eq!(
+            objectives.objectives[0].parameters,
+            MissionObjectiveParameters::Destroy {
+                target_kind: Some(KindId(0)), // "base" sorts first
+            }
+        );
+        // Unknown missions are refused loudly.
+        let err = tree.mission_objectives("missing", PlayerId(0)).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"
         );
     }
