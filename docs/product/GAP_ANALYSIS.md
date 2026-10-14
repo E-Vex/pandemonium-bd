@@ -35,8 +35,8 @@ assumes — but it is not a product. A player-facing R1 needs something double-c
 
 | Item | Current state | Gap | Severity | Size |
 |---|---|---|---|---|
-| Binary distribution | None. `.github/workflows/` holds `ci.yml`, `nightly.yml`, `audit.yml` only — no release workflow, no artifacts, no channels | R1's defining deliverable: per-OS builds from tagged commits | **R1-blocker** | M (L if all three OS are first-class) |
-| Versioning | Workspace `version = "0.1.0"` (`Cargo.toml:6`); **zero git tags**; `CHANGELOG.md` keys entries to milestone tags that do not exist in the repo | A shipped build must be identifiable: tag, version string, and a visible build id (see §3) | **R1-blocker** | S |
+| Binary distribution | Closed (A-004): `.github/workflows/release.yml` builds tagged commits into per-OS artifacts (Linux/Windows/macOS archives + `checksums.txt`) and publishes them as GitHub releases; `v0.1.0` and `v0.1.1` are both tagged and published | none | — | — |
+| Versioning | Closed: workspace `version = "0.1.1"` (`Cargo.toml:6`); git tags `v0.1.0` and `v0.1.1` exist and are published as GitHub releases (per-OS archives + `checksums.txt`); the build id is visible in the client — the F3 overlay / F8 sidecar line and, since A-009, the main-menu and pause-menu footer | none | — | — |
 | License | ~~"No license has been published yet"~~ **decided — MIT** (the owner's A-005 ruling; `LICENSE` at the repo root, the README Licence section points at it, and `THIRD_PARTY_NOTICES.md` catalogues the third-party terms; third-party components, including the embedded font, keep their own licences) | ~~Nothing can be redistributed until the owner decides terms~~ resolved: the project's own code and data are redistributable under MIT per `LICENSE` | ~~**R1-blocker**~~ closed (A-005) | S (done) |
 | Install footprint | The binary resolves content from the crate manifest (`main.rs:208` `content_path()` walks from `CARGO_MANIFEST_DIR`); run the raw exe elsewhere and it cannot find the content tree | exe-relative (or installed-asset) content discovery | **R1-blocker** (pairs with packaging) | S |
 
@@ -61,9 +61,9 @@ what is missing is the furniture players expect around a title screen.
 
 | Item | Current state | Gap | Severity | Size |
 |---|---|---|---|---|
-| Main menu | `MainMenu -> (Settings | NewMatch)` (`screens.rs:1-18`); rows New Match / Settings / Quit; focus starts at row 0; hover moves focus; keyboard and mouse share one navigation core | nothing structural | — | — |
+| Main menu | `MainMenu -> (Settings | NewMatch)` (`screens.rs:1-18`); rows New Match / Settings / Controls / Quit (the Controls row added by A-009); focus starts at row 0; hover moves focus; keyboard and mouse share one navigation core | none | — | — |
 | **observed** | `screenshots/menu.png` — "PANDEMONIUM" panel over the default map backdrop, three rows, fully legible | real capture, suitable for the README | — | — |
-| Version / build identity on menu | Absent — no version string anywhere in the UI | A support conversation starts with "what build are you on?" — the menu (and F8 sidecar) should carry it | **R1-should** | S |
+| Version / build identity on menu | Closed (A-009): a build-identity footer renders on the main menu and the pause menu (`MenuInput.version`, `ui.rs:697-701`, the `show_version` guard `ui.rs:905-913`) — the same string the F3 overlay and the F8 sidecar print | none | — | — |
 | Menu ambience | None — audio is event-cue-only by design (ADR-0002); menus are silent | Menu music / ambience is a product-phase content question, not a system gap | later | M |
 | Quit confirmation | Esc at the main menu quits directly (AI-Handoff §9, menu gotchas); there is no live match at the menu, so nothing is lost today | Once a "quit to menu" mid-match exists it needs a confirm (see §8) | later | S |
 | Credits / about / links | Absent | Standard product furniture; the docs exist and are one row away | later | S |
@@ -106,7 +106,7 @@ and the A15 restart path is tested. The one product-shaped hole is focus behavio
 | Item | Current state | Gap | Severity | Size |
 |---|---|---|---|---|
 | Pause menu | Resume / Settings / Restart / Quit to Menu (`screens.rs` PauseMenu rows); `P` pauses without the menu; the sim pauses through `MatchHost::set_paused` (`host.rs:203`) | none structural | — | — |
-| Focus loss / minimize | `WindowEvent::Focused` is recorded and nothing else (`main.rs:1782-1784`); the event loop keeps advancing the host while unfocused or minimized | Classic RTS behavior is auto-pause on focus loss (at least when not spectating) — today a minimized player returns to a match that ran on without them | **R1-should** | S |
+| Focus loss / minimize | Closed (A-009): the pure `auto_pause_on_focus(screen, mode, is_paused, event)` function (`screens.rs:201-216`) pauses a live human-driven match on focus loss or minimize — `WindowEvent::Focused(false)` and `Resized(PhysicalSize::ZERO)` map to `FocusEvent` and apply `Effect::Pause` through the existing `open_pause()` path; regaining focus never auto-resumes; spectated (AiVsAi) matches keep running | none | — | — |
 | Pause state legibility | The HUD prints paused state (debug overlay / evidence lines); the visual "PAUSED" treatment is minimal | A first-time player should never wonder whether time is moving | **R1-should** | S |
 
 ## 7. End screen
@@ -130,7 +130,7 @@ all present; they are merely *unprotected*.
 | Item | Current state | Gap | Severity | Size |
 |---|---|---|---|---|
 | Rematch / restart | End screen R; pause menu Restart; two fresh hosts from one seed hash identically (`tests/match_rules.rs`, A15) | none | — | — |
-| Quit to menu mid-match | Pause menu row, and the Esc ladder reaches it (AI-Handoff §9) — the live match is discarded with **no confirmation** | A mis-press (Esc ladder + Enter) throws away a 10-minute match; a confirm row or a two-press guard is the fix | **R1-should** | S |
+| Quit to menu mid-match | Closed (A-009): the pause menu's Restart and Quit to Menu rows open a Confirm screen first — two rows, Cancel the default focus, Esc = Cancel, the subline "the current match will be lost"; Confirm runs the existing RestartMatch / DropMatch effect unchanged (`screens.rs:395-399`, `:651-673`) | none | — | — |
 | Window close | Graceful: the exit line reports how the run ended (**observed** pattern in the smoke; `exiting` handler, `main.rs`) | none | — | — |
 
 ## 9. Settings
@@ -159,7 +159,7 @@ line, and a packaged player has no console.
 | Missing content | anyhow chain with the attempted path, exit 1 (`main.rs:97-107`) | unreachable from a cargo run, reachable from a packaged exe (see §1) — same friendly-surface fix | **R1-should** (blocker with packaging) | S |
 | Audio failure | Two-arm sink: startup probe with a `/dev/snd` pre-check (`sound.rs:521-541`, A-124), null fallback counts cues, run continues — **observed** under Xvfb | The player is never *told* the game is silent: the arm is reported to stdout only. A one-row settings/menu notice ("audio: no device found") closes it | **R1-should** | S |
 | Resize | `renderer.resize` + camera aspect on every `Resized` (`main.rs:1247-1253`) | none | — | — |
-| Minimize | No handler (no `Minimized` match arm in `main.rs`) | pairs with auto-pause (§6) | **R1-should** (with §6) | S |
+| Minimize | Closed (A-009): winit 0.30 has no dedicated `Minimized` variant — minimize arrives as `Resized(PhysicalSize::ZERO)`, which maps to `FocusEvent::Minimized` and auto-pauses a live human-driven match through `auto_pause_on_focus` (see §6) | none | — | — |
 | DPI / scale factor | Zero handling — no `scale_factor` reference in the client; the UI lays out against physical pixels (`window.inner_size()` throughout `main.rs`/`ui.rs`), and the embedded font rasterizes at fixed sizes (`text.rs`) | On HiDPI displays the window renders at 2× physical pixels with same-size UI text → small text; on fractional-scale Wayland, blur. Needs a UI-scale factor derived from winit's scale factor (see §13) | **R1-should** | M |
 | Fullscreen | Startup + live toggle, borderless (`main.rs:723-751`, applied at `main.rs:1233-1235`) | Alt+Enter not bound; exclusive fullscreen not offered (borderless is the right default) | later | S |
 | Panic path | No custom panic hook; a panic in the client prints to stderr and exits — while the sim crates' invariants are soak-policed, client-side panics lose the F8 evidence | A panic hook that dumps the F8 report before exiting turns every client crash into a filed repro | **R1-should** | S |
@@ -179,7 +179,7 @@ line, and a packaged player has no console.
 |---|---|---|---|---|
 | In-match reference | Standing one-line card at the HUD's edge (`report.rs` `CONTROLS_LINE`, rendered by `ui.rs`; **observed** visible in `screenshots/match.png`), plus the armed-mode instruction line and refusal reasons | none for the line itself | — | — |
 | Card accuracy | The card mirrors the README/PLAYTEST copy (M10.2 Phase 1 re-test A-101 pinned the controls themselves) | keep the three copies in sync mechanically (a shared const already exists client-side) | later | S |
-| Dedicated screen | None — the line vanishes in menus/pause | a Controls screen (pause menu row / main menu row) is the S-sized fix and the A14-friendliest one on this list | **R1-should** | S |
+| Dedicated screen | Closed (A-009): the Controls screen exists — one row on the main menu and one on the pause menu (`screens.rs:367-370`, `:387-391`), the 16-entry `CONTROLS_TABLE` rendered as informational rows above a Back button, Back/Esc returning via the Settings `return_to` pattern (`Screen::Controls { return_to }`) | none | — | — |
 
 ## 13. Accessibility basics
 
