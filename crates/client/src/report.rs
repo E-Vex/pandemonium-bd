@@ -32,6 +32,38 @@ pub const CONTROLS_LINE: &str = "left-click/drag select; right-click move/attack
      A+click attack-move; S stop; Q/E rotate; Ctrl+wheel pitch; P pause; \
      F3 overlay; F8 bug report; R restart";
 
+/// The full controls reference table — every binding the client actually
+/// handles, derived from the winit event translation in `main.rs` and the
+/// pure state machine's menu navigation in `screens.rs`/`ui.rs`. Lives in
+/// ONE place next to [`CONTROLS_LINE`] so the standing summary, the
+/// Controls screen, and the F8 sidecar (which prints `controls_line`)
+/// cannot drift apart silently.
+///
+/// Each entry is `(action, binding)`. ASCII only — the embedded font is an
+/// ASCII subset of DejaVu Sans (the Phase 3 trap T8).
+///
+/// Order is the on-screen order of the Controls screen (camera first, then
+/// selection/orders, then match/debug). The table fits the smallest
+/// supported window (800×600 logical) at the menu pass's line pitch.
+pub const CONTROLS_TABLE: &[(&str, &str)] = &[
+    ("Pan camera", "W A S D / Arrows"),
+    ("Rotate camera", "Q/E held or middle-drag"),
+    ("Zoom / pitch", "wheel / Ctrl+wheel"),
+    ("Camera pan (alt)", "right-drag"),
+    ("Select units", "left-click / left-drag"),
+    ("Move/Attack/Gather", "right-click"),
+    ("Attack-move", "A + left-click"),
+    ("Stop", "S"),
+    ("Control groups", "1-9 (Ctrl=assign, 2x=center)"),
+    ("Jump to event/base", "Space"),
+    ("Pause", "P"),
+    ("Cancel / open pause", "Esc (ladder)"),
+    ("Restart (after end)", "R"),
+    ("Single-step (paused)", "Period (.)"),
+    ("Debug overlay", "F3"),
+    ("Bug report", "F8"),
+];
+
 /// The armed-attack-move instruction (the HUD line shown while 'A' is armed).
 pub const ATTACK_MOVE_LINE: &str = "ATTACK MOVE - left-click a target (Esc cancels)";
 
@@ -325,6 +357,48 @@ mod tests {
         assert_eq!(controls_line(true, false), ATTACK_MOVE_LINE);
         assert_eq!(controls_line(false, true), "order refused - see HUD notice");
         assert_eq!(controls_line(false, false), CONTROLS_LINE);
+    }
+
+    #[test]
+    fn the_controls_table_covers_every_binding_the_standing_line_names() {
+        // CONTROLS_LINE is the standing summary; CONTROLS_TABLE is the full
+        // reference. The line must name no binding the table omits, and the
+        // table must be ASCII (the embedded font subset, the Phase 3 trap T8).
+        let table_text: String = CONTROLS_TABLE
+            .iter()
+            .flat_map(|(action, binding)| [*action, *binding])
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Every binding the standing line names appears in the table.
+        for needle in [
+            "left-click",  // select
+            "right-click", // move/attack/gather
+            "A",           // attack-move
+            "S",           // stop
+            "Q",           // rotate
+            "E",           // rotate
+            "Ctrl+wheel",  // pitch
+            "P",           // pause
+            "F3",          // overlay
+            "F8",          // bug report
+            "R",           // restart
+        ] {
+            assert!(
+                table_text.contains(needle),
+                "the table must mention {needle:?} (the standing line does)"
+            );
+        }
+        // The table is ASCII-only (the embedded font subset).
+        for (action, binding) in CONTROLS_TABLE {
+            assert!(action.is_ascii(), "action {action:?} must be ASCII");
+            assert!(binding.is_ascii(), "binding {binding:?} must be ASCII");
+        }
+        // Every entry has a non-empty action and a non-empty binding (the
+        // Controls screen renders one row per entry).
+        for (action, binding) in CONTROLS_TABLE {
+            assert!(!action.is_empty(), "no empty action");
+            assert!(!binding.is_empty(), "no empty binding");
+        }
     }
 
     /// The setup `driven_host` builds (kept out of the helper so the record

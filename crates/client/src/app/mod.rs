@@ -934,6 +934,13 @@ impl App {
                 (size.width as f32, size.height as f32)
             })
             .unwrap_or((1920.0, 1080.0));
+        // A-009 task 1: the Controls screen renders the standing binding
+        // table (report.rs) as informational rows. Every other menu screen
+        // passes an empty slice — its rows ARE the buttons.
+        let info_lines: &[(&'static str, &'static str)] = match &self.screen.screen {
+            Screen::Controls { .. } => report::CONTROLS_TABLE,
+            _ => &[],
+        };
         let built = ui::build_menu(ui::MenuInput {
             atlas: renderer.atlas(),
             viewport,
@@ -942,6 +949,7 @@ impl App {
             maps: &maps,
             end_lines: None, // no host behind a menu-only frame
             backdrop: [0.02, 0.03, 0.05, 0.94],
+            info_lines,
         });
         self.menu_buttons = built.buttons;
         renderer.queue_ui(&built.quads);
@@ -1351,6 +1359,14 @@ impl App {
                 AI => ("DEFEAT", "Your base was destroyed."),
                 _ => ("MUTUAL DESTRUCTION", "Both sides were eliminated."),
             });
+            // A-009 task 1: the Controls screen renders the standing binding
+            // table (report.rs) as informational rows here too (when opened
+            // from the pause menu — the in-match draw path serves the
+            // pause menu and everything reachable from it).
+            let info_lines: &[(&'static str, &'static str)] = match &self.screen.screen {
+                Screen::Controls { .. } => report::CONTROLS_TABLE,
+                _ => &[],
+            };
             let built = ui::build_menu(ui::MenuInput {
                 atlas: renderer.atlas(),
                 viewport,
@@ -1359,6 +1375,7 @@ impl App {
                 maps: &maps,
                 end_lines: headline,
                 backdrop: [0.0, 0.0, 0.0, 0.55],
+                info_lines,
             });
             self.menu_buttons = built.buttons;
             quads.extend(built.quads);

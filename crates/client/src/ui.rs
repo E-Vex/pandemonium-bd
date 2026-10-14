@@ -689,6 +689,11 @@ pub struct MenuInput<'a> {
     /// The dimming backdrop's strength over a live match (menus without a
     /// host behind them dim harder).
     pub backdrop: [f32; 4],
+    /// A-009 task 1: informational rows rendered as plain text between the
+    /// title and the buttons (the Controls screen's binding table, sourced
+    /// from [`crate::report::CONTROLS_TABLE`]). Empty for every other
+    /// screen — those screens render buttons only.
+    pub info_lines: &'a [(&'static str, &'static str)],
 }
 
 /// What [`build_menu`] produced: the quads to draw and the hit rects.
@@ -719,7 +724,9 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
         Screen::MainMenu => vec![
             row(0, ButtonId::NewMatch, "New Match", String::new()),
             row(1, ButtonId::Settings, "Settings", String::new()),
-            row(2, ButtonId::Quit, "Quit", String::new()),
+            // A-009 task 1: the Controls row opens the new screen.
+            row(2, ButtonId::Controls, "Controls", String::new()),
+            row(3, ButtonId::Quit, "Quit", String::new()),
         ],
         Screen::NewMatch(fields) => {
             let seed = if fields.seed_text.is_empty() {
@@ -779,13 +786,19 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
         Screen::PauseMenu => vec![
             row(0, ButtonId::Resume, "Resume", String::new()),
             row(1, ButtonId::Settings, "Settings", String::new()),
-            row(2, ButtonId::PauseRestart, "Restart", String::new()),
-            row(3, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
+            // A-009 task 1: the Controls row on the pause menu.
+            row(2, ButtonId::Controls, "Controls", String::new()),
+            row(3, ButtonId::PauseRestart, "Restart", String::new()),
+            row(4, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
         ],
         Screen::EndScreen => vec![
             row(0, ButtonId::Rematch, "Rematch", String::new()),
             row(1, ButtonId::ToMenu, "Main Menu", String::new()),
         ],
+        // A-009 task 1: the Controls screen has one button (Back). The
+        // binding table is rendered separately as `info_lines` (not rows —
+        // they are plain text, not focusable buttons).
+        Screen::Controls { .. } => vec![row(0, ButtonId::Back, "Back", String::new())],
         Screen::InMatch => Vec::new(), // the match owns the input; no rows
     }
 }
@@ -820,6 +833,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         maps: _,
         end_lines,
         backdrop,
+        info_lines,
     } = input;
     let mut quads: Vec<UiQuad> = Vec::new();
     let mut buttons = Vec::new();
@@ -835,6 +849,10 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
     const PAD: f32 = 10.0;
     const ROW_H: f32 = 30.0;
     const ROW_GAP: f32 = 8.0;
+    // A-009 task 1: the Controls screen's info rows use a tighter pitch
+    // (line_height + a small gap) so the 16-row table fits the smallest
+    // supported window (800×600) alongside the title and the Back button.
+    const INFO_GAP: f32 = 4.0;
     let panel_w = 440.0_f32.min(viewport.0 * 0.9);
     let row_w = panel_w - 2.0 * PAD;
 
@@ -845,6 +863,8 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         (crate::screens::Screen::NewMatch(_), _) => ("NEW MATCH".to_string(), None),
         (crate::screens::Screen::Settings { .. }, _) => ("SETTINGS".to_string(), None),
         (crate::screens::Screen::PauseMenu, _) => ("PAUSED".to_string(), None),
+        // A-009 task 1: the Controls screen's title.
+        (crate::screens::Screen::Controls { .. }, _) => ("CONTROLS".to_string(), None),
         _ => ("PANDEMONIUM".to_string(), None),
     };
 
@@ -852,6 +872,11 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
     let mut panel_h = PAD + line_height + PAD + ROW_GAP; // title + gap
     if subline.is_some() {
         panel_h += line_height + 4.0;
+    }
+    // A-009 task 1: the info_lines block sits between the title (or its
+    // subline) and the buttons — one text line per (action, binding) pair.
+    if !info_lines.is_empty() {
+        panel_h += info_lines.len() as f32 * (line_height + INFO_GAP) + ROW_GAP;
     }
     panel_h += rows.len() as f32 * (ROW_H + ROW_GAP);
     if hint {
@@ -889,6 +914,30 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
             [1.0, 1.0, 1.0, 0.9],
         ));
         cursor_y += line_height + 4.0;
+    }
+
+    // A-009 task 1: the info_lines block (the Controls screen's binding
+    // table). One line per (action, binding) pair — action left, binding
+    // right, both as plain text (no focus ring, no button — they are not
+    // focusable; only the Back button below is).
+    if !info_lines.is_empty() {
+        for (action, binding) in info_lines {
+            quads.extend(atlas.layout(
+                action,
+                panel_x + PAD + 8.0,
+                cursor_y + atlas.ascent,
+                [0.78, 0.84, 0.92, 0.85],
+            ));
+            let value_w = atlas.measure(binding);
+            quads.extend(atlas.layout(
+                binding,
+                panel_x + panel_w - PAD - 8.0 - value_w,
+                cursor_y + atlas.ascent,
+                [0.62, 0.68, 0.78, 0.85],
+            ));
+            cursor_y += line_height + INFO_GAP;
+        }
+        cursor_y += ROW_GAP;
     }
 
     // The rows.
@@ -1343,6 +1392,7 @@ mod tests {
             maps: MAPS.get_or_init(|| vec![("crossroads".to_string(), "Crossroads".to_string())]),
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
         }
     }
 
@@ -1383,6 +1433,7 @@ mod tests {
                 maps: &[("crossroads".to_string(), "Crossroads".to_string())],
                 end_lines: Some(("VICTORY", "You eliminated the enemy.")),
                 backdrop: [0.0, 0.0, 0.0, 0.5],
+                info_lines: &[],
             };
             let built = build_menu(input);
             let expected: Vec<crate::screens::ButtonId> = (0..state.button_count())
@@ -1410,6 +1461,7 @@ mod tests {
             maps: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
         });
         assert_eq!(built.buttons.len(), 9);
         for button in &built.buttons {
