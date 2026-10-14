@@ -27,7 +27,7 @@
 | What | Pandemonium — an RTS **foundation** that grows into a game (architecture first, content is data) |
 | Stack | Rust 1.98.1 (pinned by `rust-toolchain.toml`), edition 2021, fully custom engine on winit/wgpu — no game engine, no ECS framework |
 | Repo | `github.com/E-Vex/pandemonium-bd`, branch `master`. `git status` must be clean before work begins |
-| Presentation | **3D perspective over the 2D logical ground plane** — the sim stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md)) |
+| Presentation | **3D perspective over the 2D logical ground plane** — the sim stays 2D fixed-point; 3D is presentation-only ([ADR-0001](docs/adr/0001-3d-presentation.md)); the authoritative-vs-presentation content boundary is accepted ([ADR-0200](docs/adr/0200-authoritative-vs-presentation-data.md)) |
 | Status | **M10.2 (playtest-1 findings): COMPLETE — all five phases.** Phase 4 (audio) delivered and re-tested **clean on real hardware** (A-126, 2026-10-09); Phase 5 (verification & handoff) closed the milestone: full gate green in dev and release, the three goldens bit-identical, the Xvfb+XTEST machine pass re-ran the M10.2 paths (controls, menus/settings, the audio evidence lines), and the A14 playtest is scheduled — five first-time tester slots in `docs/PLAYTEST.md` §7. Next: the A14 human playtest → Alpha declaration |
 | Goldens (never move) | demo `0xb6fff6659cfb7709` (seed 7, 300 ticks) · flagship `0x6e9a18bd7c5f699f` (seed 7, 7200 ticks AI-vs-AI; tick-0 `0x71a924ad5799e4b3`) · content `0x9bc18c521107b262` (map id `0xd38136401ab02ff1`) |
 | Tests | 576 dev / 571 release (5 should-panic invariant tests are debug-only) |
