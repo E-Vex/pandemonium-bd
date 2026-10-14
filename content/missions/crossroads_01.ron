@@ -1,0 +1,29 @@
+// The Phase 1 mission (ADR-0201 §9): the vertical slice — one mission on
+// crossroads_64 with the unchanged Legion content. The objective set is the
+// two kinds the slice proves: destroy the enemy (required) and train four
+// workers (optional). No fog preset, no AI settings, no restrictions — those
+// are Phase 2; no campaign file — that is Phase 3.
+(
+    schema_version: 1,
+    id: "crossroads_01",
+    display_name: "Crossroads",
+    map: "crossroads_64",
+    faction: "legion",
+    rules: "alpha",
+    objectives: [
+        // Destroy every enemy structure — today's elimination rule, now
+        // authored as the mission's required objective.
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: None )),
+            optional: false,
+        ),
+        // Train four workers — optional: it feeds the end screen and the
+        // story hooks, never the match outcome.
+        (
+            kind: "BuildTrain",
+            parameters: BuildTrain(( kind: "worker", count: 4 )),
+            optional: true,
+        ),
+    ],
+)
