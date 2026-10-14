@@ -409,6 +409,7 @@ mod tests {
                 format_version: FORMAT_VERSION,
                 content_hash: 0,
                 map_id: 0,
+                mission_id: None,
                 seed: 0,
                 player_setup: vec![
                     PlayerSetup {

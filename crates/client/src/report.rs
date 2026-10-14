@@ -111,6 +111,7 @@ pub fn replay_record(
         format_version: FORMAT_VERSION,
         content_hash: world.content_hash(),
         map_id: world.map_id,
+        mission_id: None,
         seed: setup.seed,
         player_setup: setup.players.clone(),
         commands: log.to_vec(),

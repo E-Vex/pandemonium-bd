@@ -1,17 +1,23 @@
 //! Replay recording and verification (plan §6.5): a match is seed + content hash +
 //! ordered command log; checkpoints carry `(tick, state hash)` pairs.
 //!
-//! The replay file is `{ format_version, content_hash, map_id, seed, player_setup,
-//! commands, checkpoints, final_hash }` — encoded and decoded through this crate's
-//! own canonical little-endian byte format with a trailing checksum (no serde:
-//! the sim-side canonical-encoding rule extends to replays, and the dependency
-//! law keeps serde out anyway). The re-simulation itself is orchestrated by
-//! `tools` and the acceptance tests, which depend on `sim` — this crate depends
-//! only on `fx` and `sim_api` (plan §4).
+//! The replay file is `{ format_version, content_hash, map_id, mission_id, seed,
+//! player_setup, commands, checkpoints, final_hash }` — encoded and decoded through
+//! this crate's own canonical little-endian byte format with a trailing checksum (no
+//! serde: the sim-side canonical-encoding rule extends to replays, and the dependency
+//! law keeps serde out anyway). The re-simulation itself is orchestrated by `tools`
+//! and the acceptance tests, which depend on `sim` — this crate depends only on `fx`
+//! and `sim_api` (plan §4).
 //!
 //! The recorded command log is *exactly* the stream fed to `Sim::step`, tick by
 //! tick, including commands the gate rejected: replaying reproduces the same
 //! rejections, so the re-simulation converges to the same hashes (A1/A2).
+//!
+//! The optional mission id (ADR-0201 §7) rides the header beside the map id: a
+//! mission match records the domain-separated mission identity it ran under, a
+//! mission-less match records `None`, and `tools replay-verify` compares it as the
+//! third identity check. Version 2 added the field; version 1 files are refused —
+//! the established forward-only pattern (FD-10, `version.rs:31-40`).
 
 #![forbid(unsafe_code)]
 #![deny(
@@ -35,7 +41,13 @@ const MAGIC: u32 = u32::from_le_bytes(*b"PDRP");
 
 /// The format version of this codec. Bump (with a migration or a deliberate
 /// break) whenever the encoded field set changes; decode refuses other versions.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// Version 2 (ADR-0201 §7) added the optional mission id to the header — a
+/// deliberate break, not a golden: no replay file is committed to the repo
+/// (the A2 CI job records and verifies within one run), and old files are
+/// not read forward (FD-10's established pattern — a loader older than the
+/// content refuses; here a codec older than the file refuses).
+pub const FORMAT_VERSION: u32 = 2;
 
 /// One `(tick, state hash)` pair recorded along the match (plan §6.5).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -55,6 +67,9 @@ pub struct ReplayFile {
     pub content_hash: u64,
     /// The map the match ran on.
     pub map_id: u64,
+    /// The domain-separated mission id the match ran under, when it ran a
+    /// mission (ADR-0201 §7); `None` for a mission-less match — the default.
+    pub mission_id: Option<u64>,
     /// The match seed.
     pub seed: u64,
     /// The player setup (controller kinds; plan §6.5).
@@ -76,6 +91,15 @@ impl ReplayFile {
         w.write_u32(FORMAT_VERSION);
         w.write_u64(self.content_hash);
         w.write_u64(self.map_id);
+        // The optional mission id (ADR-0201 §7): a presence flag, then the
+        // value — `None` stays one byte, mission-less files stay lean.
+        match self.mission_id {
+            Some(mission_id) => {
+                w.write_bool(true);
+                w.write_u64(mission_id);
+            }
+            None => w.write_bool(false),
+        }
         w.write_u64(self.seed);
 
         w.write_u32(self.player_setup.len() as u32);
@@ -126,6 +150,11 @@ impl ReplayFile {
         }
         let content_hash = r.read_u64().map_err(|_| ReplayError::Truncated)?;
         let map_id = r.read_u64().map_err(|_| ReplayError::Truncated)?;
+        let mission_id = if r.read_bool().map_err(|_| ReplayError::Truncated)? {
+            Some(r.read_u64().map_err(|_| ReplayError::Truncated)?)
+        } else {
+            None
+        };
         let seed = r.read_u64().map_err(|_| ReplayError::Truncated)?;
 
         let player_count = r.read_u32().map_err(|_| ReplayError::Truncated)? as usize;
@@ -158,6 +187,7 @@ impl ReplayFile {
             format_version,
             content_hash,
             map_id,
+            mission_id,
             seed,
             player_setup,
             commands,
@@ -467,6 +497,7 @@ mod tests {
             format_version: FORMAT_VERSION,
             content_hash: 0xABCD,
             map_id: 7,
+            mission_id: None,
             seed: 42,
             player_setup: vec![
                 PlayerSetup {
@@ -531,6 +562,40 @@ mod tests {
         let bytes = replay.encode();
         let decoded = ReplayFile::decode(&bytes).expect("decode must succeed");
         assert_eq!(decoded, replay);
+    }
+
+    #[test]
+    fn a_mission_bearing_replay_roundtrips_its_mission_id() {
+        // ADR-0201 §7: a mission match records the domain-separated mission
+        // id in the header; the codec carries it losslessly in both shapes.
+        let mut replay = sample_replay();
+        replay.mission_id = Some(0x004d_4953_dead_beef);
+        let decoded = ReplayFile::decode(&replay.encode()).expect("decode must succeed");
+        assert_eq!(decoded.mission_id, Some(0x004d_4953_dead_beef));
+        assert_eq!(decoded, replay);
+        // And the mission-less shape stays `None` through the same path.
+        let plain = sample_replay();
+        assert_eq!(plain.mission_id, None);
+        let decoded = ReplayFile::decode(&plain.encode()).expect("decode must succeed");
+        assert_eq!(decoded.mission_id, None);
+        // The two encodings differ in size (the mission id costs 8 bytes).
+        assert_eq!(replay.encode().len(), plain.encode().len() + 8);
+    }
+
+    #[test]
+    fn version_one_files_are_refused_forward_only() {
+        // FD-10's established pattern: a codec older than the file refuses.
+        // Build a v1 file by patching a v2 encoding's version word and
+        // recomputing the trailing checksum.
+        let bytes = sample_replay().encode();
+        let (payload, _) = bytes.split_at(bytes.len() - 8);
+        let mut patched = payload.to_vec();
+        patched[4..8].copy_from_slice(&1u32.to_le_bytes());
+        patched.extend_from_slice(&fnv1a64(&patched).to_le_bytes());
+        assert_eq!(
+            ReplayFile::decode(&patched),
+            Err(ReplayError::UnsupportedVersion(1))
+        );
     }
 
     #[test]
