@@ -146,13 +146,82 @@ pub enum SettingsReturn {
     PauseMenu,
 }
 
+/// The action a confirmation screen guards (A-009 task 2). Restart and
+/// Quit to Menu both discard live match state, so they open the confirm
+/// rung first; the action stores which effect Confirm runs unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// Restart the match (the existing `Effect::RestartMatch` path).
+    Restart,
+    /// Quit to the main menu (the existing `Effect::DropMatch` path).
+    QuitToMenu,
+}
+
+/// The window focus / minimize signals the pure auto-pause decision reads
+/// (A-009 task 3). winit 0.30's `WindowEvent::Focused(bool)` is the focus
+/// signal; minimize has no dedicated variant, so the pinned winit emits
+/// `WindowEvent::Resized(PhysicalSize::ZERO)` on minimize (the standard
+/// 0.30 signal, used here through the wiring layer's translation). The
+/// pure module never touches winit types — it reads this enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusEvent {
+    /// The window lost keyboard focus (`Focused(false)`).
+    Unfocused,
+    /// The window regained keyboard focus (`Focused(true)`).
+    Focused,
+    /// The window was minimized (`Resized((0, 0))` on the pinned winit).
+    Minimized,
+}
+
+/// A-009 task 3: the auto-pause decision — a pure function over
+/// `(screen, mode, is_paused, event)` that returns `Effect::Pause` only
+/// when a live human-driven match is in progress and focus is lost or the
+/// window minimized. Concretely:
+///
+/// - the screen is `InMatch` (not on a menu, not on the end screen — the
+///   pause menu is already a paused state, and the end screen has no live
+///   match to pause);
+/// - `mode.human_orders()` is true (not `AiVsAi` spectate — a spectated
+///   match is not the player's to guard, and the AI keeps running);
+/// - the host is not already paused (a `P` pause stays a `P` pause —
+///   regaining focus later does not auto-resume, so a focus blip during a
+///   manual pause must not stack a second pause on top);
+/// - the event is `Unfocused` or `Minimized`.
+///
+/// Regaining focus (`Focused`) never auto-resumes — the player resumes
+/// explicitly through the pause menu's Resume (the classic-RTS contract;
+/// the brief's design ruling).
+///
+/// The wiring layer applies the returned effect: `Effect::Pause` triggers
+/// the existing `AppState::open_pause()` path (which both pauses the host
+/// and opens the pause menu), `Effect::None` is a no-op. The
+/// `--frames`/smoke/`--record` runs behave exactly as before — the
+/// windowed smoke under Xvfb has no focus changes or minimize events, so
+/// the function returns `Effect::None` there.
+pub fn auto_pause_on_focus(
+    screen: &Screen,
+    mode: MatchMode,
+    is_paused: bool,
+    event: FocusEvent,
+) -> Effect {
+    use FocusEvent::{Focused, Minimized, Unfocused};
+    match (screen, mode, is_paused, event) {
+        (Screen::InMatch, mode, false, Unfocused | Minimized) if mode.human_orders() => {
+            Effect::Pause
+        }
+        // Regaining focus never auto-resumes (the brief's design ruling).
+        (_, _, _, Focused) => Effect::None,
+        _ => Effect::None,
+    }
+}
+
 /// One application screen.
 // The variant `EndScreen` is the plan's own diagram name (PLAN-M10.2 §3.1)
 // — kept verbatim over the pedantic suffix lint.
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Screen {
-    /// New Match / Settings / Quit.
+    /// New Match / Settings / Controls / Quit.
     MainMenu,
     /// Mode / seed / map / Start.
     NewMatch(NewMatchState),
@@ -164,10 +233,28 @@ pub enum Screen {
     },
     /// A match is running and owns the world input.
     InMatch,
-    /// Resume / Settings / Restart / Quit to Menu.
+    /// Resume / Settings / Controls / Restart / Quit to Menu.
     PauseMenu,
     /// The match resolved: Rematch / back to the menu.
     EndScreen,
+    /// The full controls reference (A-009 task 1): the standing
+    /// [`crate::report::CONTROLS_TABLE`] rendered as informational rows,
+    /// plus a single Back button. `return_to` follows the Settings pattern
+    /// (opened from both the main menu and the pause menu).
+    Controls {
+        /// Which screen Controls was opened from.
+        return_to: SettingsReturn,
+    },
+    /// A confirmation rung (A-009 task 2): the pause menu's Restart and
+    /// Quit to Menu open this screen before discarding a live match. Two
+    /// rows (Cancel / Confirm), default focus on Cancel so a mis-press
+    /// (Enter on the focused row, or Esc) cancels. Confirm runs the
+    /// pending [`ConfirmAction`] unchanged through the existing effect
+    /// path.
+    Confirm {
+        /// Which action Confirm runs.
+        action: ConfirmAction,
+    },
 }
 
 /// The side effects the app layer executes (PLAN §3.1: "effects are an
@@ -253,6 +340,8 @@ pub enum ButtonId {
     NewMatch,
     /// Main menu: open the settings screen.
     Settings,
+    /// Main menu / pause menu: open the Controls screen (A-009 task 1).
+    Controls,
     /// Main menu: quit the application.
     Quit,
     /// New Match screen: the mode field.
@@ -279,6 +368,10 @@ pub enum ButtonId {
     Rematch,
     /// End screen: back to the main menu.
     ToMenu,
+    /// Confirm screen (A-009 task 2): cancel the pending action.
+    ConfirmCancel,
+    /// Confirm screen (A-009 task 2): run the pending action unchanged.
+    ConfirmProceed,
 }
 
 /// The application state: the current screen plus the keyboard focus
@@ -316,6 +409,8 @@ impl AppState {
             Screen::InMatch => "match",
             Screen::PauseMenu => "pause menu",
             Screen::EndScreen => "end screen",
+            Screen::Controls { .. } => "controls screen",
+            Screen::Confirm { .. } => "confirm screen",
         }
     }
 
@@ -329,7 +424,8 @@ impl AppState {
         Some(match (&self.screen, index) {
             (Screen::MainMenu, 0) => ButtonId::NewMatch,
             (Screen::MainMenu, 1) => ButtonId::Settings,
-            (Screen::MainMenu, 2) => ButtonId::Quit,
+            (Screen::MainMenu, 2) => ButtonId::Controls,
+            (Screen::MainMenu, 3) => ButtonId::Quit,
             (Screen::NewMatch(_), 0) => ButtonId::Mode,
             (Screen::NewMatch(_), 1) => ButtonId::Seed,
             (Screen::NewMatch(_), 2) => ButtonId::Map,
@@ -348,10 +444,17 @@ impl AppState {
             (Screen::InMatch, _) => return None,
             (Screen::PauseMenu, 0) => ButtonId::Resume,
             (Screen::PauseMenu, 1) => ButtonId::Settings,
-            (Screen::PauseMenu, 2) => ButtonId::PauseRestart,
-            (Screen::PauseMenu, 3) => ButtonId::QuitToMenu,
+            (Screen::PauseMenu, 2) => ButtonId::Controls,
+            (Screen::PauseMenu, 3) => ButtonId::PauseRestart,
+            (Screen::PauseMenu, 4) => ButtonId::QuitToMenu,
             (Screen::EndScreen, 0) => ButtonId::Rematch,
             (Screen::EndScreen, 1) => ButtonId::ToMenu,
+            (Screen::Controls { .. }, 0) => ButtonId::Back,
+            // A-009 task 2: the confirm screen has two rows, Cancel first
+            // (the safer default — focus 0 lands on Cancel so a mis-press
+            // or an Esc cancels).
+            (Screen::Confirm { .. }, 0) => ButtonId::ConfirmCancel,
+            (Screen::Confirm { .. }, 1) => ButtonId::ConfirmProceed,
             _ => return None,
         })
     }
@@ -359,12 +462,14 @@ impl AppState {
     /// How many focusable rows the current screen has.
     pub fn button_count(&self) -> usize {
         match self.screen {
-            Screen::MainMenu => 3,
+            Screen::MainMenu => 4,
             Screen::NewMatch(_) => 5,
             Screen::Settings { .. } => 9, // 8 settings rows + Done
             Screen::InMatch => 0,
-            Screen::PauseMenu => 4,
+            Screen::PauseMenu => 5,
             Screen::EndScreen => 2,
+            Screen::Controls { .. } => 1, // Back
+            Screen::Confirm { .. } => 2,  // Cancel + Confirm
         }
     }
 
@@ -422,6 +527,22 @@ impl AppState {
                 next.screen = Screen::InMatch;
                 (next, Effect::Unpause)
             }
+            // A-009 task 1: Esc on the Controls screen backs out to where
+            // it was opened from (the same return_to pattern Settings uses).
+            Screen::Controls { return_to } => {
+                next.screen = match return_to {
+                    SettingsReturn::MainMenu => Screen::MainMenu,
+                    SettingsReturn::PauseMenu => Screen::PauseMenu,
+                };
+                (next, Effect::None)
+            }
+            // A-009 task 2: Esc on the confirm screen cancels (the default
+            // focus is Cancel, so Esc and Enter-without-Down are the same
+            // safe edge). Returns to the pause menu; the match is unchanged.
+            Screen::Confirm { .. } => {
+                next.screen = Screen::PauseMenu;
+                (next, Effect::None)
+            }
         }
     }
 
@@ -476,6 +597,18 @@ impl AppState {
                 };
                 (next, Effect::None)
             }
+            // A-009 task 1: open the Controls screen, remembering where to
+            // return to (the same return_to pattern Settings uses — opened
+            // from both the main menu and the pause menu).
+            ButtonId::Controls => {
+                next.screen = Screen::Controls {
+                    return_to: match self.screen {
+                        Screen::PauseMenu => SettingsReturn::PauseMenu,
+                        _ => SettingsReturn::MainMenu,
+                    },
+                };
+                (next, Effect::None)
+            }
             ButtonId::Quit => (next, Effect::QuitApp),
             ButtonId::Mode => {
                 if let Screen::NewMatch(fields) = &mut next.screen {
@@ -508,7 +641,17 @@ impl AppState {
                 (next, effect)
             }
             ButtonId::Back => {
-                next.screen = Screen::MainMenu;
+                // A-009 task 1: when Back is the Controls screen's row, it
+                // returns to where Controls was opened from (the same
+                // return_to pattern Settings uses). On the New Match screen
+                // it returns to the main menu (its prior behavior).
+                next.screen = match self.screen {
+                    Screen::Controls { return_to } => match return_to {
+                        SettingsReturn::MainMenu => Screen::MainMenu,
+                        SettingsReturn::PauseMenu => Screen::PauseMenu,
+                    },
+                    _ => Screen::MainMenu,
+                };
                 (next, Effect::None)
             }
             ButtonId::Setting(row) => (
@@ -532,13 +675,21 @@ impl AppState {
                 next.screen = Screen::InMatch;
                 (next, Effect::Unpause)
             }
+            // A-009 task 2: Restart and Quit to Menu now open the confirm
+            // rung before discarding a live match. The action stored is the
+            // one the confirm screen runs unchanged on Proceed — the same
+            // Effect::RestartMatch / Effect::DropMatch the direct path ran.
             ButtonId::PauseRestart => {
-                next.screen = Screen::InMatch;
-                (next, Effect::RestartMatch)
+                next.screen = Screen::Confirm {
+                    action: ConfirmAction::Restart,
+                };
+                (next, Effect::None)
             }
             ButtonId::QuitToMenu => {
-                next.screen = Screen::MainMenu;
-                (next, Effect::DropMatch)
+                next.screen = Screen::Confirm {
+                    action: ConfirmAction::QuitToMenu,
+                };
+                (next, Effect::None)
             }
             ButtonId::Rematch => {
                 next.screen = Screen::InMatch;
@@ -547,6 +698,36 @@ impl AppState {
             ButtonId::ToMenu => {
                 next.screen = Screen::MainMenu;
                 (next, Effect::DropMatch)
+            }
+            // A-009 task 2: Cancel returns to the pause menu, no effect —
+            // the live match is unchanged. The match is still paused (the
+            // pause menu is over a paused host).
+            ButtonId::ConfirmCancel => {
+                next.screen = Screen::PauseMenu;
+                (next, Effect::None)
+            }
+            // A-009 task 2: Proceed runs the pending action unchanged —
+            // RestartMatch rebuilds the same match (A15), DropMatch
+            // discards it. The successor screen is the action's natural
+            // destination (InMatch for Restart, MainMenu for Quit to Menu),
+            // exactly what the direct path produced before the confirm rung.
+            ButtonId::ConfirmProceed => {
+                match self.screen {
+                    Screen::Confirm { action } => match action {
+                        ConfirmAction::Restart => {
+                            next.screen = Screen::InMatch;
+                            (next, Effect::RestartMatch)
+                        }
+                        ConfirmAction::QuitToMenu => {
+                            next.screen = Screen::MainMenu;
+                            (next, Effect::DropMatch)
+                        }
+                    },
+                    // Confirm* outside a Confirm screen is unreachable
+                    // (the button only resolves inside one); the safe
+                    // no-op keeps the machine total.
+                    _ => (next, Effect::None),
+                }
             }
         }
     }
@@ -704,8 +885,23 @@ mod tests {
 
     #[test]
     fn main_menu_quit_quits() {
-        let (_, effect) = menu().activate_index(2, &ctx());
+        // A-009 task 1: the Controls row inserted at index 2 pushes Quit
+        // to index 3 (NewMatch / Settings / Controls / Quit).
+        let (_, effect) = menu().activate_index(3, &ctx());
         assert_eq!(effect, Effect::QuitApp);
+    }
+
+    #[test]
+    fn main_menu_controls_opens_the_controls_screen_returning_to_the_menu() {
+        // A-009 task 1: the new Controls row on the main menu.
+        let (next, effect) = menu().activate_index(2, &ctx());
+        assert_eq!(
+            next.screen,
+            Screen::Controls {
+                return_to: SettingsReturn::MainMenu
+            }
+        );
+        assert_eq!(effect, Effect::None);
     }
 
     #[test]
@@ -813,17 +1009,216 @@ mod tests {
     }
 
     #[test]
-    fn pause_menu_restart_rebuilds_and_reenters_the_match() {
+    fn pause_menu_controls_opens_the_controls_screen_returning_to_the_pause_menu() {
+        // A-009 task 1: the Controls row on the pause menu.
         let (next, effect) = at(Screen::PauseMenu).activate_index(2, &ctx());
+        assert_eq!(
+            next.screen,
+            Screen::Controls {
+                return_to: SettingsReturn::PauseMenu
+            }
+        );
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn pause_menu_restart_opens_the_confirm_screen() {
+        // A-009 task 2: Restart no longer rebuilds the match directly — it
+        // opens the confirm rung first (the live match will be lost).
+        let (next, effect) = at(Screen::PauseMenu).activate_index(3, &ctx());
+        assert_eq!(
+            next.screen,
+            Screen::Confirm {
+                action: ConfirmAction::Restart
+            }
+        );
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn pause_menu_quit_to_menu_opens_the_confirm_screen() {
+        // A-009 task 2: Quit to Menu no longer drops the match directly — it
+        // opens the confirm rung first.
+        let (next, effect) = at(Screen::PauseMenu).activate_index(4, &ctx());
+        assert_eq!(
+            next.screen,
+            Screen::Confirm {
+                action: ConfirmAction::QuitToMenu
+            }
+        );
+        assert_eq!(effect, Effect::None);
+    }
+
+    // ---- the Controls screen (A-009 task 1) ----------------------------
+
+    #[test]
+    fn controls_screen_has_one_button_the_back_row() {
+        let controls = at(Screen::Controls {
+            return_to: SettingsReturn::MainMenu,
+        });
+        assert_eq!(controls.button_count(), 1);
+        assert_eq!(controls.button_at(0), Some(ButtonId::Back));
+        assert_eq!(controls.button_at(1), None);
+    }
+
+    #[test]
+    fn controls_back_and_escape_return_to_the_screen_they_were_opened_from() {
+        // Opened from the main menu — Back and Esc return there.
+        let from_menu = at(Screen::Controls {
+            return_to: SettingsReturn::MainMenu,
+        });
+        let (next, effect) = from_menu.activate_index(0, &ctx()); // Back
+        assert_eq!(next.screen, Screen::MainMenu);
+        assert_eq!(effect, Effect::None);
+        let (next, effect) = from_menu.on_key(NavKey::Escape, &ctx());
+        assert_eq!(next.screen, Screen::MainMenu);
+        assert_eq!(effect, Effect::None);
+        // Opened from the pause menu — Back and Esc return there (the match
+        // stays paused; the player resumes through the pause menu's Resume).
+        let from_pause = at(Screen::Controls {
+            return_to: SettingsReturn::PauseMenu,
+        });
+        let (next, effect) = from_pause.activate_index(0, &ctx()); // Back
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+        let (next, effect) = from_pause.on_key(NavKey::Escape, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn controls_enter_activates_the_back_row() {
+        // Keyboard nav: Up/Down is a no-op on a one-row screen (the shared
+        // nav core still owns the focus), Enter activates Back, Esc backs
+        // out. Default focus is row 0 (Back).
+        let controls = at(Screen::Controls {
+            return_to: SettingsReturn::MainMenu,
+        });
+        assert_eq!(controls.focus, 0);
+        assert_eq!(controls.focused_button(), Some(ButtonId::Back));
+        let (next, _) = controls.on_key(NavKey::Up, &ctx());
+        assert_eq!(next.focus, 0, "Up wraps on a one-row screen");
+        let (next, _) = controls.on_key(NavKey::Down, &ctx());
+        assert_eq!(next.focus, 0, "Down wraps on a one-row screen");
+        let (next, effect) = controls.on_key(NavKey::Enter, &ctx());
+        assert_eq!(next.screen, Screen::MainMenu);
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn controls_round_trip_from_pause_menu_returns_to_the_match_via_resume() {
+        // Pause menu -> Controls -> Back -> Pause menu -> Resume. The whole
+        // round trip preserves the match (no DropMatch, no RestartMatch).
+        let paused = at(Screen::PauseMenu);
+        let (controls, effect) = paused.activate_index(2, &ctx()); // Controls
+        assert_eq!(effect, Effect::None);
+        assert!(matches!(
+            controls.screen,
+            Screen::Controls {
+                return_to: SettingsReturn::PauseMenu
+            }
+        ));
+        let (back_to_pause, effect) = controls.activate_index(0, &ctx()); // Back
+        assert_eq!(effect, Effect::None);
+        assert_eq!(back_to_pause.screen, Screen::PauseMenu);
+        let (resumed, effect) = back_to_pause.activate_index(0, &ctx()); // Resume
+        assert_eq!(resumed.screen, Screen::InMatch);
+        assert_eq!(effect, Effect::Unpause);
+    }
+
+    // ---- the Confirm screen (A-009 task 2) -----------------------------
+
+    #[test]
+    fn confirm_screen_has_two_rows_cancel_first_default_focus_cancel() {
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        assert_eq!(restart.button_count(), 2);
+        assert_eq!(restart.button_at(0), Some(ButtonId::ConfirmCancel));
+        assert_eq!(restart.button_at(1), Some(ButtonId::ConfirmProceed));
+        assert_eq!(restart.button_at(2), None);
+        // Default focus is row 0 (Cancel) — the safer mis-press.
+        assert_eq!(restart.focus, 0);
+        assert_eq!(restart.focused_button(), Some(ButtonId::ConfirmCancel));
+    }
+
+    #[test]
+    fn confirm_cancel_and_escape_return_to_the_pause_menu_with_no_effect() {
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        let (next, effect) = restart.activate_index(0, &ctx()); // Cancel
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+        let (next, effect) = restart.on_key(NavKey::Escape, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+
+        let quit = at(Screen::Confirm {
+            action: ConfirmAction::QuitToMenu,
+        });
+        let (next, effect) = quit.on_key(NavKey::Escape, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn confirm_default_focus_means_an_enter_alone_cancels() {
+        // A mis-press (Esc ladder + Enter) lands on Cancel — the safer edge.
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        let (next, effect) = restart.on_key(NavKey::Enter, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn confirm_proceed_restarts_the_match_unchanged() {
+        // Down to row 1 (Proceed), Enter runs RestartMatch — the same
+        // effect the pause menu's Restart row ran before the confirm rung.
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        let (next, _) = restart.on_key(NavKey::Down, &ctx()); // row 1
+        assert_eq!(next.focused_button(), Some(ButtonId::ConfirmProceed));
+        let (next, effect) = next.on_key(NavKey::Enter, &ctx());
         assert_eq!(next.screen, Screen::InMatch);
         assert_eq!(effect, Effect::RestartMatch);
     }
 
     #[test]
-    fn pause_menu_quit_to_menu_drops_the_match() {
-        let (next, effect) = at(Screen::PauseMenu).activate_index(3, &ctx());
+    fn confirm_proceed_drops_the_match_unchanged() {
+        let quit = at(Screen::Confirm {
+            action: ConfirmAction::QuitToMenu,
+        });
+        let (next, _) = quit.on_key(NavKey::Down, &ctx()); // row 1
+        assert_eq!(next.focused_button(), Some(ButtonId::ConfirmProceed));
+        let (next, effect) = next.on_key(NavKey::Enter, &ctx());
         assert_eq!(next.screen, Screen::MainMenu);
         assert_eq!(effect, Effect::DropMatch);
+    }
+
+    #[test]
+    fn confirm_round_trip_cancel_keeps_the_live_match() {
+        // Pause menu -> Restart (opens Confirm) -> Cancel -> Pause menu ->
+        // Resume. The whole round trip preserves the match (no DropMatch,
+        // no RestartMatch).
+        let paused = at(Screen::PauseMenu);
+        let (confirm, effect) = paused.activate_index(3, &ctx()); // Restart
+        assert_eq!(effect, Effect::None);
+        assert!(matches!(
+            confirm.screen,
+            Screen::Confirm {
+                action: ConfirmAction::Restart
+            }
+        ));
+        let (back_to_pause, effect) = confirm.activate_index(0, &ctx()); // Cancel
+        assert_eq!(effect, Effect::None);
+        assert_eq!(back_to_pause.screen, Screen::PauseMenu);
+        let (resumed, effect) = back_to_pause.activate_index(0, &ctx()); // Resume
+        assert_eq!(resumed.screen, Screen::InMatch);
+        assert_eq!(effect, Effect::Unpause);
     }
 
     #[test]
@@ -854,10 +1249,14 @@ mod tests {
 
     #[test]
     fn focus_moves_wrapping_within_the_screen() {
+        // A-009 task 1: the main menu now has four rows (NewMatch, Settings,
+        // Controls, Quit). The walk visits each before wrapping.
         let mut state = menu();
         assert_eq!(state.focused_button(), Some(ButtonId::NewMatch));
         state.focus_next();
         assert_eq!(state.focused_button(), Some(ButtonId::Settings));
+        state.focus_next();
+        assert_eq!(state.focused_button(), Some(ButtonId::Controls));
         state.focus_next();
         assert_eq!(state.focused_button(), Some(ButtonId::Quit));
         state.focus_next(); // wraps (A-110)
@@ -868,8 +1267,10 @@ mod tests {
 
     #[test]
     fn keyboard_navigation_and_activation_reach_every_button() {
+        // A-009 task 1: three focus_next presses now reach Quit (was two)
+        // because the Controls row sits between Settings and Quit.
         let mut state = menu();
-        for _ in 0..2 {
+        for _ in 0..3 {
             state.focus_next();
         }
         assert_eq!(state.focused_button(), Some(ButtonId::Quit));
@@ -895,9 +1296,11 @@ mod tests {
 
     #[test]
     fn mouse_hover_clamps_into_the_screen_and_click_activates() {
+        // A-009 task 1: a stale focus index now clamps to row 3 (Quit), not
+        // row 2, because the menu grew a fourth row.
         let mut state = menu();
         state.focus_index(99); // a stale index cannot escape
-        assert_eq!(state.focus, 2);
+        assert_eq!(state.focus, 3);
         state.focus_index(1);
         let (_, effect) = state.activate_index(1, &ctx()); // a click on Settings
         assert!(matches!(effect, Effect::None));
@@ -1163,5 +1566,134 @@ mod tests {
         assert_eq!(setup.players[0].controller, ControllerKind::Human);
         assert_eq!(setup.players[1].controller, ControllerKind::Human);
         assert_eq!(MatchMode::Sandbox.ai_slots(), Vec::<PlayerId>::new());
+    }
+
+    // ---- the auto-pause decision (A-009 task 3) ------------------------
+
+    #[test]
+    fn auto_pause_fires_on_focus_loss_during_a_live_human_match() {
+        // InMatch + human_orders() + not paused + focus loss => Pause.
+        for mode in [MatchMode::PlayerVsAi, MatchMode::Sandbox] {
+            assert_eq!(
+                auto_pause_on_focus(&Screen::InMatch, mode, false, FocusEvent::Unfocused),
+                Effect::Pause,
+                "mode {mode:?} should auto-pause on focus loss"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_pause_fires_on_minimize_during_a_live_human_match() {
+        for mode in [MatchMode::PlayerVsAi, MatchMode::Sandbox] {
+            assert_eq!(
+                auto_pause_on_focus(&Screen::InMatch, mode, false, FocusEvent::Minimized),
+                Effect::Pause,
+                "mode {mode:?} should auto-pause on minimize"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_pause_does_not_fire_for_spectated_matches() {
+        // AiVsAi spectate is not the player's to guard — the AI keeps
+        // running; the player is watching, not driving.
+        assert_eq!(
+            auto_pause_on_focus(
+                &Screen::InMatch,
+                MatchMode::AiVsAi,
+                false,
+                FocusEvent::Unfocused
+            ),
+            Effect::None
+        );
+        assert_eq!(
+            auto_pause_on_focus(
+                &Screen::InMatch,
+                MatchMode::AiVsAi,
+                false,
+                FocusEvent::Minimized
+            ),
+            Effect::None
+        );
+    }
+
+    #[test]
+    fn auto_pause_does_not_fire_when_already_paused() {
+        // A P-paused match stays P-paused; the focus blip does not stack a
+        // second pause on top (regaining focus later does not auto-resume,
+        // so the manual pause stays the source of truth).
+        for event in [FocusEvent::Unfocused, FocusEvent::Minimized] {
+            assert_eq!(
+                auto_pause_on_focus(&Screen::InMatch, MatchMode::PlayerVsAi, true, event),
+                Effect::None,
+                "event {event:?} during a manual pause is a no-op"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_pause_does_not_fire_on_menus_or_the_end_screen() {
+        // Not InMatch = no live match to guard. The pause menu IS the
+        // paused state; the end screen has no match; the menus have no
+        // host. None auto-pause.
+        let screens = [
+            Screen::MainMenu,
+            Screen::PauseMenu,
+            Screen::EndScreen,
+            Screen::Settings {
+                return_to: SettingsReturn::PauseMenu,
+            },
+            Screen::Controls {
+                return_to: SettingsReturn::PauseMenu,
+            },
+            Screen::Confirm {
+                action: ConfirmAction::Restart,
+            },
+        ];
+        for screen in &screens {
+            for event in [FocusEvent::Unfocused, FocusEvent::Minimized] {
+                assert_eq!(
+                    auto_pause_on_focus(screen, MatchMode::PlayerVsAi, false, event),
+                    Effect::None,
+                    "screen {screen:?} event {event:?} must not auto-pause"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn regaining_focus_never_auto_resumes() {
+        // The classic-RTS contract: focus loss pauses; focus gain does not
+        // resume. The player resumes explicitly through the pause menu.
+        for mode in [MatchMode::PlayerVsAi, MatchMode::AiVsAi, MatchMode::Sandbox] {
+            for paused in [false, true] {
+                assert_eq!(
+                    auto_pause_on_focus(&Screen::InMatch, mode, paused, FocusEvent::Focused),
+                    Effect::None,
+                    "mode {mode:?} paused {paused} must not auto-resume on focus gain"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_pause_is_pure_over_its_inputs() {
+        // Same inputs => same output (the decision is a pure function —
+        // the wiring layer relies on this; calling it twice in the same
+        // frame must not double-fire).
+        let once = auto_pause_on_focus(
+            &Screen::InMatch,
+            MatchMode::PlayerVsAi,
+            false,
+            FocusEvent::Unfocused,
+        );
+        let twice = auto_pause_on_focus(
+            &Screen::InMatch,
+            MatchMode::PlayerVsAi,
+            false,
+            FocusEvent::Unfocused,
+        );
+        assert_eq!(once, twice);
+        assert_eq!(once, Effect::Pause);
     }
 }

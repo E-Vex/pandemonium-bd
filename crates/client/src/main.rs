@@ -44,7 +44,7 @@ use pandemonium_sim_api::{
     Vec2Fx,
 };
 use render::WgpuRenderer;
-use screens::MatchMode;
+use screens::{Effect, MatchMode};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -57,7 +57,7 @@ use winit::window::{Window, WindowId};
 #[cfg(test)]
 use pandemonium_engine::alpha_controller;
 #[cfg(test)]
-use screens::{Effect, Screen};
+use screens::Screen;
 
 /// The player the human controls.
 pub(crate) const HUMAN: PlayerId = PlayerId(0);
@@ -405,6 +405,34 @@ impl ApplicationHandler for App {
                     renderer.resize(size.width, size.height);
                     self.camera
                         .set_aspect(size.width as f32 / size.height.max(1) as f32);
+                }
+                // A-009 task 3: minimize is signaled on the pinned winit
+                // (0.30.13) by `WindowEvent::Resized(PhysicalSize::ZERO)`.
+                // winit 0.30 has no dedicated Minimized variant; the
+                // (0,0) resize is the standard 0.30 signal (the platform
+                // backends emit it on minimize — see winit's own
+                // event.rs:1043-1045 in this version). The auto-pause
+                // decision is a pure function over (screen, mode, paused,
+                // event) — see `screens::auto_pause_on_focus` — and the
+                // wiring here applies Effect::Pause through the existing
+                // `AppState::open_pause()` path (which both pauses the
+                // host and opens the pause menu). The --frames/smoke runs
+                // never emit this signal under Xvfb (no window manager
+                // minimizes the window), so the behavior is unchanged.
+                if size.width == 0 && size.height == 0 {
+                    if let Some(host) = &self.host {
+                        let effect = screens::auto_pause_on_focus(
+                            &self.screen.screen,
+                            self.match_mode,
+                            host.is_paused(),
+                            screens::FocusEvent::Minimized,
+                        );
+                        if matches!(effect, Effect::Pause) {
+                            let (next, effect) = self.screen.open_pause();
+                            self.screen = next;
+                            self.apply_effect(effect, event_loop);
+                        }
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -937,6 +965,33 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
+                // A-009 task 3: auto-pause on focus loss during a live
+                // human-driven match (the classic-RTS contract). The pure
+                // decision is in `screens::auto_pause_on_focus`; the wiring
+                // here applies Effect::Pause through the existing
+                // `AppState::open_pause()` path (host pause + pause menu).
+                // Regaining focus (Focused::true) does NOT auto-resume —
+                // the player resumes explicitly through the pause menu.
+                // The --frames/smoke runs under Xvfb have no window
+                // manager to steal focus, so the behavior is unchanged.
+                let event = if focused {
+                    screens::FocusEvent::Focused
+                } else {
+                    screens::FocusEvent::Unfocused
+                };
+                if let Some(host) = &self.host {
+                    let effect = screens::auto_pause_on_focus(
+                        &self.screen.screen,
+                        self.match_mode,
+                        host.is_paused(),
+                        event,
+                    );
+                    if matches!(effect, Effect::Pause) {
+                        let (next, effect) = self.screen.open_pause();
+                        self.screen = next;
+                        self.apply_effect(effect, event_loop);
+                    }
+                }
             }
             _ => {}
         }
