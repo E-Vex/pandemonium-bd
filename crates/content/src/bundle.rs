@@ -35,6 +35,12 @@ const CONTENT_ENCODING_VERSION: u32 = 1;
 /// full-bundle hash by construction — different first block).
 const MAP_ID_DOMAIN: u32 = 0x004D_4150;
 
+/// Domain-separation tag for mission ids (ADR-0201 §7): the `MAP_ID_DOMAIN`
+/// pattern with its own domain word, so a mission id can never collide with
+/// a map id or a full-bundle hash by construction — the domain word is hashed
+/// first and differs in every case.
+const MISSION_ID_DOMAIN: u32 = 0x004D_4953;
+
 /// Every validated file of a content directory. Maps, factions, entities, and
 /// missions are plural (a directory may carry several; a missions directory
 /// may be absent — the mission-less default, ADR-0201 §3); the ruleset is
@@ -197,6 +203,38 @@ impl ContentTree {
     /// Looks up a map by id.
     pub fn map(&self, id: &str) -> Option<&defs::MapDef> {
         self.maps.iter().find(|map| map.id == id)
+    }
+
+    /// Looks up a mission by id (ADR-0201 §3).
+    pub fn mission(&self, id: &str) -> Option<&defs::MissionDef> {
+        self.missions.iter().find(|mission| mission.id == id)
+    }
+
+    /// The domain-separated mission id (ADR-0201 §7): a hash over the
+    /// mission's canonical encoding — id, display name, schema version, the
+    /// map/faction/rules references, and the ordered objective list — through
+    /// the `MAP_ID_DOMAIN` pattern with its own domain word. The mission id
+    /// rides alongside the content hash and map id (replays record it;
+    /// `verify_replay` compares it) exactly as the map id does.
+    ///
+    /// A mission-less match computes its content hash through the exact
+    /// unchanged byte path: the mission category appends nothing to the
+    /// existing encoders (`encode_rules`/`encode_entities`/
+    /// `encode_factions`/`encode_map` never read missions), so the registered
+    /// content hash and map id cannot move.
+    ///
+    /// An unknown mission id returns `0` — a value no real mission id can
+    /// produce (the domain word is hashed first), so callers that accept
+    /// user-facing ids check [`ContentTree::mission`] first; the id itself
+    /// stays total and deterministic.
+    pub fn mission_id(&self, mission_id_str: &str) -> u64 {
+        let Some(mission) = self.mission(mission_id_str) else {
+            return 0;
+        };
+        let mut h = XxHash64::new();
+        h.write_u32(MISSION_ID_DOMAIN);
+        encode_mission(&mut h, mission);
+        h.finish()
     }
 
     /// Builds the bundle for one map. Every faction travels along (the Alpha
@@ -861,5 +899,317 @@ fn encode_map(h: &mut XxHash64, map: &defs::MapDef) {
             }
         }
         None => encode_bool(h, false),
+    }
+}
+
+/// The canonical encoding of one mission record (ADR-0201 §7) — fixed
+/// little-endian order through `fx::XxHash64`, exactly the discipline of the
+/// four encoders above. Reachable only through [`ContentTree::mission_id`]:
+/// the mission category appends nothing to the content hash's or the map id's
+/// byte paths, which is why the registered goldens cannot move (the
+/// mission-less path is byte-identical by construction).
+fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
+    encode_str(h, &mission.id);
+    encode_str(h, &mission.display_name);
+    h.write_u32(mission.schema_version);
+    encode_str(h, &mission.map);
+    encode_str(h, &mission.faction);
+    encode_str(h, &mission.rules);
+    h.write_u32(mission.objectives.len() as u32);
+    for objective in &mission.objectives {
+        // The kind tag: fixed, ordered, exhaustive over the Phase 1 vocabulary.
+        h.write_u8(match objective.kind {
+            defs::ObjectiveKind::Destroy => 1,
+            defs::ObjectiveKind::BuildTrain => 2,
+        });
+        match &objective.parameters {
+            defs::ObjectiveParameters::Destroy { target_kind } => match target_kind {
+                Some(kind) => {
+                    encode_bool(h, true);
+                    encode_str(h, kind);
+                }
+                None => encode_bool(h, false),
+            },
+            defs::ObjectiveParameters::BuildTrain { kind, count } => {
+                encode_str(h, kind);
+                h.write_u32(*count);
+            }
+        }
+        encode_bool(h, objective.optional);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Mission identity (ADR-0201 §7, B-012 Task 2): the domain-separated
+    //! mission id, and the golden-preservation property — adding a mission to
+    //! a tree changes neither the content hash nor the map id, because the
+    //! mission category appends nothing to the existing encoders. The
+    //! in-memory factory mirrors `tests.rs`'s shape; these live here so the
+    //! identity surface is tested in the file that owns it.
+
+    use super::*;
+
+    const RULES: &str = r#"
+(
+    schema_version: 1,
+    id: "alpha",
+    display_name: "Alpha Test Rules",
+    resources: [ ( id: "ore", display_name: "Ore", starting: 200 ) ],
+    base_population_cap: 0,
+    victory: ( kind: "elimination", allow_resignation: true ),
+)
+"#;
+
+    const BASE: &str = r#"
+(
+    schema_version: 1,
+    id: "base",
+    display_name: "Base",
+    capabilities: [
+        Health(( max: 500 )),
+        Vision(( radius_milli_tiles: 6000 )),
+        Footprint(( w: 2, h: 2 )),
+        Produce(()),
+    ],
+    cost: ( ore: 100 ),
+    build_time_ms: 10000,
+    population: 0,
+    requires: [],
+)
+"#;
+
+    const WORKER: &str = r#"
+(
+    schema_version: 1,
+    id: "worker",
+    display_name: "Worker",
+    capabilities: [
+        Health(( max: 40 )),
+        Move(( speed_milli_tiles_per_s: 2600, radius_milli_tiles: 300 )),
+        Vision(( radius_milli_tiles: 7000 )),
+    ],
+    cost: ( ore: 50 ),
+    build_time_ms: 12000,
+    population: 1,
+    requires: [],
+)
+"#;
+
+    const ORE_NODE: &str = r#"
+(
+    schema_version: 1,
+    id: "ore_node",
+    display_name: "Ore Node",
+    capabilities: [
+        Resource(( resource: "ore", amount: 1500 )),
+        Footprint(( w: 2, h: 2 )),
+    ],
+    cost: ( ore: 0 ),
+    build_time_ms: 0,
+    population: 0,
+    requires: [],
+)
+"#;
+
+    const FACTION: &str = r#"
+(
+    schema_version: 1,
+    id: "testers",
+    display_name: "Testers",
+    roster: [ "base", "worker" ],
+    production: { "base": [ "worker" ] },
+    starting_forces: [
+        ( entity: "base", offset: ( x: 0, y: 0 ) ),
+        ( entity: "worker", offset: ( x: -1, y: 3 ) ),
+        ( entity: "worker", offset: ( x: 1, y: 3 ) ),
+    ],
+)
+"#;
+
+    /// A 16x16 all-ground map, two starts, two ore nodes — the factory shape.
+    fn map_text() -> String {
+        let row = ".".repeat(16);
+        let grid = vec![row; 16].join("\",\n        \"");
+        format!(
+            r#"
+(
+    schema_version: 2,
+    id: "testing",
+    display_name: "Testing Grounds",
+    width: 16,
+    height: 16,
+    terrain: [
+        ( code: ".", name: "ground", passable: true, buildable: true ),
+    ],
+    grid: [
+        "{grid}",
+    ],
+    starts: [
+        ( player: 0, anchor: ( x: 3, y: 3 ) ),
+        ( player: 1, anchor: ( x: 10, y: 10 ) ),
+    ],
+    ore_nodes: [
+        ( kind: "ore_node", tile: ( x: 1, y: 1 ) ),
+        ( kind: "ore_node", tile: ( x: 13, y: 13 ) ),
+    ],
+    symmetric: false,
+)
+"#
+        )
+    }
+
+    const MISSION: &str = r#"
+(
+    schema_version: 1,
+    id: "testing_01",
+    display_name: "Testing Grounds Assault",
+    map: "testing",
+    faction: "testers",
+    rules: "alpha",
+    objectives: [
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: None )),
+            optional: false,
+        ),
+        (
+            kind: "BuildTrain",
+            parameters: BuildTrain(( kind: "worker", count: 4 )),
+            optional: true,
+        ),
+    ],
+)
+"#;
+
+    fn factory() -> SourceMap {
+        SourceMap::new()
+            .rules("alpha.ron", RULES)
+            .entity("base.ron", BASE)
+            .entity("worker.ron", WORKER)
+            .entity("ore_node.ron", ORE_NODE)
+            .faction("testers.ron", FACTION)
+            .map("testing.ron", &map_text())
+    }
+
+    #[test]
+    fn a_tree_with_a_mission_lists_it_sorted_and_looks_it_up() {
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the factory with a mission loads");
+        assert_eq!(tree.missions.len(), 1);
+        let mission = tree.mission("testing_01").expect("the mission is found");
+        assert_eq!(mission.display_name, "Testing Grounds Assault");
+        assert!(tree.mission("missing").is_none());
+    }
+
+    #[test]
+    fn adding_a_mission_moves_neither_the_content_hash_nor_the_map_id() {
+        // The golden-preservation property (ADR-0201 §7): the mission
+        // category appends nothing to the content hash's or the map id's
+        // encoders, so a mission-bearing tree produces the exact same bundle
+        // identity as the mission-less one.
+        let plain = ContentTree::load(&factory()).expect("the mission-less tree loads");
+        let with_mission = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the mission-bearing tree loads");
+        let plain_bundle = plain.bundle("testing").expect("bundle");
+        let mission_bundle = with_mission.bundle("testing").expect("bundle");
+        assert_eq!(
+            plain_bundle.content_hash(),
+            mission_bundle.content_hash(),
+            "the content hash must not move when a mission joins the tree"
+        );
+        assert_eq!(
+            plain_bundle.map_id(),
+            mission_bundle.map_id(),
+            "the map id must not move when a mission joins the tree"
+        );
+        // And the two identities stay distinct values.
+        assert_ne!(plain_bundle.content_hash(), plain_bundle.map_id());
+    }
+
+    #[test]
+    fn mission_ids_are_deterministic_and_domain_separated() {
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the mission-bearing tree loads");
+        let first = tree.mission_id("testing_01");
+        let second = tree.mission_id("testing_01");
+        assert_eq!(first, second, "the mission id is a pure function");
+        assert_ne!(first, 0, "a real mission id is never the unknown sentinel");
+        // Domain separation from the map id (different domain words over
+        // overlapping fields would still collide only by hash accident — the
+        // domain words make the byte paths differ from the first block).
+        let bundle = tree.bundle("testing").expect("bundle");
+        assert_ne!(first, bundle.map_id());
+        assert_ne!(first, bundle.content_hash());
+        // The unknown-mission sentinel.
+        assert_eq!(tree.mission_id("missing"), 0);
+    }
+
+    #[test]
+    fn mission_identity_follows_the_mission_bytes() {
+        // A different objective set is a different mission (ADR-0201 §7: the
+        // mission record is identity-bearing).
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the mission-bearing tree loads");
+        let edited = MISSION.replace("count: 4", "count: 5");
+        let tree_edited =
+            ContentTree::load(&factory().mission("testing_01.ron", &edited)).expect("loads");
+        assert_ne!(
+            tree.mission_id("testing_01"),
+            tree_edited.mission_id("testing_01"),
+            "editing an objective changes the mission id"
+        );
+        let renamed = MISSION.replace("Testing Grounds Assault", "Second Assault");
+        let tree_renamed =
+            ContentTree::load(&factory().mission("testing_01.ron", &renamed)).expect("loads");
+        assert_ne!(
+            tree.mission_id("testing_01"),
+            tree_renamed.mission_id("testing_01"),
+            "editing the display name changes the mission id"
+        );
+    }
+
+    #[test]
+    fn mission_references_are_validated_against_the_tree() {
+        let bad_map = MISSION.replace("map: \"testing\",", "map: \"elsewhere\",");
+        let err = ContentTree::load(&factory().mission("testing_01.ron", &bad_map)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("references unknown map 'elsewhere'"),
+            "got: {err}"
+        );
+        let bad_faction = MISSION.replace("faction: \"testers\",", "faction: \"raiders\",");
+        let err =
+            ContentTree::load(&factory().mission("testing_01.ron", &bad_faction)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("references unknown faction 'raiders'"),
+            "got: {err}"
+        );
+        let bad_rules = MISSION.replace("rules: \"alpha\",", "rules: \"beta\",");
+        let err = ContentTree::load(&factory().mission("testing_01.ron", &bad_rules)).unwrap_err();
+        assert!(
+            err.to_string().contains("references unknown rules 'beta'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_mission_ids_are_refused_with_both_files() {
+        // `SourceMap` has public fields, so a caller can hand the loader the
+        // same mission file twice — the duplicate-id guard catches it (the
+        // same discipline as `duplicate_source_names_are_rejected_with_both_files`;
+        // file stems on disk are unique, so the directory reader can never
+        // produce this).
+        let mut sources = factory().mission("testing_01.ron", MISSION);
+        sources
+            .missions
+            .push(crate::Source::new("testing_01.ron", MISSION));
+        let err = ContentTree::load(&sources).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("duplicate id 'testing_01' in category 'missions'"),
+            "got: {err}"
+        );
     }
 }
