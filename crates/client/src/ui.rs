@@ -799,6 +799,13 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
         // binding table is rendered separately as `info_lines` (not rows —
         // they are plain text, not focusable buttons).
         Screen::Controls { .. } => vec![row(0, ButtonId::Back, "Back", String::new())],
+        // A-009 task 2: the confirm screen's two rows — Cancel first
+        // (the safer default focus), Confirm second. The message rides as
+        // the title's subline.
+        Screen::Confirm { .. } => vec![
+            row(0, ButtonId::ConfirmCancel, "Cancel", String::new()),
+            row(1, ButtonId::ConfirmProceed, "Confirm", String::new()),
+        ],
         Screen::InMatch => Vec::new(), // the match owns the input; no rows
     }
 }
@@ -865,6 +872,27 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         (crate::screens::Screen::PauseMenu, _) => ("PAUSED".to_string(), None),
         // A-009 task 1: the Controls screen's title.
         (crate::screens::Screen::Controls { .. }, _) => ("CONTROLS".to_string(), None),
+        // A-009 task 2: the confirm screen's title names the pending action;
+        // the subline is the standing warning ("the current match will be
+        // lost"). ASCII only — the embedded font subset.
+        (
+            crate::screens::Screen::Confirm {
+                action: crate::screens::ConfirmAction::Restart,
+            },
+            _,
+        ) => (
+            "RESTART?".to_string(),
+            Some("the current match will be lost".to_string()),
+        ),
+        (
+            crate::screens::Screen::Confirm {
+                action: crate::screens::ConfirmAction::QuitToMenu,
+            },
+            _,
+        ) => (
+            "QUIT TO MENU?".to_string(),
+            Some("the current match will be lost".to_string()),
+        ),
         _ => ("PANDEMONIUM".to_string(), None),
     };
 

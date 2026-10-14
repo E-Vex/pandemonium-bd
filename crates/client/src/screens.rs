@@ -146,6 +146,17 @@ pub enum SettingsReturn {
     PauseMenu,
 }
 
+/// The action a confirmation screen guards (A-009 task 2). Restart and
+/// Quit to Menu both discard live match state, so they open the confirm
+/// rung first; the action stores which effect Confirm runs unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// Restart the match (the existing `Effect::RestartMatch` path).
+    Restart,
+    /// Quit to the main menu (the existing `Effect::DropMatch` path).
+    QuitToMenu,
+}
+
 /// One application screen.
 // The variant `EndScreen` is the plan's own diagram name (PLAN-M10.2 §3.1)
 // — kept verbatim over the pedantic suffix lint.
@@ -175,6 +186,16 @@ pub enum Screen {
     Controls {
         /// Which screen Controls was opened from.
         return_to: SettingsReturn,
+    },
+    /// A confirmation rung (A-009 task 2): the pause menu's Restart and
+    /// Quit to Menu open this screen before discarding a live match. Two
+    /// rows (Cancel / Confirm), default focus on Cancel so a mis-press
+    /// (Enter on the focused row, or Esc) cancels. Confirm runs the
+    /// pending [`ConfirmAction`] unchanged through the existing effect
+    /// path.
+    Confirm {
+        /// Which action Confirm runs.
+        action: ConfirmAction,
     },
 }
 
@@ -289,6 +310,10 @@ pub enum ButtonId {
     Rematch,
     /// End screen: back to the main menu.
     ToMenu,
+    /// Confirm screen (A-009 task 2): cancel the pending action.
+    ConfirmCancel,
+    /// Confirm screen (A-009 task 2): run the pending action unchanged.
+    ConfirmProceed,
 }
 
 /// The application state: the current screen plus the keyboard focus
@@ -327,6 +352,7 @@ impl AppState {
             Screen::PauseMenu => "pause menu",
             Screen::EndScreen => "end screen",
             Screen::Controls { .. } => "controls screen",
+            Screen::Confirm { .. } => "confirm screen",
         }
     }
 
@@ -366,6 +392,11 @@ impl AppState {
             (Screen::EndScreen, 0) => ButtonId::Rematch,
             (Screen::EndScreen, 1) => ButtonId::ToMenu,
             (Screen::Controls { .. }, 0) => ButtonId::Back,
+            // A-009 task 2: the confirm screen has two rows, Cancel first
+            // (the safer default — focus 0 lands on Cancel so a mis-press
+            // or an Esc cancels).
+            (Screen::Confirm { .. }, 0) => ButtonId::ConfirmCancel,
+            (Screen::Confirm { .. }, 1) => ButtonId::ConfirmProceed,
             _ => return None,
         })
     }
@@ -380,6 +411,7 @@ impl AppState {
             Screen::PauseMenu => 5,
             Screen::EndScreen => 2,
             Screen::Controls { .. } => 1, // Back
+            Screen::Confirm { .. } => 2,  // Cancel + Confirm
         }
     }
 
@@ -444,6 +476,13 @@ impl AppState {
                     SettingsReturn::MainMenu => Screen::MainMenu,
                     SettingsReturn::PauseMenu => Screen::PauseMenu,
                 };
+                (next, Effect::None)
+            }
+            // A-009 task 2: Esc on the confirm screen cancels (the default
+            // focus is Cancel, so Esc and Enter-without-Down are the same
+            // safe edge). Returns to the pause menu; the match is unchanged.
+            Screen::Confirm { .. } => {
+                next.screen = Screen::PauseMenu;
                 (next, Effect::None)
             }
         }
@@ -578,13 +617,21 @@ impl AppState {
                 next.screen = Screen::InMatch;
                 (next, Effect::Unpause)
             }
+            // A-009 task 2: Restart and Quit to Menu now open the confirm
+            // rung before discarding a live match. The action stored is the
+            // one the confirm screen runs unchanged on Proceed — the same
+            // Effect::RestartMatch / Effect::DropMatch the direct path ran.
             ButtonId::PauseRestart => {
-                next.screen = Screen::InMatch;
-                (next, Effect::RestartMatch)
+                next.screen = Screen::Confirm {
+                    action: ConfirmAction::Restart,
+                };
+                (next, Effect::None)
             }
             ButtonId::QuitToMenu => {
-                next.screen = Screen::MainMenu;
-                (next, Effect::DropMatch)
+                next.screen = Screen::Confirm {
+                    action: ConfirmAction::QuitToMenu,
+                };
+                (next, Effect::None)
             }
             ButtonId::Rematch => {
                 next.screen = Screen::InMatch;
@@ -593,6 +640,36 @@ impl AppState {
             ButtonId::ToMenu => {
                 next.screen = Screen::MainMenu;
                 (next, Effect::DropMatch)
+            }
+            // A-009 task 2: Cancel returns to the pause menu, no effect —
+            // the live match is unchanged. The match is still paused (the
+            // pause menu is over a paused host).
+            ButtonId::ConfirmCancel => {
+                next.screen = Screen::PauseMenu;
+                (next, Effect::None)
+            }
+            // A-009 task 2: Proceed runs the pending action unchanged —
+            // RestartMatch rebuilds the same match (A15), DropMatch
+            // discards it. The successor screen is the action's natural
+            // destination (InMatch for Restart, MainMenu for Quit to Menu),
+            // exactly what the direct path produced before the confirm rung.
+            ButtonId::ConfirmProceed => {
+                match self.screen {
+                    Screen::Confirm { action } => match action {
+                        ConfirmAction::Restart => {
+                            next.screen = Screen::InMatch;
+                            (next, Effect::RestartMatch)
+                        }
+                        ConfirmAction::QuitToMenu => {
+                            next.screen = Screen::MainMenu;
+                            (next, Effect::DropMatch)
+                        }
+                    },
+                    // Confirm* outside a Confirm screen is unreachable
+                    // (the button only resolves inside one); the safe
+                    // no-op keeps the machine total.
+                    _ => (next, Effect::None),
+                }
             }
         }
     }
@@ -887,20 +964,31 @@ mod tests {
     }
 
     #[test]
-    fn pause_menu_restart_rebuilds_and_reenters_the_match() {
-        // A-009 task 1: the Controls row inserted at index 2 pushes Restart
-        // to index 3 (Resume / Settings / Controls / Restart / Quit to Menu).
+    fn pause_menu_restart_opens_the_confirm_screen() {
+        // A-009 task 2: Restart no longer rebuilds the match directly — it
+        // opens the confirm rung first (the live match will be lost).
         let (next, effect) = at(Screen::PauseMenu).activate_index(3, &ctx());
-        assert_eq!(next.screen, Screen::InMatch);
-        assert_eq!(effect, Effect::RestartMatch);
+        assert_eq!(
+            next.screen,
+            Screen::Confirm {
+                action: ConfirmAction::Restart
+            }
+        );
+        assert_eq!(effect, Effect::None);
     }
 
     #[test]
-    fn pause_menu_quit_to_menu_drops_the_match() {
-        // A-009 task 1: Quit to Menu is now index 4 (was 3).
+    fn pause_menu_quit_to_menu_opens_the_confirm_screen() {
+        // A-009 task 2: Quit to Menu no longer drops the match directly — it
+        // opens the confirm rung first.
         let (next, effect) = at(Screen::PauseMenu).activate_index(4, &ctx());
-        assert_eq!(next.screen, Screen::MainMenu);
-        assert_eq!(effect, Effect::DropMatch);
+        assert_eq!(
+            next.screen,
+            Screen::Confirm {
+                action: ConfirmAction::QuitToMenu
+            }
+        );
+        assert_eq!(effect, Effect::None);
     }
 
     // ---- the Controls screen (A-009 task 1) ----------------------------
@@ -973,6 +1061,101 @@ mod tests {
             }
         ));
         let (back_to_pause, effect) = controls.activate_index(0, &ctx()); // Back
+        assert_eq!(effect, Effect::None);
+        assert_eq!(back_to_pause.screen, Screen::PauseMenu);
+        let (resumed, effect) = back_to_pause.activate_index(0, &ctx()); // Resume
+        assert_eq!(resumed.screen, Screen::InMatch);
+        assert_eq!(effect, Effect::Unpause);
+    }
+
+    // ---- the Confirm screen (A-009 task 2) -----------------------------
+
+    #[test]
+    fn confirm_screen_has_two_rows_cancel_first_default_focus_cancel() {
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        assert_eq!(restart.button_count(), 2);
+        assert_eq!(restart.button_at(0), Some(ButtonId::ConfirmCancel));
+        assert_eq!(restart.button_at(1), Some(ButtonId::ConfirmProceed));
+        assert_eq!(restart.button_at(2), None);
+        // Default focus is row 0 (Cancel) — the safer mis-press.
+        assert_eq!(restart.focus, 0);
+        assert_eq!(restart.focused_button(), Some(ButtonId::ConfirmCancel));
+    }
+
+    #[test]
+    fn confirm_cancel_and_escape_return_to_the_pause_menu_with_no_effect() {
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        let (next, effect) = restart.activate_index(0, &ctx()); // Cancel
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+        let (next, effect) = restart.on_key(NavKey::Escape, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+
+        let quit = at(Screen::Confirm {
+            action: ConfirmAction::QuitToMenu,
+        });
+        let (next, effect) = quit.on_key(NavKey::Escape, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn confirm_default_focus_means_an_enter_alone_cancels() {
+        // A mis-press (Esc ladder + Enter) lands on Cancel — the safer edge.
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        let (next, effect) = restart.on_key(NavKey::Enter, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn confirm_proceed_restarts_the_match_unchanged() {
+        // Down to row 1 (Proceed), Enter runs RestartMatch — the same
+        // effect the pause menu's Restart row ran before the confirm rung.
+        let restart = at(Screen::Confirm {
+            action: ConfirmAction::Restart,
+        });
+        let (next, _) = restart.on_key(NavKey::Down, &ctx()); // row 1
+        assert_eq!(next.focused_button(), Some(ButtonId::ConfirmProceed));
+        let (next, effect) = next.on_key(NavKey::Enter, &ctx());
+        assert_eq!(next.screen, Screen::InMatch);
+        assert_eq!(effect, Effect::RestartMatch);
+    }
+
+    #[test]
+    fn confirm_proceed_drops_the_match_unchanged() {
+        let quit = at(Screen::Confirm {
+            action: ConfirmAction::QuitToMenu,
+        });
+        let (next, _) = quit.on_key(NavKey::Down, &ctx()); // row 1
+        assert_eq!(next.focused_button(), Some(ButtonId::ConfirmProceed));
+        let (next, effect) = next.on_key(NavKey::Enter, &ctx());
+        assert_eq!(next.screen, Screen::MainMenu);
+        assert_eq!(effect, Effect::DropMatch);
+    }
+
+    #[test]
+    fn confirm_round_trip_cancel_keeps_the_live_match() {
+        // Pause menu -> Restart (opens Confirm) -> Cancel -> Pause menu ->
+        // Resume. The whole round trip preserves the match (no DropMatch,
+        // no RestartMatch).
+        let paused = at(Screen::PauseMenu);
+        let (confirm, effect) = paused.activate_index(3, &ctx()); // Restart
+        assert_eq!(effect, Effect::None);
+        assert!(matches!(
+            confirm.screen,
+            Screen::Confirm {
+                action: ConfirmAction::Restart
+            }
+        ));
+        let (back_to_pause, effect) = confirm.activate_index(0, &ctx()); // Cancel
         assert_eq!(effect, Effect::None);
         assert_eq!(back_to_pause.screen, Screen::PauseMenu);
         let (resumed, effect) = back_to_pause.activate_index(0, &ctx()); // Resume
