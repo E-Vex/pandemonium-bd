@@ -12,11 +12,13 @@
   parameterize code; their evaluation stays code), the same extension pattern
   ADR-0200 applied for the content classes. **FD-10** (plan §2 — content schema
   moves only forward): *extended* — the mission schema is versioned and
-  forward-only like every other content kind. **FD-2, FD-3, FD-5, FD-6, FD-7,
-  FD-8, FD-9 are unchanged** and bind everything below: no mutation outside
-  `Sim::step`, no floats below the boundary, the sim depends on nothing above
-  it, the AI sees only its `PlayerView`, fog never alters the simulation, and
-  events flow outward. **plan §17** lists "Campaigns, cosmetics, ranked, mods,
+  forward-only like every other content kind. **FD-8** (plan §2, plan §9.5 —
+  fog filters information, never alters the simulation): *clarified* — a fog
+  preset changes the filter's *initial state* (derived, unhashed) — never
+  simulation state. **FD-2, FD-3, FD-5, FD-6, FD-7, FD-9 are unchanged** and
+  bind everything below: no mutation outside `Sim::step`, no floats below the
+  boundary, the sim depends on nothing above it, the AI sees only its
+  `PlayerView`, and events flow outward. **plan §17** lists "Campaigns, cosmetics, ranked, mods,
   live service — only after the core proves it needs them" (`plan.md:606`); the
   standing orders' PRODUCT PHASE amendment (`docs/pm/STANDING_ORDERS.md:8`)
   suspends the anti-goal side of that line for product briefs while the
