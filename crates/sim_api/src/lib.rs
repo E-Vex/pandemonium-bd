@@ -400,8 +400,10 @@ pub enum CommandKind {
 /// part of the hashed state.
 ///
 /// M1 emits [`Event::Spawned`], [`Event::Died`], and [`Event::CommandRejected`];
-/// the remaining variants are the planned vocabulary and light up as their systems
-/// land (M4–M8).
+/// the remaining variants light up as their systems land (M4–M8). ADR-0201
+/// adds the objective-state family (M-missions Phase 1): [`Event::ObjectiveState`]
+/// reports mission-objective progress, consumed after the step like every
+/// other event.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Event {
     /// An entity entered the world (initial or scheduled spawn now; production and
@@ -489,6 +491,101 @@ pub enum Event {
         /// The winning slot.
         winner: PlayerId,
     },
+    /// An objective's state changed (ADR-0201 §2): one mission objective
+    /// resolved this tick — completed or failed. `index` is 0-indexed into
+    /// the mission's objective list. Unhashed and outward (FD-9): like every
+    /// event, it is an output consumed after the step, never part of the
+    /// canonical state and never inside the replay codec.
+    ObjectiveState {
+        /// The objective that resolved, 0-indexed into the mission's
+        /// objective list.
+        index: u32,
+        /// How it resolved.
+        state: ObjectiveState,
+    },
+}
+
+/// How one mission objective resolved (ADR-0201 §2) — the payload of
+/// [`Event::ObjectiveState`]. Phase 1 objectives complete, never fail
+/// (failure arrives with the Phase 2 kinds — protect, survive); the state is
+/// monotonic per objective: once resolved, it never reverts, and the event
+/// fires exactly once per objective.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObjectiveState {
+    /// The objective's success condition is met.
+    Completed,
+    /// The objective's failure condition is met.
+    Failed,
+}
+
+/// A mission objective's kind in the simulation's resolved vocabulary
+/// (ADR-0201 §2): what the stage-10 evaluator checks. Content authors kinds
+/// by id string; the content seam resolves them to `KindId`s. Phase 1
+/// carries the two vertical-slice kinds — the remaining kinds (survive,
+/// reach, protect, gather) are Phase 2 and will extend this enum alongside
+/// the mission schema version.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MissionObjectiveKind {
+    /// Destroy all enemy structures — or every enemy structure of a target
+    /// kind (`MissionObjectiveParameters::Destroy`).
+    Destroy,
+    /// Build/train N entities of a kind (`MissionObjectiveParameters::BuildTrain`).
+    BuildTrain,
+}
+
+/// A mission objective's parameters in the simulation's resolved vocabulary
+/// (ADR-0201 §2) — the `KindId`-resolved form of content's
+/// `ObjectiveParameters` (string ids). The content seam
+/// (`ContentTree::mission_objectives`) performs the resolution; the
+/// simulation never sees kind-name strings (FD-6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MissionObjectiveParameters {
+    /// `None` = all enemy structures (today's elimination rule); `Some(kind)`
+    /// = every enemy structure of that kind.
+    Destroy {
+        /// The target kind, if the objective names one.
+        target_kind: Option<KindId>,
+    },
+    /// The kind to build/train, and how many.
+    BuildTrain {
+        /// The kind to build or train.
+        kind: KindId,
+        /// How many must exist.
+        count: u32,
+    },
+}
+
+/// One mission objective as the simulation receives it (ADR-0201 §2): the
+/// kind, its resolved parameters, and whether the objective is optional.
+/// Optional objectives never gate `MatchEnded` — they feed the end screen
+/// and story hooks; a failed *non-optional* objective ends the match with the
+/// opponent as winner.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MissionObjective {
+    /// What the evaluator checks.
+    pub kind: MissionObjectiveKind,
+    /// The kind's parameters.
+    pub parameters: MissionObjectiveParameters,
+    /// Whether the objective is optional.
+    pub optional: bool,
+}
+
+/// A mission's objective set as the simulation receives it (ADR-0201 §2a):
+/// the mission player the objectives belong to, plus the ordered objective
+/// list — the indices are the [`Event::ObjectiveState`] indices. Match-
+/// defining input data, exactly the class [`MatchSetup`] belongs to: it
+/// crosses the sim boundary at construction (`Sim::with_mission`) and is
+/// evaluated per tick by stage 10 as derived state (the A-066 pattern), so it
+/// never enters the canonical state hash.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MissionObjectives {
+    /// The player the objectives belong to — the mission player. The
+    /// objective evaluator reads the world from this player's side: "enemy"
+    /// means every non-neutral owner that is not this player.
+    pub player: PlayerId,
+    /// The ordered objective list, AND-composed (ADR-0201 §2): the mission
+    /// player wins when every non-optional objective completes.
+    pub objectives: Vec<MissionObjective>,
 }
 
 /// One of the eleven fixed pipeline stages of the simulation tick (plan
@@ -574,5 +671,52 @@ mod tests {
         // The simulator allocates from 1 upward, so zero stays a safe null value.
         assert_eq!(EntityId::NONE, EntityId(0));
         assert!(EntityId::NONE < EntityId(1));
+    }
+
+    #[test]
+    fn objective_state_events_carry_the_index_and_resolution() {
+        // ADR-0201 §2: the outward objective-progress vocabulary is plain data
+        // — index into the mission's objective list, and the resolution.
+        let event = Event::ObjectiveState {
+            index: 1,
+            state: ObjectiveState::Completed,
+        };
+        assert_eq!(
+            event,
+            Event::ObjectiveState {
+                index: 1,
+                state: ObjectiveState::Completed,
+            }
+        );
+        assert_ne!(ObjectiveState::Completed, ObjectiveState::Failed);
+    }
+
+    #[test]
+    fn mission_objective_sets_carry_their_player_and_ordered_objectives() {
+        // ADR-0201 §2a: the mission input vocabulary — resolved KindIds, the
+        // mission player, and the ordered list whose indices the events echo.
+        let objectives = MissionObjectives {
+            player: PlayerId(0),
+            objectives: vec![
+                MissionObjective {
+                    kind: MissionObjectiveKind::Destroy,
+                    parameters: MissionObjectiveParameters::Destroy { target_kind: None },
+                    optional: false,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::BuildTrain,
+                    parameters: MissionObjectiveParameters::BuildTrain {
+                        kind: KindId(3),
+                        count: 4,
+                    },
+                    optional: true,
+                },
+            ],
+        };
+        assert_eq!(objectives.player, PlayerId(0));
+        assert_eq!(objectives.objectives.len(), 2);
+        assert!(objectives.objectives[0].kind == MissionObjectiveKind::Destroy);
+        assert!(!objectives.objectives[0].optional);
+        assert!(objectives.objectives[1].optional);
     }
 }

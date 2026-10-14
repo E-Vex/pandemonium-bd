@@ -119,7 +119,8 @@ pub fn cue_for(event: &Event) -> Option<AudioCue> {
         | Event::ConstructionStarted { .. }
         | Event::NodeDepleted { .. }
         | Event::CommandRejected { .. }
-        | Event::MoveFailed { .. } => None,
+        | Event::MoveFailed { .. }
+        | Event::ObjectiveState { .. } => None,
     }
 }
 
