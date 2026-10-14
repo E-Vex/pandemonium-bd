@@ -694,6 +694,11 @@ pub struct MenuInput<'a> {
     /// from [`crate::report::CONTROLS_TABLE`]). Empty for every other
     /// screen — those screens render buttons only.
     pub info_lines: &'a [(&'static str, &'static str)],
+    /// A-009 task 4: the build-identity footer line drawn at the bottom of
+    /// the main menu and the pause menu (the `App::version_line()` —
+    /// "pandemonium X.Y git Z content HASH"). Empty string for screens
+    /// that do not draw it (per the brief: main menu and pause menu only).
+    pub version: &'a str,
 }
 
 /// What [`build_menu`] produced: the quads to draw and the hit rects.
@@ -841,6 +846,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         end_lines,
         backdrop,
         info_lines,
+        version,
     } = input;
     let mut quads: Vec<UiQuad> = Vec::new();
     let mut buttons = Vec::new();
@@ -897,6 +903,14 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
     };
 
     let hint = matches!(screen.screen, crate::screens::Screen::Settings { .. });
+    // A-009 task 4: the version footer draws on the main menu and the
+    // pause menu only (per the brief). Other screens pass an empty
+    // string and draw nothing.
+    let show_version = !version.is_empty()
+        && matches!(
+            screen.screen,
+            crate::screens::Screen::MainMenu | crate::screens::Screen::PauseMenu
+        );
     let mut panel_h = PAD + line_height + PAD + ROW_GAP; // title + gap
     if subline.is_some() {
         panel_h += line_height + 4.0;
@@ -909,6 +923,10 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
     panel_h += rows.len() as f32 * (ROW_H + ROW_GAP);
     if hint {
         panel_h += line_height + PAD; // the hint line
+    }
+    // A-009 task 4: the version footer adds one line + a small pad.
+    if show_version {
+        panel_h += line_height + PAD;
     }
     let panel_x = viewport.0 * 0.5 - panel_w * 0.5;
     let panel_y = viewport.1 * 0.5 - panel_h * 0.5;
@@ -1031,6 +1049,22 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
             panel_x + (panel_w - hint_w) * 0.5,
             cursor_y + PAD + atlas.ascent,
             [0.55, 0.6, 0.68, 0.9],
+        ));
+        cursor_y += line_height + PAD;
+    }
+
+    // A-009 task 4: the build-identity footer line. Small, dimmed, centered
+    // at the bottom of the panel — "pandemonium X.Y git Z content HASH"
+    // (the same string the F8 sidecar and the F3 debug overlay print).
+    // Drawn on the main menu and the pause menu only; other screens pass
+    // an empty string and the `show_version` guard above excludes them.
+    if show_version {
+        let version_w = atlas.measure(version);
+        quads.extend(atlas.layout(
+            version,
+            panel_x + (panel_w - version_w) * 0.5,
+            cursor_y + atlas.ascent,
+            [0.45, 0.5, 0.58, 0.8],
         ));
     }
 
@@ -1421,6 +1455,7 @@ mod tests {
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
+            version: "",
         }
     }
 
@@ -1462,6 +1497,7 @@ mod tests {
                 end_lines: Some(("VICTORY", "You eliminated the enemy.")),
                 backdrop: [0.0, 0.0, 0.0, 0.5],
                 info_lines: &[],
+                version: "",
             };
             let built = build_menu(input);
             let expected: Vec<crate::screens::ButtonId> = (0..state.button_count())
@@ -1490,6 +1526,7 @@ mod tests {
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
+            version: "",
         });
         assert_eq!(built.buttons.len(), 9);
         for button in &built.buttons {
@@ -1537,5 +1574,114 @@ mod tests {
         };
         let built = build_menu(menu_input(&without_seed));
         assert_eq!(built.buttons.len(), 5);
+    }
+
+    #[test]
+    fn the_version_footer_renders_on_the_main_menu_and_the_pause_menu_only() {
+        // A-009 task 4: the build-identity footer draws on the main menu and
+        // the pause menu only. Other screens pass an empty string and draw
+        // nothing. The footer is text quads; the screen that draws it has
+        // MORE quads than the same screen with an empty version string.
+        let version = "pandemonium 0.1.1 git abc123  content 0x9bc18c521107b262";
+        let no_version = "";
+
+        // Main menu: the footer adds text quads on top of the no-version
+        // baseline.
+        let main_menu = crate::screens::AppState::at_main_menu();
+        let with_footer = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &main_menu,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version,
+        });
+        let without_footer = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &main_menu,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version: no_version,
+        });
+        assert!(
+            with_footer.quads.len() > without_footer.quads.len(),
+            "the main menu draws the version footer (extra text quads)"
+        );
+
+        // Pause menu: same — the footer adds quads.
+        let pause = crate::screens::AppState {
+            screen: crate::screens::Screen::PauseMenu,
+            focus: 0,
+        };
+        let with_footer = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &pause,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version,
+        });
+        let without_footer = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &pause,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version: no_version,
+        });
+        assert!(
+            with_footer.quads.len() > without_footer.quads.len(),
+            "the pause menu draws the version footer (extra text quads)"
+        );
+
+        // Settings screen: even when version is non-empty, the guard
+        // excludes it (the brief scopes the footer to main menu and pause
+        // menu only). The quad count must NOT grow.
+        let settings = crate::screens::AppState {
+            screen: crate::screens::Screen::Settings {
+                return_to: crate::screens::SettingsReturn::MainMenu,
+            },
+            focus: 0,
+        };
+        let with_footer = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &settings,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version,
+        });
+        let without_footer = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &settings,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            end_lines: None,
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version: no_version,
+        });
+        assert_eq!(
+            with_footer.quads.len(),
+            without_footer.quads.len(),
+            "the settings screen does NOT draw the version footer"
+        );
     }
 }

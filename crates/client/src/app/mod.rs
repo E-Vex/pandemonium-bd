@@ -923,6 +923,10 @@ impl App {
     /// hit rects (hover/click routing reads them).
     pub(crate) fn draw_menu_frame(&mut self) {
         let maps = self.map_list(); // before the renderer borrow
+                                    // A-009 task 4: the build-identity footer draws on the main menu
+                                    // (the menu-only path lands here). Composed before the renderer
+                                    // borrow so the borrow checker is happy.
+        let version_line = self.version_line();
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -950,6 +954,7 @@ impl App {
             end_lines: None, // no host behind a menu-only frame
             backdrop: [0.02, 0.03, 0.05, 0.94],
             info_lines,
+            version: &version_line,
         });
         self.menu_buttons = built.buttons;
         renderer.queue_ui(&built.quads);
@@ -1376,6 +1381,10 @@ impl App {
                 end_lines: headline,
                 backdrop: [0.0, 0.0, 0.0, 0.55],
                 info_lines,
+                // A-009 task 4: the pause menu (this in-match draw path)
+                // also draws the build-identity footer. version_line was
+                // composed above, before the renderer borrow.
+                version: &version_line,
             });
             self.menu_buttons = built.buttons;
             quads.extend(built.quads);
