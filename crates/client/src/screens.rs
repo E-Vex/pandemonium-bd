@@ -157,6 +157,64 @@ pub enum ConfirmAction {
     QuitToMenu,
 }
 
+/// The window focus / minimize signals the pure auto-pause decision reads
+/// (A-009 task 3). winit 0.30's `WindowEvent::Focused(bool)` is the focus
+/// signal; minimize has no dedicated variant, so the pinned winit emits
+/// `WindowEvent::Resized(PhysicalSize::ZERO)` on minimize (the standard
+/// 0.30 signal, used here through the wiring layer's translation). The
+/// pure module never touches winit types — it reads this enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusEvent {
+    /// The window lost keyboard focus (`Focused(false)`).
+    Unfocused,
+    /// The window regained keyboard focus (`Focused(true)`).
+    Focused,
+    /// The window was minimized (`Resized((0, 0))` on the pinned winit).
+    Minimized,
+}
+
+/// A-009 task 3: the auto-pause decision — a pure function over
+/// `(screen, mode, is_paused, event)` that returns `Effect::Pause` only
+/// when a live human-driven match is in progress and focus is lost or the
+/// window minimized. Concretely:
+///
+/// - the screen is `InMatch` (not on a menu, not on the end screen — the
+///   pause menu is already a paused state, and the end screen has no live
+///   match to pause);
+/// - `mode.human_orders()` is true (not `AiVsAi` spectate — a spectated
+///   match is not the player's to guard, and the AI keeps running);
+/// - the host is not already paused (a `P` pause stays a `P` pause —
+///   regaining focus later does not auto-resume, so a focus blip during a
+///   manual pause must not stack a second pause on top);
+/// - the event is `Unfocused` or `Minimized`.
+///
+/// Regaining focus (`Focused`) never auto-resumes — the player resumes
+/// explicitly through the pause menu's Resume (the classic-RTS contract;
+/// the brief's design ruling).
+///
+/// The wiring layer applies the returned effect: `Effect::Pause` triggers
+/// the existing `AppState::open_pause()` path (which both pauses the host
+/// and opens the pause menu), `Effect::None` is a no-op. The
+/// `--frames`/smoke/`--record` runs behave exactly as before — the
+/// windowed smoke under Xvfb has no focus changes or minimize events, so
+/// the function returns `Effect::None` there.
+pub fn auto_pause_on_focus(
+    screen: &Screen,
+    mode: MatchMode,
+    is_paused: bool,
+    event: FocusEvent,
+) -> Effect {
+    use FocusEvent::{Focused, Minimized, Unfocused};
+    match (screen, mode, is_paused, event) {
+        (Screen::InMatch, mode, false, Unfocused | Minimized) if mode.human_orders() => {
+            Effect::Pause
+        }
+        // Regaining focus never auto-resumes (the brief's design ruling).
+        (_, _, _, Focused) => Effect::None,
+        _ => Effect::None,
+    }
+}
+
 /// One application screen.
 // The variant `EndScreen` is the plan's own diagram name (PLAN-M10.2 §3.1)
 // — kept verbatim over the pedantic suffix lint.
@@ -1508,5 +1566,134 @@ mod tests {
         assert_eq!(setup.players[0].controller, ControllerKind::Human);
         assert_eq!(setup.players[1].controller, ControllerKind::Human);
         assert_eq!(MatchMode::Sandbox.ai_slots(), Vec::<PlayerId>::new());
+    }
+
+    // ---- the auto-pause decision (A-009 task 3) ------------------------
+
+    #[test]
+    fn auto_pause_fires_on_focus_loss_during_a_live_human_match() {
+        // InMatch + human_orders() + not paused + focus loss => Pause.
+        for mode in [MatchMode::PlayerVsAi, MatchMode::Sandbox] {
+            assert_eq!(
+                auto_pause_on_focus(&Screen::InMatch, mode, false, FocusEvent::Unfocused),
+                Effect::Pause,
+                "mode {mode:?} should auto-pause on focus loss"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_pause_fires_on_minimize_during_a_live_human_match() {
+        for mode in [MatchMode::PlayerVsAi, MatchMode::Sandbox] {
+            assert_eq!(
+                auto_pause_on_focus(&Screen::InMatch, mode, false, FocusEvent::Minimized),
+                Effect::Pause,
+                "mode {mode:?} should auto-pause on minimize"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_pause_does_not_fire_for_spectated_matches() {
+        // AiVsAi spectate is not the player's to guard — the AI keeps
+        // running; the player is watching, not driving.
+        assert_eq!(
+            auto_pause_on_focus(
+                &Screen::InMatch,
+                MatchMode::AiVsAi,
+                false,
+                FocusEvent::Unfocused
+            ),
+            Effect::None
+        );
+        assert_eq!(
+            auto_pause_on_focus(
+                &Screen::InMatch,
+                MatchMode::AiVsAi,
+                false,
+                FocusEvent::Minimized
+            ),
+            Effect::None
+        );
+    }
+
+    #[test]
+    fn auto_pause_does_not_fire_when_already_paused() {
+        // A P-paused match stays P-paused; the focus blip does not stack a
+        // second pause on top (regaining focus later does not auto-resume,
+        // so the manual pause stays the source of truth).
+        for event in [FocusEvent::Unfocused, FocusEvent::Minimized] {
+            assert_eq!(
+                auto_pause_on_focus(&Screen::InMatch, MatchMode::PlayerVsAi, true, event),
+                Effect::None,
+                "event {event:?} during a manual pause is a no-op"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_pause_does_not_fire_on_menus_or_the_end_screen() {
+        // Not InMatch = no live match to guard. The pause menu IS the
+        // paused state; the end screen has no match; the menus have no
+        // host. None auto-pause.
+        let screens = [
+            Screen::MainMenu,
+            Screen::PauseMenu,
+            Screen::EndScreen,
+            Screen::Settings {
+                return_to: SettingsReturn::PauseMenu,
+            },
+            Screen::Controls {
+                return_to: SettingsReturn::PauseMenu,
+            },
+            Screen::Confirm {
+                action: ConfirmAction::Restart,
+            },
+        ];
+        for screen in &screens {
+            for event in [FocusEvent::Unfocused, FocusEvent::Minimized] {
+                assert_eq!(
+                    auto_pause_on_focus(screen, MatchMode::PlayerVsAi, false, event),
+                    Effect::None,
+                    "screen {screen:?} event {event:?} must not auto-pause"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn regaining_focus_never_auto_resumes() {
+        // The classic-RTS contract: focus loss pauses; focus gain does not
+        // resume. The player resumes explicitly through the pause menu.
+        for mode in [MatchMode::PlayerVsAi, MatchMode::AiVsAi, MatchMode::Sandbox] {
+            for paused in [false, true] {
+                assert_eq!(
+                    auto_pause_on_focus(&Screen::InMatch, mode, paused, FocusEvent::Focused),
+                    Effect::None,
+                    "mode {mode:?} paused {paused} must not auto-resume on focus gain"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_pause_is_pure_over_its_inputs() {
+        // Same inputs => same output (the decision is a pure function —
+        // the wiring layer relies on this; calling it twice in the same
+        // frame must not double-fire).
+        let once = auto_pause_on_focus(
+            &Screen::InMatch,
+            MatchMode::PlayerVsAi,
+            false,
+            FocusEvent::Unfocused,
+        );
+        let twice = auto_pause_on_focus(
+            &Screen::InMatch,
+            MatchMode::PlayerVsAi,
+            false,
+            FocusEvent::Unfocused,
+        );
+        assert_eq!(once, twice);
+        assert_eq!(once, Effect::Pause);
     }
 }
