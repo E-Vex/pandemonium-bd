@@ -33,7 +33,7 @@ use std::time::Duration;
 use pandemonium_ai::Controller;
 use pandemonium_sim::{MatchOutcome, Sim, TrivialWorld};
 use pandemonium_sim_api::{
-    Command, Event, MatchSetup, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
+    Command, Event, MatchSetup, MissionObjectives, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
 };
 
 use crate::clock::FixedTimestep;
@@ -132,6 +132,48 @@ impl MatchHost {
     /// The current simulation tick (the tick the next step applies).
     pub fn tick(&self) -> Tick {
         self.sim.tick()
+    }
+
+    /// Starts a mission match (ADR-0201 Phase 1, the engine mission seam):
+    /// the exact [`MatchHost::with_controllers`] construction path with the
+    /// simulation built by [`Sim::with_mission`] instead of [`Sim::new`] —
+    /// the shared `Sim::build` body means tick-0 state is identical by
+    /// construction (the B-012 proof), so the mission's objective set is the
+    /// only difference. The mission's objectives are evaluated per tick by
+    /// stage 10 as derived state and surface outward as
+    /// [`Event::ObjectiveState`] / `MatchEnded` — never in the state hash, so
+    /// the mission-less paths and every golden are untouched. A peer of
+    /// [`Self::with_controllers`], not a refactor of it.
+    pub fn with_mission(
+        world: &TrivialWorld,
+        setup: MatchSetup,
+        controllers: Vec<(PlayerId, Box<dyn Controller>)>,
+        mission: MissionObjectives,
+    ) -> Self {
+        for (player, _) in &controllers {
+            assert!(
+                setup.players.iter().any(|entry| entry.player == *player),
+                "controller for slot {player:?}, which is not in the match"
+            );
+        }
+        let mut controllers = controllers;
+        controllers.sort_by_key(|(player, _)| *player);
+        assert!(
+            controllers.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "one controller per slot at most"
+        );
+        let sim = Sim::with_mission(world, setup, mission);
+        let mut interpolator = Interpolator::new();
+        interpolator.push(sim.snapshot());
+        Self {
+            sim,
+            clock: FixedTimestep::new(pandemonium_sim::TICKS_PER_SECOND),
+            interpolator,
+            pending: Vec::new(),
+            paused: false,
+            controllers,
+            log: Vec::new(),
+        }
     }
 
     /// Queues a command for the next step, (re-)stamping its tick so it
@@ -325,7 +367,8 @@ mod tests {
         CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
     };
     use pandemonium_sim_api::{
-        CommandKind, ControllerKind, EntityId, KindId, PlayerSetup, ResourceId,
+        CommandKind, ControllerKind, EntityId, KindId, MissionObjective, MissionObjectiveKind,
+        MissionObjectiveParameters, ObjectiveState, PlayerSetup, ResourceId,
     };
 
     fn world() -> TrivialWorld {
@@ -648,5 +691,90 @@ mod tests {
             assert_eq!(oa.hashes, ob.hashes, "the checkpoint trails must match");
         }
         assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    // ---- ADR-0201 Phase 1: the engine mission seam ----------------------
+
+    /// A one-objective mission for the mission player: destroy all enemy
+    /// structures (`None` = every enemy structure, today's elimination rule
+    /// as an authored objective). The test world fields no enemy at all, so
+    /// the objective resolves on the first evaluated tick — a compact,
+    /// deterministic drive of the seam.
+    fn test_mission() -> MissionObjectives {
+        MissionObjectives {
+            player: PlayerId(0),
+            objectives: vec![MissionObjective {
+                kind: MissionObjectiveKind::Destroy,
+                parameters: MissionObjectiveParameters::Destroy { target_kind: None },
+                optional: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn with_mission_matches_with_controllers_tick_for_tick() {
+        // The seam's construction law: `Sim::with_mission` runs the exact
+        // `Sim::build` body, so the mission-carrying host and the
+        // mission-less host produce identical state hashes and checkpoint
+        // trails tick for tick — the mission state is derived and never
+        // hashed (A-066 pattern; the B-012 proof carried through the engine
+        // seam).
+        let world = world();
+        let setup = setup();
+        let mut plain = MatchHost::new(&world, setup.clone());
+        let mut mission = MatchHost::with_mission(&world, setup, Vec::new(), test_mission());
+        assert_eq!(plain.state_hash(), mission.state_hash(), "tick 0");
+        for _ in 0..62 {
+            let frame = Duration::from_millis(16);
+            let op = plain.advance(frame);
+            let om = mission.advance(frame);
+            assert_eq!(plain.tick(), mission.tick());
+            assert_eq!(plain.state_hash(), mission.state_hash());
+            assert_eq!(op.hashes, om.hashes, "the checkpoint trails must match");
+        }
+        assert_eq!(plain.state_hash(), mission.state_hash());
+    }
+
+    #[test]
+    fn with_mission_surfaces_the_objective_resolution_the_plain_host_lacks() {
+        // Same world, same setup, same empty controller set: the mission host
+        // emits the objective's resolution (and the mission's MatchEnded —
+        // the required objective completed, so the mission player wins),
+        // while the plain host emits neither. The hashes stay identical
+        // (pinned above) — the mission lives in events, not state.
+        let world = world();
+        let setup = setup();
+        let mut plain = MatchHost::new(&world, setup.clone());
+        let mut mission = MatchHost::with_mission(&world, setup, Vec::new(), test_mission());
+        let frame = Duration::from_millis(34); // one step
+        let op = plain.advance(frame);
+        let om = mission.advance(frame);
+        assert!(op
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::ObjectiveState { .. })));
+        assert!(op
+            .events
+            .iter()
+            .all(|event| !matches!(event, Event::MatchEnded { .. })));
+        assert!(matches!(
+            om.events
+                .iter()
+                .find(|event| matches!(event, Event::ObjectiveState { .. })),
+            Some(Event::ObjectiveState {
+                index: 0,
+                state: ObjectiveState::Completed
+            })
+        ));
+        assert!(matches!(
+            om.events
+                .iter()
+                .find(|event| matches!(event, Event::MatchEnded { .. })),
+            Some(Event::MatchEnded {
+                winner: PlayerId(0)
+            })
+        ));
+        assert!(mission.is_finished());
+        assert!(!plain.is_finished());
     }
 }
