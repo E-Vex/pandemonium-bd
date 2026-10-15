@@ -1529,7 +1529,7 @@ mod mission_wiring {
         assert_eq!(mission.lines.len(), 2);
         // The objective HUD lines derive from the resolved set (the same
         // order the events index).
-        assert_eq!(mission.lines[0].text, "Destroy all enemy structures");
+        assert_eq!(mission.lines[0].text, "Destroy all enemy Command Center");
         assert_eq!(mission.lines[1].text, "Train 4 Worker");
         // Task 3: the scene runs over a paused host at tick 0.
         assert!(

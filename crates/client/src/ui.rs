@@ -2058,7 +2058,7 @@ mod tests {
         assert_eq!(lines.len(), 2);
         // The Phase 1 mission: destroy (required) + train four workers
         // (optional), in the authored order.
-        assert_eq!(lines[0].text, "Destroy all enemy structures");
+        assert_eq!(lines[0].text, "Destroy all enemy Command Center");
         assert!(!lines[0].optional);
         assert_eq!(lines[1].text, "Train 4 Worker");
         assert!(lines[1].optional);
