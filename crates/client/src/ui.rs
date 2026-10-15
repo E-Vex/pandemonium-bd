@@ -721,6 +721,17 @@ impl MissionHud {
         };
     }
 
+    /// The end screen's rows (A-011 Task 4): each objective's display text
+    /// beside its final state — `PENDING` for objectives the match's
+    /// resolution left unresolved (an optional objective the player never
+    /// finished, or a mission ended by the elimination rule).
+    pub fn end_pairs(&self) -> Vec<(String, String)> {
+        self.lines
+            .iter()
+            .map(|line| (line.display_text(), line.state.end_label().to_string()))
+            .collect()
+    }
+
     /// The mission-start cutscene's one-line intro (A-011 Task 3): the
     /// objective summary, semicolon-joined — "Objectives: ..." (ASCII).
     pub fn intro_line(&self) -> String {
@@ -752,6 +763,15 @@ impl ObjectiveHudState {
             Self::Pending => "[ ]",
             Self::Completed => "[x]",
             Self::Failed => "[!]",
+        }
+    }
+
+    /// The state's end-screen label (ASCII).
+    fn end_label(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
         }
     }
 }

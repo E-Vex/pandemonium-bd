@@ -1625,17 +1625,43 @@ impl App {
         // and draws its panel on top; the built buttons are this frame's
         // hit rects.
         if !self.screen.takes_world_input() {
-            let headline = outcome.as_ref().map(|outcome| match outcome.winner {
-                HUMAN => ("VICTORY", "You eliminated the enemy."),
-                AI => ("DEFEAT", "Your base was destroyed."),
-                _ => ("MUTUAL DESTRUCTION", "Both sides were eliminated."),
+            // A-011 (ADR-0201 Phase 1, Task 4): a mission match's end screen
+            // carries the mission's display name under the headline and each
+            // objective's final state as info rows (objective left, state
+            // right — the same block the Controls screen's table uses). A
+            // mission-less match's end screen is unchanged.
+            let mission_pairs: Vec<(String, String)> = self
+                .mission_hud
+                .as_ref()
+                .map(|mission| mission.end_pairs())
+                .unwrap_or_default();
+            let mission_rows: Vec<(&str, &str)> = mission_pairs
+                .iter()
+                .map(|(text, state)| (text.as_str(), state.as_str()))
+                .collect();
+            let headline = outcome.as_ref().map(|outcome| {
+                let head = match outcome.winner {
+                    HUMAN => "VICTORY",
+                    AI => "DEFEAT",
+                    _ => "MUTUAL DESTRUCTION",
+                };
+                let sub = match &self.mission_hud {
+                    Some(mission) => mission.display_name.as_str(),
+                    None => match outcome.winner {
+                        HUMAN => "You eliminated the enemy.",
+                        AI => "Your base was destroyed.",
+                        _ => "Both sides were eliminated.",
+                    },
+                };
+                (head, sub)
             });
             // A-009 task 1: the Controls screen renders the standing binding
             // table (report.rs) as informational rows here too (when opened
             // from the pause menu — the in-match draw path serves the
             // pause menu and everything reachable from it).
-            let info_lines: &[(&'static str, &'static str)] = match &self.screen.screen {
+            let info_lines: &[(&str, &str)] = match &self.screen.screen {
                 Screen::Controls { .. } => report::CONTROLS_TABLE,
+                Screen::EndScreen if !mission_rows.is_empty() => &mission_rows,
                 _ => &[],
             };
             let built = ui::build_menu(ui::MenuInput {
