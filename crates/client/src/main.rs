@@ -1467,6 +1467,7 @@ mod mission_wiring {
 
     use super::*;
     use crate::screens::{KeyContext, NavKey};
+    use pandemonium_replay::{Checkpoint, ReplayFile};
 
     /// An app over the repo content with the null audio arm.
     fn app() -> App {
@@ -1669,6 +1670,101 @@ mod mission_wiring {
         assert_eq!(app.mission_index, None);
         assert!(app.mission_hud.is_none());
         assert!(app.cutscene.is_none());
+    }
+
+    #[test]
+    fn a_mission_match_recording_carries_the_mission_identity() {
+        // AUD-002 (ADR-0201 §7): the --record write path stamps the
+        // domain-separated mission id of the mission begin_mission resolved
+        // — through the real app: begin_mission -> advance -> the recorded
+        // file decodes with `mission_id == tree.mission_id("crossroads_01")`
+        // (the key `tools replay-verify`'s third comparison checks), while a
+        // plain match's record stays mission-less. The record re-simulates
+        // mission-carrying to identical hashes (objectives are derived,
+        // unhashed state — the A-066 discipline).
+        let tree_path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(tree_path).expect("the repo content loads");
+        let mission_id = tree.mission_id("crossroads_01");
+
+        // The pure stamp: (tree, Some(0)) is the mission's id, a plain
+        // match's None stays None, an out-of-range index is None (defensive).
+        assert_eq!(App::mission_replay_id(&tree, Some(0)), Some(mission_id));
+        assert_eq!(App::mission_replay_id(&tree, None), None);
+        assert_eq!(App::mission_replay_id(&tree, Some(9)), None);
+
+        // The end-to-end record: an app with --record armed, a mission
+        // begun and advanced, the recording written and read back.
+        let dir = std::env::temp_dir();
+        let mission_path = dir.join("pandemonium-aud002-mission-record.pdrp");
+        let plain_path = dir.join("pandemonium-aud002-plain-record.pdrp");
+        let bundle = tree
+            .bundle("crossroads_64")
+            .expect("the mission's map bundles");
+        let mut app = App::new(
+            tree,
+            bundle,
+            Some(42),
+            Some(mission_path.clone()),
+            config::Settings::default(),
+            sound::Sound::without_device(1.0, false),
+        )
+        .expect("the app constructs");
+        app.begin_mission(0, 42);
+        app.cutscene_input(); // unpause so the host steps
+        let frame = std::time::Duration::from_millis(34);
+        for _ in 0..90 {
+            let outcome = app.host.as_mut().expect("the mission host").advance(frame);
+            for &(tick, hash) in &outcome.hashes {
+                app.checkpoints.push((tick, hash));
+            }
+        }
+        app.write_recording();
+        let bytes = std::fs::read(&mission_path).expect("the recording was written");
+        let replay = ReplayFile::decode(&bytes).expect("the recording decodes");
+        assert_eq!(
+            replay.mission_id,
+            Some(mission_id),
+            "the mission record names its mission"
+        );
+        // The record re-simulates mission-carrying to identical hashes —
+        // the mission seam the recording ran, exercised end to end.
+        let objectives = app
+            .tree
+            .mission_objectives("crossroads_01", HUMAN)
+            .expect("crossroads_01 resolves");
+        let setup = app.setup.clone();
+        let end_tick = replay.checkpoints.last().expect("the trail").tick;
+        let resim = pandemonium_sim::run_command_log_with_mission(
+            &app.bundle.world(),
+            &setup,
+            &replay.commands,
+            end_tick,
+            Some(objectives),
+        );
+        assert_eq!(
+            resim
+                .checkpoints
+                .iter()
+                .map(|&(tick, hash)| Checkpoint { tick, hash })
+                .collect::<Vec<_>>(),
+            replay.checkpoints,
+            "every checkpoint re-simulates mission-carrying"
+        );
+        assert_eq!(resim.final_hash, replay.final_hash);
+
+        // The plain-match control in the same app: a mission-less start
+        // records no mission id.
+        app.begin_match(MatchMode::PlayerVsAi, 42, 0);
+        app.record_path = Some(plain_path.clone());
+        app.record_written = false;
+        app.write_recording();
+        let bytes = std::fs::read(&plain_path).expect("the plain recording was written");
+        let plain = ReplayFile::decode(&bytes).expect("the plain recording decodes");
+        assert_eq!(plain.mission_id, None, "a plain match records no mission");
+
+        // Tidy: the recordings live in the session temp dir only.
+        let _ = std::fs::remove_file(&mission_path);
+        let _ = std::fs::remove_file(&plain_path);
     }
 }
 

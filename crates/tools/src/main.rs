@@ -25,13 +25,13 @@ mod soak;
 mod validate_content;
 mod verify;
 
-use ai_match::{load_content, resolve_replay_world, run_ai_match, Slot};
+use ai_match::{load_content, run_ai_match, Slot};
 use bench::{print_report as print_bench_report, run_bench, BenchCli};
 use demo::record_replay;
 use diff_check::{print_report as print_diff_report, run_diff_check, DiffCheckCli};
 use soak::{print_report, run_soak, SoakCli};
 use validate_content::validate_content;
-use verify::{verify_replay, Verification};
+use verify::{resolve_replay_verification, verify_replay, Verification};
 
 #[derive(Parser)]
 #[command(
@@ -211,23 +211,15 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("reading replay {}", file.display()))?;
             let replay = pandemonium_replay::ReplayFile::decode(&bytes)
                 .with_context(|| format!("decoding replay {}", file.display()))?;
-            let world = resolve_replay_world(&content, &replay)?;
-            // The mission id set for ADR-0201 §7's third comparison: loaded
-            // only when the replay carries a mission id, so a mission-less
-            // record keeps verifying against the demo world without loading
-            // (or failing on) the content tree.
-            let mission_ids: Vec<u64> = match replay.mission_id {
-                None => Vec::new(),
-                Some(_) => {
-                    let tree = pandemonium_content::ContentTree::load_dir(&content)
-                        .with_context(|| format!("loading content at {}", content.display()))?;
-                    tree.missions
-                        .iter()
-                        .map(|mission| tree.mission_id(&mission.id))
-                        .collect()
-                }
-            };
-            match verify_replay(&world, &replay, &mission_ids)? {
+            // AUD-002 (ADR-0201 §7): mission-aware resolution — a
+            // mission-bearing record resolves its world through the named
+            // mission's own map bundle and loads every mission's resolved
+            // identity for the third comparison, so the re-simulation runs
+            // the exact match the recording ran; a mission-less record
+            // keeps the identity-based resolution (demo world or content
+            // directory) with an empty mission set, exactly as before.
+            let (world, missions) = resolve_replay_verification(&content, &replay)?;
+            match verify_replay(&world, &replay, &missions)? {
                 Verification::Passed {
                     checkpoints,
                     final_hash,

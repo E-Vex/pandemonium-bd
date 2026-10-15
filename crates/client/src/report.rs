@@ -86,6 +86,13 @@ pub fn controls_line(attack_move_armed: bool, refusal_showing: bool) -> &'static
 /// checkpoint trail (tick 0 + every periodic checkpoint, forced final at
 /// `current_tick` if the trail does not end there), and the final hash.
 ///
+/// `mission_id` is the domain-separated identity of the mission the match
+/// ran under (ADR-0201 §7, stamped from the same resolved mission
+/// `begin_mission` built the host from — `App::mission_replay_id`);
+/// `None` for a plain match, so a mission record names its mission for
+/// `tools replay-verify`'s third comparison and a plain record stays
+/// mission-less.
+///
 /// Pure over its inputs — the caller supplies what the `MatchHost` already
 /// keeps (`log()`, `tick()`, `state_hash()`) plus the trail collected from
 /// the per-frame outcomes.
@@ -96,6 +103,7 @@ pub fn replay_record(
     trail: &[(u32, u64)],
     current_tick: u32,
     current_hash: u64,
+    mission_id: Option<u64>,
 ) -> ReplayFile {
     let mut checkpoints: Vec<Checkpoint> = trail
         .iter()
@@ -111,7 +119,7 @@ pub fn replay_record(
         format_version: FORMAT_VERSION,
         content_hash: world.content_hash(),
         map_id: world.map_id,
-        mission_id: None,
+        mission_id,
         seed: setup.seed,
         player_setup: setup.players.clone(),
         commands: log.to_vec(),
@@ -264,6 +272,7 @@ mod tests {
             &trail,
             host.tick(),
             host.state_hash(),
+            None,
         );
         let decoded = ReplayFile::decode(&replay.encode()).expect("the record decodes");
         assert_eq!(decoded, replay);
@@ -299,6 +308,7 @@ mod tests {
             &trail,
             host.tick(),
             host.state_hash(),
+            None,
         );
         let resim = run_command_log(
             &world,
