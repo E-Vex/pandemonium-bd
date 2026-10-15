@@ -28,7 +28,8 @@ use pandemonium_engine::{
     RtsCamera,
 };
 use pandemonium_sim_api::{
-    EntityId, Event, KindId, MatchSetup, PlayerId, PlayerView, Snapshot, TileFog, Vec2Fx,
+    EntityId, Event, KindId, MatchSetup, MissionObjectives, PlayerId, PlayerView, Snapshot,
+    TileFog, Vec2Fx,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState};
@@ -83,6 +84,23 @@ pub(crate) struct App {
     pub(crate) setup: MatchSetup,
     /// The live match's selected map (index into `tree.maps`).
     pub(crate) map_index: usize,
+    /// A-011 (ADR-0201 Phase 1): the live match's mission, when it is a
+    /// mission match — the tree's mission list index Start was pressed
+    /// with. Restart rebuilds the same mission through it (the A15 shape:
+    /// same mission, same seed, same match); a mission-less match keeps
+    /// `None`.
+    pub(crate) mission_index: Option<usize>,
+    /// A-011: the live mission's presentation state — the HUD's objective
+    /// lines and the end screen's mission text read this one tracker, fed
+    /// by `Event::ObjectiveState` after the step (FD-9). `None` on every
+    /// mission-less match: the HUD and the end screen stay exactly as they
+    /// were.
+    pub(crate) mission_hud: Option<ui::MissionHud>,
+    /// A-011 (ADR-0201 §5, option (i)): the active live-state cutscene, if
+    /// any — the host is paused while it runs, the camera pans over the
+    /// frozen live world, and any key ends the scene and unpauses. `None`
+    /// outside a scene.
+    pub(crate) cutscene: Option<crate::cutscene::Cutscene>,
     pub(crate) camera: RtsCamera,
     pub(crate) renderer: Option<WgpuRenderer>,
     pub(crate) window: Option<Arc<Window>>,
@@ -281,6 +299,9 @@ impl App {
             match_mode: MatchMode::PlayerVsAi,
             setup: MatchMode::PlayerVsAi.match_setup(seed_prefill.unwrap_or(7)),
             map_index: 0,
+            mission_index: None,
+            mission_hud: None,
+            cutscene: None,
             camera,
             renderer: None,
             window: None,
@@ -371,6 +392,187 @@ impl App {
         MatchHost::with_controllers(&world, setup, controllers)
     }
 
+    /// Builds a mission match's host (A-011 Task 1, over Task 1.5's engine
+    /// seam): the opponent slot's scripted Alpha controller — the default
+    /// plan is the slice's opponent (ADR-0201 §9: "AI: nothing") — plus the
+    /// mission's resolved objective set through [`MatchHost::with_mission`],
+    /// so the sim evaluates the mission's objectives and emits
+    /// `Event::ObjectiveState`. The construction path is the exact
+    /// `with_controllers` body with the sim built mission-carrying: tick-0
+    /// state is identical by construction.
+    pub(crate) fn build_mission_host(
+        bundle: &ContentBundle,
+        setup: MatchSetup,
+        mission: MissionObjectives,
+    ) -> MatchHost {
+        let world = bundle.world();
+        let controllers: Vec<(PlayerId, Box<dyn Controller>)> = [AI]
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    Box::new(alpha_controller(bundle, &world, slot, setup.seed))
+                        as Box<dyn Controller>,
+                )
+            })
+            .collect();
+        MatchHost::with_mission(&world, setup, controllers, mission)
+    }
+
+    /// Starts a mission match (A-011 Task 1, ADR-0201 Phase 1): bundles the
+    /// mission's map, resolves its objectives through the content seam
+    /// (`ContentTree::mission_objectives` — the mission player is the first
+    /// map start's player, slot 0 on this content, the human), and builds
+    /// the host through the engine mission seam. The setup is the Player vs
+    /// AI shape (the human runs the mission player's slot; the scripted
+    /// Alpha AI runs the opponent), so the match plays through the exact
+    /// existing order/host paths — only the mission rides along. A failure
+    /// to bundle or resolve is surfaced and keeps the menu (never crash the
+    /// loop — the same discipline as `begin_match`).
+    pub(crate) fn begin_mission(&mut self, mission_index: usize, seed: u64) {
+        let Some(def) = self.tree.missions.get(mission_index).cloned() else {
+            println!(
+                "pandemonium client — mission index {mission_index} is out of range \
+                 ({} mission(s) loaded)",
+                self.tree.missions.len()
+            );
+            return;
+        };
+        let bundle = match self.tree.bundle(&def.map) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                println!(
+                    "pandemonium client — could not bundle map '{}' for mission '{}': {error:#}",
+                    def.map, def.id
+                );
+                return;
+            }
+        };
+        // The mission player is the human's slot (the first map start's
+        // player — slot 0 on the Alpha content; the content seam's Phase 1
+        // law). The objectives resolve to KindIds through the tree's entity
+        // order — the exact ids the bundled world's entities carry.
+        let mission = match self.tree.mission_objectives(&def.id, HUMAN) {
+            Ok(mission) => mission,
+            Err(error) => {
+                println!(
+                    "pandemonium client — could not resolve objectives for mission '{}': {error:#}",
+                    def.id
+                );
+                return;
+            }
+        };
+        // A-011: the HUD's objective lines derive from the same resolved
+        // objective set the simulation receives (built here, before the set
+        // moves into the host) — the line indices are the `Event::ObjectiveState`
+        // indices by construction.
+        let lines = ui::objective_lines(&mission, &bundle);
+        let setup = MatchMode::PlayerVsAi.match_setup(seed);
+        // M9.1: the right-click context resolver needs the content's worker
+        // and node kind ids — a mission match plays the same order paths.
+        let world = bundle.world();
+        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
+        let host = Self::build_mission_host(&bundle, setup.clone(), mission);
+        self.matches_started += 1;
+        self.bundle = bundle;
+        self.match_mode = MatchMode::PlayerVsAi;
+        self.setup = setup;
+        self.map_index = self
+            .tree
+            .maps
+            .iter()
+            .position(|map| map.id == def.map)
+            .unwrap_or(0);
+        self.host = Some(host);
+        // The per-match derived state (restart's source of truth).
+        self.start_anchor = self
+            .bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| start.player == 0)
+            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+            .unwrap_or((
+                self.bundle.map.width as f32 / 2.0,
+                self.bundle.map.height as f32 / 2.0,
+            ));
+        self.worker_kind = Some(plan.worker);
+        self.node_kind = plan.node;
+        self.reset_match_state();
+        // The mission-scoped state: the restart source (the tree index) and
+        // the presentation tracker (the HUD lines and end-screen text read
+        // the same objective states — built from the resolved objective set,
+        // so the indices are the event indices by construction).
+        self.mission_index = Some(mission_index);
+        self.mission_hud = Some(ui::MissionHud::new(def.display_name.clone(), lines));
+        // PLAN-M10.2 §3.4: the debug overlay's default at match start, and
+        // the user zoom limits re-clamp the opening view.
+        self.debug_overlay = self.settings.debug_overlay;
+        self.camera
+            .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
+        // M10.1: the checkpoint trail opens at the fresh match's tick-0
+        // hash — identical to the mission-less construction by the seam's
+        // shared `Sim::build` body (pinned by the engine seam test).
+        self.checkpoints = vec![(0, self.host.as_ref().expect("just built").state_hash())];
+        self.record_written = false;
+        // A-011 (ADR-0201 §5, Task 3): the mission-start cutscene — pause
+        // the host, pan the camera from the enemy's start to the player's
+        // start over the frozen live world, caption the mission's name and
+        // objective summary. Any key ends the scene and unpauses.
+        let enemy_anchor = self
+            .bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| start.player == 1)
+            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+            .unwrap_or((
+                self.bundle.map.width as f32 / 2.0,
+                self.bundle.map.height as f32 / 2.0,
+            ));
+        let intro = self.mission_hud.as_ref().expect("just built").intro_line();
+        self.cutscene = Some(crate::cutscene::Cutscene::mission_start(
+            &def.display_name,
+            &intro,
+            enemy_anchor,
+            self.start_anchor,
+        ));
+        if let Some(host) = &mut self.host {
+            host.set_paused(true);
+        }
+        self.screen = AppState {
+            screen: Screen::InMatch,
+            focus: 0,
+        };
+    }
+
+    /// Ends the active cutscene, if any (ADR-0201 §5): the camera snaps to
+    /// the scene's resting focus (the player's start at the opening
+    /// distance — a readable view whatever moment the skip landed on) and
+    /// the host unpauses. The host was paused by the scene's start, so a
+    /// mission-less call is a no-op.
+    pub(crate) fn end_cutscene(&mut self) {
+        let Some(mut scene) = self.cutscene.take() else {
+            return;
+        };
+        // The player's own skip edge (§5 (iii)): the scene is over from
+        // here on, whatever moment it ended at.
+        scene.skip();
+        let (x, z, distance) = scene.resting_focus();
+        self.camera.focus(x, z, distance);
+        if let Some(host) = &mut self.host {
+            host.set_paused(false);
+        }
+    }
+
+    /// One input event during an active cutscene (ADR-0201 §5 (iii): every
+    /// cutscene is skippable at any moment — any key, Esc included, ends
+    /// the scene and unpauses). The wiring layer's single call site for the
+    /// skip path; a no-op when no scene runs.
+    pub(crate) fn cutscene_input(&mut self) {
+        self.end_cutscene();
+    }
+
     /// Starts a match (PLAN-M10.2 §3.3): bundles the selected map, builds the
     /// mode's setup and host, and resets every match-scoped state — the same
     /// drop + reconstruct discipline M8's restart established (A15), so
@@ -442,6 +644,14 @@ impl App {
     /// restart reproduces the same match bit-for-bit (test-pinned; do not
     /// weaken).
     pub(crate) fn restart_match(&mut self) {
+        // A-011: a mission match restarts as the same mission — the same
+        // (mission, seed) record Start was pressed with (the A15 shape over
+        // the mission dimension).
+        if let Some(mission_index) = self.mission_index {
+            let seed = self.setup.seed;
+            self.begin_mission(mission_index, seed);
+            return;
+        }
         let (mode, seed, map_index) = (self.match_mode, self.setup.seed, self.map_index);
         self.begin_match(mode, seed, map_index);
     }
@@ -488,6 +698,13 @@ impl App {
         self.attack_move_armed = false;
         self.last_order = None;
         self.drag_start = None;
+        // A-011 (ADR-0201 Phase 1): the mission-scoped state resets with the
+        // match — the restart source and the HUD/end-screen tracker.
+        // `begin_mission` re-populates them after this reset; a mission-less
+        // start stays clean.
+        self.mission_index = None;
+        self.mission_hud = None;
+        self.cutscene = None;
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -532,6 +749,12 @@ impl App {
                 seed,
                 map_index,
             } => self.begin_match(mode, seed, map_index),
+            // A-011 (ADR-0201 Phase 1): the mission picker's Start resolves
+            // through the engine mission seam.
+            Effect::StartMission {
+                mission_index,
+                seed,
+            } => self.begin_mission(mission_index, seed),
             Effect::RestartMatch => self.restart_match(),
             Effect::DropMatch => self.drop_match(),
             Effect::Pause => {
@@ -914,6 +1137,7 @@ impl App {
             random_seed: random_seed(),
             seed_prefill: self.seed_prefill,
             map_count: self.tree.maps.len(),
+            mission_count: self.tree.missions.len(),
         }
     }
 
@@ -923,9 +1147,12 @@ impl App {
     /// hit rects (hover/click routing reads them).
     pub(crate) fn draw_menu_frame(&mut self) {
         let maps = self.map_list(); // before the renderer borrow
-                                    // A-009 task 4: the build-identity footer draws on the main menu
-                                    // (the menu-only path lands here). Composed before the renderer
-                                    // borrow so the borrow checker is happy.
+                                    // A-011: the mission list feeds the picker's Mission field (the map
+                                    // list's shape over the tree's missions).
+        let missions = self.mission_list();
+        // A-009 task 4: the build-identity footer draws on the main menu
+        // (the menu-only path lands here). Composed before the renderer
+        // borrow so the borrow checker is happy.
         let version_line = self.version_line();
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -951,6 +1178,7 @@ impl App {
             screen: &self.screen,
             settings: &self.settings,
             maps: &maps,
+            missions: &missions,
             end_lines: None, // no host behind a menu-only frame
             backdrop: [0.02, 0.03, 0.05, 0.94],
             info_lines,
@@ -980,9 +1208,33 @@ impl App {
             .collect()
     }
 
+    /// The mission list (id, display name) in tree order — A-011: the
+    /// mission picker's Mission field and the pass's labels (the map list's
+    /// exact shape over the tree's missions).
+    pub(crate) fn mission_list(&self) -> Vec<(String, String)> {
+        self.tree
+            .missions
+            .iter()
+            .map(|mission| (mission.id.clone(), mission.display_name.clone()))
+            .collect()
+    }
+
     pub(crate) fn draw(&mut self) {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
+        // A-011 (ADR-0201 §5): an active cutscene drives the camera over the
+        // frozen live world (the host is paused, so `advance` below steps
+        // nothing); a scene that ran its duration ends and unpauses through
+        // the same path a skip takes.
+        if let Some(scene) = &mut self.cutscene {
+            if scene.advance(dt.as_secs_f32()) == crate::cutscene::SceneProgress::Finished {
+                self.end_cutscene();
+            }
+        }
+        if let Some(scene) = &self.cutscene {
+            let (x, z, distance) = scene.camera_focus();
+            self.camera.focus(x, z, distance);
+        }
         // PLAN-M10.2 §3.1: the match resolved -> the state machine promotes
         // InMatch to the end screen (the panel's buttons own the choice
         // now). The live line is the long-run evidence the M9 windowed
@@ -1056,6 +1308,15 @@ impl App {
                         // Space jump's "last event".
                         self.last_event_ground = Some((pos.x, pos.z));
                         self.feedback.death(pos, kind, owner, self.frames_presented);
+                    }
+                }
+                // A-011 (ADR-0201 §2, FD-9): the mission HUD's tracker
+                // consumes the objective's resolution after the step, from
+                // the step's event list — presentation state, never sim
+                // state, and never a poll of sim internals.
+                Event::ObjectiveState { index, state } => {
+                    if let Some(mission) = &mut self.mission_hud {
+                        mission.on_objective_state(*index, *state);
                     }
                 }
                 _ => {}
@@ -1168,8 +1429,10 @@ impl App {
             })
         };
         let maps = self.map_list(); // before the renderer borrow
-                                    // A-002 Part 2.2: composed before the renderer borrow too (the
-                                    // overlay's first line: build identity + live bundle's content hash).
+                                    // A-011: the mission list for the menu pass (the picker's field).
+        let missions = self.mission_list();
+        // A-002 Part 2.2: composed before the renderer borrow too (the
+        // overlay's first line: build identity + live bundle's content hash).
         let version_line = self.version_line();
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -1284,6 +1547,9 @@ impl App {
             log_len: self.host.as_ref().map_or(0, |host| host.log().len()),
             viewport,
             armed: self.attack_move_armed,
+            // A-011: the mission's objective HUD block (None = unchanged
+            // mission-less HUD).
+            mission: self.mission_hud.as_ref(),
             version: &version_line,
             notice: self
                 .feedback
@@ -1359,17 +1625,43 @@ impl App {
         // and draws its panel on top; the built buttons are this frame's
         // hit rects.
         if !self.screen.takes_world_input() {
-            let headline = outcome.as_ref().map(|outcome| match outcome.winner {
-                HUMAN => ("VICTORY", "You eliminated the enemy."),
-                AI => ("DEFEAT", "Your base was destroyed."),
-                _ => ("MUTUAL DESTRUCTION", "Both sides were eliminated."),
+            // A-011 (ADR-0201 Phase 1, Task 4): a mission match's end screen
+            // carries the mission's display name under the headline and each
+            // objective's final state as info rows (objective left, state
+            // right — the same block the Controls screen's table uses). A
+            // mission-less match's end screen is unchanged.
+            let mission_pairs: Vec<(String, String)> = self
+                .mission_hud
+                .as_ref()
+                .map(|mission| mission.end_pairs())
+                .unwrap_or_default();
+            let mission_rows: Vec<(&str, &str)> = mission_pairs
+                .iter()
+                .map(|(text, state)| (text.as_str(), state.as_str()))
+                .collect();
+            let headline = outcome.as_ref().map(|outcome| {
+                let head = match outcome.winner {
+                    HUMAN => "VICTORY",
+                    AI => "DEFEAT",
+                    _ => "MUTUAL DESTRUCTION",
+                };
+                let sub = match &self.mission_hud {
+                    Some(mission) => mission.display_name.as_str(),
+                    None => match outcome.winner {
+                        HUMAN => "You eliminated the enemy.",
+                        AI => "Your base was destroyed.",
+                        _ => "Both sides were eliminated.",
+                    },
+                };
+                (head, sub)
             });
             // A-009 task 1: the Controls screen renders the standing binding
             // table (report.rs) as informational rows here too (when opened
             // from the pause menu — the in-match draw path serves the
             // pause menu and everything reachable from it).
-            let info_lines: &[(&'static str, &'static str)] = match &self.screen.screen {
+            let info_lines: &[(&str, &str)] = match &self.screen.screen {
                 Screen::Controls { .. } => report::CONTROLS_TABLE,
+                Screen::EndScreen if !mission_rows.is_empty() => &mission_rows,
                 _ => &[],
             };
             let built = ui::build_menu(ui::MenuInput {
@@ -1378,6 +1670,7 @@ impl App {
                 screen: &self.screen,
                 settings: &self.settings,
                 maps: &maps,
+                missions: &missions,
                 end_lines: headline,
                 backdrop: [0.0, 0.0, 0.0, 0.55],
                 info_lines,
@@ -1390,6 +1683,11 @@ impl App {
             quads.extend(built.quads);
         } else {
             self.menu_buttons.clear();
+        }
+        // A-011 (ADR-0201 §5): the cutscene's caption panel rides on top of
+        // the frozen world frame (subtitle-style, bottom-centered, ASCII).
+        if let Some(scene) = &self.cutscene {
+            quads.extend(scene.caption_quads(renderer.atlas(), viewport));
         }
         // Everything the overlay pass draws this frame queues together: the
         // feedback cues, the HUD panels, and the bottom bar.
@@ -1505,6 +1803,10 @@ pub(crate) struct OverlayInput<'a> {
     /// promise, automatic); the content hash joins it per frame from the
     /// live bundle.
     version: &'a str,
+    /// A-011 (ADR-0201 Phase 1, Task 2): the live mission's tracker — the
+    /// objective HUD block draws under the notice lines (None = no mission,
+    /// the HUD unchanged).
+    mission: Option<&'a ui::MissionHud>,
 }
 
 /// Builds the overlay quads for one frame: the resource/population HUD
@@ -1524,6 +1826,7 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
         armed,
         notice,
         version,
+        mission,
     } = input;
     /// Screen margin between panels and the window edge.
     const MARGIN: f32 = 8.0;
@@ -1593,6 +1896,16 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
             notice_top + PAD + atlas.ascent,
             [1.0, 0.45, 0.4, 0.95],
         ));
+    }
+
+    // A-011 (ADR-0201 Phase 1, Task 2): the mission's objective HUD — one
+    // panel under the notice lines, one line per objective with its state
+    // marker (pending / completed / failed). A mission-less match draws
+    // nothing here (the block is gated on the tracker's presence).
+    if let Some(mission) = mission {
+        let (block, height) = ui::objective_hud_quads(atlas, mission, notice_top);
+        quads.extend(block);
+        notice_top += height + MARGIN;
     }
 
     // The debug overlay (§11.6), below the notice lines.

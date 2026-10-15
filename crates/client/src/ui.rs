@@ -12,7 +12,10 @@
 
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
-use pandemonium_sim_api::{EntityId, EntityView, KindId, QueueView, TilePos};
+use pandemonium_sim_api::{
+    EntityId, EntityView, KindId, MissionObjectiveKind, MissionObjectiveParameters,
+    MissionObjectives, ObjectiveState, QueueView, TilePos,
+};
 
 /// What pressing a button asks the client to do (FD-2: it becomes a
 /// `Command` at the same gate every other order enters through).
@@ -646,6 +649,227 @@ pub fn tooltip_quads(
     quads
 }
 
+// ── The mission HUD (A-011, ADR-0201 Phase 1 Task 2) ────────────────────
+//
+// Presentation-only state fed by `Event::ObjectiveState` after the step
+// (FD-9: the client never polls sim internals — the tracker consumes the
+// step's events, exactly like the audio and feedback layers). A mission-less
+// match carries no `MissionHud`, so the existing HUD is unchanged.
+
+/// How one mission objective reads on the HUD (ADR-0201 §2): pending until
+/// the step's `Event::ObjectiveState` resolves it. The tracker is monotonic
+/// per objective — once resolved, a later event for the same index never
+/// reverts it (the sim fires each exactly once; the guard is defense).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectiveHudState {
+    /// Not yet resolved.
+    Pending,
+    /// The success condition is met.
+    Completed,
+    /// The failure condition is met.
+    Failed,
+}
+
+/// One mission objective's display line: the ASCII text, whether it is
+/// optional (never gates the match — it feeds this HUD and the end screen),
+/// and its live state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveLine {
+    /// The objective's display text (ASCII — the embedded font subset).
+    pub text: String,
+    /// Whether the objective is optional.
+    pub optional: bool,
+    /// The live state.
+    pub state: ObjectiveHudState,
+}
+
+/// The live mission's presentation state (ADR-0201 Phase 1): the mission's
+/// display name plus the ordered objective lines — the indices match the
+/// `Event::ObjectiveState` indices (the mission's objective list order).
+/// One tracker feeds both the in-match HUD and the end-screen mission text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissionHud {
+    /// The mission's display name (ASCII).
+    pub display_name: String,
+    /// The ordered objective lines.
+    pub lines: Vec<ObjectiveLine>,
+}
+
+impl MissionHud {
+    /// Builds the tracker with every objective pending (the mission starts).
+    pub fn new(display_name: String, lines: Vec<ObjectiveLine>) -> Self {
+        Self {
+            display_name,
+            lines,
+        }
+    }
+
+    /// Consumes one `Event::ObjectiveState` (FD-9: called after the step,
+    /// from the step's event list). Out-of-range indices are ignored (the
+    /// mission's own events always name a live index; the guard is defense),
+    /// and a resolved objective never reverts.
+    pub fn on_objective_state(&mut self, index: u32, state: ObjectiveState) {
+        let Some(line) = self.lines.get_mut(index as usize) else {
+            return;
+        };
+        if line.state != ObjectiveHudState::Pending {
+            return; // resolutions are monotonic
+        }
+        line.state = match state {
+            ObjectiveState::Completed => ObjectiveHudState::Completed,
+            ObjectiveState::Failed => ObjectiveHudState::Failed,
+        };
+    }
+
+    /// The end screen's rows (A-011 Task 4): each objective's display text
+    /// beside its final state — `PENDING` for objectives the match's
+    /// resolution left unresolved (an optional objective the player never
+    /// finished, or a mission ended by the elimination rule).
+    pub fn end_pairs(&self) -> Vec<(String, String)> {
+        self.lines
+            .iter()
+            .map(|line| (line.display_text(), line.state.end_label().to_string()))
+            .collect()
+    }
+
+    /// The mission-start cutscene's one-line intro (A-011 Task 3): the
+    /// objective summary, semicolon-joined — "Objectives: ..." (ASCII).
+    pub fn intro_line(&self) -> String {
+        let joined = self
+            .lines
+            .iter()
+            .map(|line| line.display_text())
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("Objectives: {joined}")
+    }
+}
+
+impl ObjectiveLine {
+    /// The line's display text with the optional marker appended.
+    pub fn display_text(&self) -> String {
+        if self.optional {
+            format!("{} (optional)", self.text)
+        } else {
+            self.text.clone()
+        }
+    }
+}
+
+impl ObjectiveHudState {
+    /// The state's checkbox marker on the HUD line (ASCII).
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Pending => "[ ]",
+            Self::Completed => "[x]",
+            Self::Failed => "[!]",
+        }
+    }
+
+    /// The state's end-screen label (ASCII).
+    fn end_label(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+/// Builds a mission's objective display lines from the resolved objective
+/// set (ADR-0201 §2a) — the same `MissionObjectives` the simulation receives
+/// through the engine seam, so the HUD's indices are the event indices by
+/// construction. Kind ids resolve to display names through the bundle's
+/// entity order (the exact order the content seam resolved them by). All
+/// text is ASCII (the embedded font subset, ADR-0201 §5).
+pub fn objective_lines(mission: &MissionObjectives, bundle: &ContentBundle) -> Vec<ObjectiveLine> {
+    mission
+        .objectives
+        .iter()
+        .map(|objective| {
+            let text = match (&objective.kind, &objective.parameters) {
+                (
+                    MissionObjectiveKind::Destroy,
+                    MissionObjectiveParameters::Destroy { target_kind: None },
+                ) => "Destroy all enemy structures".to_string(),
+                (
+                    MissionObjectiveKind::Destroy,
+                    MissionObjectiveParameters::Destroy {
+                        target_kind: Some(kind),
+                    },
+                ) => format!("Destroy all enemy {}", kind_display(bundle, *kind)),
+                (
+                    MissionObjectiveKind::BuildTrain,
+                    MissionObjectiveParameters::BuildTrain { kind, count },
+                ) => format!("Train {count} {}", kind_display(bundle, *kind)),
+                // The content seam rejects kind/parameters mismatches loudly
+                // (the loader guarantees agreement); the defensive arm keeps
+                // an impossible shape readable rather than panicking the HUD.
+                _ => "Objective".to_string(),
+            };
+            ObjectiveLine {
+                text,
+                optional: objective.optional,
+                state: ObjectiveHudState::Pending,
+            }
+        })
+        .collect()
+}
+
+/// One kind id's display name through the bundle's entity order (the same
+/// order `ContentTree::mission_objectives` resolved the ids by); an unknown
+/// id falls back to its index, never a panic.
+fn kind_display(bundle: &ContentBundle, kind: KindId) -> String {
+    bundle
+        .entities
+        .get(kind.0 as usize)
+        .map(|def| def.display_name.clone())
+        .unwrap_or_else(|| format!("kind {}", kind.0))
+}
+
+/// The in-match objective HUD block (Task 2): a "MISSION <name>" header plus
+/// one line per objective — the state marker, the display text — panel-backed
+/// at the given top edge, directly under the notice lines. Returns the quads
+/// and the block's height (the caller advances its layout cursor). A
+/// mission-less match never calls this (the existing HUD is unchanged).
+pub fn objective_hud_quads(
+    atlas: &TextAtlas,
+    mission: &MissionHud,
+    top: f32,
+) -> (Vec<UiQuad>, f32) {
+    /// Padding inside the panel.
+    const PAD: f32 = 6.0;
+    let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+    let header = format!("MISSION {}", mission.display_name);
+    let texts: Vec<String> = mission
+        .lines
+        .iter()
+        .map(|line| format!("{} {}", line.state.marker(), line.display_text()))
+        .collect();
+    let widest = std::iter::once(atlas.measure(&header))
+        .chain(texts.iter().map(|text| atlas.measure(text)))
+        .fold(0.0f32, f32::max);
+    let panel_h = (texts.len() + 1) as f32 * line_height + 2.0 * PAD;
+    let mut quads =
+        vec![atlas.solid_rect(8.0, top, widest + 2.0 * PAD, panel_h, [0.0, 0.0, 0.0, 0.5])];
+    quads.extend(atlas.layout(
+        &header,
+        8.0 + PAD,
+        top + PAD + atlas.ascent,
+        [1.0, 0.85, 0.4, 0.95],
+    ));
+    for (index, text) in texts.iter().enumerate() {
+        let color = match mission.lines[index].state {
+            ObjectiveHudState::Pending => [0.9, 0.94, 1.0, 0.95],
+            ObjectiveHudState::Completed => [0.6, 1.0, 0.6, 1.0],
+            ObjectiveHudState::Failed => [1.0, 0.5, 0.5, 1.0],
+        };
+        let baseline = top + PAD + atlas.ascent + (index + 1) as f32 * line_height;
+        quads.extend(atlas.layout(text, 8.0 + PAD, baseline, color));
+    }
+    (quads, panel_h)
+}
+
 // ── The menu screens (PLAN-M10.2 §3.6) ─────────────────────────────────
 //
 // One builder renders every screen the pure state machine
@@ -684,6 +908,10 @@ pub struct MenuInput<'a> {
     pub settings: &'a crate::config::Settings,
     /// The loaded maps: (id, display name) in list order.
     pub maps: &'a [(String, String)],
+    /// The loaded missions: (id, display name) in list order — A-011
+    /// (ADR-0201 Phase 1): the mission picker's Mission field reads the
+    /// selected mission's display name from here.
+    pub missions: &'a [(String, String)],
     /// The end screen's headline/subline when the screen is the end screen.
     pub end_lines: Option<(&'a str, &'a str)>,
     /// The dimming backdrop's strength over a live match (menus without a
@@ -691,9 +919,10 @@ pub struct MenuInput<'a> {
     pub backdrop: [f32; 4],
     /// A-009 task 1: informational rows rendered as plain text between the
     /// title and the buttons (the Controls screen's binding table, sourced
-    /// from [`crate::report::CONTROLS_TABLE`]). Empty for every other
-    /// screen — those screens render buttons only.
-    pub info_lines: &'a [(&'static str, &'static str)],
+    /// from [`crate::report::CONTROLS_TABLE`]; A-011: the mission end
+    /// screen's objective-outcome rows ride the same block). Empty for every
+    /// other screen — those screens render buttons only.
+    pub info_lines: &'a [(&'a str, &'a str)],
     /// A-009 task 4: the build-identity footer line drawn at the bottom of
     /// the main menu and the pause menu (the `App::version_line()` —
     /// "pandemonium X.Y git Z content HASH"). Empty string for screens
@@ -760,6 +989,43 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
                 row(2, ButtonId::Map, "Map", map_value),
                 row(3, ButtonId::Start, "Start", String::new()),
                 row(4, ButtonId::Back, "Back", String::new()),
+                // A-011 (ADR-0201 Phase 1): the Missions row opens the
+                // mission picker — after Back so every existing row keeps
+                // its index (the A-010 Xvfb evidence script walks this
+                // screen by index; Mode/Seed/Map/Start stay rows 0-3).
+                row(5, ButtonId::Missions, "Missions", String::new()),
+            ]
+        }
+        // A-011 (ADR-0201 Phase 1, Task 1): the mission picker mirrors the
+        // New Match screen's shape — the cycling Mission field (the
+        // selected mission's display name), the editable seed, Start, and
+        // Back to the New Match fields the picker carried.
+        Screen::MissionPicker(fields) => {
+            let seed = if fields.seed_text.is_empty() {
+                "random".to_string()
+            } else {
+                fields.seed_text.clone()
+            };
+            let mission_name = input
+                .missions
+                .get(fields.mission_index)
+                .map(|(_, name)| name.clone())
+                .unwrap_or_else(|| "?".to_string());
+            let mission_value = if fields.mission_count > 1 {
+                format!("< {mission_name} >")
+            } else {
+                mission_name
+            };
+            vec![
+                row(0, ButtonId::Mission, "Mission", mission_value),
+                row(
+                    1,
+                    ButtonId::MissionSeed,
+                    "Seed",
+                    format!("{seed} [Enter: random]"),
+                ),
+                row(2, ButtonId::MissionStart, "Start", String::new()),
+                row(3, ButtonId::Back, "Back", String::new()),
             ]
         }
         Screen::Settings { .. } => {
@@ -843,6 +1109,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         screen,
         settings: _,
         maps: _,
+        missions: _,
         end_lines,
         backdrop,
         info_lines,
@@ -874,6 +1141,8 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         (_, Some((headline, subline))) => (headline.to_string(), Some(subline.to_string())),
         (crate::screens::Screen::MainMenu, _) => ("PANDEMONIUM".to_string(), None),
         (crate::screens::Screen::NewMatch(_), _) => ("NEW MATCH".to_string(), None),
+        // A-011: the mission picker's title.
+        (crate::screens::Screen::MissionPicker(_), _) => ("MISSIONS".to_string(), None),
         (crate::screens::Screen::Settings { .. }, _) => ("SETTINGS".to_string(), None),
         (crate::screens::Screen::PauseMenu, _) => ("PAUSED".to_string(), None),
         // A-009 task 1: the Controls screen's title.
@@ -1098,6 +1367,7 @@ fn panel_border_pub(atlas: &TextAtlas, rect: [f32; 4], color: [f32; 3], t: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pandemonium_content::ContentTree;
     use pandemonium_sim_api::Vec2Fx;
 
     fn bundle() -> ContentBundle {
@@ -1445,6 +1715,10 @@ mod tests {
 
     static MAPS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
 
+    /// The loaded missions fixture (A-011: the picker's Mission field reads
+    /// the selected mission's display name from the list).
+    static MISSIONS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
     fn menu_input(screen: &crate::screens::AppState) -> MenuInput<'_> {
         MenuInput {
             atlas: atlas(),
@@ -1452,6 +1726,8 @@ mod tests {
             screen,
             settings: SETTINGS.get_or_init(crate::config::Settings::default),
             maps: MAPS.get_or_init(|| vec![("crossroads".to_string(), "Crossroads".to_string())]),
+            missions: MISSIONS
+                .get_or_init(|| vec![("crossroads_01".to_string(), "Crossroads".to_string())]),
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1494,6 +1770,7 @@ mod tests {
                 screen: state,
                 settings: &crate::config::Settings::default(),
                 maps: &[("crossroads".to_string(), "Crossroads".to_string())],
+                missions: &[],
                 end_lines: Some(("VICTORY", "You eliminated the enemy.")),
                 backdrop: [0.0, 0.0, 0.0, 0.5],
                 info_lines: &[],
@@ -1523,6 +1800,7 @@ mod tests {
             screen: &state,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1560,7 +1838,10 @@ mod tests {
             focus: 0,
         };
         let built = build_menu(menu_input(&with_seed));
-        assert_eq!(built.buttons.len(), 5);
+        // A-011: the Missions row (row 5, after Back) grew the screen to
+        // six buttons — the brief's picker entry as a sub-screen of New
+        // Match.
+        assert_eq!(built.buttons.len(), 6);
         // (The values ride the quads as text; the ids and the rect geometry
         // are the machine's contract — pinned above.)
         let without_seed = crate::screens::AppState {
@@ -1573,7 +1854,7 @@ mod tests {
             focus: 0,
         };
         let built = build_menu(menu_input(&without_seed));
-        assert_eq!(built.buttons.len(), 5);
+        assert_eq!(built.buttons.len(), 6);
     }
 
     #[test]
@@ -1594,6 +1875,7 @@ mod tests {
             screen: &main_menu,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1605,6 +1887,7 @@ mod tests {
             screen: &main_menu,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1626,6 +1909,7 @@ mod tests {
             screen: &pause,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1637,6 +1921,7 @@ mod tests {
             screen: &pause,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1662,6 +1947,7 @@ mod tests {
             screen: &settings,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1673,6 +1959,7 @@ mod tests {
             screen: &settings,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1682,6 +1969,242 @@ mod tests {
             with_footer.quads.len(),
             without_footer.quads.len(),
             "the settings screen does NOT draw the version footer"
+        );
+    }
+
+    // ── the mission HUD (A-011, ADR-0201 Phase 1 Tasks 2 and 4) ─────────
+
+    /// The repo content's tree + the Phase 1 mission's bundle (the objective
+    /// lines resolve through the same content seam the app uses).
+    fn tree_and_mission_bundle() -> (ContentTree, ContentBundle) {
+        let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let mission = tree
+            .missions
+            .first()
+            .expect("the Phase 1 mission loads")
+            .clone();
+        let bundle = tree
+            .bundle(&mission.map)
+            .expect("the mission's map bundles");
+        (tree, bundle)
+    }
+
+    /// The Phase 1 mission's resolved objective set (the content seam, as
+    /// `begin_mission` resolves it).
+    fn resolved_mission(tree: &ContentTree) -> MissionObjectives {
+        let mission = tree.missions.first().expect("the Phase 1 mission loads");
+        tree.mission_objectives(&mission.id.clone(), pandemonium_sim_api::PlayerId(0))
+            .expect("the objectives resolve")
+    }
+
+    #[test]
+    fn the_objective_tracker_processes_a_sequence_of_objective_state_events() {
+        // A-011 Task 5: the HUD state tracker consumes a sequence of
+        // `Event::ObjectiveState` payloads — the objective indices are the
+        // mission's list order, resolutions are monotonic, and out-of-range
+        // indices are ignored (defense; the sim only names live indices).
+        let mut hud = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![
+                ObjectiveLine {
+                    text: "Destroy all enemy structures".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Train 4 Worker".to_string(),
+                    optional: true,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Hold the line".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+            ],
+        );
+        // Every objective starts pending.
+        assert!(hud
+            .lines
+            .iter()
+            .all(|line| line.state == ObjectiveHudState::Pending));
+        // A sequence of resolutions: index 1 completes, index 2 fails,
+        // index 0 completes late.
+        hud.on_objective_state(1, ObjectiveState::Completed);
+        hud.on_objective_state(2, ObjectiveState::Failed);
+        hud.on_objective_state(0, ObjectiveState::Completed);
+        assert_eq!(hud.lines[0].state, ObjectiveHudState::Completed);
+        assert_eq!(hud.lines[1].state, ObjectiveHudState::Completed);
+        assert_eq!(hud.lines[2].state, ObjectiveHudState::Failed);
+        // Monotonic: a later event for a resolved objective never reverts
+        // it (the sim fires each exactly once; the guard is defense).
+        hud.on_objective_state(0, ObjectiveState::Failed);
+        assert_eq!(hud.lines[0].state, ObjectiveHudState::Completed);
+        // An out-of-range index is ignored, not a panic.
+        hud.on_objective_state(9, ObjectiveState::Completed);
+        assert_eq!(hud.lines.len(), 3);
+    }
+
+    #[test]
+    fn objective_lines_build_ascii_text_from_the_resolved_objective_set() {
+        // A-011: the HUD lines derive from the same resolved objective set
+        // the simulation receives — the line indices are the event indices
+        // by construction, and every string is ASCII (the embedded font
+        // subset, ADR-0201 §5).
+        let (tree, bundle) = tree_and_mission_bundle();
+        let resolved = resolved_mission(&tree);
+        let lines = objective_lines(&resolved, &bundle);
+        assert_eq!(lines.len(), 2);
+        // The Phase 1 mission: destroy (required) + train four workers
+        // (optional), in the authored order.
+        assert_eq!(lines[0].text, "Destroy all enemy structures");
+        assert!(!lines[0].optional);
+        assert_eq!(lines[1].text, "Train 4 Worker");
+        assert!(lines[1].optional);
+        // All display text is ASCII.
+        for line in &lines {
+            assert!(line.text.is_ascii(), "{} is ASCII", line.text);
+            assert!(line.display_text().is_ascii());
+        }
+        assert!(MissionHud::new("Crossroads".to_string(), lines.clone())
+            .intro_line()
+            .is_ascii());
+    }
+
+    #[test]
+    fn the_end_pairs_carry_each_objectives_final_state() {
+        // A-011 Task 4: the end screen's rows — each objective's display
+        // text beside its final state, PENDING for unresolved ones.
+        let mut hud = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![
+                ObjectiveLine {
+                    text: "Destroy all enemy structures".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Train 4 Worker".to_string(),
+                    optional: true,
+                    state: ObjectiveHudState::Pending,
+                },
+            ],
+        );
+        assert_eq!(
+            hud.end_pairs(),
+            vec![
+                (
+                    "Destroy all enemy structures".to_string(),
+                    "PENDING".to_string()
+                ),
+                (
+                    "Train 4 Worker (optional)".to_string(),
+                    "PENDING".to_string()
+                ),
+            ]
+        );
+        hud.on_objective_state(1, ObjectiveState::Completed);
+        assert_eq!(
+            hud.end_pairs(),
+            vec![
+                (
+                    "Destroy all enemy structures".to_string(),
+                    "PENDING".to_string()
+                ),
+                (
+                    "Train 4 Worker (optional)".to_string(),
+                    "COMPLETED".to_string()
+                ),
+            ]
+        );
+        hud.on_objective_state(0, ObjectiveState::Failed);
+        assert_eq!(
+            hud.end_pairs()[0],
+            (
+                "Destroy all enemy structures".to_string(),
+                "FAILED".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn the_objective_hud_block_draws_one_line_per_objective_plus_the_header() {
+        // A-011 Task 2: the block's height grows one line per objective
+        // (plus the MISSION header), and the quads land on screen.
+        let atlas = TextAtlas::new();
+        let hud = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![
+                ObjectiveLine {
+                    text: "Destroy all enemy structures".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Train 4 Worker".to_string(),
+                    optional: true,
+                    state: ObjectiveHudState::Pending,
+                },
+            ],
+        );
+        let (quads, height) = objective_hud_quads(&atlas, &hud, 50.0);
+        assert!(!quads.is_empty());
+        let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+        assert_eq!(height, 3.0 * line_height + 12.0); // header + 2 objectives
+                                                      // Fewer objectives, less height.
+        let one = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![ObjectiveLine {
+                text: "Destroy all enemy structures".to_string(),
+                optional: false,
+                state: ObjectiveHudState::Pending,
+            }],
+        );
+        let (_, one_height) = objective_hud_quads(&atlas, &one, 50.0);
+        assert!(one_height < height);
+    }
+
+    #[test]
+    fn a_mission_end_screen_renders_the_objective_rows() {
+        // A-011 Task 4: the end screen with mission info rows draws more
+        // than the same screen without them (the rows are text quads, the
+        // same block the Controls table uses — pinned by quad count, the
+        // version-footer test's law).
+        let end_screen = crate::screens::AppState {
+            screen: crate::screens::Screen::EndScreen,
+            focus: 0,
+        };
+        let with_objectives = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &end_screen,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            missions: &[],
+            end_lines: Some(("VICTORY", "Crossroads")),
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[
+                ("Destroy all enemy structures", "COMPLETED"),
+                ("Train 4 Worker (optional)", "PENDING"),
+            ],
+            version: "",
+        });
+        let without_objectives = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &end_screen,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            missions: &[],
+            end_lines: Some(("VICTORY", "You eliminated the enemy.")),
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version: "",
+        });
+        assert!(
+            with_objectives.quads.len() > without_objectives.quads.len(),
+            "the mission end screen draws the objective rows"
         );
     }
 }
