@@ -193,10 +193,10 @@ download; the bypasses are documented on the tester's side in
 `pandemonium-client --version` (and the F3 overlay's first line) prints:
 
 ```
-pandemonium-client 0.1.0 (git 2bcb25a, content 0x9bc18c521107b262)
+pandemonium-client 0.1.1 (git 2bcb25a, content 0x9bc18c521107b262)
 ```
 
-- `0.1.0` — the workspace semver.
+- `0.1.1` — the workspace semver.
 - `git 2bcb25a` — the exact commit, stamped at build time by
   `crates/client/build.rs` ("unknown" for tarball builds — honest).
 - `content 0x…` — the loaded content tree's bundle hash: the same identity
@@ -204,7 +204,7 @@ pandemonium-client 0.1.0 (git 2bcb25a, content 0x9bc18c521107b262)
   wants next to every incident. A tester's report that quotes this line
   names the build, the commit, and the content in one breath.
 
-A tag build's archive names carry the tag (`pandemonium-0.1.0-…`); a
+A tag build's archive names carry the tag (`pandemonium-0.1.1-…`); a
 dispatch build carries the commit (`pandemonium-git-<sha>-…`).
 
 ## The release checklist (PM)

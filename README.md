@@ -75,7 +75,7 @@ cargo run -p pandemonium-client -- --headless
 
 # the build identity: version, the exact git commit, and the content hash
 cargo run -p pandemonium-client -- --version
-#   pandemonium-client 0.1.0 (git <sha>, content 0x9bc18c521107b262)
+#   pandemonium-client 0.1.1 (git <sha>, content 0x9bc18c521107b262)
 # the same line is the F3 debug overlay's first line while you play
 
 # content resolves at runtime: --content names a tree explicitly (the

@@ -19,7 +19,7 @@ a finding — write it down.
 
 **Primary path — download the archive, unpack, run.** Grab the archive for
 your OS from the
-[v0.1.0 pre-release](https://github.com/E-Vex/pandemonium-bd/releases/tag/v0.1.0),
+[v0.1.1 pre-release](https://github.com/E-Vex/pandemonium-bd/releases/tag/v0.1.1),
 optionally verify it against `checksums.txt` (same page), unpack it anywhere,
 and run the binary inside. No compiler, no Rust toolchain — the archive
 carries the client, the tools, the `content/` data tree, the licence, and
@@ -27,9 +27,9 @@ carries the client, the tools, the `content/` data tree, the licence, and
 
 | OS | Archive | One-time OS bypass | Floor |
 |---|---|---|---|
-| **Linux** | `pandemonium-0.1.0-linux-x86_64.tar.gz` | none | x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12), plus `libasound2` at load time |
-| **Windows** | `pandemonium-0.1.0-windows-x86_64.zip` | SmartScreen → *More info* → *Run anyway* | Windows 10+ x86-64 (stated, not pipeline-proven) |
-| **macOS** | `pandemonium-0.1.0-macos-aarch64.tar.gz` | Gatekeeper — run from Terminal, or `xattr -d com.apple.quarantine pandemonium-client` | macOS 11+ on Apple silicon ONLY |
+| **Linux** | `pandemonium-0.1.1-linux-x86_64.tar.gz` | none | x86-64, glibc 2.35+ (Ubuntu 22.04, Debian 12), plus `libasound2` at load time |
+| **Windows** | `pandemonium-0.1.1-windows-x86_64.zip` | SmartScreen → *More info* → *Run anyway* | Windows 10+ x86-64 (stated, not pipeline-proven) |
+| **macOS** | `pandemonium-0.1.1-macos-aarch64.tar.gz` | Gatekeeper — run from Terminal, or `xattr -d com.apple.quarantine pandemonium-client` | macOS 11+ on Apple silicon ONLY |
 
 The full per-OS steps (SmartScreen / Gatekeeper in detail, the Linux
 `libasound2` install line, the troubleshooting table) live in
@@ -49,8 +49,8 @@ Unpack and run — keep `content/` next to the executable (the client finds it
 there automatically):
 
 ```bash
-tar -xzf pandemonium-0.1.0-linux-x86_64.tar.gz     # Windows: unzip
-cd pandemonium-0.1.0-linux-x86_64
+tar -xzf pandemonium-0.1.1-linux-x86_64.tar.gz     # Windows: unzip
+cd pandemonium-0.1.1-linux-x86_64
 ./pandemonium-client                                # Windows: .\pandemonium-client.exe
 ```
 
