@@ -247,14 +247,17 @@ fn main() -> anyhow::Result<()> {
             cli.content = resolve_content_dir(&cli.content)?;
             let report = run_soak(&cli)?;
             print_report(&report);
-            // A7's "no stuck matches" gate: a non-zero `unresolved` count
-            // at this scale is a finding worth surfacing as a non-zero exit
-            // (the run still completes — the report is the evidence).
-            if report.crashed > 0 {
-                bail!(
-                    "soak reported {} crashed match(es) — A7 crash signal",
-                    report.crashed
-                );
+            // A7's exit gates (the audit's AUD-004 — the comment and the
+            // code finally agree): a non-zero `crashed` count (panics, host
+            // errors, dev-tier A12 violations) or, unless explicitly
+            // allowed for an evidence run, a non-zero `unresolved` count
+            // (matches that ran the tick budget — the "stuck" signal) is a
+            // finding worth surfacing as a non-zero exit. The run still
+            // completes and the report is printed first: the evidence is
+            // preserved on both the pass and the fail path.
+            let failures = report.gate_failures(cli.allow_unresolved);
+            if !failures.is_empty() {
+                bail!("{}", failures.join("; "));
             }
         }
         Command::Bench(mut cli) => {
