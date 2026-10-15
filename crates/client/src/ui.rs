@@ -1367,6 +1367,7 @@ fn panel_border_pub(atlas: &TextAtlas, rect: [f32; 4], color: [f32; 3], t: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pandemonium_content::ContentTree;
     use pandemonium_sim_api::Vec2Fx;
 
     fn bundle() -> ContentBundle {
@@ -1968,6 +1969,242 @@ mod tests {
             with_footer.quads.len(),
             without_footer.quads.len(),
             "the settings screen does NOT draw the version footer"
+        );
+    }
+
+    // ── the mission HUD (A-011, ADR-0201 Phase 1 Tasks 2 and 4) ─────────
+
+    /// The repo content's tree + the Phase 1 mission's bundle (the objective
+    /// lines resolve through the same content seam the app uses).
+    fn tree_and_mission_bundle() -> (ContentTree, ContentBundle) {
+        let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let mission = tree
+            .missions
+            .first()
+            .expect("the Phase 1 mission loads")
+            .clone();
+        let bundle = tree
+            .bundle(&mission.map)
+            .expect("the mission's map bundles");
+        (tree, bundle)
+    }
+
+    /// The Phase 1 mission's resolved objective set (the content seam, as
+    /// `begin_mission` resolves it).
+    fn resolved_mission(tree: &ContentTree) -> MissionObjectives {
+        let mission = tree.missions.first().expect("the Phase 1 mission loads");
+        tree.mission_objectives(&mission.id.clone(), pandemonium_sim_api::PlayerId(0))
+            .expect("the objectives resolve")
+    }
+
+    #[test]
+    fn the_objective_tracker_processes_a_sequence_of_objective_state_events() {
+        // A-011 Task 5: the HUD state tracker consumes a sequence of
+        // `Event::ObjectiveState` payloads — the objective indices are the
+        // mission's list order, resolutions are monotonic, and out-of-range
+        // indices are ignored (defense; the sim only names live indices).
+        let mut hud = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![
+                ObjectiveLine {
+                    text: "Destroy all enemy structures".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Train 4 Worker".to_string(),
+                    optional: true,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Hold the line".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+            ],
+        );
+        // Every objective starts pending.
+        assert!(hud
+            .lines
+            .iter()
+            .all(|line| line.state == ObjectiveHudState::Pending));
+        // A sequence of resolutions: index 1 completes, index 2 fails,
+        // index 0 completes late.
+        hud.on_objective_state(1, ObjectiveState::Completed);
+        hud.on_objective_state(2, ObjectiveState::Failed);
+        hud.on_objective_state(0, ObjectiveState::Completed);
+        assert_eq!(hud.lines[0].state, ObjectiveHudState::Completed);
+        assert_eq!(hud.lines[1].state, ObjectiveHudState::Completed);
+        assert_eq!(hud.lines[2].state, ObjectiveHudState::Failed);
+        // Monotonic: a later event for a resolved objective never reverts
+        // it (the sim fires each exactly once; the guard is defense).
+        hud.on_objective_state(0, ObjectiveState::Failed);
+        assert_eq!(hud.lines[0].state, ObjectiveHudState::Completed);
+        // An out-of-range index is ignored, not a panic.
+        hud.on_objective_state(9, ObjectiveState::Completed);
+        assert_eq!(hud.lines.len(), 3);
+    }
+
+    #[test]
+    fn objective_lines_build_ascii_text_from_the_resolved_objective_set() {
+        // A-011: the HUD lines derive from the same resolved objective set
+        // the simulation receives — the line indices are the event indices
+        // by construction, and every string is ASCII (the embedded font
+        // subset, ADR-0201 §5).
+        let (tree, bundle) = tree_and_mission_bundle();
+        let resolved = resolved_mission(&tree);
+        let lines = objective_lines(&resolved, &bundle);
+        assert_eq!(lines.len(), 2);
+        // The Phase 1 mission: destroy (required) + train four workers
+        // (optional), in the authored order.
+        assert_eq!(lines[0].text, "Destroy all enemy structures");
+        assert!(!lines[0].optional);
+        assert_eq!(lines[1].text, "Train 4 Worker");
+        assert!(lines[1].optional);
+        // All display text is ASCII.
+        for line in &lines {
+            assert!(line.text.is_ascii(), "{} is ASCII", line.text);
+            assert!(line.display_text().is_ascii());
+        }
+        assert!(MissionHud::new("Crossroads".to_string(), lines.clone())
+            .intro_line()
+            .is_ascii());
+    }
+
+    #[test]
+    fn the_end_pairs_carry_each_objectives_final_state() {
+        // A-011 Task 4: the end screen's rows — each objective's display
+        // text beside its final state, PENDING for unresolved ones.
+        let mut hud = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![
+                ObjectiveLine {
+                    text: "Destroy all enemy structures".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Train 4 Worker".to_string(),
+                    optional: true,
+                    state: ObjectiveHudState::Pending,
+                },
+            ],
+        );
+        assert_eq!(
+            hud.end_pairs(),
+            vec![
+                (
+                    "Destroy all enemy structures".to_string(),
+                    "PENDING".to_string()
+                ),
+                (
+                    "Train 4 Worker (optional)".to_string(),
+                    "PENDING".to_string()
+                ),
+            ]
+        );
+        hud.on_objective_state(1, ObjectiveState::Completed);
+        assert_eq!(
+            hud.end_pairs(),
+            vec![
+                (
+                    "Destroy all enemy structures".to_string(),
+                    "PENDING".to_string()
+                ),
+                (
+                    "Train 4 Worker (optional)".to_string(),
+                    "COMPLETED".to_string()
+                ),
+            ]
+        );
+        hud.on_objective_state(0, ObjectiveState::Failed);
+        assert_eq!(
+            hud.end_pairs()[0],
+            (
+                "Destroy all enemy structures".to_string(),
+                "FAILED".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn the_objective_hud_block_draws_one_line_per_objective_plus_the_header() {
+        // A-011 Task 2: the block's height grows one line per objective
+        // (plus the MISSION header), and the quads land on screen.
+        let atlas = TextAtlas::new();
+        let hud = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![
+                ObjectiveLine {
+                    text: "Destroy all enemy structures".to_string(),
+                    optional: false,
+                    state: ObjectiveHudState::Pending,
+                },
+                ObjectiveLine {
+                    text: "Train 4 Worker".to_string(),
+                    optional: true,
+                    state: ObjectiveHudState::Pending,
+                },
+            ],
+        );
+        let (quads, height) = objective_hud_quads(&atlas, &hud, 50.0);
+        assert!(!quads.is_empty());
+        let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+        assert_eq!(height, 3.0 * line_height + 12.0); // header + 2 objectives
+                                                      // Fewer objectives, less height.
+        let one = MissionHud::new(
+            "Crossroads".to_string(),
+            vec![ObjectiveLine {
+                text: "Destroy all enemy structures".to_string(),
+                optional: false,
+                state: ObjectiveHudState::Pending,
+            }],
+        );
+        let (_, one_height) = objective_hud_quads(&atlas, &one, 50.0);
+        assert!(one_height < height);
+    }
+
+    #[test]
+    fn a_mission_end_screen_renders_the_objective_rows() {
+        // A-011 Task 4: the end screen with mission info rows draws more
+        // than the same screen without them (the rows are text quads, the
+        // same block the Controls table uses — pinned by quad count, the
+        // version-footer test's law).
+        let end_screen = crate::screens::AppState {
+            screen: crate::screens::Screen::EndScreen,
+            focus: 0,
+        };
+        let with_objectives = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &end_screen,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            missions: &[],
+            end_lines: Some(("VICTORY", "Crossroads")),
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[
+                ("Destroy all enemy structures", "COMPLETED"),
+                ("Train 4 Worker (optional)", "PENDING"),
+            ],
+            version: "",
+        });
+        let without_objectives = build_menu(MenuInput {
+            atlas: atlas(),
+            viewport: (1280.0, 800.0),
+            screen: &end_screen,
+            settings: &crate::config::Settings::default(),
+            maps: &[],
+            missions: &[],
+            end_lines: Some(("VICTORY", "You eliminated the enemy.")),
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            info_lines: &[],
+            version: "",
+        });
+        assert!(
+            with_objectives.quads.len() > without_objectives.quads.len(),
+            "the mission end screen draws the objective rows"
         );
     }
 }

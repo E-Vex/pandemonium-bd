@@ -1456,6 +1456,223 @@ mod mode_pins {
 }
 
 #[cfg(test)]
+mod mission_wiring {
+    //! A-011 (ADR-0201 Phase 1): the mission wiring pins — the picker's
+    //! Start resolves through the engine mission seam, the mission-start
+    //! cutscene opens over a paused host, any key ends the scene and
+    //! unpauses, restart rebuilds the same mission, and the mission state
+    //! clears on mission-less starts. The oracle is the App itself over the
+    //! repo content (which carries the Phase 1 `crossroads_01` mission), the
+    //! A-002 null-audio-arm pattern from audio_wiring.
+
+    use super::*;
+    use crate::screens::{KeyContext, NavKey};
+
+    /// An app over the repo content with the null audio arm.
+    fn app() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            sound::Sound::without_device(1.0, false),
+        )
+        .expect("the app constructs")
+    }
+
+    /// A pinned context (the machine drives need a known random seed).
+    fn ctx() -> KeyContext {
+        KeyContext {
+            random_seed: 1234,
+            seed_prefill: None,
+            map_count: 1,
+            mission_count: 1,
+        }
+    }
+
+    #[test]
+    fn the_repo_content_carries_the_phase_one_mission() {
+        // The wiring below resolves through the tree's mission list; this
+        // pins what it finds (the ADR-0201 §9 vertical slice).
+        let app = app();
+        let mission = app.tree.missions.first().expect("crossroads_01 loads");
+        assert_eq!(mission.id, "crossroads_01");
+        assert_eq!(mission.display_name, "Crossroads");
+        assert_eq!(mission.map, "crossroads_64");
+        assert_eq!(mission.objectives.len(), 2);
+    }
+
+    #[test]
+    fn beginning_a_mission_opens_the_cutscene_over_a_paused_host() {
+        // Task 1 + Task 3: begin_mission resolves the mission's map and
+        // objectives, builds the host through the engine seam, and opens
+        // the mission-start cutscene over the paused host.
+        let mut app = app();
+        app.begin_mission(0, 7);
+        assert_eq!(app.matches_started, 1);
+        assert!(matches!(app.screen.screen, Screen::InMatch));
+        assert_eq!(app.mission_index, Some(0));
+        let mission = app.mission_hud.as_ref().expect("the mission tracker");
+        assert_eq!(mission.display_name, "Crossroads");
+        assert_eq!(mission.lines.len(), 2);
+        // The objective HUD lines derive from the resolved set (the same
+        // order the events index).
+        assert_eq!(mission.lines[0].text, "Destroy all enemy structures");
+        assert_eq!(mission.lines[1].text, "Train 4 Worker");
+        // Task 3: the scene runs over a paused host at tick 0.
+        assert!(
+            app.cutscene.is_some(),
+            "the mission-start cutscene is active"
+        );
+        let host = app.host.as_ref().expect("the mission host");
+        assert!(host.is_paused(), "the cutscene paused the host");
+        assert_eq!(host.tick(), 0);
+        // The setup is the Player vs AI shape: the human runs the mission
+        // player's slot, the scripted AI the opponent.
+        assert_eq!(app.setup.players.len(), 2);
+        assert_eq!(app.match_mode, MatchMode::PlayerVsAi);
+    }
+
+    #[test]
+    fn any_key_skips_the_cutscene_unpauses_and_refocuses_the_camera() {
+        // Task 3 + Task 5: the skip input ends the scene and unpauses —
+        // the wiring path the KeyboardInput guard calls for any key.
+        let mut app = app();
+        app.begin_mission(0, 7);
+        let (anchor_x, anchor_z) = app.start_anchor;
+        // Mid-scene the camera is somewhere over the map (the enemy start
+        // edge), not yet on the player's anchor.
+        assert!(app.cutscene.is_some());
+        app.cutscene_input();
+        assert!(app.cutscene.is_none(), "the scene ended");
+        let host = app.host.as_ref().expect("the mission host");
+        assert!(!host.is_paused(), "the skip unpaused the host");
+        let target = app.camera.target();
+        assert_eq!(
+            (target.x, target.z),
+            (anchor_x, anchor_z),
+            "the camera rests on the player's start (the readable opening view)"
+        );
+        // A second input is a no-op (no scene, no stray unpause).
+        app.cutscene_input();
+        assert!(app.cutscene.is_none());
+    }
+
+    #[test]
+    fn a_mission_matchs_objective_events_feed_the_tracker() {
+        // Task 2 + Task 5: a mission host's own events feed the tracker —
+        // the exact consumption the draw loop runs per step (FD-9: after
+        // the step, from the step's event list). On the Phase 1 content
+        // the optional train-four-workers objective completes on the first
+        // evaluated tick (the Legion starts with exactly four workers) and
+        // the required destroy objective stays pending — a deterministic
+        // event sequence over the real content.
+        let mut app = app();
+        app.begin_mission(0, 7);
+        app.cutscene_input(); // unpause so the host steps
+        let outcome = app
+            .host
+            .as_mut()
+            .expect("the mission host")
+            .advance(std::time::Duration::from_millis(34));
+        for event in &outcome.events {
+            if let Event::ObjectiveState { index, state } = event {
+                app.mission_hud
+                    .as_mut()
+                    .expect("the tracker")
+                    .on_objective_state(*index, *state);
+            }
+        }
+        let mission = app.mission_hud.as_ref().expect("the tracker");
+        assert_eq!(
+            mission.lines[0].state,
+            crate::ui::ObjectiveHudState::Pending,
+            "the enemy command center still stands"
+        );
+        assert_eq!(
+            mission.lines[1].state,
+            crate::ui::ObjectiveHudState::Completed,
+            "the starting force is exactly four workers"
+        );
+        // The match is not over: the required objective is still pending.
+        assert!(!app.host.as_ref().expect("the mission host").is_finished());
+    }
+
+    #[test]
+    fn the_mission_picker_start_resolves_to_the_selected_mission() {
+        // Task 1 + Task 5: the machine's StartMission effect, driven through
+        // the real activation path (New Match -> Missions -> type a seed ->
+        // Start), resolves to the selected mission in the app.
+        let state = screens::AppState::at_main_menu();
+        let (new_match, _) = state.activate_index(0, &ctx()); // New Match
+        let (picker, _) = new_match.activate_index(5, &ctx()); // Missions
+        let mut seed_row = picker.clone();
+        seed_row.focus_index(1);
+        let (typed, _) = seed_row.on_key(NavKey::Digit('7'), &ctx());
+        let (next, effect) = typed.activate_index(2, &ctx()); // Start
+        assert!(matches!(next.screen, Screen::InMatch));
+        assert_eq!(
+            effect,
+            Effect::StartMission {
+                mission_index: 0,
+                seed: 7
+            }
+        );
+        // The app resolves the same record begin_mission consumes.
+        let mut app = app();
+        app.begin_mission(0, 7);
+        assert_eq!(app.mission_index, Some(0));
+        assert_eq!(
+            app.mission_hud.as_ref().expect("the tracker").display_name,
+            app.tree.missions[0].display_name
+        );
+        assert_eq!(app.setup.seed, 7);
+    }
+
+    #[test]
+    fn a_mission_rematch_rebuilds_the_same_mission_and_other_starts_clear_it() {
+        // Restart (A15 over the mission dimension): the same mission, the
+        // same seed. A later mission-less start and a drop both clear the
+        // mission state (a normal match never shows the mission HUD).
+        let mut app = app();
+        app.begin_mission(0, 7);
+        app.restart_match();
+        assert_eq!(app.mission_index, Some(0));
+        assert_eq!(
+            app.mission_hud.as_ref().expect("the tracker").display_name,
+            "Crossroads"
+        );
+        assert_eq!(app.setup.seed, 7);
+        assert!(
+            app.cutscene.is_some(),
+            "a restarted mission re-opens its scene"
+        );
+        // A mission-less start clears the mission state.
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        assert_eq!(app.mission_index, None);
+        assert!(app.mission_hud.is_none());
+        // And drop_match clears it too.
+        app.begin_mission(0, 7);
+        app.drop_match();
+        assert_eq!(app.mission_index, None);
+        assert!(app.mission_hud.is_none());
+        assert!(app.cutscene.is_none());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
         content_flag_from_args, frames_budget_arg, headless_requested_from_args, random_seed,

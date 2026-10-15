@@ -186,3 +186,95 @@ impl Cutscene {
         quads
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Phase 1 scene over pinned anchors (the crossroads start corners'
+    /// shape: enemy start bottom-right, player start top-left).
+    fn scene() -> Cutscene {
+        Cutscene::mission_start(
+            "Crossroads",
+            "Objectives: Destroy all enemy structures; Train 4 Worker (optional)",
+            (56.0, 56.0),
+            (8.5, 8.5),
+        )
+    }
+
+    #[test]
+    fn the_scene_eases_from_the_enemy_start_to_the_player_start() {
+        // t=0: the camera sits on the enemy's start; the distance is the
+        // opening view's. The midpoint eases to the average (smoothstep's
+        // symmetric middle); t=1: the player's start.
+        let mut scene = scene();
+        let (x, z, distance) = scene.camera_focus();
+        assert_eq!((x, z), (56.0, 56.0));
+        assert_eq!(distance, crate::START_CAMERA_DISTANCE);
+        scene.advance(MISSION_START_SECONDS * 0.5);
+        let (x, z, _) = scene.camera_focus();
+        assert_eq!((x, z), (32.25, 32.25), "the eased midpoint");
+        for _ in 0..60 {
+            scene.advance(MISSION_START_SECONDS / 60.0);
+        }
+        let focus = scene.camera_focus();
+        assert_eq!(
+            (focus.0, focus.1),
+            (8.5, 8.5),
+            "the pan lands on the player's start"
+        );
+        assert_eq!(focus, scene.resting_focus());
+    }
+
+    #[test]
+    fn advancing_past_the_duration_finishes_the_scene() {
+        // A-011 Task 5: the scene ends when it runs its duration — the
+        // wiring layer then unpauses (the same path a skip takes).
+        let mut scene = scene();
+        assert_eq!(scene.advance(1.0), SceneProgress::Playing);
+        assert!(!scene.is_over());
+        assert_eq!(
+            scene.advance(MISSION_START_SECONDS),
+            SceneProgress::Finished
+        );
+        assert!(scene.is_over());
+        // Further advances stay finished (idempotent at the duration cap).
+        assert_eq!(scene.advance(0.5), SceneProgress::Finished);
+    }
+
+    #[test]
+    fn skip_input_ends_the_scene_at_the_resting_focus() {
+        // A-011 Task 5: the skip edge — any moment it lands on, the scene is
+        // over and the camera reads the resting focus (the player's start,
+        // the readable opening view). The app-level unpause is pinned in
+        // main.rs's mission wiring tests.
+        let mut scene = scene();
+        scene.advance(0.7); // somewhere mid-pan
+        assert!(!scene.is_over());
+        let mid_focus = scene.camera_focus();
+        assert_ne!(mid_focus, scene.resting_focus());
+        scene.skip();
+        assert!(scene.is_over());
+        assert_eq!(scene.camera_focus(), scene.resting_focus());
+    }
+
+    #[test]
+    fn the_captions_carry_the_mission_name_and_intro_in_ascii() {
+        // The caption is the mission's display name plus the one-line intro
+        // (the objective summary); every string is ASCII (the embedded font
+        // subset, ADR-0201 §5).
+        let scene = scene();
+        let (title, line) = scene.captions();
+        assert_eq!(title, "Crossroads");
+        assert!(line.starts_with("Objectives: "));
+        assert!(title.is_ascii() && line.is_ascii());
+        // The caption panel draws quads inside the viewport.
+        let atlas = crate::text::TextAtlas::new();
+        let quads = scene.caption_quads(&atlas, (1280.0, 800.0));
+        assert!(!quads.is_empty());
+        for quad in &quads {
+            assert!(quad.x >= 0.0 && quad.x + quad.w <= 1280.0 + 0.5);
+            assert!(quad.y >= 0.0 && quad.y + quad.h <= 800.0 + 0.5);
+        }
+    }
+}
