@@ -30,7 +30,7 @@ use bench::{print_report as print_bench_report, run_bench, BenchCli};
 use demo::record_replay;
 use diff_check::{print_report as print_diff_report, run_diff_check, DiffCheckCli};
 use soak::{print_report, run_soak, SoakCli};
-use validate_content::validate_content;
+use validate_content::{parse_identity_hex, validate_content};
 use verify::{resolve_replay_verification, verify_replay, Verification};
 
 #[derive(Parser)]
@@ -80,6 +80,15 @@ enum Command {
         /// The content directory (defaults to ./content — run from the repo root).
         #[arg(default_value = "content")]
         path: PathBuf,
+        /// The registered content hash the loaded tree must bundle
+        /// (0x-prefixed hex) — the golden-identity pin (AUD-005); a
+        /// mismatch fails the command. Omitted = report only.
+        #[arg(long)]
+        expect_content_hash: Option<String>,
+        /// The registered map id the loaded tree must bundle (0x-prefixed
+        /// hex), beside --expect-content-hash.
+        #[arg(long)]
+        expect_map_id: Option<String>,
     },
     /// Run many seeded AI-vs-AI matches and report win/stuck/crash telemetry
     /// (M10 prep, A7 acceptance). Sequential — nightly CI that wants
@@ -236,9 +245,27 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::ContentValidate { path } => {
+        Command::ContentValidate {
+            path,
+            expect_content_hash,
+            expect_map_id,
+        } => {
             let path = resolve_content_dir(&path)?;
-            validate_content(&path)?;
+            // AUD-005: parse the pinned expectations once, with the input
+            // named on failure (a typo'd golden is a gate failure, not a
+            // silent skip).
+            let parse = |flag: &str, value: Option<String>| -> anyhow::Result<Option<u64>> {
+                value
+                    .map(|hex| {
+                        parse_identity_hex(&hex).ok_or_else(|| {
+                            anyhow::anyhow!("{flag} expects a hex identity, got '{hex}'")
+                        })
+                    })
+                    .transpose()
+            };
+            let expect_content_hash = parse("--expect-content-hash", expect_content_hash)?;
+            let expect_map_id = parse("--expect-map-id", expect_map_id)?;
+            validate_content(&path, expect_content_hash, expect_map_id)?;
         }
         Command::Soak(mut cli) => {
             // A-002 Part 2.1: same runtime resolution, threaded through the
