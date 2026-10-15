@@ -28,7 +28,8 @@ use pandemonium_engine::{
     RtsCamera,
 };
 use pandemonium_sim_api::{
-    EntityId, Event, KindId, MatchSetup, PlayerId, PlayerView, Snapshot, TileFog, Vec2Fx,
+    EntityId, Event, KindId, MatchSetup, MissionObjectives, PlayerId, PlayerView, Snapshot,
+    TileFog, Vec2Fx,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState};
@@ -83,6 +84,12 @@ pub(crate) struct App {
     pub(crate) setup: MatchSetup,
     /// The live match's selected map (index into `tree.maps`).
     pub(crate) map_index: usize,
+    /// A-011 (ADR-0201 Phase 1): the live match's mission, when it is a
+    /// mission match — the tree's mission list index Start was pressed
+    /// with. Restart rebuilds the same mission through it (the A15 shape:
+    /// same mission, same seed, same match); a mission-less match keeps
+    /// `None`.
+    pub(crate) mission_index: Option<usize>,
     pub(crate) camera: RtsCamera,
     pub(crate) renderer: Option<WgpuRenderer>,
     pub(crate) window: Option<Arc<Window>>,
@@ -281,6 +288,7 @@ impl App {
             match_mode: MatchMode::PlayerVsAi,
             setup: MatchMode::PlayerVsAi.match_setup(seed_prefill.unwrap_or(7)),
             map_index: 0,
+            mission_index: None,
             camera,
             renderer: None,
             window: None,
@@ -371,6 +379,126 @@ impl App {
         MatchHost::with_controllers(&world, setup, controllers)
     }
 
+    /// Builds a mission match's host (A-011 Task 1, over Task 1.5's engine
+    /// seam): the opponent slot's scripted Alpha controller — the default
+    /// plan is the slice's opponent (ADR-0201 §9: "AI: nothing") — plus the
+    /// mission's resolved objective set through [`MatchHost::with_mission`],
+    /// so the sim evaluates the mission's objectives and emits
+    /// `Event::ObjectiveState`. The construction path is the exact
+    /// `with_controllers` body with the sim built mission-carrying: tick-0
+    /// state is identical by construction.
+    pub(crate) fn build_mission_host(
+        bundle: &ContentBundle,
+        setup: MatchSetup,
+        mission: MissionObjectives,
+    ) -> MatchHost {
+        let world = bundle.world();
+        let controllers: Vec<(PlayerId, Box<dyn Controller>)> = [AI]
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    Box::new(alpha_controller(bundle, &world, slot, setup.seed))
+                        as Box<dyn Controller>,
+                )
+            })
+            .collect();
+        MatchHost::with_mission(&world, setup, controllers, mission)
+    }
+
+    /// Starts a mission match (A-011 Task 1, ADR-0201 Phase 1): bundles the
+    /// mission's map, resolves its objectives through the content seam
+    /// (`ContentTree::mission_objectives` — the mission player is the first
+    /// map start's player, slot 0 on this content, the human), and builds
+    /// the host through the engine mission seam. The setup is the Player vs
+    /// AI shape (the human runs the mission player's slot; the scripted
+    /// Alpha AI runs the opponent), so the match plays through the exact
+    /// existing order/host paths — only the mission rides along. A failure
+    /// to bundle or resolve is surfaced and keeps the menu (never crash the
+    /// loop — the same discipline as `begin_match`).
+    pub(crate) fn begin_mission(&mut self, mission_index: usize, seed: u64) {
+        let Some(def) = self.tree.missions.get(mission_index).cloned() else {
+            println!(
+                "pandemonium client — mission index {mission_index} is out of range \
+                 ({} mission(s) loaded)",
+                self.tree.missions.len()
+            );
+            return;
+        };
+        let bundle = match self.tree.bundle(&def.map) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                println!(
+                    "pandemonium client — could not bundle map '{}' for mission '{}': {error:#}",
+                    def.map, def.id
+                );
+                return;
+            }
+        };
+        // The mission player is the human's slot (the first map start's
+        // player — slot 0 on the Alpha content; the content seam's Phase 1
+        // law). The objectives resolve to KindIds through the tree's entity
+        // order — the exact ids the bundled world's entities carry.
+        let mission = match self.tree.mission_objectives(&def.id, HUMAN) {
+            Ok(mission) => mission,
+            Err(error) => {
+                println!(
+                    "pandemonium client — could not resolve objectives for mission '{}': {error:#}",
+                    def.id
+                );
+                return;
+            }
+        };
+        let setup = MatchMode::PlayerVsAi.match_setup(seed);
+        // M9.1: the right-click context resolver needs the content's worker
+        // and node kind ids — a mission match plays the same order paths.
+        let world = bundle.world();
+        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
+        let host = Self::build_mission_host(&bundle, setup.clone(), mission);
+        self.matches_started += 1;
+        self.bundle = bundle;
+        self.match_mode = MatchMode::PlayerVsAi;
+        self.setup = setup;
+        self.map_index = self
+            .tree
+            .maps
+            .iter()
+            .position(|map| map.id == def.map)
+            .unwrap_or(0);
+        self.host = Some(host);
+        // The per-match derived state (restart's source of truth).
+        self.start_anchor = self
+            .bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| start.player == 0)
+            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+            .unwrap_or((
+                self.bundle.map.width as f32 / 2.0,
+                self.bundle.map.height as f32 / 2.0,
+            ));
+        self.worker_kind = Some(plan.worker);
+        self.node_kind = plan.node;
+        self.reset_match_state();
+        // The mission-scoped state: the restart source (the tree index).
+        self.mission_index = Some(mission_index);
+        // PLAN-M10.2 §3.4: the debug overlay's default at match start, and
+        // the user zoom limits re-clamp the opening view.
+        self.debug_overlay = self.settings.debug_overlay;
+        self.camera
+            .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
+        // M10.1: the checkpoint trail opens at the fresh match's tick-0
+        // hash — identical to the mission-less construction by the seam's
+        // shared `Sim::build` body (pinned by the engine seam test).
+        self.checkpoints = vec![(0, self.host.as_ref().expect("just built").state_hash())];
+        self.record_written = false;
+        self.screen = AppState {
+            screen: Screen::InMatch,
+            focus: 0,
+        };
+    }
+
     /// Starts a match (PLAN-M10.2 §3.3): bundles the selected map, builds the
     /// mode's setup and host, and resets every match-scoped state — the same
     /// drop + reconstruct discipline M8's restart established (A15), so
@@ -442,6 +570,14 @@ impl App {
     /// restart reproduces the same match bit-for-bit (test-pinned; do not
     /// weaken).
     pub(crate) fn restart_match(&mut self) {
+        // A-011: a mission match restarts as the same mission — the same
+        // (mission, seed) record Start was pressed with (the A15 shape over
+        // the mission dimension).
+        if let Some(mission_index) = self.mission_index {
+            let seed = self.setup.seed;
+            self.begin_mission(mission_index, seed);
+            return;
+        }
         let (mode, seed, map_index) = (self.match_mode, self.setup.seed, self.map_index);
         self.begin_match(mode, seed, map_index);
     }
@@ -488,6 +624,10 @@ impl App {
         self.attack_move_armed = false;
         self.last_order = None;
         self.drag_start = None;
+        // A-011 (ADR-0201 Phase 1): the mission restart source resets with
+        // the match — `begin_mission` re-populates it after this reset; a
+        // mission-less start stays clean.
+        self.mission_index = None;
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -532,6 +672,12 @@ impl App {
                 seed,
                 map_index,
             } => self.begin_match(mode, seed, map_index),
+            // A-011 (ADR-0201 Phase 1): the mission picker's Start resolves
+            // through the engine mission seam.
+            Effect::StartMission {
+                mission_index,
+                seed,
+            } => self.begin_mission(mission_index, seed),
             Effect::RestartMatch => self.restart_match(),
             Effect::DropMatch => self.drop_match(),
             Effect::Pause => {
@@ -914,6 +1060,7 @@ impl App {
             random_seed: random_seed(),
             seed_prefill: self.seed_prefill,
             map_count: self.tree.maps.len(),
+            mission_count: self.tree.missions.len(),
         }
     }
 
@@ -923,9 +1070,12 @@ impl App {
     /// hit rects (hover/click routing reads them).
     pub(crate) fn draw_menu_frame(&mut self) {
         let maps = self.map_list(); // before the renderer borrow
-                                    // A-009 task 4: the build-identity footer draws on the main menu
-                                    // (the menu-only path lands here). Composed before the renderer
-                                    // borrow so the borrow checker is happy.
+                                    // A-011: the mission list feeds the picker's Mission field (the map
+                                    // list's shape over the tree's missions).
+        let missions = self.mission_list();
+        // A-009 task 4: the build-identity footer draws on the main menu
+        // (the menu-only path lands here). Composed before the renderer
+        // borrow so the borrow checker is happy.
         let version_line = self.version_line();
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -951,6 +1101,7 @@ impl App {
             screen: &self.screen,
             settings: &self.settings,
             maps: &maps,
+            missions: &missions,
             end_lines: None, // no host behind a menu-only frame
             backdrop: [0.02, 0.03, 0.05, 0.94],
             info_lines,
@@ -977,6 +1128,17 @@ impl App {
             .maps
             .iter()
             .map(|map| (map.id.clone(), map.display_name.clone()))
+            .collect()
+    }
+
+    /// The mission list (id, display name) in tree order — A-011: the
+    /// mission picker's Mission field and the pass's labels (the map list's
+    /// exact shape over the tree's missions).
+    pub(crate) fn mission_list(&self) -> Vec<(String, String)> {
+        self.tree
+            .missions
+            .iter()
+            .map(|mission| (mission.id.clone(), mission.display_name.clone()))
             .collect()
     }
 
@@ -1168,8 +1330,10 @@ impl App {
             })
         };
         let maps = self.map_list(); // before the renderer borrow
-                                    // A-002 Part 2.2: composed before the renderer borrow too (the
-                                    // overlay's first line: build identity + live bundle's content hash).
+                                    // A-011: the mission list for the menu pass (the picker's field).
+        let missions = self.mission_list();
+        // A-002 Part 2.2: composed before the renderer borrow too (the
+        // overlay's first line: build identity + live bundle's content hash).
         let version_line = self.version_line();
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -1378,6 +1542,7 @@ impl App {
                 screen: &self.screen,
                 settings: &self.settings,
                 maps: &maps,
+                missions: &missions,
                 end_lines: headline,
                 backdrop: [0.0, 0.0, 0.0, 0.55],
                 info_lines,

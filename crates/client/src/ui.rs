@@ -684,6 +684,10 @@ pub struct MenuInput<'a> {
     pub settings: &'a crate::config::Settings,
     /// The loaded maps: (id, display name) in list order.
     pub maps: &'a [(String, String)],
+    /// The loaded missions: (id, display name) in list order — A-011
+    /// (ADR-0201 Phase 1): the mission picker's Mission field reads the
+    /// selected mission's display name from here.
+    pub missions: &'a [(String, String)],
     /// The end screen's headline/subline when the screen is the end screen.
     pub end_lines: Option<(&'a str, &'a str)>,
     /// The dimming backdrop's strength over a live match (menus without a
@@ -691,9 +695,10 @@ pub struct MenuInput<'a> {
     pub backdrop: [f32; 4],
     /// A-009 task 1: informational rows rendered as plain text between the
     /// title and the buttons (the Controls screen's binding table, sourced
-    /// from [`crate::report::CONTROLS_TABLE`]). Empty for every other
-    /// screen — those screens render buttons only.
-    pub info_lines: &'a [(&'static str, &'static str)],
+    /// from [`crate::report::CONTROLS_TABLE`]; A-011: the mission end
+    /// screen's objective-outcome rows ride the same block). Empty for every
+    /// other screen — those screens render buttons only.
+    pub info_lines: &'a [(&'a str, &'a str)],
     /// A-009 task 4: the build-identity footer line drawn at the bottom of
     /// the main menu and the pause menu (the `App::version_line()` —
     /// "pandemonium X.Y git Z content HASH"). Empty string for screens
@@ -760,6 +765,43 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
                 row(2, ButtonId::Map, "Map", map_value),
                 row(3, ButtonId::Start, "Start", String::new()),
                 row(4, ButtonId::Back, "Back", String::new()),
+                // A-011 (ADR-0201 Phase 1): the Missions row opens the
+                // mission picker — after Back so every existing row keeps
+                // its index (the A-010 Xvfb evidence script walks this
+                // screen by index; Mode/Seed/Map/Start stay rows 0-3).
+                row(5, ButtonId::Missions, "Missions", String::new()),
+            ]
+        }
+        // A-011 (ADR-0201 Phase 1, Task 1): the mission picker mirrors the
+        // New Match screen's shape — the cycling Mission field (the
+        // selected mission's display name), the editable seed, Start, and
+        // Back to the New Match fields the picker carried.
+        Screen::MissionPicker(fields) => {
+            let seed = if fields.seed_text.is_empty() {
+                "random".to_string()
+            } else {
+                fields.seed_text.clone()
+            };
+            let mission_name = input
+                .missions
+                .get(fields.mission_index)
+                .map(|(_, name)| name.clone())
+                .unwrap_or_else(|| "?".to_string());
+            let mission_value = if fields.mission_count > 1 {
+                format!("< {mission_name} >")
+            } else {
+                mission_name
+            };
+            vec![
+                row(0, ButtonId::Mission, "Mission", mission_value),
+                row(
+                    1,
+                    ButtonId::MissionSeed,
+                    "Seed",
+                    format!("{seed} [Enter: random]"),
+                ),
+                row(2, ButtonId::MissionStart, "Start", String::new()),
+                row(3, ButtonId::Back, "Back", String::new()),
             ]
         }
         Screen::Settings { .. } => {
@@ -843,6 +885,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         screen,
         settings: _,
         maps: _,
+        missions: _,
         end_lines,
         backdrop,
         info_lines,
@@ -874,6 +917,8 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         (_, Some((headline, subline))) => (headline.to_string(), Some(subline.to_string())),
         (crate::screens::Screen::MainMenu, _) => ("PANDEMONIUM".to_string(), None),
         (crate::screens::Screen::NewMatch(_), _) => ("NEW MATCH".to_string(), None),
+        // A-011: the mission picker's title.
+        (crate::screens::Screen::MissionPicker(_), _) => ("MISSIONS".to_string(), None),
         (crate::screens::Screen::Settings { .. }, _) => ("SETTINGS".to_string(), None),
         (crate::screens::Screen::PauseMenu, _) => ("PAUSED".to_string(), None),
         // A-009 task 1: the Controls screen's title.
@@ -1445,6 +1490,10 @@ mod tests {
 
     static MAPS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
 
+    /// The loaded missions fixture (A-011: the picker's Mission field reads
+    /// the selected mission's display name from the list).
+    static MISSIONS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
     fn menu_input(screen: &crate::screens::AppState) -> MenuInput<'_> {
         MenuInput {
             atlas: atlas(),
@@ -1452,6 +1501,8 @@ mod tests {
             screen,
             settings: SETTINGS.get_or_init(crate::config::Settings::default),
             maps: MAPS.get_or_init(|| vec![("crossroads".to_string(), "Crossroads".to_string())]),
+            missions: MISSIONS
+                .get_or_init(|| vec![("crossroads_01".to_string(), "Crossroads".to_string())]),
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1494,6 +1545,7 @@ mod tests {
                 screen: state,
                 settings: &crate::config::Settings::default(),
                 maps: &[("crossroads".to_string(), "Crossroads".to_string())],
+                missions: &[],
                 end_lines: Some(("VICTORY", "You eliminated the enemy.")),
                 backdrop: [0.0, 0.0, 0.0, 0.5],
                 info_lines: &[],
@@ -1523,6 +1575,7 @@ mod tests {
             screen: &state,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1560,7 +1613,10 @@ mod tests {
             focus: 0,
         };
         let built = build_menu(menu_input(&with_seed));
-        assert_eq!(built.buttons.len(), 5);
+        // A-011: the Missions row (row 5, after Back) grew the screen to
+        // six buttons — the brief's picker entry as a sub-screen of New
+        // Match.
+        assert_eq!(built.buttons.len(), 6);
         // (The values ride the quads as text; the ids and the rect geometry
         // are the machine's contract — pinned above.)
         let without_seed = crate::screens::AppState {
@@ -1573,7 +1629,7 @@ mod tests {
             focus: 0,
         };
         let built = build_menu(menu_input(&without_seed));
-        assert_eq!(built.buttons.len(), 5);
+        assert_eq!(built.buttons.len(), 6);
     }
 
     #[test]
@@ -1594,6 +1650,7 @@ mod tests {
             screen: &main_menu,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1605,6 +1662,7 @@ mod tests {
             screen: &main_menu,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1626,6 +1684,7 @@ mod tests {
             screen: &pause,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1637,6 +1696,7 @@ mod tests {
             screen: &pause,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1662,6 +1722,7 @@ mod tests {
             screen: &settings,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1673,6 +1734,7 @@ mod tests {
             screen: &settings,
             settings: &crate::config::Settings::default(),
             maps: &[],
+            missions: &[],
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],

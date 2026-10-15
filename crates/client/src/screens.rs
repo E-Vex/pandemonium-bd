@@ -136,6 +136,50 @@ impl NewMatchState {
     }
 }
 
+/// The mission picker screen's fields (ADR-0201 Phase 1, A-011 Task 1): the
+/// mission list cycles by index exactly like the map picker
+/// ([`NewMatchState::cycle_map`]'s wrap law) and shows the selected mission's
+/// display name; the seed field mirrors the New Match screen's; and the New
+/// Match fields the picker was opened from ride along so Back restores them
+/// unchanged. The picker is a sub-screen of New Match — a menu peer, never a
+/// gate (ADR-0201 §6): the advanced modes stay directly reachable exactly as
+/// they were.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissionPickerState {
+    /// The New Match fields the picker was opened from (Back/Esc restores
+    /// them unchanged).
+    pub new_match: NewMatchState,
+    /// The seed field's text — digits only, edited in place. Starts as the
+    /// parent's seed so opening the picker loses nothing.
+    pub seed_text: String,
+    /// The selected mission's index into the tree's mission list.
+    pub mission_index: usize,
+    /// How many missions the tree lists (drives the wrap).
+    pub mission_count: usize,
+}
+
+impl MissionPickerState {
+    /// The seed Start will use: the parsed field, else the context's fresh
+    /// random seed (the New Match screen's law, verbatim).
+    pub fn seed_value(&self, random_seed: u64) -> u64 {
+        self.seed_text.parse::<u64>().unwrap_or(random_seed)
+    }
+
+    /// Cycles the mission index (the map picker's wrap law: a one-mission
+    /// tree cycles to itself; a mission-less tree never gets here — the
+    /// Missions row is inert without a mission to pick).
+    pub fn cycle_mission(&mut self, dir: i32) {
+        if self.mission_count <= 1 {
+            return;
+        }
+        if dir.is_positive() {
+            self.mission_index = (self.mission_index + 1) % self.mission_count;
+        } else {
+            self.mission_index = (self.mission_index + self.mission_count - 1) % self.mission_count;
+        }
+    }
+}
+
 /// Where the Settings screen returns to when it closes (the plan's diagram
 /// has settings reachable from both the main menu and the pause menu).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,6 +269,12 @@ pub enum Screen {
     MainMenu,
     /// Mode / seed / map / Start.
     NewMatch(NewMatchState),
+    /// Mission / seed / Start / Back — A-011 (ADR-0201 Phase 1): the
+    /// mission picker, a sub-screen of New Match reached by its Missions
+    /// row. Mirrors the map picker (cycles the tree's mission list, shows
+    /// the selected mission's display name); Start resolves to a mission
+    /// match.
+    MissionPicker(MissionPickerState),
     /// The eight settings rows + Done. The *values* live in the app's
     /// [`crate::config::Settings`]; the machine only navigates.
     Settings {
@@ -292,6 +342,16 @@ pub enum Effect {
     },
     /// Close the application.
     QuitApp,
+    /// Start a mission match (A-011, ADR-0201 Phase 1): bundle the mission's
+    /// map, resolve its objectives through the content seam, and build the
+    /// host through the engine mission seam so the sim evaluates the
+    /// mission's objectives.
+    StartMission {
+        /// The selected mission's index into the tree's mission list.
+        mission_index: usize,
+        /// The seed the match will run (parsed field or fresh random).
+        seed: u64,
+    },
 }
 
 /// The machine's view of one input event (winit keys map here — the pure
@@ -330,6 +390,10 @@ pub struct KeyContext {
     pub seed_prefill: Option<u64>,
     /// How many maps the loaded content tree lists.
     pub map_count: usize,
+    /// How many missions the loaded content tree lists (A-011: the mission
+    /// picker's wrap; zero = the tree carries no missions and the Missions
+    /// row stays inert).
+    pub mission_count: usize,
 }
 
 /// One focusable row's identity — the shared vocabulary between the
@@ -354,6 +418,16 @@ pub enum ButtonId {
     Start,
     /// New Match screen: back to the main menu.
     Back,
+    /// New Match screen: open the mission picker (A-011, ADR-0201
+    /// Phase 1) — the picker is a sub-screen of New Match, so the main
+    /// menu's rows and every existing index stay unchanged.
+    Missions,
+    /// Mission picker screen: the mission field (cycles the tree's list).
+    Mission,
+    /// Mission picker screen: the seed field.
+    MissionSeed,
+    /// Mission picker screen: start the mission match.
+    MissionStart,
     /// Settings screen: one settings row (by index).
     Setting(usize),
     /// Settings screen: save and return.
@@ -405,6 +479,7 @@ impl AppState {
         match self.screen {
             Screen::MainMenu => "main menu",
             Screen::NewMatch(_) => "new match screen",
+            Screen::MissionPicker(_) => "mission picker screen",
             Screen::Settings { .. } => "settings screen",
             Screen::InMatch => "match",
             Screen::PauseMenu => "pause menu",
@@ -431,6 +506,15 @@ impl AppState {
             (Screen::NewMatch(_), 2) => ButtonId::Map,
             (Screen::NewMatch(_), 3) => ButtonId::Start,
             (Screen::NewMatch(_), 4) => ButtonId::Back,
+            // A-011: the Missions row rides after Back (row 5) so the
+            // existing rows — and every index-driven path over them, the
+            // A-010 Xvfb evidence script included — stay exactly as they
+            // were.
+            (Screen::NewMatch(_), 5) => ButtonId::Missions,
+            (Screen::MissionPicker(_), 0) => ButtonId::Mission,
+            (Screen::MissionPicker(_), 1) => ButtonId::MissionSeed,
+            (Screen::MissionPicker(_), 2) => ButtonId::MissionStart,
+            (Screen::MissionPicker(_), 3) => ButtonId::Back,
             (Screen::Settings { .. }, index) => {
                 const SETTINGS_ROWS: usize = 8; // the eight keys + Done
                 if index < SETTINGS_ROWS {
@@ -463,7 +547,8 @@ impl AppState {
     pub fn button_count(&self) -> usize {
         match self.screen {
             Screen::MainMenu => 4,
-            Screen::NewMatch(_) => 5,
+            Screen::NewMatch(_) => 6, // Mode/Seed/Map/Start/Back/Missions
+            Screen::MissionPicker(_) => 4, // Mission/Seed/Start/Back
             Screen::Settings { .. } => 9, // 8 settings rows + Done
             Screen::InMatch => 0,
             Screen::PauseMenu => 5,
@@ -510,6 +595,12 @@ impl AppState {
             Screen::MainMenu => (next, Effect::QuitApp),
             Screen::NewMatch(_) => {
                 next.screen = Screen::MainMenu;
+                (next, Effect::None)
+            }
+            // A-011: the picker backs out to the New Match screen it was
+            // opened from, restoring its fields unchanged.
+            Screen::MissionPicker(ref fields) => {
+                next.screen = Screen::NewMatch(fields.new_match.clone());
                 (next, Effect::None)
             }
             Screen::Settings { return_to } => {
@@ -640,16 +731,72 @@ impl AppState {
                 next.screen = Screen::InMatch;
                 (next, effect)
             }
+            // A-011 (ADR-0201 Phase 1, Task 1): the Missions row opens the
+            // picker, carrying the New Match fields (Back restores them) and
+            // the parent's seed text. Inert when the tree lists no missions —
+            // there is nothing to pick, and the machine never emits a
+            // StartMission the app cannot resolve.
+            ButtonId::Missions => {
+                if ctx.mission_count == 0 {
+                    return (next, Effect::None);
+                }
+                if let Screen::NewMatch(fields) = &self.screen {
+                    next.screen = Screen::MissionPicker(MissionPickerState {
+                        new_match: fields.clone(),
+                        seed_text: fields.seed_text.clone(),
+                        mission_index: 0,
+                        mission_count: ctx.mission_count.max(1),
+                    });
+                }
+                (next, Effect::None)
+            }
+            // A-011: the picker's Mission row cycles the tree's mission list
+            // (a click advances one, same as the map field).
+            ButtonId::Mission => {
+                if let Screen::MissionPicker(fields) = &mut next.screen {
+                    fields.cycle_mission(1);
+                }
+                (next, Effect::None)
+            }
+            // A-011: the picker's seed field randomizes on Enter/click, the
+            // New Match screen's Seed law verbatim.
+            ButtonId::MissionSeed => {
+                if let Screen::MissionPicker(fields) = &mut next.screen {
+                    fields.seed_text = ctx.random_seed.to_string();
+                }
+                (next, Effect::None)
+            }
+            // A-011: Start resolves to a mission match — the effect carries
+            // the selected mission's index and the seed; the app layer
+            // bundles the mission's map and builds the host through the
+            // engine mission seam.
+            ButtonId::MissionStart => {
+                let Screen::MissionPicker(fields) = &self.screen else {
+                    return (next, Effect::None);
+                };
+                if fields.mission_count == 0 {
+                    return (next, Effect::None);
+                }
+                let effect = Effect::StartMission {
+                    mission_index: fields.mission_index,
+                    seed: fields.seed_value(ctx.random_seed),
+                };
+                next.screen = Screen::InMatch;
+                (next, effect)
+            }
             ButtonId::Back => {
                 // A-009 task 1: when Back is the Controls screen's row, it
                 // returns to where Controls was opened from (the same
                 // return_to pattern Settings uses). On the New Match screen
-                // it returns to the main menu (its prior behavior).
+                // it returns to the main menu (its prior behavior). A-011:
+                // on the mission picker it restores the New Match fields the
+                // picker carried (its parent screen).
                 next.screen = match self.screen {
                     Screen::Controls { return_to } => match return_to {
                         SettingsReturn::MainMenu => Screen::MainMenu,
                         SettingsReturn::PauseMenu => Screen::PauseMenu,
                     },
+                    Screen::MissionPicker(ref fields) => Screen::NewMatch(fields.new_match.clone()),
                     _ => Screen::MainMenu,
                 };
                 (next, Effect::None)
@@ -767,6 +914,14 @@ impl AppState {
                         }
                         (next, Effect::None)
                     }
+                    // A-011: the picker's Mission field cycles Left/Right,
+                    // the map field's law verbatim.
+                    Some(ButtonId::Mission) => {
+                        if let Screen::MissionPicker(fields) = &mut next.screen {
+                            fields.cycle_mission(dir);
+                        }
+                        (next, Effect::None)
+                    }
                     Some(ButtonId::Setting(row)) => (
                         next,
                         Effect::AdjustSetting {
@@ -785,11 +940,27 @@ impl AppState {
                         fields.seed_text.pop();
                     }
                 }
+                // A-011: the picker's seed field edits in place, same law.
+                if matches!(next.focused_button(), Some(ButtonId::MissionSeed)) {
+                    if let Screen::MissionPicker(fields) = &mut next.screen {
+                        fields.seed_text.pop();
+                    }
+                }
                 (next, Effect::None)
             }
             NavKey::Digit(d) => {
                 if matches!(next.focused_button(), Some(ButtonId::Seed)) && d.is_ascii_digit() {
                     if let Screen::NewMatch(fields) = &mut next.screen {
+                        if fields.seed_text.len() < 20 {
+                            fields.seed_text.push(d);
+                        }
+                    }
+                }
+                // A-011: the picker's seed field types digits, same cap.
+                if matches!(next.focused_button(), Some(ButtonId::MissionSeed))
+                    && d.is_ascii_digit()
+                {
+                    if let Screen::MissionPicker(fields) = &mut next.screen {
                         if fields.seed_text.len() < 20 {
                             fields.seed_text.push(d);
                         }
@@ -836,6 +1007,7 @@ mod tests {
             random_seed: 1234,
             seed_prefill: None,
             map_count: 1,
+            mission_count: 1,
         }
     }
 
@@ -845,6 +1017,7 @@ mod tests {
             random_seed: 1234,
             seed_prefill: Some(4242),
             map_count: 3,
+            mission_count: 1,
         }
     }
 
