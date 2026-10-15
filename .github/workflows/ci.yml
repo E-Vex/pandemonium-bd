@@ -87,9 +87,14 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component clippy
           rustup default 1.98.1
       # Only the Linux legs build the client binary (rodio -> cpal -> alsa-sys
-      # needs libasound2-dev); the Windows legs fail for a different, known
-      # reason (the client test binary's STATUS_ACCESS_VIOLATION, filed for
-      # the client's lane) and the macOS legs need no system audio lib.
+      # needs libasound2-dev); the macOS legs need no system audio lib. (The
+      # Windows legs once failed on a different, known reason — the client
+      # test binary's STATUS_ACCESS_VIOLATION, CLOSED since fix a2bc546: a
+      # multi-probe rodio/cpal WASAPI crash on machines with no audio
+      # endpoint, proven 194/194 green and re-proven on master's gate; the
+      # full record is docs/product/WINDOWS_CI_CRASH.md. Comment corrected
+      # 2026-10-16 by the audit's AUD-006 — it had described the closed
+      # crash in the present tense.)
       - name: Linux system deps (ALSA dev for the client's audio stack)
         if: matrix.os == 'ubuntu-24.04'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
