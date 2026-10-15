@@ -1,107 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="232" viewBox="0 0 960 232" role="img" font-family="ui-monospace,'Cascadia Mono','SF Mono',Menlo,Consolas,'Liberation Mono',monospace" >
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="232" viewBox="0 0 960 232" role="img" font-family="ui-monospace,'Cascadia Mono','SF Mono',Menlo,Consolas,'Liberation Mono',monospace">
 <defs>
-<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7681"/></marker>
-<marker id="arr-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d29922"/></marker>
-<marker id="arr-danger" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f85149"/></marker>
+<style>
+.sweep{animation:sweep 11s linear infinite}
+@keyframes sweep{from{transform:translateX(0)}to{transform:translateX(848px)}}
+.accu{animation:accu 1.1s linear infinite;transform-box:fill-box;transform-origin:left center}
+@keyframes accu{0%{transform:scaleX(0.04)}92%{transform:scaleX(1)}100%{transform:scaleX(1)}}
+@media (prefers-reduced-motion:reduce){.sweep,.accu{animation:none}.accu{transform:scaleX(0.62)}}
+</style>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/></marker>
+<marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d29922"/></marker>
 </defs>
-<rect x="0" y="0" width="960" height="232" fill="#0d1117"/>
-<text x="48" y="42" font-size="14" fill="#8b949e" text-anchor="start" letter-spacing="2">TIME COMES FROM THE ENGINE — NEVER FROM THE SIMULATION (FD-6)</text>
-<rect x="392" y="84" width="30" height="104" fill="#d29922" opacity="0.07"/>
-<line x1="392" y1="96" x2="392" y2="184" stroke="#9e6a03" stroke-width="1" stroke-dasharray="2 3" opacity="0.55"/>
-<line x1="422" y1="96" x2="422" y2="184" stroke="#9e6a03" stroke-width="1" stroke-dasharray="2 3" opacity="0.55"/>
-<line x1="56" y1="104" x2="904" y2="104" stroke="#6e7681" stroke-width="2"/>
-<line x1="86" y1="98" x2="86" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="116" y1="98" x2="116" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="146" y1="98" x2="146" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="176" y1="98" x2="176" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="206" y1="98" x2="206" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="236" y1="98" x2="236" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="266" y1="98" x2="266" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="296" y1="98" x2="296" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="326" y1="98" x2="326" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="356" y1="98" x2="356" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="386" y1="98" x2="386" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="416" y1="98" x2="416" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="446" y1="98" x2="446" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="476" y1="98" x2="476" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="506" y1="98" x2="506" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="536" y1="98" x2="536" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="566" y1="98" x2="566" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="596" y1="98" x2="596" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="626" y1="98" x2="626" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="656" y1="98" x2="656" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="686" y1="98" x2="686" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="716" y1="98" x2="716" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="746" y1="98" x2="746" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="776" y1="98" x2="776" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="806" y1="98" x2="806" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="836" y1="98" x2="836" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="866" y1="98" x2="866" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="896" y1="98" x2="896" y2="110" stroke="#8b949e" stroke-width="1.6"/>
-<line x1="392" y1="90" x2="422" y2="90" stroke="#9e6a03" stroke-width="1.2"/>
-<line x1="392" y1="90" x2="392" y2="95" stroke="#9e6a03" stroke-width="1.2"/>
-<line x1="422" y1="90" x2="422" y2="95" stroke="#9e6a03" stroke-width="1.2"/>
-<text x="407.0" y="82" font-size="12.5" fill="#d29922" text-anchor="middle" letter-spacing="0.5">33.33 ms — one tick</text>
-<text x="904" y="80" font-size="13.5" fill="#8b949e" text-anchor="end" letter-spacing="2">SIM — 30 TICKS/S · FIXED</text>
-<line x1="56" y1="176" x2="904" y2="176" stroke="#3d444d" stroke-width="1.5"/>
-<line x1="86" y1="172" x2="86" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="101" y1="172" x2="101" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="116" y1="172" x2="116" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="131" y1="172" x2="131" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="146" y1="172" x2="146" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="161" y1="172" x2="161" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="176" y1="172" x2="176" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="191" y1="172" x2="191" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="206" y1="172" x2="206" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="221" y1="172" x2="221" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="236" y1="172" x2="236" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="251" y1="172" x2="251" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="266" y1="172" x2="266" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="281" y1="172" x2="281" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="296" y1="172" x2="296" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="311" y1="172" x2="311" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="326" y1="172" x2="326" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="341" y1="172" x2="341" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="356" y1="172" x2="356" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="371" y1="172" x2="371" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="386" y1="172" x2="386" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="401" y1="172" x2="401" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="416" y1="172" x2="416" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="431" y1="172" x2="431" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="446" y1="172" x2="446" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="461" y1="172" x2="461" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="476" y1="172" x2="476" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="491" y1="172" x2="491" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="506" y1="172" x2="506" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="521" y1="172" x2="521" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="536" y1="172" x2="536" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="551" y1="172" x2="551" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="566" y1="172" x2="566" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="581" y1="172" x2="581" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="596" y1="172" x2="596" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="611" y1="172" x2="611" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="626" y1="172" x2="626" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="641" y1="172" x2="641" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="656" y1="172" x2="656" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="671" y1="172" x2="671" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="686" y1="172" x2="686" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="701" y1="172" x2="701" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="716" y1="172" x2="716" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="731" y1="172" x2="731" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="746" y1="172" x2="746" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="761" y1="172" x2="761" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="776" y1="172" x2="776" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="791" y1="172" x2="791" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="806" y1="172" x2="806" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="821" y1="172" x2="821" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="836" y1="172" x2="836" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="851" y1="172" x2="851" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="866" y1="172" x2="866" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="881" y1="172" x2="881" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<line x1="896" y1="172" x2="896" y2="180" stroke="#57606a" stroke-width="1.1"/>
-<text x="904" y="208" font-size="13.5" fill="#8b949e" text-anchor="end" letter-spacing="2">RENDER — DISPLAY RATE · FLOATS ALLOWED HERE</text>
-<line x1="407" y1="170" x2="428" y2="148" stroke="#9e6a03" stroke-width="1"/>
-<text x="434" y="144" font-size="12.5" fill="#d29922" text-anchor="start" letter-spacing="0.3">α = accumulator / tick_duration</text>
-<text x="434" y="160" font-size="11.5" fill="#8b949e" text-anchor="start" letter-spacing="0.3">interpolate(prev_snapshot, next_snapshot, α)</text>
-<text x="56" y="208" font-size="12" fill="#57606a" text-anchor="start" letter-spacing="0.3">catch-up capped at 5 ticks per frame (plan §11.1)</text>
+<rect width="960" height="232" fill="#0d1117"/>
+<text x="48" y="40" font-size="14" fill="#c9d1d9" text-anchor="start" letter-spacing="1.8" font-weight="600">TIME COMES FROM THE ENGINE — NEVER FROM THE SIMULATION (FD-6)</text>
+<!-- render lane -->
+<line x1="56" y1="86" x2="904" y2="86" stroke="#6e7681" stroke-width="1.5" stroke-linecap="butt"/>
+<line x1="64.0" y1="80" x2="64.0" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="64.0" cy="86" r="3" fill="#58a6ff"/><line x1="116.82853900155871" y1="80" x2="116.82853900155871" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="116.8" cy="86" r="3" fill="#58a6ff"/><line x1="171.26659688660695" y1="80" x2="171.26659688660695" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="171.3" cy="86" r="3" fill="#58a6ff"/><line x1="230.50869724357204" y1="80" x2="230.50869724357204" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="230.5" cy="86" r="3" fill="#58a6ff"/><line x1="275.71825945917703" y1="80" x2="275.71825945917703" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="275.7" cy="86" r="3" fill="#58a6ff"/><line x1="330.66661862740006" y1="80" x2="330.66661862740006" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="330.7" cy="86" r="3" fill="#58a6ff"/><line x1="391.8277034719414" y1="80" x2="391.8277034719414" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="391.8" cy="86" r="3" fill="#58a6ff"/><line x1="453.457245075502" y1="80" x2="453.457245075502" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="453.5" cy="86" r="3" fill="#58a6ff"/><line x1="496.3065716224392" y1="80" x2="496.3065716224392" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="496.3" cy="86" r="3" fill="#58a6ff"/><line x1="551.2514764679095" y1="80" x2="551.2514764679095" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="551.3" cy="86" r="3" fill="#58a6ff"/><line x1="605.2965256921906" y1="80" x2="605.2965256921906" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="605.3" cy="86" r="3" fill="#58a6ff"/><line x1="656.3847654986778" y1="80" x2="656.3847654986778" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="656.4" cy="86" r="3" fill="#58a6ff"/><line x1="719.5059125938117" y1="80" x2="719.5059125938117" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="719.5" cy="86" r="3" fill="#58a6ff"/><line x1="771.2408344403884" y1="80" x2="771.2408344403884" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="771.2" cy="86" r="3" fill="#58a6ff"/><line x1="820.8174409624219" y1="80" x2="820.8174409624219" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="820.8" cy="86" r="3" fill="#58a6ff"/><line x1="883.3500310349932" y1="80" x2="883.3500310349932" y2="92" stroke="#58a6ff" stroke-width="1.4" stroke-linecap="butt" opacity="0.75"/><circle cx="883.4" cy="86" r="3" fill="#58a6ff"/>
+<text x="904" y="76" font-size="12" fill="#8b949e" text-anchor="end" letter-spacing="1">RENDER — DISPLAY RATE · FLOATS ALLOWED HERE</text>
+<!-- accumulator: one tick, zoomed -->
+<text x="56" y="112" font-size="9.5" fill="#6e7681" text-anchor="start" letter-spacing="1.5">ACCUMULATOR — ONE TICK</text>
+<rect x="56" y="118" width="144" height="48" rx="6" fill="#10151c" stroke="#3d444d" stroke-width="1.2"/>
+<rect x="56" y="118" width="144" height="48" rx="6" fill="#d29922" opacity="0.12" class="accu"/>
+<line x1="200" y1="114" x2="200" y2="170" stroke="#d29922" stroke-width="1.2" stroke-linecap="butt" stroke-dasharray="3 3" opacity="0.8"/>
+<text x="220" y="136" font-size="12.5" fill="#c9d1d9" text-anchor="start">α = accumulator / tick_duration</text>
+<text x="220" y="154" font-size="11.5" fill="#8b949e" text-anchor="start">interpolate(prev_snapshot, next_snapshot, α)</text>
+<!-- sim lane -->
+<line x1="536.5333333333333" y1="190" x2="536.5333333333333" y2="92" stroke="#6e7681" stroke-width="1" stroke-linecap="butt" stroke-dasharray="2 5" opacity="0.35"/><line x1="677.8666666666667" y1="190" x2="677.8666666666667" y2="92" stroke="#6e7681" stroke-width="1" stroke-linecap="butt" stroke-dasharray="2 5" opacity="0.35"/><line x1="875.7333333333333" y1="190" x2="875.7333333333333" y2="92" stroke="#6e7681" stroke-width="1" stroke-linecap="butt" stroke-dasharray="2 5" opacity="0.35"/>
+<line x1="56" y1="196" x2="904" y2="196" stroke="#3d444d" stroke-width="2" stroke-linecap="butt"/>
+<line x1="56.0" y1="184" x2="56.0" y2="208" stroke="#8b949e" stroke-width="1.6" stroke-linecap="butt"/><line x1="84.26666666666667" y1="188" x2="84.26666666666667" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="112.53333333333333" y1="188" x2="112.53333333333333" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="140.8" y1="188" x2="140.8" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="169.06666666666666" y1="188" x2="169.06666666666666" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="197.33333333333331" y1="184" x2="197.33333333333331" y2="208" stroke="#8b949e" stroke-width="1.6" stroke-linecap="butt"/><line x1="225.6" y1="188" x2="225.6" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="253.86666666666667" y1="188" x2="253.86666666666667" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="282.1333333333333" y1="188" x2="282.1333333333333" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="310.4" y1="188" x2="310.4" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="338.66666666666663" y1="184" x2="338.66666666666663" y2="208" stroke="#8b949e" stroke-width="1.6" stroke-linecap="butt"/><line x1="366.93333333333334" y1="188" x2="366.93333333333334" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="395.2" y1="188" x2="395.2" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="423.46666666666664" y1="188" x2="423.46666666666664" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="451.73333333333335" y1="188" x2="451.73333333333335" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="480.0" y1="184" x2="480.0" y2="208" stroke="#8b949e" stroke-width="1.6" stroke-linecap="butt"/><line x1="508.26666666666665" y1="188" x2="508.26666666666665" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="536.5333333333333" y1="188" x2="536.5333333333333" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="564.8" y1="188" x2="564.8" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="593.0666666666666" y1="188" x2="593.0666666666666" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="621.3333333333333" y1="184" x2="621.3333333333333" y2="208" stroke="#8b949e" stroke-width="1.6" stroke-linecap="butt"/><line x1="649.6" y1="188" x2="649.6" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="677.8666666666667" y1="188" x2="677.8666666666667" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="706.1333333333333" y1="188" x2="706.1333333333333" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="734.4" y1="188" x2="734.4" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="762.6666666666666" y1="184" x2="762.6666666666666" y2="208" stroke="#8b949e" stroke-width="1.6" stroke-linecap="butt"/><line x1="790.9333333333333" y1="188" x2="790.9333333333333" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="819.1999999999999" y1="188" x2="819.1999999999999" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="847.4666666666667" y1="188" x2="847.4666666666667" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="875.7333333333333" y1="188" x2="875.7333333333333" y2="204" stroke="#6e7681" stroke-width="1.1" stroke-linecap="butt"/><line x1="904.0" y1="184" x2="904.0" y2="208" stroke="#8b949e" stroke-width="1.6" stroke-linecap="butt"/>
+<rect x="53.0" y="193" width="6" height="6" fill="#d29922"/><rect x="137.8" y="193" width="6" height="6" fill="#d29922"/><rect x="222.6" y="193" width="6" height="6" fill="#d29922"/><rect x="307.4" y="193" width="6" height="6" fill="#d29922"/><rect x="392.2" y="193" width="6" height="6" fill="#d29922"/><rect x="477.0" y="193" width="6" height="6" fill="#d29922"/><rect x="561.8" y="193" width="6" height="6" fill="#d29922"/><rect x="646.6" y="193" width="6" height="6" fill="#d29922"/><rect x="731.4" y="193" width="6" height="6" fill="#d29922"/><rect x="816.2" y="193" width="6" height="6" fill="#d29922"/><rect x="901.0" y="193" width="6" height="6" fill="#d29922"/>
+<line x1="56" y1="180" x2="84.3" y2="180" stroke="#8b949e" stroke-width="1.2" marker-start="url(#arr)" marker-end="url(#arr)"/>
+<text x="92" y="184" font-size="11.5" fill="#8b949e" text-anchor="start">33.33 ms — one tick</text>
+<text x="904" y="224" font-size="12.5" fill="#9e6a03" text-anchor="end" letter-spacing="1" font-weight="600">SIM — 30 TICKS/S · FIXED</text>
+<text x="56" y="224" font-size="11.5" fill="#6e7681" text-anchor="start">catch-up capped at 5 ticks per frame (plan §11.1)</text>
+<!-- the sweep -->
+<line x1="56" y1="64" x2="56" y2="212" stroke="#d29922" stroke-width="1.5" opacity="0.3" class="sweep"/>
 </svg>

@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="readme-assets/hero-dark.svg">
-  <img src="readme-assets/hero-light.svg" alt="Pandemonium theater display rendered in 3D: on the left, scattered debris and an amber strike reticle labeled CONTACTS — UNSORTED; in the centre, three tanks follow dashed movement paths to a hostile target diamond while an F-16-style fighter jet with a lit afterburner and vapor trails fires a missile that locks onto it (TGT LOCK); on the right, build-order footprints and a neat row of contacts labeled CONTACTS — SORTED. A tick ruler along the bottom runs to T+300 with a checkpoint every 30 ticks. Instrument labels read simulation feed live, replay verify pass, seed 7, 30 ticks per second, and Q16.16 fixed-point, no floats." width="100%">
+  <img src="readme-assets/hero-light.svg" alt="The Pandemonium verification console: a top bar reads SIMULATION FEED — LIVE and REPLAY VERIFY — PASS. The left panel, CONTACTS — UNSORTED, holds scattered strokes around a red hostile diamond in an amber reticle. The center panel, COMMAND LOG → STATE HASH, shows a tick ruler from T+0 to T+300 with eleven checkpoint nodes that light up in sequence, ending at the golden state hash 0xb6fff6659cfb7709. The right panel, CONTACTS — SORTED, shows the same contacts as a neat grid under the line CHECKPOINTS MATCH — 11/11. The bottom bar reads seed 7, 30 ticks per second, the content hash 0x9bc18c521107b262, and Q16.16 fixed-point, no floats." width="100%">
 </picture>
 
 # Pandemonium: Build & Destroy
@@ -79,7 +79,7 @@ the most valuable bug report this project can receive.
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="readme-assets/architecture-dark.svg">
-  <img src="readme-assets/architecture-light.svg" alt="The Pandemonium crate architecture as layered boxes: the client binary sits at the top and sends commands down through the engine, which hosts matches and defines the renderer and audio seams; the simulation sits at the bottom, beside sim_api and content, and depends only on the fx math crate; every dependency arrow points downward, and nothing ever points back up into the simulation." width="100%">
+  <img src="readme-assets/architecture-light.svg" alt="The Pandemonium crate architecture as five tier bands — presentation, host, domain, simulation, foundation. The client binary sends commands down through the engine into sim; content feeds sim its RON data; ai and replay reach the boundary vocabulary sim_api; sim steps the world and stands on sim_api and the fx math crate (Q16.16, PCG32, XXH64); tools and tests sit at the bottom as instruments and referee. Every dependency arrow points downward; the one forbidden edge — ai reaching past the command gate into sim — is drawn red and dashed (FD-7)." width="100%">
 </picture>
 </p>
 
@@ -104,7 +104,7 @@ The heartbeat, as a diagram:
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="readme-assets/timestep-dark.svg">
-  <img src="readme-assets/timestep-light.svg" alt="Timeline diagram of the fixed timestep: engine time advances along a ruler while the simulation consumes it in fixed 30 Hz ticks, each tick producing a snapshot; rendering interpolates between snapshots and never feeds time back into the simulation (FD-6)." width="100%">
+  <img src="readme-assets/timestep-light.svg" alt="Timeline diagram of the fixed timestep: a render lane at display rate (floats allowed) sits above the simulation's perfectly even 30 Hz tick ruler; an accumulator box shows one tick filling while the formulas α = accumulator / tick_duration and interpolate(prev_snapshot, next_snapshot, α) bridge the two lanes; time comes from the engine and never feeds back into the simulation (FD-6)." width="100%">
 </picture>
 </p>
 
