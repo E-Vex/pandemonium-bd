@@ -96,6 +96,11 @@ pub(crate) struct App {
     /// mission-less match: the HUD and the end screen stay exactly as they
     /// were.
     pub(crate) mission_hud: Option<ui::MissionHud>,
+    /// A-011 (ADR-0201 §5, option (i)): the active live-state cutscene, if
+    /// any — the host is paused while it runs, the camera pans over the
+    /// frozen live world, and any key ends the scene and unpauses. `None`
+    /// outside a scene.
+    pub(crate) cutscene: Option<crate::cutscene::Cutscene>,
     pub(crate) camera: RtsCamera,
     pub(crate) renderer: Option<WgpuRenderer>,
     pub(crate) window: Option<Arc<Window>>,
@@ -296,6 +301,7 @@ impl App {
             map_index: 0,
             mission_index: None,
             mission_hud: None,
+            cutscene: None,
             camera,
             renderer: None,
             window: None,
@@ -509,10 +515,62 @@ impl App {
         // shared `Sim::build` body (pinned by the engine seam test).
         self.checkpoints = vec![(0, self.host.as_ref().expect("just built").state_hash())];
         self.record_written = false;
+        // A-011 (ADR-0201 §5, Task 3): the mission-start cutscene — pause
+        // the host, pan the camera from the enemy's start to the player's
+        // start over the frozen live world, caption the mission's name and
+        // objective summary. Any key ends the scene and unpauses.
+        let enemy_anchor = self
+            .bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| start.player == 1)
+            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+            .unwrap_or((
+                self.bundle.map.width as f32 / 2.0,
+                self.bundle.map.height as f32 / 2.0,
+            ));
+        let intro = self.mission_hud.as_ref().expect("just built").intro_line();
+        self.cutscene = Some(crate::cutscene::Cutscene::mission_start(
+            &def.display_name,
+            &intro,
+            enemy_anchor,
+            self.start_anchor,
+        ));
+        if let Some(host) = &mut self.host {
+            host.set_paused(true);
+        }
         self.screen = AppState {
             screen: Screen::InMatch,
             focus: 0,
         };
+    }
+
+    /// Ends the active cutscene, if any (ADR-0201 §5): the camera snaps to
+    /// the scene's resting focus (the player's start at the opening
+    /// distance — a readable view whatever moment the skip landed on) and
+    /// the host unpauses. The host was paused by the scene's start, so a
+    /// mission-less call is a no-op.
+    pub(crate) fn end_cutscene(&mut self) {
+        let Some(mut scene) = self.cutscene.take() else {
+            return;
+        };
+        // The player's own skip edge (§5 (iii)): the scene is over from
+        // here on, whatever moment it ended at.
+        scene.skip();
+        let (x, z, distance) = scene.resting_focus();
+        self.camera.focus(x, z, distance);
+        if let Some(host) = &mut self.host {
+            host.set_paused(false);
+        }
+    }
+
+    /// One input event during an active cutscene (ADR-0201 §5 (iii): every
+    /// cutscene is skippable at any moment — any key, Esc included, ends
+    /// the scene and unpauses). The wiring layer's single call site for the
+    /// skip path; a no-op when no scene runs.
+    pub(crate) fn cutscene_input(&mut self) {
+        self.end_cutscene();
     }
 
     /// Starts a match (PLAN-M10.2 §3.3): bundles the selected map, builds the
@@ -646,6 +704,7 @@ impl App {
         // start stays clean.
         self.mission_index = None;
         self.mission_hud = None;
+        self.cutscene = None;
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -1163,6 +1222,19 @@ impl App {
     pub(crate) fn draw(&mut self) {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
+        // A-011 (ADR-0201 §5): an active cutscene drives the camera over the
+        // frozen live world (the host is paused, so `advance` below steps
+        // nothing); a scene that ran its duration ends and unpauses through
+        // the same path a skip takes.
+        if let Some(scene) = &mut self.cutscene {
+            if scene.advance(dt.as_secs_f32()) == crate::cutscene::SceneProgress::Finished {
+                self.end_cutscene();
+            }
+        }
+        if let Some(scene) = &self.cutscene {
+            let (x, z, distance) = scene.camera_focus();
+            self.camera.focus(x, z, distance);
+        }
         // PLAN-M10.2 §3.1: the match resolved -> the state machine promotes
         // InMatch to the end screen (the panel's buttons own the choice
         // now). The live line is the long-run evidence the M9 windowed
@@ -1585,6 +1657,11 @@ impl App {
             quads.extend(built.quads);
         } else {
             self.menu_buttons.clear();
+        }
+        // A-011 (ADR-0201 §5): the cutscene's caption panel rides on top of
+        // the frozen world frame (subtitle-style, bottom-centered, ASCII).
+        if let Some(scene) = &self.cutscene {
+            quads.extend(scene.caption_quads(renderer.atlas(), viewport));
         }
         // Everything the overlay pass draws this frame queues together: the
         // feedback cues, the HUD panels, and the bottom bar.

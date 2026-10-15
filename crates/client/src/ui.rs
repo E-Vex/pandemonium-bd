@@ -720,6 +720,18 @@ impl MissionHud {
             ObjectiveState::Failed => ObjectiveHudState::Failed,
         };
     }
+
+    /// The mission-start cutscene's one-line intro (A-011 Task 3): the
+    /// objective summary, semicolon-joined — "Objectives: ..." (ASCII).
+    pub fn intro_line(&self) -> String {
+        let joined = self
+            .lines
+            .iter()
+            .map(|line| line.display_text())
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("Objectives: {joined}")
+    }
 }
 
 impl ObjectiveLine {

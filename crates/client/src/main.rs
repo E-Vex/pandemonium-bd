@@ -12,6 +12,7 @@
 
 mod app;
 mod config;
+mod cutscene;
 mod feedback;
 #[cfg(test)]
 mod hw;
@@ -517,6 +518,13 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                // A-011 (ADR-0201 §5): an active cutscene owns the buttons
+                // too — clicks neither skip the scene (any *key* does, per
+                // the brief) nor reach the world (nothing may order while
+                // the host is paused under the scene).
+                if self.cutscene.is_some() {
+                    return;
+                }
                 // PLAN-M10.2 §3.6: menus own the buttons — a left press
                 // activates the hovered row; nothing in a menu may send a
                 // sim command. The other buttons are inert at a menu.
@@ -729,6 +737,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                // A-011: no zooming while a cutscene drives the camera.
+                if self.cutscene.is_some() {
+                    return;
+                }
                 if !self.screen.takes_world_input() {
                     return; // menus own the wheel
                 }
@@ -767,6 +779,19 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let pressed = event.state == ElementState::Pressed;
+                // A-011 (ADR-0201 §5 (iii)): an active cutscene owns the
+                // keyboard — any key, Esc included, ends the scene and
+                // unpauses (the mission-start pan is six seconds; nothing
+                // else fires while it runs). Key releases just clear the
+                // held-key set so a resumed match never pans on a ghost.
+                if self.cutscene.is_some() {
+                    if pressed {
+                        self.cutscene_input();
+                    } else {
+                        self.keys.clear();
+                    }
+                    return;
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     // PLAN-M10.2 §3.6: menus own the keyboard — up/down moves
                     // focus, Enter activates, Esc backs out (the pure
