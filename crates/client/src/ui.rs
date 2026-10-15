@@ -12,7 +12,10 @@
 
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
-use pandemonium_sim_api::{EntityId, EntityView, KindId, QueueView, TilePos};
+use pandemonium_sim_api::{
+    EntityId, EntityView, KindId, MissionObjectiveKind, MissionObjectiveParameters,
+    MissionObjectives, ObjectiveState, QueueView, TilePos,
+};
 
 /// What pressing a button asks the client to do (FD-2: it becomes a
 /// `Command` at the same gate every other order enters through).
@@ -644,6 +647,195 @@ pub fn tooltip_quads(
         [0.65, 0.75, 0.85, 0.9],
     ));
     quads
+}
+
+// ── The mission HUD (A-011, ADR-0201 Phase 1 Task 2) ────────────────────
+//
+// Presentation-only state fed by `Event::ObjectiveState` after the step
+// (FD-9: the client never polls sim internals — the tracker consumes the
+// step's events, exactly like the audio and feedback layers). A mission-less
+// match carries no `MissionHud`, so the existing HUD is unchanged.
+
+/// How one mission objective reads on the HUD (ADR-0201 §2): pending until
+/// the step's `Event::ObjectiveState` resolves it. The tracker is monotonic
+/// per objective — once resolved, a later event for the same index never
+/// reverts it (the sim fires each exactly once; the guard is defense).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectiveHudState {
+    /// Not yet resolved.
+    Pending,
+    /// The success condition is met.
+    Completed,
+    /// The failure condition is met.
+    Failed,
+}
+
+/// One mission objective's display line: the ASCII text, whether it is
+/// optional (never gates the match — it feeds this HUD and the end screen),
+/// and its live state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveLine {
+    /// The objective's display text (ASCII — the embedded font subset).
+    pub text: String,
+    /// Whether the objective is optional.
+    pub optional: bool,
+    /// The live state.
+    pub state: ObjectiveHudState,
+}
+
+/// The live mission's presentation state (ADR-0201 Phase 1): the mission's
+/// display name plus the ordered objective lines — the indices match the
+/// `Event::ObjectiveState` indices (the mission's objective list order).
+/// One tracker feeds both the in-match HUD and the end-screen mission text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissionHud {
+    /// The mission's display name (ASCII).
+    pub display_name: String,
+    /// The ordered objective lines.
+    pub lines: Vec<ObjectiveLine>,
+}
+
+impl MissionHud {
+    /// Builds the tracker with every objective pending (the mission starts).
+    pub fn new(display_name: String, lines: Vec<ObjectiveLine>) -> Self {
+        Self {
+            display_name,
+            lines,
+        }
+    }
+
+    /// Consumes one `Event::ObjectiveState` (FD-9: called after the step,
+    /// from the step's event list). Out-of-range indices are ignored (the
+    /// mission's own events always name a live index; the guard is defense),
+    /// and a resolved objective never reverts.
+    pub fn on_objective_state(&mut self, index: u32, state: ObjectiveState) {
+        let Some(line) = self.lines.get_mut(index as usize) else {
+            return;
+        };
+        if line.state != ObjectiveHudState::Pending {
+            return; // resolutions are monotonic
+        }
+        line.state = match state {
+            ObjectiveState::Completed => ObjectiveHudState::Completed,
+            ObjectiveState::Failed => ObjectiveHudState::Failed,
+        };
+    }
+}
+
+impl ObjectiveLine {
+    /// The line's display text with the optional marker appended.
+    pub fn display_text(&self) -> String {
+        if self.optional {
+            format!("{} (optional)", self.text)
+        } else {
+            self.text.clone()
+        }
+    }
+}
+
+impl ObjectiveHudState {
+    /// The state's checkbox marker on the HUD line (ASCII).
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Pending => "[ ]",
+            Self::Completed => "[x]",
+            Self::Failed => "[!]",
+        }
+    }
+}
+
+/// Builds a mission's objective display lines from the resolved objective
+/// set (ADR-0201 §2a) — the same `MissionObjectives` the simulation receives
+/// through the engine seam, so the HUD's indices are the event indices by
+/// construction. Kind ids resolve to display names through the bundle's
+/// entity order (the exact order the content seam resolved them by). All
+/// text is ASCII (the embedded font subset, ADR-0201 §5).
+pub fn objective_lines(mission: &MissionObjectives, bundle: &ContentBundle) -> Vec<ObjectiveLine> {
+    mission
+        .objectives
+        .iter()
+        .map(|objective| {
+            let text = match (&objective.kind, &objective.parameters) {
+                (
+                    MissionObjectiveKind::Destroy,
+                    MissionObjectiveParameters::Destroy { target_kind: None },
+                ) => "Destroy all enemy structures".to_string(),
+                (
+                    MissionObjectiveKind::Destroy,
+                    MissionObjectiveParameters::Destroy {
+                        target_kind: Some(kind),
+                    },
+                ) => format!("Destroy all enemy {}", kind_display(bundle, *kind)),
+                (
+                    MissionObjectiveKind::BuildTrain,
+                    MissionObjectiveParameters::BuildTrain { kind, count },
+                ) => format!("Train {count} {}", kind_display(bundle, *kind)),
+                // The content seam rejects kind/parameters mismatches loudly
+                // (the loader guarantees agreement); the defensive arm keeps
+                // an impossible shape readable rather than panicking the HUD.
+                _ => "Objective".to_string(),
+            };
+            ObjectiveLine {
+                text,
+                optional: objective.optional,
+                state: ObjectiveHudState::Pending,
+            }
+        })
+        .collect()
+}
+
+/// One kind id's display name through the bundle's entity order (the same
+/// order `ContentTree::mission_objectives` resolved the ids by); an unknown
+/// id falls back to its index, never a panic.
+fn kind_display(bundle: &ContentBundle, kind: KindId) -> String {
+    bundle
+        .entities
+        .get(kind.0 as usize)
+        .map(|def| def.display_name.clone())
+        .unwrap_or_else(|| format!("kind {}", kind.0))
+}
+
+/// The in-match objective HUD block (Task 2): a "MISSION <name>" header plus
+/// one line per objective — the state marker, the display text — panel-backed
+/// at the given top edge, directly under the notice lines. Returns the quads
+/// and the block's height (the caller advances its layout cursor). A
+/// mission-less match never calls this (the existing HUD is unchanged).
+pub fn objective_hud_quads(
+    atlas: &TextAtlas,
+    mission: &MissionHud,
+    top: f32,
+) -> (Vec<UiQuad>, f32) {
+    /// Padding inside the panel.
+    const PAD: f32 = 6.0;
+    let line_height = atlas.line_height.max(atlas.ascent + atlas.descent);
+    let header = format!("MISSION {}", mission.display_name);
+    let texts: Vec<String> = mission
+        .lines
+        .iter()
+        .map(|line| format!("{} {}", line.state.marker(), line.display_text()))
+        .collect();
+    let widest = std::iter::once(atlas.measure(&header))
+        .chain(texts.iter().map(|text| atlas.measure(text)))
+        .fold(0.0f32, f32::max);
+    let panel_h = (texts.len() + 1) as f32 * line_height + 2.0 * PAD;
+    let mut quads =
+        vec![atlas.solid_rect(8.0, top, widest + 2.0 * PAD, panel_h, [0.0, 0.0, 0.0, 0.5])];
+    quads.extend(atlas.layout(
+        &header,
+        8.0 + PAD,
+        top + PAD + atlas.ascent,
+        [1.0, 0.85, 0.4, 0.95],
+    ));
+    for (index, text) in texts.iter().enumerate() {
+        let color = match mission.lines[index].state {
+            ObjectiveHudState::Pending => [0.9, 0.94, 1.0, 0.95],
+            ObjectiveHudState::Completed => [0.6, 1.0, 0.6, 1.0],
+            ObjectiveHudState::Failed => [1.0, 0.5, 0.5, 1.0],
+        };
+        let baseline = top + PAD + atlas.ascent + (index + 1) as f32 * line_height;
+        quads.extend(atlas.layout(text, 8.0 + PAD, baseline, color));
+    }
+    (quads, panel_h)
 }
 
 // ── The menu screens (PLAN-M10.2 §3.6) ─────────────────────────────────

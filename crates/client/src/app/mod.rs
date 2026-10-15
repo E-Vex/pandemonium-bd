@@ -90,6 +90,12 @@ pub(crate) struct App {
     /// same mission, same seed, same match); a mission-less match keeps
     /// `None`.
     pub(crate) mission_index: Option<usize>,
+    /// A-011: the live mission's presentation state — the HUD's objective
+    /// lines and the end screen's mission text read this one tracker, fed
+    /// by `Event::ObjectiveState` after the step (FD-9). `None` on every
+    /// mission-less match: the HUD and the end screen stay exactly as they
+    /// were.
+    pub(crate) mission_hud: Option<ui::MissionHud>,
     pub(crate) camera: RtsCamera,
     pub(crate) renderer: Option<WgpuRenderer>,
     pub(crate) window: Option<Arc<Window>>,
@@ -289,6 +295,7 @@ impl App {
             setup: MatchMode::PlayerVsAi.match_setup(seed_prefill.unwrap_or(7)),
             map_index: 0,
             mission_index: None,
+            mission_hud: None,
             camera,
             renderer: None,
             window: None,
@@ -449,6 +456,11 @@ impl App {
                 return;
             }
         };
+        // A-011: the HUD's objective lines derive from the same resolved
+        // objective set the simulation receives (built here, before the set
+        // moves into the host) — the line indices are the `Event::ObjectiveState`
+        // indices by construction.
+        let lines = ui::objective_lines(&mission, &bundle);
         let setup = MatchMode::PlayerVsAi.match_setup(seed);
         // M9.1: the right-click context resolver needs the content's worker
         // and node kind ids — a mission match plays the same order paths.
@@ -481,8 +493,12 @@ impl App {
         self.worker_kind = Some(plan.worker);
         self.node_kind = plan.node;
         self.reset_match_state();
-        // The mission-scoped state: the restart source (the tree index).
+        // The mission-scoped state: the restart source (the tree index) and
+        // the presentation tracker (the HUD lines and end-screen text read
+        // the same objective states — built from the resolved objective set,
+        // so the indices are the event indices by construction).
         self.mission_index = Some(mission_index);
+        self.mission_hud = Some(ui::MissionHud::new(def.display_name.clone(), lines));
         // PLAN-M10.2 §3.4: the debug overlay's default at match start, and
         // the user zoom limits re-clamp the opening view.
         self.debug_overlay = self.settings.debug_overlay;
@@ -624,10 +640,12 @@ impl App {
         self.attack_move_armed = false;
         self.last_order = None;
         self.drag_start = None;
-        // A-011 (ADR-0201 Phase 1): the mission restart source resets with
-        // the match — `begin_mission` re-populates it after this reset; a
-        // mission-less start stays clean.
+        // A-011 (ADR-0201 Phase 1): the mission-scoped state resets with the
+        // match — the restart source and the HUD/end-screen tracker.
+        // `begin_mission` re-populates them after this reset; a mission-less
+        // start stays clean.
         self.mission_index = None;
+        self.mission_hud = None;
         // M9.1: the camera re-frames on the base and the armed order clears
         // — a fresh match starts from the same readable opening view.
         self.camera.focus(
@@ -1220,6 +1238,15 @@ impl App {
                         self.feedback.death(pos, kind, owner, self.frames_presented);
                     }
                 }
+                // A-011 (ADR-0201 §2, FD-9): the mission HUD's tracker
+                // consumes the objective's resolution after the step, from
+                // the step's event list — presentation state, never sim
+                // state, and never a poll of sim internals.
+                Event::ObjectiveState { index, state } => {
+                    if let Some(mission) = &mut self.mission_hud {
+                        mission.on_objective_state(*index, *state);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1448,6 +1475,9 @@ impl App {
             log_len: self.host.as_ref().map_or(0, |host| host.log().len()),
             viewport,
             armed: self.attack_move_armed,
+            // A-011: the mission's objective HUD block (None = unchanged
+            // mission-less HUD).
+            mission: self.mission_hud.as_ref(),
             version: &version_line,
             notice: self
                 .feedback
@@ -1670,6 +1700,10 @@ pub(crate) struct OverlayInput<'a> {
     /// promise, automatic); the content hash joins it per frame from the
     /// live bundle.
     version: &'a str,
+    /// A-011 (ADR-0201 Phase 1, Task 2): the live mission's tracker — the
+    /// objective HUD block draws under the notice lines (None = no mission,
+    /// the HUD unchanged).
+    mission: Option<&'a ui::MissionHud>,
 }
 
 /// Builds the overlay quads for one frame: the resource/population HUD
@@ -1689,6 +1723,7 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
         armed,
         notice,
         version,
+        mission,
     } = input;
     /// Screen margin between panels and the window edge.
     const MARGIN: f32 = 8.0;
@@ -1758,6 +1793,16 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
             notice_top + PAD + atlas.ascent,
             [1.0, 0.45, 0.4, 0.95],
         ));
+    }
+
+    // A-011 (ADR-0201 Phase 1, Task 2): the mission's objective HUD — one
+    // panel under the notice lines, one line per objective with its state
+    // marker (pending / completed / failed). A mission-less match draws
+    // nothing here (the block is gated on the tracker's presence).
+    if let Some(mission) = mission {
+        let (block, height) = ui::objective_hud_quads(atlas, mission, notice_top);
+        quads.extend(block);
+        notice_top += height + MARGIN;
     }
 
     // The debug overlay (§11.6), below the notice lines.
