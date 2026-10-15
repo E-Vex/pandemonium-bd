@@ -11,11 +11,11 @@
     faction: "legion",
     rules: "alpha",
     objectives: [
-        // Destroy every enemy structure — today's elimination rule, now
-        // authored as the mission's required objective.
+        // Destroy the enemy command center — a surgical target distinct from
+        // the elimination rule, proving the objective model's expressiveness.
         (
             kind: "Destroy",
-            parameters: Destroy(( target_kind: None )),
+            parameters: Destroy(( target_kind: Some("command_center") )),
             optional: false,
         ),
         // Train four workers — optional: it feeds the end screen and the

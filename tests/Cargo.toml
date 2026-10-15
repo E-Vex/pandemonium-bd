@@ -65,3 +65,7 @@ path = "match_rules.rs"
 [[test]]
 name = "alpha_loop"
 path = "alpha_loop.rs"
+
+[[test]]
+name = "mission_phase1"
+path = "mission_phase1.rs"
