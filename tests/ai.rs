@@ -1184,6 +1184,7 @@ fn ai_matches_replay_from_their_log_alone() {
         format_version: FORMAT_VERSION,
         content_hash: world.content_hash(),
         map_id: world.map_id,
+        mission_id: None,
         seed: FLAGSHIP_SEED,
         player_setup: ai_setup(FLAGSHIP_SEED, [ControllerKind::Ai, ControllerKind::Ai]).players,
         commands: run.host_log.clone(),

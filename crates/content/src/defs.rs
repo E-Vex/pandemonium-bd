@@ -338,3 +338,98 @@ impl MapDef {
         self.terrain.iter().find(|class| class.code == code)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Missions (ADR-0201)
+// ---------------------------------------------------------------------------
+
+/// A mission objective's kind (ADR-0201 §2): what the stage-10 evaluator
+/// checks. Phase 1 carries the vertical slice's two kinds; the vocabulary
+/// grows forward-only with the mission schema version (survive, reach,
+/// protect and gather are Phase 2 — ADR-0201 §9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObjectiveKind {
+    /// Destroy all enemy structures — or every enemy structure of a target
+    /// kind (`ObjectiveParameters::Destroy`).
+    Destroy,
+    /// Build/train N entities of a kind (`ObjectiveParameters::BuildTrain`).
+    BuildTrain,
+}
+
+impl ObjectiveKind {
+    /// The schema spelling of this kind (what appears in the mission file).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ObjectiveKind::Destroy => "Destroy",
+            ObjectiveKind::BuildTrain => "BuildTrain",
+        }
+    }
+
+    /// Parses a schema spelling. Unknown spellings are `None` so the loader
+    /// can reject them loudly — never silently mapped.
+    pub fn from_schema(kind: &str) -> Option<Self> {
+        match kind {
+            "Destroy" => Some(ObjectiveKind::Destroy),
+            "BuildTrain" => Some(ObjectiveKind::BuildTrain),
+            _ => None,
+        }
+    }
+}
+
+/// A mission objective's parameters, in content ids (ADR-0201 §2). The
+/// simulation's resolved form — kind ids as `KindId`s — lives at the sim seam
+/// (`pandemonium_sim_api::MissionObjectiveParameters`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ObjectiveParameters {
+    /// `None` = all enemy structures (today's elimination rule); `Some(kind)`
+    /// = every enemy structure of that entity kind.
+    Destroy {
+        /// The target structure kind, if the objective names one.
+        target_kind: Option<String>,
+    },
+    /// The entity kind to build/train, and how many.
+    BuildTrain {
+        /// The kind id to build or train.
+        kind: String,
+        /// How many must exist.
+        count: u32,
+    },
+}
+
+/// One mission objective (ADR-0201 §2): the kind, its parameters, and whether
+/// it is optional. Optional objectives never gate `MatchEnded`; they feed the
+/// end screen and story hooks.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ObjectiveDef {
+    /// What the evaluator checks.
+    pub kind: ObjectiveKind,
+    /// The kind's parameters.
+    pub parameters: ObjectiveParameters,
+    /// Whether the objective is optional.
+    pub optional: bool,
+}
+
+/// A validated mission (ADR-0201 §3): a closed reference set into the content
+/// tree — map, faction, rules — plus the ordered, AND-composed objective
+/// list. Reference existence is validated at load (the loader resolves
+/// objective entity references; the tree assembly resolves the map, faction
+/// and rules references); the objectives' content ids become `KindId`s at the
+/// sim seam.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MissionDef {
+    /// Stable mission id.
+    pub id: String,
+    /// Human-facing name (ASCII — the embedded font constraint, ADR-0201 §5).
+    pub display_name: String,
+    /// The mission schema version the file declared (forward-only, FD-10).
+    pub schema_version: u32,
+    /// The map this mission runs on (validated to exist in the tree).
+    pub map: String,
+    /// The faction the mission player runs (validated to exist in the tree).
+    pub faction: String,
+    /// The ruleset the mission runs under (validated to exist in the tree).
+    pub rules: String,
+    /// The ordered objective list — the indices are the objective-state event
+    /// indices (ADR-0201 §2).
+    pub objectives: Vec<ObjectiveDef>,
+}

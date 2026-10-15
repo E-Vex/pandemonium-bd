@@ -364,6 +364,7 @@ pub fn record_replay(seed: u64, ticks: u32) -> ReplayFile {
         format_version: FORMAT_VERSION,
         content_hash: world.content_hash(),
         map_id: world.map_id,
+        mission_id: None,
         seed,
         player_setup: setup.players,
         commands: script,

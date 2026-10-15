@@ -990,6 +990,13 @@ fn add_a_map_is_data_only() {
     );
     std::fs::write(root.join("maps/duel_48.ron"), &map).unwrap();
     std::fs::remove_file(root.join("maps/crossroads_64.ron")).unwrap();
+    // The copied tree carries the Phase 1 mission (B-012), which references
+    // the map this scenario removes — a mission whose map reference is gone
+    // is invalid content by the mission loader's closed-reference-set rule
+    // (ADR-0201 §3), so the swap drops the mission too. The scenario itself
+    // is unchanged: a tree whose map was swapped, loaded with zero code
+    // changes.
+    std::fs::remove_file(root.join("missions/crossroads_01.ron")).unwrap();
 
     // 2. The loader accepts the swapped map with zero code changes, and the
     //    map identity moves (different data -> different map id).

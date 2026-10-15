@@ -8,8 +8,8 @@
 
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
-    Command, EntityId, EntityView, Event, MatchSetup, PlayerId, PlayerView, QueueItemView,
-    QueueView, Snapshot, Stage, StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
+    Command, EntityId, EntityView, Event, MatchSetup, MissionObjectives, PlayerId, PlayerView,
+    QueueItemView, QueueView, Snapshot, Stage, StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
 };
 
 use crate::command::apply_commands;
@@ -59,6 +59,16 @@ pub struct Sim {
     /// is ongoing; `Some` once it has ended, cached so `MatchEnded` is
     /// emitted exactly once.
     outcome: Option<crate::match_rules::MatchOutcome>,
+    /// The loaded mission's evaluation state (ADR-0201 §2a, Phase 1):
+    /// `None` on the mission-less default path — today's match, byte-for-
+    /// byte — and `Some` when the match runs a mission objective set, set at
+    /// construction through [`Sim::with_mission`] (the only path; there is
+    /// no mid-match mutation). Derived state in the A-066 pattern — a pure
+    /// function of the hashed world inputs, evaluated per tick by stage 10,
+    /// never part of the canonical hash: the mission-less and mission-wrapped
+    /// simulations over the same world and setup produce identical state
+    /// hashes at every tick (pinned by the byte-equivalence test).
+    mission: Option<crate::match_rules::MissionState>,
 }
 
 impl Sim {
@@ -69,6 +79,35 @@ impl Sim {
     /// setup is code in M1, so a violation is a programmer error surfaced loudly
     /// and deterministically, not data to repair. Content validation is M2's job.
     pub fn new(world: &TrivialWorld, setup: MatchSetup) -> Self {
+        Self::build(world, setup)
+    }
+
+    /// Builds the initial state for a mission match (ADR-0201 §2a, Phase 1):
+    /// the exact [`Sim::new`] construction path — the same RNG consumption, the
+    /// same spawn order, the same tick-0 state hash — with the mission's
+    /// objective set attached for stage 10 to evaluate per tick. Mission data
+    /// reaches the simulation only through this seam (FD-6): the caller
+    /// resolves the objective set from content (the content seam's
+    /// `mission_objectives`), and the sim never sees a mission file, a content
+    /// id, or anything above it.
+    ///
+    /// The objective set is derived state (the A-066 pattern), so a mission
+    /// match over the same world and setup produces the same state hashes as
+    /// the mission-less one at every tick — only the outward event stream
+    /// gains the objective-state family, and the match may resolve through the
+    /// mission's AND-composition instead of (or before) elimination.
+    pub fn with_mission(
+        world: &TrivialWorld,
+        setup: MatchSetup,
+        mission: MissionObjectives,
+    ) -> Self {
+        let mut sim = Self::build(world, setup);
+        sim.mission = Some(crate::match_rules::MissionState::new(mission));
+        sim
+    }
+
+    /// The shared construction body of [`Sim::new`] and [`Sim::with_mission`].
+    fn build(world: &TrivialWorld, setup: MatchSetup) -> Self {
         let mut players = setup.players;
         players.sort_by_key(|p| p.player);
         assert!(
@@ -92,6 +131,7 @@ impl Sim {
             spawn_cursor: 0,
             fog: crate::vision::FogState::new(players.len(), world.width_tiles, world.height_tiles),
             outcome: None,
+            mission: None,
         };
         // The buildability grid must match the map shape (the fixture and the
         // content seam both guarantee it; a mismatch is programmer error).
@@ -504,15 +544,24 @@ impl Sim {
         // Stage 10 — Match rules: defeat/victory evaluation (M8, plan §9.7).
         //            Idempotent: once `outcome` is `Some`, this is a no-op.
         //            When the match transitions to ended this tick, exactly
-        //            one `MatchEnded` event is emitted. The outcome is
-        //            derived state (A-066: not part of the canonical hash —
-        //            a pure function of the entity set and `resigned` flags,
-        //            both of which ARE hashed), so toggling evaluation on/off
-        //            cannot change a checkpoint.
+        //            one `MatchEnded` event is emitted. With a mission loaded
+        //            (ADR-0201 §2a), the objective set is evaluated first —
+        //            same stage, same tick, outward `ObjectiveState` events.
+        //            The outcome and the mission state are both derived
+        //            (A-066: not part of the canonical hash — pure functions
+        //            of the entity set and `resigned` flags, which ARE
+        //            hashed), so toggling evaluation on/off cannot change a
+        //            checkpoint.
         if let Some(observer) = observer.as_mut() {
             observer.stage(Stage::MatchRules);
         }
-        crate::match_rules::evaluate(&self.world, self.tick, &mut self.outcome, &mut self.events);
+        crate::match_rules::evaluate(
+            &self.world,
+            self.tick,
+            self.mission.as_mut(),
+            &mut self.outcome,
+            &mut self.events,
+        );
 
         // Stage 11 — Finalize: increment the tick, flush events, compute the
         //            periodic hash.

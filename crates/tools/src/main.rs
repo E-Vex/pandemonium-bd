@@ -212,7 +212,22 @@ fn main() -> anyhow::Result<()> {
             let replay = pandemonium_replay::ReplayFile::decode(&bytes)
                 .with_context(|| format!("decoding replay {}", file.display()))?;
             let world = resolve_replay_world(&content, &replay)?;
-            match verify_replay(&world, &replay)? {
+            // The mission id set for ADR-0201 §7's third comparison: loaded
+            // only when the replay carries a mission id, so a mission-less
+            // record keeps verifying against the demo world without loading
+            // (or failing on) the content tree.
+            let mission_ids: Vec<u64> = match replay.mission_id {
+                None => Vec::new(),
+                Some(_) => {
+                    let tree = pandemonium_content::ContentTree::load_dir(&content)
+                        .with_context(|| format!("loading content at {}", content.display()))?;
+                    tree.missions
+                        .iter()
+                        .map(|mission| tree.mission_id(&mission.id))
+                        .collect()
+                }
+            };
+            match verify_replay(&world, &replay, &mission_ids)? {
                 Verification::Passed {
                     checkpoints,
                     final_hash,
