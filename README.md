@@ -1,54 +1,240 @@
 <div align="center">
 
-# Pandemonium: Build & Destroy
-
-**A deterministic real-time strategy foundation, written from scratch in Rust.**
-No game engine, no ECS framework, no off-the-shelf simulation — the loop, the
-entity store, the fixed-point math, the replay codec: all of it is ours.
-
-The name promises chaos. The simulation declines to deliver it. A match is a
-seed, a content hash, and an ordered command log — replay it anywhere and every
-checksum must match, tick for tick. Units may scatter. The simulation does not.
-
-[![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
-![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
-![stage](https://img.shields.io/badge/stage-M10.2_complete_(A14_playtest_pending)-9E6A03?labelColor=21262D)
-![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
-
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="readme-assets/hero-dark.svg">
   <img src="readme-assets/hero-light.svg" alt="Pandemonium theater display rendered in 3D: on the left, scattered debris and an amber strike reticle labeled CONTACTS — UNSORTED; in the centre, three tanks follow dashed movement paths to a hostile target diamond while an F-16-style fighter jet with a lit afterburner and vapor trails fires a missile that locks onto it (TGT LOCK); on the right, build-order footprints and a neat row of contacts labeled CONTACTS — SORTED. A tick ruler along the bottom runs to T+300 with a checkpoint every 30 ticks. Instrument labels read simulation feed live, replay verify pass, seed 7, 30 ticks per second, and Q16.16 fixed-point, no floats." width="100%">
 </picture>
 
+# Pandemonium: Build & Destroy
+
+**Build. Destroy. Replay. Verify.**
+
+A deterministic real-time strategy foundation, written from scratch in Rust —
+no game engine, no ECS framework, no off-the-shelf simulation. The loop, the
+entity store, the fixed-point math, the replay codec: all of it is ours.
+
+`30 Hz fixed tick` · `Q16.16 fixed-point` · `PCG32` · `xxHash64` · `9 crates, 0 floats`
+
+[![CI](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml/badge.svg)](https://github.com/E-Vex/pandemonium-bd/actions/workflows/ci.yml)
+![toolchain](https://img.shields.io/badge/toolchain-1.98.1_pinned-9E6A03?labelColor=21262D)
+![stage](https://img.shields.io/badge/stage-M10.2_complete_(A14_playtest_pending)-9E6A03?labelColor=21262D)
+![sim floats](https://img.shields.io/badge/sim_floats-0_%28enforced%29-9E6A03?labelColor=21262D)
+![license](https://img.shields.io/badge/license-MIT-9E6A03?labelColor=21262D)
+
+*The name promises chaos. The simulation declines to deliver it.*
+
 </div>
 
 ---
 
-## Status — accurate as of M10.2 (October 2026)
+## The thirty-second brief
 
-Milestones M0 through M10.2 are complete and green: **553 tests pass in dev,
-548 in release** (5 should-panic invariant tests are debug-only), on Linux,
-Windows, and macOS in CI, with the three golden hashes bit-identical across
-every change. The windowed client plays a full match against the scripted AI
-opponent — menus, settings that persist, audio, fog, minimap, replays.
+| | |
+|---|---|
+| **Determinism is the product** | A match is a seed, a content hash, and an ordered command log. Replay those three anywhere and every tick checksum must match — bit for bit, tick for tick. |
+| **Everything is ours** | The game loop, the entity store, the Q16.16 fixed-point math, the PCG32 RNG, the xxHash64 state hash, the replay codec. No engine, no ECS, no shortcuts. |
+| **Content is data** | Units, maps, factions, rulesets, missions: strict, versioned RON. Adding one touches zero lines of engine code (FD-4). |
+| **Trust is enforced, not promised** | No floats, no unordered maps, no wall-clock, no OS entropy anywhere in the simulation — enforced by lints *and* a source-scanning test (FD-5). |
 
-The Alpha is **not yet declared**: one acceptance criterion is open by design —
-**A14, the human playtest** (five first-time tester slots, scheduled in
-[`docs/PLAYTEST.md`](docs/PLAYTEST.md)). The Alpha's *system* properties are
-declared proven with evidence in
-[`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md); the playtest decides
-the human half. The live status board is [`AI-Handoff.md`](AI-Handoff.md); an
-out-of-date handoff is treated as a bug.
+## The Guarantee
 
-The product surface is being audited for the first release: the journey map and
-R1 gap list live in
-[`docs/product/GAP_ANALYSIS.md`](docs/product/GAP_ANALYSIS.md).
+> **THE DETERMINISM GUARANTEE** — issued with every build, honored on every
+> machine.
+>
+> 1. A match is exactly three things: **a seed, a content hash, and an ordered
+>    log of commands.** Nothing else participates.
+> 2. Replayed anywhere — any OS, any compiler, debug or release — **every
+>    checkpoint checksum shall match**, tick for tick.
+> 3. Units may scatter. **The simulation does not.** If two runs of the same
+>    inputs ever differ, that is not a feature and not an edge case — that is
+>    a defect, and you file it.
+>
+> *Sealed by three golden hashes, re-verified bit-identical on every push, on
+> three operating systems, in both build profiles.*
 
-## What it looks like
+## Disprove it in sixty seconds
+
+Every claim above is falsifiable — that is the point. The fastest attempted
+refutation of the Guarantee is a shell session:
+
+```bash
+git clone https://github.com/E-Vex/pandemonium-bd && cd pandemonium-bd
+
+# fight a war nobody watches: 300 ticks, seed 7, every checkpoint printed
+cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
+#   final state hash: 0xb6fff6659cfb7709        <- the demo golden
+
+# now prove the past: record the match, then re-simulate it
+cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300 --record demo.pdrp
+cargo run -p pandemonium-tools -- replay-verify demo.pdrp
+#   verify pass                                 <- the war happened twice, identically
+```
+
+Run it on the strangest machine you own. **The golden hash is a dare.** If
+your run disagrees with it, you have not found an edge case — you have found
+the most valuable bug report this project can receive.
+
+## The War Machine
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="readme-assets/architecture-dark.svg">
+  <img src="readme-assets/architecture-light.svg" alt="The Pandemonium crate architecture as layered boxes: the client binary sits at the top and sends commands down through the engine, which hosts matches and defines the renderer and audio seams; the simulation sits at the bottom, beside sim_api and content, and depends only on the fx math crate; every dependency arrow points downward, and nothing ever points back up into the simulation." width="100%">
+</picture>
+</p>
+
+Nine crates, one law: **dependencies point downward only, and `sim` depends on
+nothing above it.** [`tests/architecture_law.rs`](tests/architecture_law.rs)
+makes breaking that a build failure, not a conversation.
+
+| crate | role |
+|---|---|
+| [`fx`](crates/fx) | fixed-point math (`Fx`, `Vec2Fx`, `isqrt`), PCG32 RNG, xxHash64 hasher |
+| [`sim_api`](crates/sim_api) | the boundary vocabulary: `Command`, `Event`, `Snapshot`, `PlayerView`, `Reject` |
+| [`sim`](crates/sim) | the simulation: the 11-stage tick pipeline, stores, the command gate, the state hash |
+| [`content`](crates/content) | RON schema, versioned loaders, validators, `ContentBundle` |
+| [`ai`](crates/ai) | the scripted Alpha opponent — commands only, through a fog-filtered view |
+| [`replay`](crates/replay) | the checksummed replay codec: record, load, verify |
+| [`engine`](crates/engine) | game loop, interpolation, `MatchHost`, camera, mesh, renderer + audio seams |
+| [`client`](crates/client) | the playable binary: wgpu + winit, 3D renderer, HUD, menus, audio |
+| [`tools`](crates/tools) | headless runner, replay verifier, content validator, soak, bench |
+
+The heartbeat, as a diagram:
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="readme-assets/timestep-dark.svg">
+  <img src="readme-assets/timestep-light.svg" alt="Timeline diagram of the fixed timestep: engine time advances along a ruler while the simulation consumes it in fixed 30 Hz ticks, each tick producing a snapshot; rendering interpolates between snapshots and never feeds time back into the simulation (FD-6)." width="100%">
+</picture>
+</p>
+
+Thirty ticks per second, every second, decoupled from rendering. The engine
+interpolates between snapshots so the picture is smooth; the simulation never
+learns what a frame rate is. All intent — player, AI, replay, future network —
+enters through one validated `Command` gate at tick boundaries (FD-2). Parity
+is a compile error, not a policy. The full specification is
+[`plan.md`](plan.md); the code-as-built map is
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## The Legion
+
+One faction ships with the Alpha, and it is enough: **the Legion** — a
+command center, four workers, one resource (200 ore in the bank), and victory
+by elimination. Every number below is data in [`content/`](content), not code;
+check it yourself with
+`cargo run -p pandemonium-tools -- content-validate content`.
+
+**The field roster**
+
+| unit | doctrine | ore | pop | the numbers that matter |
+|---|---|---:|---:|---|
+| **Worker** | the economy — gathers ore, raises structures | 50 | 1 | 2.6 tiles/s |
+| **Rifleman** | line infantry — holds the middle | 75 | 1 | dmg 8 · range 5.0 · 1.0 s reload |
+| **Raider** | the flanker — arrives first | 60 | 1 | 4.0 tiles/s · dmg 6 · range 1.5 · 0.6 s reload |
+| **Guardian** | the slow hammer | 200 | 3 | dmg 30 · range 8.0 · 2.0 s reload |
+| **Turret** | static denial | 125 | 0 | dmg 10 · range 7.0 · 1.0 s reload |
+
+**The infrastructure**
+
+| structure | ore | provides |
+|---|---:|---|
+| **Command Center** | 400 | the HQ — trains Workers, +10 population |
+| **Barracks** | 150 | trains the field roster: Rifleman, Raider, Guardian |
+| **Supply Depot** | 100 | +10 population |
+
+The Legion's sparring partner, **the Swarm**, is not a faction — it is an
+instrument: the same roster at 1,000 starting forces per side, on the 128×128
+Proving Grounds, for the 10× scale row. The stress test fights back
+([`content_scale/`](content_scale)).
+
+## Boot Camp
+
+The toolchain is pinned to an exact Rust version by
+[`rust-toolchain.toml`](rust-toolchain.toml); rustup installs it automatically
+on first use.
+
+```bash
+# deploy
+cargo run -p pandemonium-client                     # the windowed client, main menu first
+cargo run -p pandemonium-client -- --frames 900     # windowed smoke: auto-exit with evidence
+cargo run -p pandemonium-client -- --headless       # no display? honest fallback, no theater
+cargo run -p pandemonium-client -- --version        # the build identity line
+#   pandemonium-client 0.1.1 (git <sha>, content 0x9bc18c521107b262)
+cargo run -p pandemonium-client -- --content PATH   # point at a content tree explicitly
+
+# the gate — the same one CI runs on every push, on three OSes, in both profiles
+cargo build --workspace --release
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo test --workspace --release     # determinism must hold in release too
+```
+
+The main menu starts a match (**Player vs AI / AI vs AI spectate / Sandbox**),
+remembers your seed and map choices within the run, and persists settings
+across runs — `edge_scroll`, `pan_speed`, `zoom_min`, `zoom_max`,
+`master_volume`, `muted`, `fullscreen`, `debug_overlay` — a small `key=value`
+file in your user config directory (per-OS locations:
+[`docs/product/GAP_ANALYSIS.md`](docs/product/GAP_ANALYSIS.md) §11).
+`--seed N` pre-fills the New Match screen's seed field; without it the seed is
+random *and shown*, so you can still report it.
+
+Audio degrades, never blocks: a machine with no output device gets one honest
+startup line and a silent game; every other system runs normally
+(`PANDEMONIUM_AUDIO_PROBE=0` skips the probe).
+
+## The Field Manual
+
+Controls follow **Generals: Zero Hour muscle memory** — the left hand of the
+mouse selects, the right hand commands.
+
+**Selection** — *left never issues an order*
+
+| input | effect |
+|---|---|
+| <kbd>Click</kbd> / <kbd>Left-drag</kbd> | select / box-select |
+| <kbd>Shift</kbd>+<kbd>Click</kbd> | add or remove one unit |
+| <kbd>Shift</kbd>+<kbd>Drag</kbd> | add the box's picks |
+| <kbd>Double-click</kbd> | select every visible unit of the same kind |
+| <kbd>Esc</kbd> | clear the selection |
+
+**Command** — *right is the only way to order*
+
+| input | effect |
+|---|---|
+| <kbd>Right-click</kbd> enemy / ore node / ground | attack / gather (workers) / move |
+| <kbd>Right-click</kbd> a single selected producer | set the rally point |
+| <kbd>A</kbd> | arm attack-move for the next left-click |
+| <kbd>S</kbd> | stop |
+
+A click under 6 px of travel orders; a right-drag beyond that grabs and
+scrolls the map instead, and the release then orders nothing.
+
+**Camera**
+
+| input | effect |
+|---|---|
+| <kbd>Right-drag</kbd> / <kbd>Middle-drag</kbd> | scroll / rotate |
+| <kbd>WASD</kbd> / arrows / screen edges | pan |
+| <kbd>Q</kbd> / <kbd>E</kbd> | rotate |
+| <kbd>Wheel</kbd> / <kbd>Ctrl</kbd>+<kbd>Wheel</kbd> | zoom toward the cursor / tilt the pitch |
+
+**Groups & jumps**
+
+| input | effect |
+|---|---|
+| <kbd>1</kbd>–<kbd>9</kbd> / <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>9</kbd> | recall / assign a control group; double-tap centers on it |
+| <kbd>Space</kbd> | jump to the last death — or your base |
+| <kbd>Esc</kbd> | climb one rung per press: armed command → placement → selection → **pause menu** |
+| <kbd>P</kbd> · <kbd>F3</kbd> · <kbd>F8</kbd> · <kbd>R</kbd> | pause · debug overlay · bug-report dump · rematch |
+
+The tester-facing copy of this card — and the playtest protocol around it — is
+[`docs/PLAYTEST.md`](docs/PLAYTEST.md).
+
+## The Evidence
 
 Real captures from the client (Xvfb + software GL, `master` `23012bf`) — the
-main menu, the match setup screen, and a match in progress with the HUD,
-command card, and standing controls line:
+main menu, the match setup screen, and a match in progress:
 
 <p align="center">
 <img src="docs/product/screenshots/menu.png" alt="The Pandemonium main menu: a panel titled PANDEMONIUM with New Match, Settings, and Quit rows, over the default map backdrop" width="32%">
@@ -56,193 +242,92 @@ command card, and standing controls line:
 <img src="docs/product/screenshots/match.png" alt="A match in progress: terrain with fog, units, the Ore/POP HUD, and the controls help line" width="32%">
 </p>
 
-## Run it
-
-The toolchain is pinned to an exact Rust version in
-[`rust-toolchain.toml`](rust-toolchain.toml); rustup installs it automatically
-on first use.
-
-```bash
-# the windowed client — opens at the main menu on a desktop
-cargo run -p pandemonium-client
-
-# windowed smoke: auto-exit after N frames with an evidence summary
-cargo run -p pandemonium-client -- --frames 900
-
-# no display? the client says so honestly and runs a headless smoke pass instead
-# (or ask for it directly — CI runners have desktop sessions)
-cargo run -p pandemonium-client -- --headless
-
-# the build identity: version, the exact git commit, and the content hash
-cargo run -p pandemonium-client -- --version
-#   pandemonium-client 0.1.1 (git <sha>, content 0x9bc18c521107b262)
-# the same line is the F3 debug overlay's first line while you play
-
-# content resolves at runtime: --content names a tree explicitly (the
-# release archives instead find content/ next to the binary)
-cargo run -p pandemonium-client -- --content /path/to/content
-
-# headless scripted match — prints every checkpoint hash and the final hash
-cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300   # 0xb6fff6659cfb7709
-
-# record a replay, then re-simulate it and compare every checkpoint
-cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300 --record demo.pdrp
-cargo run -p pandemonium-tools -- replay-verify demo.pdrp
-
-# validate the content bundle (prints content hash + map id, exits 0 on PASS)
-cargo run -p pandemonium-tools -- content-validate content
-```
-
-The main menu starts a match (**Player vs AI / AI vs AI spectate / Sandbox**),
-keeps your seed and map choices within the run, and persists settings across
-runs (`edge_scroll`, `pan_speed`, `zoom_min`, `zoom_max`, `master_volume`,
-`muted`, `fullscreen`, `debug_overlay` — a small `key=value` file in your user
-config directory; see `docs/product/GAP_ANALYSIS.md` §11 for the exact
-per-OS locations). `--seed N` pre-fills the New Match screen's seed field;
-without it the seed is random and shown, so you can still report it.
-
-Audio degrades, never blocks: a machine with no output device (or a probe
-that misbehaves — set `PANDEMONIUM_AUDIO_PROBE=0` to skip it) gets one
-honest startup line and a silent game; every other system runs normally.
-
-## Build it
-
-```bash
-cargo build --workspace               # debug
-cargo build --workspace --release     # the profile benchmarks and soaks run in
-```
-
-The full verification gate — the same one CI runs on every push, on all three
-OSes, in both profiles:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo test --workspace --release   # determinism must hold in release too
-```
-
-Same seed, same ticks — same hashes, on any machine, in either profile. If
-those hashes ever differ between two runs, that is not a feature. File it.
-
-## Controls (Generals: Zero Hour muscle memory)
-
-**Selecting** — **left-click** selects, **left-drag** box-selects; left never
-issues an order, and a click on empty ground does nothing (Esc clears the
-selection). **Shift+click** adds or removes one unit, **shift+drag** adds the
-box's picks, **double-click** selects every visible unit of the same kind.
-
-**Commanding** — **right-click** is the only way to command: on an enemy it
-attacks, on an ore node it gathers (workers), on open ground it moves, and on
-a single selected producer it sets the rally point. A click under 6 px of
-travel orders; **right-drag** beyond that grabs and scrolls the map (the
-release then orders nothing). **A** arms attack-move for the next left-click,
-**S** stops.
-
-**Camera** — **right-drag** scrolls, **middle-drag** rotates, **WASD /
-arrows / screen edges** pan, **Q / E** rotate, the **wheel** zooms toward the
-cursor, **Ctrl+wheel** tilts the pitch.
-
-**Groups & jumps** — **1–9** recall control groups, **Ctrl+1–9** assigns,
-double-tap centers on the group. **Space** jumps to the last death (or your
-base). **Esc** climbs one rung per press: armed command → placement →
-selection → **pause menu**. **P** pauses without the menu, **F3** toggles the
-debug overlay, **F8** writes the bug-report dump, **R** restarts after the
-match ends.
-
-The tester-facing copy of this card (and the playtest protocol around it) is
-[`docs/PLAYTEST.md`](docs/PLAYTEST.md).
-
-## Architecture in five lines
-
-1. `sim` advances the world in a fixed 30 Hz tick — `Sim::step(commands)` is the
-   **only** mutator, and the simulation depends on nothing above it (FD-2/FD-6).
-2. All intent — player, AI, replay, future network — enters as validated
-   `Command` records through one gate (FD-2/FD-7); parity is a compile error, not
-   a policy.
-3. `content` turns strict, versioned RON data into plain structs; units, maps,
-   and factions are data, and adding one touches no engine code (FD-4/FD-10).
-4. `engine` hosts matches (`MatchHost`), interpolates snapshots, and defines the
-   renderer/audio seams; `client` is one swappable presentation above it all.
-5. No floating point, no unordered maps, no wall-clock, no OS entropy anywhere
-   in the simulation — enforced by lints *and* a source-scanning test (FD-5).
-
-Dependencies point downward only, and
-[`tests/architecture_law.rs`](tests/architecture_law.rs) makes breaking that a
-build failure, not a conversation. The full specification is
-[`plan.md`](plan.md); the code-as-built map is
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
-## Repository structure
-
-```text
-pandemonium-bd/
-├─ crates/
-│  ├─ fx/         fixed-point math (Fx, Vec2Fx, isqrt), PCG32 RNG, xxHash64 hasher
-│  ├─ sim_api/    boundary vocabulary: Command, Event, Snapshot, PlayerView, Reject
-│  ├─ sim/        the simulation: 11-stage tick pipeline, stores, command gate, state hash
-│  ├─ content/    RON schema, versioned loaders, validators, ContentBundle
-│  ├─ ai/         the scripted Alpha opponent (Controller trait, commands-only)
-│  ├─ replay/     checksummed replay codec: record, load, verify
-│  ├─ engine/     game loop, interpolation, MatchHost, camera, mesh, renderer + audio seams
-│  ├─ client/     the playable binary: wgpu + winit, 3D renderer, HUD, menus, audio
-│  └─ tools/      headless runner, replay verifier, content validator, soak, bench
-├─ tests/         cross-crate acceptance tests (A1–A15)
-├─ content/       data-only game content: rules, entities, factions, maps
-├─ docs/          ARCHITECTURE · DEBT · ASSUMPTIONS · product/ · adr/ · …
-├─ plan.md        the authoritative specification (v2.0)
-└─ AI-Handoff.md  live status board and resume protocol — start here
-```
-
-## Documentation
-
-| Document | Role |
+| | |
 |---|---|
-| [`AI-Handoff.md`](AI-Handoff.md) | **start here** — live status board, verification commands, hard-won gotchas |
-| [`plan.md`](plan.md) | the authoritative spec: frozen decisions FD-1..10, determinism rules, milestones, acceptance A1–A15 |
-| [`docs/product/GAP_ANALYSIS.md`](docs/product/GAP_ANALYSIS.md) | the product-surface audit: the player journey vs the shipped client, and the ordered R1 gap list |
+| **Stage** | M10.2 complete — the Alpha awaits one thing: **A14, the human playtest** (five first-time tester slots, [`docs/PLAYTEST.md`](docs/PLAYTEST.md)) |
+| **Tests** | 570+ automated, green in dev **and** release (the five should-panic invariants are debug-only) |
+| **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
+| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x6e9a18bd7c5f699f` (seed 7 · 7,200 ticks · AI vs AI) · content `0x9bc18c521107b262` — bit-identical across every change |
+| **In flight** | the mission system's first phase ([ADR-0201](docs/adr/0201-missions-campaigns-cutscenes.md)): Crossroads 01 — destroy the enemy command center |
+
+The live status board is [`AI-Handoff.md`](AI-Handoff.md) — an out-of-date
+handoff is treated as a bug. The Alpha's *system* properties are declared
+proven with evidence in
+[`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md); the playtest decides
+the human half.
+
+<details>
+<summary><b>The Law — the ten frozen decisions (FD-1 … FD-10)</b></summary>
+
+The constitution of the project ([`plan.md`](plan.md) §2). Changing one takes
+an [ADR](docs/adr/README.md) with evidence — never a silent edit.
+
+| | the law | what it buys |
+|---|---|---|
+| **FD-1** | deterministic fixed-tick simulation, 30 Hz, decoupled from rendering | a match = seed + content hash + command log; replays, soaks, lockstep multiplayer follow |
+| **FD-2** | all intent enters as validated `Command` records at tick boundaries | one door for players, AI, replays, future network |
+| **FD-3** | unified entity model: base record + capability blocks; 64-bit monotonic IDs, never reused | new entity types are data; systems iterate by capability, never by type name |
+| **FD-4** | strict data/code boundary — stats, costs, maps, factions are versioned data files | add-a-unit and add-a-map require zero engine changes |
+| **FD-5** | no floating point in the simulation or content — fixed-point / integer only | bit-identical results across OS, CPU, and compiler versions |
+| **FD-6** | the simulation depends on nothing above it — no renderer, window, audio, clock, filesystem, OS entropy | the presentation layer is swappable without touching rules |
+| **FD-7** | the AI plays through commands and a fog-filtered `PlayerView` | parity is structural, not a policy |
+| **FD-8** | fog filters information; it never alters the simulation | replays and the AI stay honest |
+| **FD-9** | events flow outward; presentation never polls sim internals | the feedback layer grows without sim changes |
+| **FD-10** | the content schema only moves forward: versioned, validated, old content keeps loading | content survives years of growth |
+
+</details>
+
+## Reproducible incidents
+
+A report that includes the seed and the tick is a **reproducible incident**;
+anything else is a war story. The windowed client writes the report for you:
+press <kbd>F8</kbd> at (or right after) the moment of the problem and it drops
+a replay record (`pandemonium-report-<seed>-tick<tick>.pdrp`) plus a sidecar
+`…-info.txt` carrying the seed, the tick, and the content identity. Attach
+both files to the issue; the replay re-verifies headlessly:
+
+```bash
+cargo run -p pandemonium-tools -- replay-verify <file>
+```
+
+## The Intelligence Annex
+
+| document | role |
+|---|---|
+| [`AI-Handoff.md`](AI-Handoff.md) | **start here** — the live status board, verification commands, hard-won gotchas |
+| [`plan.md`](plan.md) | the authoritative spec (v2.0): FD-1..10, determinism rules, milestones, acceptance A1–A15 |
 | [`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md) | the acceptance sweep A1–A15 with evidence; A14's open finding |
 | [`docs/PLAYTEST.md`](docs/PLAYTEST.md) | the A14 instrument: protocol, controls card, tester schedule and results |
+| [`docs/product/GAP_ANALYSIS.md`](docs/product/GAP_ANALYSIS.md) | the product-surface audit: the player journey vs the shipped client, and the ordered R1 gap list |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | the working map of the code as built |
+| [`docs/CONTENT_GUIDE.md`](docs/CONTENT_GUIDE.md) | content authoring reference |
 | [`docs/DEBT.md`](docs/DEBT.md) | every deliberate simplification, each with a repayment trigger |
 | [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) | every interpretation that had to be guessed, numbered and cited |
-| [`docs/CONTENT_GUIDE.md`](docs/CONTENT_GUIDE.md) | content authoring reference |
-| [`docs/adr/`](docs/adr/README.md) | the process for changing frozen decisions (ADR-0001 3D presentation, ADR-0002 audio backend, ADR-0100 app shell — proposed) |
+| [`docs/adr/`](docs/adr/README.md) | the process for changing frozen decisions — ADR-0001 3D presentation · ADR-0002 audio backend · ADR-0100 app shell · ADR-0200 authoritative-vs-presentation data · ADR-0201 missions & campaigns |
 | [`CHANGELOG.md`](CHANGELOG.md) | one entry per milestone |
 | [`SECURITY.md`](SECURITY.md) | the declared threat model |
 
-## Bug reports are reproducible incidents
+## The Workflow
 
-A report that includes the seed and the tick is a reproducible incident;
-anything else is a war story. The windowed client writes the report for you:
-press **F8** at (or right after) the moment of the problem and it drops a replay
-record (`pandemonium-report-<seed>-tick<tick>.pdrp`) plus a sidecar `…-info.txt`
-carrying the seed, the tick, and the content identity — attach both files to
-the issue; the replay re-verifies headlessly
-(`cargo run -p pandemonium-tools -- replay-verify <file>`).
-
-## Development workflow
-
-Every change passes the green gate before commit (formatting, clippy with zero
-tolerance, the full suite in both profiles). One logical change per commit.
-Milestones are gates, not dates: M(N+1) does not start until every exit test of
-M(N) is green in CI. Deliberate simplifications go to
-[`docs/DEBT.md`](docs/DEBT.md) with a repayment trigger; guessed interpretations
-go to [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md); challenges to frozen
-decisions go through an ADR. Read [plan.md §0](plan.md) (the operating
-contract) before the first commit — the process is strict because the product
-is trust.
+Every change passes the green gate before commit — formatting, clippy with
+zero tolerance, the full suite in both profiles. One logical change per
+commit. Milestones are gates, not dates: M(N+1) does not start until every
+exit test of M(N) is green in CI. Deliberate simplifications go to
+[`docs/DEBT.md`](docs/DEBT.md) with a repayment trigger; guessed
+interpretations go to [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md);
+challenges to frozen decisions go through an [ADR](docs/adr/README.md). Read
+[plan.md §0](plan.md) — the operating contract — before the first commit. The
+process is strict because the product is trust.
 
 Contributions follow the same law as the code. Gameplay content is not
-accepted while the Alpha content manifest is locked; bug reports (with seed and
-tick) are welcome now and unusually actionable.
+accepted while the Alpha content manifest is locked; bug reports — with seed
+and tick — are welcome now, and unusually actionable.
 
 ## Licence
 
-The project's own code and data are MIT-licensed — see
-[`LICENSE`](LICENSE). Third-party components, including the embedded
-font, keep their own licences; those terms are catalogued in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and ride in every
+The project's own code and data are MIT-licensed — see [`LICENSE`](LICENSE).
+Third-party components, including the embedded font, keep their own licences;
+those terms are catalogued in `THIRD_PARTY_NOTICES.md` and ride in every
 release archive.
 
 ---
