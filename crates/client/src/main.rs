@@ -1531,7 +1531,7 @@ mod mission_wiring {
         // The objective HUD lines derive from the resolved set (the same
         // order the events index).
         assert_eq!(mission.lines[0].text, "Destroy all enemy Command Center");
-        assert_eq!(mission.lines[1].text, "Train 4 Worker");
+        assert_eq!(mission.lines[1].text, "Grow to 8 Workers");
         // Task 3: the scene runs over a paused host at tick 0.
         assert!(
             app.cutscene.is_some(),
@@ -1576,10 +1576,12 @@ mod mission_wiring {
         // Task 2 + Task 5: a mission host's own events feed the tracker —
         // the exact consumption the draw loop runs per step (FD-9: after
         // the step, from the step's event list). On the Phase 1 content
-        // the optional train-four-workers objective completes on the first
-        // evaluated tick (the Legion starts with exactly four workers) and
-        // the required destroy objective stays pending — a deterministic
-        // event sequence over the real content.
+        // both objectives stay pending in the opening (AUD-003: the
+        // optional objective now targets eight workers — above the
+        // Legion's starting four — so the mission demands play; the
+        // required destroy objective stays pending while the enemy
+        // command center stands) — a deterministic event sequence over
+        // the real content: no objective events at all in the opening.
         let mut app = app();
         app.begin_mission(0, 7);
         app.cutscene_input(); // unpause so the host steps
@@ -1596,6 +1598,14 @@ mod mission_wiring {
                     .on_objective_state(*index, *state);
             }
         }
+        assert!(
+            !outcome
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ObjectiveState { .. })),
+            "no objective resolves in the opening: {:?}",
+            outcome.events
+        );
         let mission = app.mission_hud.as_ref().expect("the tracker");
         assert_eq!(
             mission.lines[0].state,
@@ -1604,8 +1614,8 @@ mod mission_wiring {
         );
         assert_eq!(
             mission.lines[1].state,
-            crate::ui::ObjectiveHudState::Completed,
-            "the starting force is exactly four workers"
+            crate::ui::ObjectiveHudState::Pending,
+            "the starting force is four workers; the objective asks for eight"
         );
         // The match is not over: the required objective is still pending.
         assert!(!app.host.as_ref().expect("the mission host").is_finished());

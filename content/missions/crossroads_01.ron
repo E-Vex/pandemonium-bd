@@ -1,8 +1,17 @@
 // The Phase 1 mission (ADR-0201 §9): the vertical slice — one mission on
 // crossroads_64 with the unchanged Legion content. The objective set is the
-// two kinds the slice proves: destroy the enemy (required) and train four
-// workers (optional). No fog preset, no AI settings, no restrictions — those
-// are Phase 2; no campaign file — that is Phase 3.
+// two kinds the slice proves: destroy the enemy (required) and grow the
+// workforce to eight (optional). No fog preset, no AI settings, no
+// restrictions — those are Phase 2; no campaign file — that is Phase 3.
+//
+// The optional objective's count is authored above the Legion starting
+// force (1 command center + 4 workers per player, plan §9.7): the owner
+// ruled (2026-10-16, the audit's AUD-003) that BuildTrain keeps its
+// "N exist" existence semantics — counting currently owned entities,
+// starting units included — so the target must exceed the starting four
+// for the objective to mean anything ("grow to 8 workers"). The starting
+// 200 ore is exactly four workers' cost, so the goal is reachable by
+// pure production from the opening economy.
 (
     schema_version: 1,
     id: "crossroads_01",
@@ -18,11 +27,14 @@
             parameters: Destroy(( target_kind: Some("command_center") )),
             optional: false,
         ),
-        // Train four workers — optional: it feeds the end screen and the
-        // story hooks, never the match outcome.
+        // Grow the workforce to eight workers — optional: it feeds the end
+        // screen and the story hooks, never the match outcome. The count is
+        // current ownership ("N exist"), so it must sit above the starting
+        // four to require any play at all (AUD-003); the starting ore funds
+        // exactly the four missing workers.
         (
             kind: "BuildTrain",
-            parameters: BuildTrain(( kind: "worker", count: 4 )),
+            parameters: BuildTrain(( kind: "worker", count: 8 )),
             optional: true,
         ),
     ],

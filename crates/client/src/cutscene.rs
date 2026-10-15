@@ -196,7 +196,7 @@ mod tests {
     fn scene() -> Cutscene {
         Cutscene::mission_start(
             "Crossroads",
-            "Objectives: Destroy all enemy structures; Train 4 Worker (optional)",
+            "Objectives: Destroy all enemy Command Center; Grow to 8 Workers (optional)",
             (56.0, 56.0),
             (8.5, 8.5),
         )

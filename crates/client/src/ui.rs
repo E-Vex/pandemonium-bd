@@ -801,7 +801,10 @@ pub fn objective_lines(mission: &MissionObjectives, bundle: &ContentBundle) -> V
                 (
                     MissionObjectiveKind::BuildTrain,
                     MissionObjectiveParameters::BuildTrain { kind, count },
-                ) => format!("Train {count} {}", kind_display(bundle, *kind)),
+                ) => format!(
+                    "Grow to {count} {}",
+                    kind_display_plural(bundle, *kind, *count)
+                ),
                 // The content seam rejects kind/parameters mismatches loudly
                 // (the loader guarantees agreement); the defensive arm keeps
                 // an impossible shape readable rather than panicking the HUD.
@@ -825,6 +828,20 @@ fn kind_display(bundle: &ContentBundle, kind: KindId) -> String {
         .get(kind.0 as usize)
         .map(|def| def.display_name.clone())
         .unwrap_or_else(|| format!("kind {}", kind.0))
+}
+
+/// The display name pluralized for a count (AUD-003): the BuildTrain line
+/// communicates an existence target ("grow to N"), so the noun reads as a
+/// quantity — "Grow to 8 Workers". The naive plural (append "s" unless the
+/// name already ends in one) is presentation-only and covers the authored
+/// kind names; a singular stays singular at count 1.
+fn kind_display_plural(bundle: &ContentBundle, kind: KindId, count: u32) -> String {
+    let name = kind_display(bundle, kind);
+    if count == 1 || name.ends_with('s') {
+        name
+    } else {
+        format!("{name}s")
+    }
 }
 
 /// The in-match objective HUD block (Task 2): a "MISSION <name>" header plus
@@ -2013,7 +2030,7 @@ mod tests {
                     state: ObjectiveHudState::Pending,
                 },
                 ObjectiveLine {
-                    text: "Train 4 Worker".to_string(),
+                    text: "Grow to 8 Workers".to_string(),
                     optional: true,
                     state: ObjectiveHudState::Pending,
                 },
@@ -2056,11 +2073,14 @@ mod tests {
         let resolved = resolved_mission(&tree);
         let lines = objective_lines(&resolved, &bundle);
         assert_eq!(lines.len(), 2);
-        // The Phase 1 mission: destroy (required) + train four workers
+        // The Phase 1 mission: destroy (required) + grow to 8 workers
         // (optional), in the authored order.
         assert_eq!(lines[0].text, "Destroy all enemy Command Center");
         assert!(!lines[0].optional);
-        assert_eq!(lines[1].text, "Train 4 Worker");
+        // AUD-003: the optional objective is an existence target above the
+        // starting force — "Grow to 8 Workers", not "Train 4 Worker" (which
+        // read as production the evaluator never counts).
+        assert_eq!(lines[1].text, "Grow to 8 Workers");
         assert!(lines[1].optional);
         // All display text is ASCII.
         for line in &lines {
@@ -2085,7 +2105,7 @@ mod tests {
                     state: ObjectiveHudState::Pending,
                 },
                 ObjectiveLine {
-                    text: "Train 4 Worker".to_string(),
+                    text: "Grow to 8 Workers".to_string(),
                     optional: true,
                     state: ObjectiveHudState::Pending,
                 },
@@ -2099,7 +2119,7 @@ mod tests {
                     "PENDING".to_string()
                 ),
                 (
-                    "Train 4 Worker (optional)".to_string(),
+                    "Grow to 8 Workers (optional)".to_string(),
                     "PENDING".to_string()
                 ),
             ]
@@ -2113,7 +2133,7 @@ mod tests {
                     "PENDING".to_string()
                 ),
                 (
-                    "Train 4 Worker (optional)".to_string(),
+                    "Grow to 8 Workers (optional)".to_string(),
                     "COMPLETED".to_string()
                 ),
             ]
@@ -2142,7 +2162,7 @@ mod tests {
                     state: ObjectiveHudState::Pending,
                 },
                 ObjectiveLine {
-                    text: "Train 4 Worker".to_string(),
+                    text: "Grow to 8 Workers".to_string(),
                     optional: true,
                     state: ObjectiveHudState::Pending,
                 },
@@ -2186,7 +2206,7 @@ mod tests {
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[
                 ("Destroy all enemy structures", "COMPLETED"),
-                ("Train 4 Worker (optional)", "PENDING"),
+                ("Grow to 8 Workers (optional)", "PENDING"),
             ],
             version: "",
         });
