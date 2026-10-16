@@ -419,6 +419,24 @@ impl App {
         MatchHost::with_mission(&world, setup, controllers, mission)
     }
 
+    /// The mission identity a mission match's replay record carries
+    /// (ADR-0201 §7, the audit's AUD-002): the domain-separated id of the
+    /// mission `begin_mission` resolved — `None` for a plain match. Pure
+    /// over `(tree, mission_index)`; both recorders (`write_recording`,
+    /// `dump_bug_report`) stamp it, so a mission record names its mission
+    /// for `tools replay-verify`'s third comparison and a plain record
+    /// stays mission-less. An out-of-range index is `None` (defensive —
+    /// `mission_index` is only ever set from a valid index, and the tree
+    /// never changes after load).
+    pub(crate) fn mission_replay_id(
+        tree: &ContentTree,
+        mission_index: Option<usize>,
+    ) -> Option<u64> {
+        let index = mission_index?;
+        let def = tree.missions.get(index)?;
+        Some(tree.mission_id(&def.id))
+    }
+
     /// Starts a mission match (A-011 Task 1, ADR-0201 Phase 1): bundles the
     /// mission's map, resolves its objectives through the content seam
     /// (`ContentTree::mission_objectives` — the mission player is the first
@@ -848,6 +866,10 @@ impl App {
             return; // no live match — nothing to record
         };
         let world = self.bundle.world();
+        // AUD-002 (ADR-0201 §7): a mission match's record names its mission
+        // — the id of the mission `begin_mission` resolved; a plain match
+        // records `None`.
+        let mission_id = Self::mission_replay_id(&self.tree, self.mission_index);
         let replay = report::replay_record(
             &world,
             &self.setup,
@@ -855,6 +877,7 @@ impl App {
             &self.checkpoints,
             host.tick(),
             host.state_hash(),
+            mission_id,
         );
         let bytes = replay.encode();
         match std::fs::write(&path, &bytes) {
@@ -897,6 +920,9 @@ impl App {
         };
         let world = self.bundle.world();
         let tick = host.tick();
+        // AUD-002 (ADR-0201 §7): the bug-report dump names the mission too —
+        // the reproducer needs the exact match identity, mission included.
+        let mission_id = Self::mission_replay_id(&self.tree, self.mission_index);
         let replay = report::replay_record(
             &world,
             &self.setup,
@@ -904,6 +930,7 @@ impl App {
             &self.checkpoints,
             tick,
             host.state_hash(),
+            mission_id,
         );
         let sidecar = report::sidecar_text(&report::SidecarInfo {
             seed: self.setup.seed,

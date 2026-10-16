@@ -1242,3 +1242,41 @@ confirms or rejects it.
   structural comparison (window geometry, panel rects, row pitch, HUD/minimap
   bands — the Phase 5 harness's rules) ran against every step under the
   Xvfb+llvmpipe recipe and matched the untouched-master baseline exactly.
+
+- **A-205 (B-014, audit remediation).** The interpretation of the brief's
+  "update the ADR index consistently" (AUD-001): the repo has no status-
+  bearing ADR index file — `docs/adr/README.md` is the process, and the
+  README's docs table lists ADR titles without statuses. The precedent is
+  B-009's ADR-0200 acceptance, whose "index" update was one link added to
+  AI-Handoff §2's Presentation row (the living map every resuming agent
+  reads first, per `docs/adr/README.md` step 3: "link the ADR from the
+  milestone notes in AI-Handoff.md"). B-014 does the same: the Presentation
+  row now carries the accepted ADR-0201 link. The README's "In flight" row
+  (line ~251, Lane A's file, not named by the brief) still says the mission
+  phase is in flight — flagged as a cross-lane request in the B-014 report
+  rather than edited here.
+- **A-206 (B-014, audit remediation).** The mission player for the verify
+  side's objective resolution (AUD-002): `ContentTree::mission_objectives`
+  documents the player as "runtime data, not mission data … Phase 1 tools
+  and clients use the first map start's player". The client's
+  `begin_mission` passes the constant `HUMAN` (PlayerId(0)); on the Alpha
+  content the first map start IS player 0, so the two agree. B-014's
+  `resolve_replay_verification` derives the player from the mission's own
+  map's first start (the documented law, and the general form of what the
+  client does), rather than hard-coding 0 — the two constructions coincide
+  on every shipped map, and a hypothetical map whose first start is not
+  player 0 would surface the divergence as a verification identity error
+  rather than a silent mismatch.
+- **A-207 (B-014, audit remediation).** The content-identity pin semantics
+  (AUD-005): `content-validate --expect-content-hash/--expect-map-id`
+  requires that at least one loaded map bundle matches every given
+  expectation ("the registered identity is present in the tree"), rather
+  than pinning a named map or the single-map bundle. On the Alpha tree
+  (exactly one map) the two are identical; on a future multi-map tree the
+  presence semantics keeps protecting the registered flagship map while
+  allowing the tree to grow. The demo state golden remains deliberately
+  without a test pin — the owner authorized executable validation for the
+  content hash and map identity only, and the cross-OS CI gate plus the
+  release smoke remain the demo value's executable enforcement (the
+  inventory is recorded truthfully in ci.yml's comment and AI-Handoff §2's
+  baseline table).

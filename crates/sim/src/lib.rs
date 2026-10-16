@@ -45,7 +45,7 @@ pub use fixture::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
 };
 pub use match_rules::MatchOutcome;
-pub use runner::{run_command_log, CommandLogRun};
+pub use runner::{run_command_log, run_command_log_with_mission, CommandLogRun};
 pub use sim::{Sim, StepOutput};
 pub use world::{
     AttackDef, BuildDef, CapabilityData, ConstructionDef, FootprintDef, GatherDef, HealthDef,

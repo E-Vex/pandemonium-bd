@@ -502,6 +502,21 @@ fn a_match_from_loaded_content_spawns_the_full_starting_state() {
 }
 
 #[test]
+fn the_registered_content_identity_is_pinned() {
+    // AUD-005: the registered content hash and map id (AI-Handoff §2
+    // "Goldens (never move)") asserted by a test — the local-suite form of
+    // CI's content-identity gate, so a contributor running
+    // `cargo test --workspace` cannot be green while the registered
+    // identity drifted (the flagship state golden has three such test
+    // pins; this is the content identity's first). A changed value is a
+    // failure to investigate and re-pin only by the owner's documented
+    // authorization — never a silent edit of this test.
+    let bundle = ContentBundle::load_dir(&repo_content()).unwrap();
+    assert_eq!(bundle.content_hash(), 0x9bc1_8c52_1107_b262);
+    assert_eq!(bundle.map_id(), 0xd381_3640_1ab0_2ff1);
+}
+
+#[test]
 fn loading_and_matches_from_content_are_deterministic() {
     // Loading is a pure function of the directory.
     let a = ContentBundle::load_dir(&repo_content()).unwrap();

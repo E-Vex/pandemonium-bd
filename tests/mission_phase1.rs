@@ -11,7 +11,9 @@
 //!
 //! - **Resolution** — the fixture resolves to exactly two objectives: a
 //!   required Destroy aimed at the command center's `KindId`, and the
-//!   optional BuildTrain of four workers; resolution is deterministic.
+//!   optional BuildTrain of eight workers (AUD-003: the owner kept the
+//!   "N exist" semantics and raised the target above the Legion's starting
+//!   four — "grow to 8 workers"); resolution is deterministic.
 //! - **Behavior** — destroying the enemy command center completes the
 //!   required objective and ends the match with the mission player the
 //!   winner, while other enemy structures remain standing (NOT the
@@ -27,8 +29,8 @@ use std::path::{Path, PathBuf};
 use pandemonium_content::ContentTree;
 use pandemonium_sim::{CapTemplate, KindEconomy, KindTemplate, Sim, SpawnDef, TrivialWorld};
 use pandemonium_sim_api::{
-    ControllerKind, Event, KindId, MatchSetup, MissionObjectiveKind, MissionObjectiveParameters,
-    ObjectiveState, PlayerId, PlayerSetup, Vec2Fx,
+    Command, CommandKind, ControllerKind, Event, KindId, MatchSetup, MissionObjectiveKind,
+    MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup, Vec2Fx,
 };
 
 /// The repository's content directory.
@@ -156,7 +158,10 @@ fn crossroads_01_resolves_command_center_objective() {
     );
     assert!(!objective.optional, "the Destroy objective is required");
 
-    // Objective 1: the optional BuildTrain of four workers.
+    // Objective 1: the optional BuildTrain of eight workers — above the
+    // Legion's starting four (the owner's AUD-003 ruling; the semantics
+    // stay "N exist", so the target must exceed the starting force for
+    // the objective to demand any play).
     let worker_index = tree
         .entities
         .iter()
@@ -168,7 +173,7 @@ fn crossroads_01_resolves_command_center_objective() {
         objective.parameters,
         MissionObjectiveParameters::BuildTrain {
             kind: KindId(worker_index as u32),
-            count: 4,
+            count: 8,
         }
     );
     assert!(objective.optional, "the BuildTrain objective is optional");
@@ -250,8 +255,8 @@ fn command_center_destruction_completes_mission_with_other_structures_standing()
         "no command center is left standing"
     );
 
-    // (d) The optional BuildTrain never completed (no four workers exist)
-    // and did not block the mission's victory.
+    // (d) The optional BuildTrain never completed (this fixture world
+    // carries no workers at all) and did not block the mission's victory.
     assert!(
         !out.events.iter().any(|event| matches!(
             event,
@@ -319,5 +324,150 @@ fn mission_less_path_is_byte_equivalent() {
             .iter()
             .any(|event| matches!(event, Event::ObjectiveState { .. })),
         "the mission-wrapped path evaluates its objectives"
+    );
+}
+
+/// The AUD-003 regression test — the one the fixture worlds above could not
+/// express: the REAL mission on the REAL content against the REAL Legion
+/// starting forces (1 command center + 4 workers per player, plan §9.7).
+/// Before the count was raised, the optional BuildTrain objective (then
+/// `count: 4`) was vacuously satisfied at tick 0 by the starting four — the
+/// fixture-world tests never caught it because their worlds carried no
+/// workers at all. The owner's ruling keeps the "N exist" existence
+/// semantics and sets the target at eight: the objective must stay pending
+/// through an idle opening and complete exactly when the eighth worker
+/// comes to exist, through the real economy (the starting 200 ore is
+/// exactly four workers' cost at 50 each — the goal is reachable by pure
+/// production from the opening).
+#[test]
+fn the_optional_objective_demands_growth_beyond_the_starting_forces() {
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let objectives = tree
+        .mission_objectives("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    let command_center = match objectives.objectives[0].parameters {
+        MissionObjectiveParameters::Destroy {
+            target_kind: Some(kind),
+        } => kind,
+        _ => panic!("objective 0 must name its target kind"),
+    };
+    let worker = match objectives.objectives[1].parameters {
+        MissionObjectiveParameters::BuildTrain { kind, count } => {
+            assert_eq!(count, 8, "the owner's AUD-003 ruling: grow to eight");
+            kind
+        }
+        _ => panic!("objective 1 must be the BuildTrain objective"),
+    };
+
+    // The real bundle's world: the Legion starting forces ride the content
+    // seam exactly as the client's begin_mission builds them.
+    let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
+    let world = bundle.world();
+    let mut sim = Sim::with_mission(&world, two_player_setup(), objectives);
+    let workers_owned = |sim: &Sim| {
+        sim.snapshot()
+            .entities
+            .iter()
+            .filter(|entity| entity.owner == PlayerId(0) && entity.kind == worker)
+            .count()
+    };
+
+    // (a) Tick 0: exactly the starting four workers exist — the count the
+    // old objective asked for. The mission has not stepped yet; standing
+    // still must never satisfy the corrected objective.
+    assert_eq!(
+        workers_owned(&sim),
+        4,
+        "the Legion starts with exactly four workers (plan section 9.7)"
+    );
+
+    // (b) The idle opening: 600 ticks (twenty seconds of game time), zero
+    // commands. Nothing produces without an order, so the optional
+    // objective stays pending — no event, no completion, no match end.
+    for _ in 0..600 {
+        let out = sim.step(&[]);
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::ObjectiveState { index: 1, .. })),
+            "the optional objective must not resolve while only four workers exist"
+        );
+    }
+    assert_eq!(workers_owned(&sim), 4, "no worker was produced unprompted");
+    assert!(sim.outcome().is_none(), "the match is still running");
+
+    // (c) Grow to eight: the mission player's command center trains four
+    // workers through the real economy — the starting 200 ore is exactly
+    // 4 x 50, so the objective is reachable by production alone.
+    let producer = sim
+        .snapshot()
+        .entities
+        .iter()
+        .find(|entity| entity.owner == PlayerId(0) && entity.kind == command_center)
+        .expect("the mission player's command center stands")
+        .id;
+    let tick = sim.tick();
+    let commands: Vec<Command> = (0..4)
+        .map(|seq| {
+            Command::new(
+                PlayerId(0),
+                tick,
+                seq,
+                CommandKind::Train {
+                    producer,
+                    unit: worker,
+                },
+            )
+        })
+        .collect();
+
+    // (d) Step until the objective resolves; it must fire exactly when the
+    // eighth worker comes to exist — the equality of the two observed
+    // ticks is the not-before proof (an early resolution would leave the
+    // counts unequal).
+    let mut resolved_at: Option<u32> = None;
+    let mut eighth_worker_at: Option<u32> = None;
+    let mut fed = false;
+    for _ in 0..2400 {
+        let feed: Vec<Command> = if fed {
+            Vec::new()
+        } else {
+            fed = true;
+            commands.clone()
+        };
+        let out = sim.step(&feed);
+        if resolved_at.is_none()
+            && out.events.iter().any(|event| {
+                matches!(
+                    event,
+                    Event::ObjectiveState {
+                        index: 1,
+                        state: ObjectiveState::Completed
+                    }
+                )
+            })
+        {
+            resolved_at = Some(sim.tick());
+        }
+        if eighth_worker_at.is_none() && workers_owned(&sim) == 8 {
+            eighth_worker_at = Some(sim.tick());
+        }
+        if resolved_at.is_some() && eighth_worker_at.is_some() {
+            break;
+        }
+    }
+    let resolved_at = resolved_at.expect("the objective completes once eight workers exist");
+    let eighth_worker_at = eighth_worker_at.expect("the eighth worker comes to exist");
+    assert_eq!(
+        resolved_at, eighth_worker_at,
+        "the objective completes exactly when the count is genuinely reached"
+    );
+    // The optional objective never gates the match: the enemy command
+    // center still stands (the required objective is pending), so the
+    // match runs on with the optional objective completed.
+    assert_eq!(workers_owned(&sim), 8);
+    assert!(
+        sim.outcome().is_none(),
+        "an optional objective completes without ending the match"
     );
 }
