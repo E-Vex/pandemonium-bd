@@ -492,6 +492,7 @@ mod tests {
                     CapTemplate::Footprint { w: 2, h: 2 },
                 ]),
             ],
+            roster: Vec::new(),
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,
@@ -851,6 +852,7 @@ pub(crate) mod tests_support {
                     CapTemplate::Footprint { w: 2, h: 2 },
                 ]),
             ],
+            roster: Vec::new(),
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,
@@ -945,6 +947,9 @@ pub(crate) mod construction_support {
                     CapTemplate::Footprint { w: 2, h: 2 },
                 ]),
             ],
+            // The test faction's fieldable kinds: the depot (kind 1) is
+            // buildable — the roster the Phase 2 Build gate checks.
+            roster: vec![pandemonium_sim_api::KindId(1)],
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,

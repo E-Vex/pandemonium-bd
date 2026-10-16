@@ -630,6 +630,19 @@ impl ContentBundle {
             })
             .collect();
 
+        // The faction's fieldable kinds (ADR-0201 §3, Phase 2 — the Build
+        // gate's membership check): resolved through the same entity order as
+        // the production lists above, in authored (faction) order. The
+        // mission-less world bakes the full roster, so every existing Build
+        // command stays valid (R5); mission restrictions (later packages)
+        // override this field through the same seam.
+        let roster: Vec<KindId> = faction
+            .roster
+            .iter()
+            .filter_map(|member| kind_of(member))
+            .map(KindId)
+            .collect();
+
         let mut initial_spawns: Vec<SpawnDef> = Vec::new();
         for start in &self.map.starts {
             for force in &faction.starting_forces {
@@ -673,6 +686,7 @@ impl ContentBundle {
             passability,
             buildability: map_buildability(&self.map),
             kinds,
+            roster,
             resources,
             production,
             base_population_cap: self.rules.base_population_cap,

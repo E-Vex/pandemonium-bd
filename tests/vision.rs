@@ -51,6 +51,7 @@ fn fog_world() -> TrivialWorld {
                 radius_milli_tiles: 9000,
             }]),
         ],
+        roster: Vec::new(),
         resources: vec![ResourceDef {
             resource: pandemonium_sim_api::ResourceId(0),
             starting: 0,

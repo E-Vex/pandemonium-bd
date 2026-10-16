@@ -25,6 +25,16 @@ const FIXTURE_ENCODING_VERSION: u32 = 4;
 /// stats), a resource registry with starting balances, the production lists,
 /// the terrain grids, and the spawns that bring it to life (plan §7.4's spirit
 /// on a trivial scale).
+///
+/// Phase 2 (ADR-0201 §3's flagged asymmetry): `roster` carries the faction's
+/// fieldable kinds — the Build gate's membership check (command.rs), so a
+/// restricted roster is authoritative, not merely hidden in the UI. It is
+/// faction data baked into the fixture like `production`, and it is
+/// deliberately NOT part of [`TrivialWorld::content_hash`] (R9): the content
+/// golden is the ContentBundle's hash over the faction bytes; a fixture-side
+/// roster would double-encode the same data and move the fixture identity for
+/// zero identity value — the mission id (domain-separated over the mission
+/// record) is what carries restriction identity.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TrivialWorld {
     /// Opaque map identity, echoed into replays alongside the content hash.
@@ -43,6 +53,13 @@ pub struct TrivialWorld {
     pub buildability: Vec<u8>,
     /// Kind templates in [`KindId`] order — a kind's id is its index here.
     pub kinds: Vec<KindTemplate>,
+    /// The faction's fieldable kinds (ADR-0201 §3, Phase 2): the Build gate
+    /// rejects a structure whose kind is not in this list — the Train gate's
+    /// `producible_by` mirror. Baked from the faction's roster by
+    /// `ContentBundle::world` (mission restrictions land as an override of
+    /// the same field). NOT part of the fixture content hash (see the type
+    /// doc).
+    pub roster: Vec<KindId>,
     /// The resource registry; each player's ledger starts with these balances.
     pub resources: Vec<ResourceDef>,
     /// Production lists — producer kind id → trainable kind ids, in authored
@@ -482,6 +499,7 @@ mod tests {
                     radius_milli_tiles: 9000,
                 }]),
             ],
+            roster: Vec::new(),
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,

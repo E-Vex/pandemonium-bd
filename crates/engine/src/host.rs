@@ -396,6 +396,7 @@ mod tests {
                 ],
                 economy: KindEconomy::default(),
             }],
+            roster: Vec::new(),
             resources: vec![SimResourceDef {
                 resource: ResourceId(0),
                 starting: 200,

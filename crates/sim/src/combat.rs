@@ -606,6 +606,7 @@ mod tests {
                     },
                 ]),
             ],
+            roster: Vec::new(),
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,
@@ -780,6 +781,7 @@ mod tests {
                     },
                 ]),
             ],
+            roster: Vec::new(),
             resources: vec![ResourceDef {
                 resource: ResourceId(0),
                 starting: 200,

@@ -78,6 +78,7 @@ pub fn demo_world() -> TrivialWorld {
                 economy: KindEconomy::default(),
             },
         ],
+        roster: Vec::new(),
         resources: vec![ResourceDef {
             resource: ResourceId(0),
             starting: 200,

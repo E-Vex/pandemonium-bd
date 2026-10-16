@@ -63,6 +63,7 @@ mod kinds {
     pub const COMMAND_CENTER: u32 = 1;
     pub const ORE_NODE: u32 = 3;
     pub const RIFLEMAN: u32 = 5;
+    pub const SUPPLY_DEPOT: u32 = 6;
     pub const WORKER: u32 = 8;
 }
 
@@ -937,8 +938,11 @@ fn a11_mirror_positions_are_not_equivalent_states_units_translate() {
                 .expect("each side starts with workers")
                 .id
         };
-        // The written-out case: p0 builds an ore node at (47, 46); p1 builds
-        // at the 180-degree footprint mirror (15, 16).
+        // The written-out case: p0 builds a supply depot at (47, 46); p1
+        // builds at the 180-degree footprint mirror (15, 16). (Phase 2's
+        // roster-gated Build: the depot is a Legion-roster structure — the
+        // ore node is not fieldable, so the old fixture's kind would now be
+        // refused before placement, which is exactly the gate's intent.)
         let commands = [
             Command::new(
                 PlayerId(0),
@@ -946,7 +950,7 @@ fn a11_mirror_positions_are_not_equivalent_states_units_translate() {
                 1,
                 CommandKind::Build {
                     worker: worker_of(0),
-                    structure: pandemonium_sim_api::KindId(kinds::ORE_NODE),
+                    structure: pandemonium_sim_api::KindId(kinds::SUPPLY_DEPOT),
                     at: TilePos { x: 47, y: 46 },
                 },
             ),
@@ -956,7 +960,7 @@ fn a11_mirror_positions_are_not_equivalent_states_units_translate() {
                 1,
                 CommandKind::Build {
                     worker: worker_of(1),
-                    structure: pandemonium_sim_api::KindId(kinds::ORE_NODE),
+                    structure: pandemonium_sim_api::KindId(kinds::SUPPLY_DEPOT),
                     at: TilePos { x: 15, y: 16 },
                 },
             ),
@@ -966,7 +970,7 @@ fn a11_mirror_positions_are_not_equivalent_states_units_translate() {
         assert_eq!(
             outcomes.get(&(0, 1)),
             None,
-            "p0's ore node at (47,46) is accepted under every labeling"
+            "p0's depot at (47,46) is accepted under every labeling"
         );
         assert_eq!(
             outcomes.get(&(1, 1)),

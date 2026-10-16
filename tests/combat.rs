@@ -98,6 +98,7 @@ fn combat_world() -> TrivialWorld {
                 },
             ]),
         ],
+        roster: Vec::new(),
         resources: vec![ResourceDef {
             resource: pandemonium_sim_api::ResourceId(0),
             starting: 0,

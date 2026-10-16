@@ -69,6 +69,7 @@ fn fifty_unit_world() -> TrivialWorld {
             ],
             economy: KindEconomy::default(),
         }],
+        roster: Vec::new(),
         resources: vec![ResourceDef {
             resource: pandemonium_sim_api::ResourceId(0),
             starting: 200,

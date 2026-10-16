@@ -182,6 +182,15 @@ fn validate(
             if !has_footprint_kind(content, *structure) {
                 return Err(RejectReason::InvalidTarget);
             }
+            // The faction's roster is authoritative, not merely the UI's
+            // button filter (ADR-0201 §3's flagged asymmetry, closed by
+            // Phase 2): a Build for a structure the roster does not carry is
+            // rejected exactly like a Train for a kind the production list
+            // does not carry. The mission-less world bakes the full faction
+            // roster, so every Phase 1 Build command stays valid.
+            if !content.roster.contains(structure) {
+                return Err(RejectReason::InvalidTarget);
+            }
             check_economy(world, content, cmd.issuer, *structure)?;
             check_placement(world, content, nav, *structure, *at)
         }
@@ -804,6 +813,7 @@ mod tests {
                     ..KindTemplate::from_caps(vec![])
                 },
             ],
+            roster: Vec::new(),
             resources: vec![],
             production: vec![(KindId(2), vec![KindId(3), KindId(4)])],
             base_population_cap: 10,
@@ -1124,6 +1134,76 @@ mod tests {
             )],
         );
         assert_eq!(reason_of(&events), Some(RejectReason::MissingCapability));
+    }
+
+    #[test]
+    fn the_roster_gates_build_membership_before_economy_and_placement() {
+        // ADR-0201 §3's flagged asymmetry, closed by Phase 2: the Build gate
+        // now checks roster membership — a structure the faction does not
+        // field is refused exactly like a Train for a kind the production
+        // list does not carry, and the refusal fires BEFORE the economy and
+        // placement checks (the in-roster build over the same fixture is
+        // proven accepted by production's construction tests, which drive
+        // the identical command to completion).
+        use crate::economy::construction_support::construction_world;
+        use crate::sim::Sim;
+        use pandemonium_sim_api::{Event, MatchSetup, RejectReason, TilePos};
+
+        let setup = || MatchSetup {
+            seed: 7,
+            players: vec![PlayerSetup {
+                player: PlayerId(0),
+                controller: ControllerKind::Human,
+            }],
+        };
+        let build_at = |seq: u32| {
+            Command::new(
+                PlayerId(0),
+                0,
+                seq,
+                CommandKind::Build {
+                    worker: EntityId(1),
+                    structure: KindId(1),
+                    at: TilePos { x: 6, y: 6 },
+                },
+            )
+        };
+
+        // (a) The fixture's own roster carries the depot (kind 1): the build
+        // proceeds — no rejection event (the depot then constructs, exactly
+        // as production's tests prove over this fixture).
+        let world = construction_world();
+        let mut sim = Sim::new(&world, setup());
+        let out = sim.step(&[build_at(1)]);
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::CommandRejected { .. })),
+            "an in-roster build is accepted: {:?}",
+            out.events
+        );
+
+        // (b) The same command against a roster that does not carry the kind:
+        // InvalidTarget — the authoritative refusal, not a hidden UI button.
+        // The depot is affordable at the fixture's 200-ore balance and the
+        // tile is free, so the refusal can only come from membership.
+        let mut restricted = construction_world();
+        restricted.roster.clear();
+        let mut sim = Sim::new(&restricted, setup());
+        let out = sim.step(&[build_at(1)]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::CommandRejected {
+                    reject: Reject {
+                        reason: RejectReason::InvalidTarget
+                    },
+                    ..
+                }
+            )),
+            "an out-of-roster build is refused with InvalidTarget: {:?}",
+            out.events
+        );
     }
 
     #[test]

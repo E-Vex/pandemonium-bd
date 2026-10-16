@@ -102,6 +102,7 @@ fn command_center_world(command_center: KindId) -> TrivialWorld {
         passability: TrivialWorld::open_passability(32, 32),
         buildability: TrivialWorld::open_buildability(32, 32),
         kinds,
+        roster: Vec::new(),
         resources: vec![],
         production: vec![],
         base_population_cap: 0,
