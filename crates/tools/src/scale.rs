@@ -690,8 +690,9 @@ mod tests {
     #[test]
     fn the_scale_content_tree_validates() {
         // The proving ground is a loadable, valid, symmetric bundle — the
-        // same strict validation `content-validate content_scale` runs.
-        crate::validate_content::validate_content(&scale_dir())
+        // same strict validation `content-validate content_scale` runs (no
+        // identity pin: the scale tree is a separate content set).
+        crate::validate_content::validate_content(&scale_dir(), None, None)
             .expect("the scale content directory must validate");
     }
 

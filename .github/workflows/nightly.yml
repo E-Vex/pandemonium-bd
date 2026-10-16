@@ -17,8 +17,10 @@ name: nightly
 #
 # The 1000-match count from A7 runs nightly rather than per-push: at Alpha
 # sizes a full sweep takes hours, and CI-per-push is the green gate's job
-# (ci.yml). Crashes fail the workflow (`tools soak` exits non-zero when any
-# match crashes or panics).
+# (ci.yml). Crashes and stuck matches fail the workflow (`tools soak` exits
+# non-zero when any match crashes, panics, or runs its tick budget
+# unresolved — the A7 crash and stuck signals; AUD-004 closed the gap where
+# only crashes gated).
 #
 # M10.1 — sharding, timeouts, and evidence artifacts (plan §12's "in parallel
 # processes" is satisfied at the process level, exactly as the plan words it:
@@ -206,7 +208,7 @@ jobs:
           path: soak-dev.txt
 
   aggregate:
-    name: aggregate (evidence + crashed gate)
+    name: aggregate (evidence + crashed/unresolved gate)
     # Needs every tier (the release shards and the dev invariant sweep)
     # and runs even when one of them failed — `!cancelled()` keeps the
     # evidence landing on exactly the failure paths it exists for (a
@@ -223,24 +225,33 @@ jobs:
           path: soak-summaries
           pattern: soak-*
           merge-multiple: true
-      - name: Concatenate the evidence, sum the totals, gate on crashed
+      - name: Concatenate the evidence, sum the totals, gate on crashed and unresolved
         run: |
           set -euo pipefail
           cd soak-summaries
           # One durable artifact: the whole night's soak evidence.
           cat $(ls | sort) > ../soak-all.txt
-          # The gate: any nonzero `crashed` count in any shard fails the
-          # nightly (belt and braces — the tool already exits non-zero on
-          # a crash, this catches a regression in that contract too).
+          # The gate: any nonzero `crashed` or `unresolved` count in any
+          # shard fails the nightly (belt and braces — the tool already
+          # exits non-zero on both signals, this catches a regression in
+          # that contract too; AUD-004 added the unresolved half).
           total_crashed=0
+          total_unresolved=0
           for f in *; do
             crashed=$(grep -E '^  crashed:' "$f" | grep -oE '[0-9]+' | head -1)
             crashed=${crashed:-0}
-            echo "  $f: crashed $crashed"
+            unresolved=$(grep -E '^  unresolved:' "$f" | grep -oE '[0-9]+' | head -1)
+            unresolved=${unresolved:-0}
+            echo "  $f: crashed $crashed, unresolved $unresolved"
             total_crashed=$(( total_crashed + crashed ))
+            total_unresolved=$(( total_unresolved + unresolved ))
           done
           if [ "$total_crashed" -ne 0 ]; then
             echo "::error::soak tiers reported $total_crashed crashed match(es)"
+            exit 1
+          fi
+          if [ "$total_unresolved" -ne 0 ]; then
+            echo "::error::soak tiers reported $total_unresolved unresolved (stuck) match(es) — A7's no-stuck-matches gate"
             exit 1
           fi
           # Win-rate totals, summed across the tiers' `resolved:` lines
@@ -255,7 +266,7 @@ jobs:
               printf "  matches resolved: %d (player 0: %d, player 1: %d)\n", \
                 resolved, wins0, wins1
             }'
-          echo "aggregate: 0 crashed across all tiers (release shards + dev invariant sweep)"
+          echo "aggregate: 0 crashed, 0 unresolved across all tiers (release shards + dev invariant sweep)"
       - name: Upload the concatenated evidence
         if: always()
         uses: actions/upload-artifact@v7
