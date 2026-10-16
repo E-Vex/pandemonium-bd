@@ -344,9 +344,9 @@ impl MapDef {
 // ---------------------------------------------------------------------------
 
 /// A mission objective's kind (ADR-0201 §2): what the stage-10 evaluator
-/// checks. Phase 1 carries the vertical slice's two kinds; the vocabulary
-/// grows forward-only with the mission schema version (survive, reach,
-/// protect and gather are Phase 2 — ADR-0201 §9).
+/// checks. Phase 1 carried the vertical slice's two kinds; Phase 2
+/// (ADR-0201 §9) adds the Survive and Protect kinds — the vocabulary grows
+/// forward-only, with unknown spellings refused loudly at load.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ObjectiveKind {
     /// Destroy all enemy structures — or every enemy structure of a target
@@ -354,6 +354,12 @@ pub enum ObjectiveKind {
     Destroy,
     /// Build/train N entities of a kind (`ObjectiveParameters::BuildTrain`).
     BuildTrain,
+    /// Survive N ticks (`ObjectiveParameters::Survive`): completes when the
+    /// match's tick reaches N (Phase 2).
+    Survive,
+    /// Protect an entity of a kind (`ObjectiveParameters::Protect`): fails
+    /// the tick none remain standing for the mission player (Phase 2).
+    Protect,
 }
 
 impl ObjectiveKind {
@@ -362,6 +368,8 @@ impl ObjectiveKind {
         match self {
             ObjectiveKind::Destroy => "Destroy",
             ObjectiveKind::BuildTrain => "BuildTrain",
+            ObjectiveKind::Survive => "Survive",
+            ObjectiveKind::Protect => "Protect",
         }
     }
 
@@ -371,6 +379,8 @@ impl ObjectiveKind {
         match kind {
             "Destroy" => Some(ObjectiveKind::Destroy),
             "BuildTrain" => Some(ObjectiveKind::BuildTrain),
+            "Survive" => Some(ObjectiveKind::Survive),
+            "Protect" => Some(ObjectiveKind::Protect),
             _ => None,
         }
     }
@@ -393,6 +403,18 @@ pub enum ObjectiveParameters {
         kind: String,
         /// How many must exist.
         count: u32,
+    },
+    /// Survive: the tick the objective completes at (Phase 2, ADR-0201 §2).
+    Survive {
+        /// How many ticks the match must reach — positive (the loader
+        /// refuses zero).
+        ticks: u32,
+    },
+    /// Protect: the kind that must keep standing for the mission player
+    /// (Phase 2, ADR-0201 §2).
+    Protect {
+        /// The protected entity kind id.
+        kind: String,
     },
 }
 

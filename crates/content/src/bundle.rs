@@ -176,6 +176,47 @@ impl ContentTree {
             }
         }
 
+        // Protect objectives name a kind the mission player must keep
+        // standing — the AUD-003 lesson, executable: the protected kind must
+        // be one the mission's own faction starts with (a target the player
+        // never fielded would fail at tick 0 and mean nothing). The check
+        // runs per mission against that mission's faction reference, the
+        // same closed-set discipline as the three reference checks above.
+        for mission in &missions {
+            let faction = factions
+                .iter()
+                .find(|faction| faction.id == mission.faction)
+                .expect("the faction reference was validated above");
+            for (index, objective) in mission.objectives.iter().enumerate() {
+                if let defs::ObjectiveParameters::Protect { kind } = &objective.parameters {
+                    if !faction
+                        .starting_forces
+                        .iter()
+                        .any(|force| &force.entity == kind)
+                    {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "mission '{}' objective {} protects kind '{}', which the \
+                                 faction '{}' does not start with (starting forces: {}) — a \
+                                 protected target the mission player never fields fails at \
+                                 tick 0 (the AUD-003 discipline)",
+                                mission.id,
+                                index + 1,
+                                kind,
+                                faction.id,
+                                faction
+                                    .starting_forces
+                                    .iter()
+                                    .map(|force| force.entity.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
         // Placement-level validation: every faction must sit legally on every
         // map (spawn legality, ore reachability, declared symmetry).
         for map in &maps {
@@ -320,10 +361,30 @@ impl ContentTree {
                         count: *count,
                     }
                 }
+                defs::ObjectiveParameters::Survive { ticks } => {
+                    MissionObjectiveParameters::Survive { ticks: *ticks }
+                }
+                defs::ObjectiveParameters::Protect { kind } => {
+                    let Some(resolved) = kind_index.get(kind.as_str()).copied() else {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "mission '{}' references kind '{}' that the tree's entities do \
+                                 not carry — the loader rejected this shape, so this is a \
+                                 content-seam bug, please report it",
+                                mission.id, kind
+                            ),
+                        });
+                    };
+                    MissionObjectiveParameters::Protect {
+                        kind: KindId(resolved),
+                    }
+                }
             };
             let kind = match parameters {
                 MissionObjectiveParameters::Destroy { .. } => MissionObjectiveKind::Destroy,
                 MissionObjectiveParameters::BuildTrain { .. } => MissionObjectiveKind::BuildTrain,
+                MissionObjectiveParameters::Survive { .. } => MissionObjectiveKind::Survive,
+                MissionObjectiveParameters::Protect { .. } => MissionObjectiveKind::Protect,
             };
             objectives.push(MissionObjective {
                 kind,
@@ -1032,10 +1093,13 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
     encode_str(h, &mission.rules);
     h.write_u32(mission.objectives.len() as u32);
     for objective in &mission.objectives {
-        // The kind tag: fixed, ordered, exhaustive over the Phase 1 vocabulary.
+        // The kind tag: fixed, ordered, exhaustive over the vocabulary
+        // (Phase 1: Destroy 1, BuildTrain 2; Phase 2: Survive 3, Protect 4).
         h.write_u8(match objective.kind {
             defs::ObjectiveKind::Destroy => 1,
             defs::ObjectiveKind::BuildTrain => 2,
+            defs::ObjectiveKind::Survive => 3,
+            defs::ObjectiveKind::Protect => 4,
         });
         match &objective.parameters {
             defs::ObjectiveParameters::Destroy { target_kind } => match target_kind {
@@ -1048,6 +1112,12 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             defs::ObjectiveParameters::BuildTrain { kind, count } => {
                 encode_str(h, kind);
                 h.write_u32(*count);
+            }
+            defs::ObjectiveParameters::Survive { ticks } => {
+                h.write_u32(*ticks);
+            }
+            defs::ObjectiveParameters::Protect { kind } => {
+                encode_str(h, kind);
             }
         }
         encode_bool(h, objective.optional);
@@ -1423,6 +1493,91 @@ mod tests {
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn survive_and_protect_objectives_resolve_through_the_seam() {
+        // Phase 2 (ADR-0201 §2, §9 Package 3): the new kinds resolve to the
+        // sim vocabulary — Survive carries its ticks, Protect resolves its
+        // kind id through the tree's entity order — and the objectives are
+        // identity-bearing (a mission with them is a different mission).
+        let with_new_kinds = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 900 )),\n            optional: true,",
+        )
+        .replace(
+            "parameters: Destroy(( target_kind: None )),",
+            "parameters: Protect(( kind: \"base\" )),",
+        )
+        .replace("kind: \"Destroy\",", "kind: \"Protect\",");
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", &with_new_kinds))
+            .expect("the mission with the new kinds loads");
+        let mission = tree
+            .mission_data("testing_01", PlayerId(0))
+            .expect("resolves");
+        assert_eq!(
+            mission.objectives[0],
+            MissionObjective {
+                kind: MissionObjectiveKind::Protect,
+                parameters: MissionObjectiveParameters::Protect {
+                    kind: KindId(0), // "base" sorts first
+                },
+                optional: false,
+            }
+        );
+        assert_eq!(
+            mission.objectives[1],
+            MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks: 900 },
+                optional: true,
+            }
+        );
+        // Identity follows the bytes: the re-authored objective set is a
+        // different mission than the factory's Phase 1 form.
+        let plain = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the Phase 1 factory loads");
+        assert_ne!(
+            plain.mission_id("testing_01"),
+            tree.mission_id("testing_01"),
+            "the new objective kinds are identity-bearing"
+        );
+        // And the bundle identity is still untouched (missions are not in
+        // the content encoders).
+        assert_eq!(
+            plain.bundle("testing").unwrap().content_hash(),
+            tree.bundle("testing").unwrap().content_hash()
+        );
+    }
+
+    #[test]
+    fn protect_targets_must_be_starting_forces() {
+        // The AUD-003 discipline, executable (Phase 2, ADR-0201 §2): a
+        // Protect objective naming a kind the mission's faction does not
+        // START with is refused at tree assembly — a protected target the
+        // mission player never fields fails at tick 0 and means nothing.
+        // The factory's "testers" start with base + 2 workers; the ore
+        // node exists in the tree but is nobody's starting force.
+        let bad = MISSION_V2_DEFAULT.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"ore_node\" )),\n            optional: false,",
+        );
+        let err = ContentTree::load(&factory().mission("testing_01.ron", &bad)).unwrap_err();
+        assert!(
+            err.to_string().contains("protects kind 'ore_node'"),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().contains("does not start with"),
+            "got: {err}"
+        );
+        // The protecting kind that IS a starting force loads cleanly.
+        let good = MISSION_V2_DEFAULT.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"base\" )),\n            optional: false,",
+        );
+        ContentTree::load(&factory().mission("testing_01.ron", &good))
+            .expect("a starting-force protect target loads");
     }
 
     #[test]

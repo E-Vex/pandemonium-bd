@@ -521,12 +521,15 @@ fn convert_objective(
         return Err(ContentError::Parse {
             file: file.to_string(),
             detail: format!(
-                "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', '{}')",
+                "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', '{}', \
+                 '{}', '{}')",
                 index + 1,
                 mission,
                 raw.kind,
                 defs::ObjectiveKind::Destroy.as_str(),
                 defs::ObjectiveKind::BuildTrain.as_str(),
+                defs::ObjectiveKind::Survive.as_str(),
+                defs::ObjectiveKind::Protect.as_str(),
             ),
         });
     };
@@ -575,6 +578,42 @@ fn convert_objective(
                     kind: params.kind,
                     count: params.count,
                 },
+            )
+        }
+        RawObjectiveParameters::Survive(params) => {
+            // R4 (the AUD-003 lesson): a zero-tick survive objective is
+            // vacuously complete at tick 0 — the loader refuses it loudly.
+            if params.ticks == 0 {
+                return Err(ContentError::Parse {
+                    file: file.to_string(),
+                    detail: format!(
+                        "objective {} of mission '{}' has ticks 0 (survive objectives \
+                         need at least one tick — a zero-tick timer is vacuously \
+                         complete)",
+                        index + 1,
+                        mission
+                    ),
+                });
+            }
+            (
+                defs::ObjectiveKind::Survive,
+                defs::ObjectiveParameters::Survive {
+                    ticks: params.ticks,
+                },
+            )
+        }
+        RawObjectiveParameters::Protect(params) => {
+            check_objective_entity_ref(
+                file,
+                mission,
+                index,
+                "Protect kind",
+                &params.kind,
+                entities,
+            )?;
+            (
+                defs::ObjectiveKind::Protect,
+                defs::ObjectiveParameters::Protect { kind: params.kind },
             )
         }
     };
@@ -741,11 +780,16 @@ mod tests {
 
     #[test]
     fn unknown_objective_kinds_are_rejected_loudly() {
-        let bad = MISSION.replace("\"BuildTrain\",", "\"Survive\",");
+        // The vocabulary is fixed and forward-only: 'Survive' and 'Protect'
+        // joined it in Phase 2, so the unknown-spelling probe uses a
+        // genuinely unknown word, and the error names every known kind.
+        let bad = MISSION.replace("\"BuildTrain\",", "\"TimeLimit\",");
         let err = parse(&bad).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("unknown kind 'Survive' (known kinds: 'Destroy', 'BuildTrain')"),
+            err.to_string().contains(
+                "unknown kind 'TimeLimit' (known kinds: 'Destroy', 'BuildTrain', 'Survive', \
+                 'Protect')"
+            ),
             "got: {err}"
         );
     }
@@ -860,6 +904,84 @@ mod tests {
         let zero = MISSION.replace("count: 4", "count: 0");
         let err = parse(&zero).unwrap_err();
         assert!(err.to_string().contains("count 0"), "got: {err}");
+    }
+
+    #[test]
+    fn survive_objectives_parse_and_carry_their_ticks() {
+        // Phase 2 (ADR-0201 §2): the Survive kind reaches the canonical form
+        // with its ticks intact — the authored unit stays ticks everywhere
+        // downstream (FD-5: plain integers).
+        let survive = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 900 )),\n            optional: true,",
+        );
+        let def = parse(&survive).expect("the survive objective parses");
+        assert_eq!(
+            def.objectives[1],
+            defs::ObjectiveDef {
+                kind: defs::ObjectiveKind::Survive,
+                parameters: defs::ObjectiveParameters::Survive { ticks: 900 },
+                optional: true,
+            }
+        );
+    }
+
+    #[test]
+    fn zero_tick_survive_timers_are_refused() {
+        // R4 (the AUD-003 lesson): a zero-tick timer is vacuously complete —
+        // the loader refuses it loudly, never silently completes it.
+        let zero = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 0 )),\n            optional: true,",
+        );
+        let err = parse(&zero).unwrap_err();
+        assert!(err.to_string().contains("has ticks 0"), "got: {err}");
+    }
+
+    #[test]
+    fn protect_objectives_parse_and_carry_their_kind() {
+        // Phase 2 (ADR-0201 §2): the Protect kind reaches the canonical form;
+        // the kind reference resolves against the tree's entities exactly
+        // like every other objective reference.
+        let protect = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"command_center\" )),\n            optional: false,",
+        );
+        let def = parse(&protect).expect("the protect objective parses");
+        assert_eq!(
+            def.objectives[1],
+            defs::ObjectiveDef {
+                kind: defs::ObjectiveKind::Protect,
+                parameters: defs::ObjectiveParameters::Protect {
+                    kind: "command_center".to_string(),
+                },
+                optional: false,
+            }
+        );
+        // Unknown protected kinds are loud errors, like every reference.
+        let unknown = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"watchtower\" )),\n            optional: false,",
+        );
+        let err = parse(&unknown).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("references unknown entity 'watchtower'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn kind_and_parameters_must_agree_for_the_phase_2_kinds() {
+        // The spelling/block agreement check covers the new arms: a Survive
+        // kind with BuildTrain parameters (and vice versa) is a loud error.
+        let mismatched = MISSION.replace("kind: \"BuildTrain\",", "kind: \"Survive\",");
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'Survive' but carries 'BuildTrain' parameters"),
+            "got: {err}"
+        );
     }
 
     #[test]

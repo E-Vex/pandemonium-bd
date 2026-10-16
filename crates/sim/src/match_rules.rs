@@ -112,9 +112,9 @@ enum ObjectiveStatus {
     Completed,
     /// Resolved failed. The failure path ships now (ADR-0201 §2's
     /// AND-composition names it: a failed non-optional objective ends the
-    /// match with the opponent as winner) — no Phase 1 objective kind can
-    /// produce it yet; the Phase 2 kinds (protect, survive) will.
-    #[allow(dead_code)]
+    /// match with the opponent as winner) — Phase 2's Protect produces it
+    /// (a Survive timer only completes; its failure mode is the elimination
+    /// rule, which still governs underneath).
     Failed,
 }
 
@@ -220,7 +220,7 @@ fn evaluate_objectives(
         if mission.statuses[index] != ObjectiveStatus::Pending {
             continue; // resolutions are monotonic — evaluate each objective once.
         }
-        if let Some(status) = objective_status(world, player, objective) {
+        if let Some(status) = objective_status(world, player, tick, objective) {
             mission.statuses[index] = status;
             events.push(Event::ObjectiveState {
                 index: index as u32,
@@ -262,6 +262,7 @@ fn evaluate_objectives(
 fn objective_status(
     world: &World,
     player: PlayerId,
+    tick: u32,
     objective: &MissionObjective,
 ) -> Option<ObjectiveStatus> {
     match (&objective.kind, &objective.parameters) {
@@ -272,6 +273,12 @@ fn objective_status(
             MissionObjectiveKind::BuildTrain,
             MissionObjectiveParameters::BuildTrain { kind, count },
         ) => build_train_status(world, player, *kind, *count),
+        (MissionObjectiveKind::Survive, MissionObjectiveParameters::Survive { ticks }) => {
+            survive_status(tick, *ticks)
+        }
+        (MissionObjectiveKind::Protect, MissionObjectiveParameters::Protect { kind }) => {
+            protect_status(world, player, *kind)
+        }
         _ => None,
     }
 }
@@ -311,6 +318,36 @@ fn build_train_status(
         .filter(|entity| entity.owner == player && entity.kind == kind)
         .count() as u32;
     (owned >= count).then_some(ObjectiveStatus::Completed)
+}
+
+/// Survive (ADR-0201 §2, Phase 2): the objective completes when the match's
+/// tick reaches the authored target — the world is irrelevant, the clock is
+/// the input (both hashed inputs of the tick counter; the objective itself
+/// stays derived, A-066). At `ticks - 1` it is still pending; at `ticks` it
+/// completes, exactly once (the resolution is monotonic).
+fn survive_status(tick: u32, ticks: u32) -> Option<ObjectiveStatus> {
+    (tick >= ticks).then_some(ObjectiveStatus::Completed)
+}
+
+/// Protect (ADR-0201 §2, Phase 2): the mission player must keep at least one
+/// entity of the protected kind standing. While any stands, the objective
+/// stays pending (protection is not "complete" — it is a standing failure
+/// condition); the tick none remain, it resolves Failed, which the
+/// AND-composition turns into the mission player's defeat (the opponent
+/// wins, `MatchEnded` fires — exactly the ADR §2 failure path). The kind is
+/// guaranteed to have existed at spawn (the content seam's AUD-003 check:
+/// the faction starts with it), so a tick-0 failure can only mean the
+/// authoring rule was bypassed, never a mission the loader accepted.
+fn protect_status(world: &World, player: PlayerId, kind: KindId) -> Option<ObjectiveStatus> {
+    let protected_stands = world
+        .entities
+        .iter()
+        .any(|entity| entity.owner == player && entity.kind == kind);
+    if protected_stands {
+        None
+    } else {
+        Some(ObjectiveStatus::Failed)
+    }
 }
 
 /// Fires the match end exactly once: sets the outcome and emits `MatchEnded`.
@@ -664,6 +701,312 @@ mod tests {
         }
         assert_eq!(objective_events, 1, "one event per objective, exactly once");
         assert_eq!(ended_events, 1, "MatchEnded fires exactly once");
+    }
+
+    /// A Phase 2 Protect fixture: player 0 owns a surviving structure (kind 0)
+    /// and a protected structure that decays away on tick 0 (kind 1); player 1
+    /// owns a surviving structure. Protecting kind 1 therefore fails at tick 0;
+    /// protecting kind 0 stays pending forever.
+    fn protect_world() -> TrivialWorld {
+        use crate::fixture::{CapTemplate, KindEconomy, KindTemplate, SpawnDef};
+        use pandemonium_fx::Vec2Fx;
+        use pandemonium_sim_api::KindId;
+        TrivialWorld {
+            map_id: 0x004D_3854_4553_5407,
+            width_tiles: 32,
+            height_tiles: 32,
+            passability: TrivialWorld::open_passability(32, 32),
+            buildability: TrivialWorld::open_buildability(32, 32),
+            kinds: vec![
+                KindTemplate {
+                    // kind 0: a structure that survives.
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 10,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                    ],
+                    economy: KindEconomy::default(),
+                },
+                KindTemplate {
+                    // kind 1: the protected structure — dies on tick 0.
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 1,
+                            regen_per_tick: -1,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                    ],
+                    economy: KindEconomy::default(),
+                },
+            ],
+            roster: Vec::new(),
+            resources: vec![],
+            production: vec![],
+            base_population_cap: 0,
+            initial_spawns: vec![
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(0), // the survivor (keeps the player alive)
+                    pos: Vec2Fx::from_ints(8, 8),
+                },
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(1), // the protected, decaying structure
+                    pos: Vec2Fx::from_ints(12, 8),
+                },
+                SpawnDef {
+                    owner: PlayerId(1),
+                    kind: KindId(0), // the enemy's survivor
+                    pos: Vec2Fx::from_ints(24, 24),
+                },
+            ],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+        }
+    }
+
+    fn protect(player: PlayerId, kind: u32, optional: bool) -> MissionData {
+        mission_for(
+            player,
+            &[MissionObjective {
+                kind: MissionObjectiveKind::Protect,
+                parameters: MissionObjectiveParameters::Protect { kind: KindId(kind) },
+                optional,
+            }],
+        )
+    }
+
+    #[test]
+    fn a_survive_objective_completes_exactly_at_its_tick() {
+        // Phase 2 (ADR-0201 §2): Survive { ticks: N } stays pending through
+        // tick N-1 and completes on the step that executes tick N — the
+        // first event is the completion, the match ends the same step with
+        // the mission player the winner (the only required objective).
+        let world = two_player_world();
+        let mission = mission_for(
+            PlayerId(0),
+            &[MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks: 3 },
+                optional: false,
+            }],
+        );
+        let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+        for _ in 0..3 {
+            let out = sim.step(&[]);
+            assert!(
+                !out.events
+                    .iter()
+                    .any(|event| matches!(event, Event::ObjectiveState { index: 0, .. })),
+                "pending at ticks 0..=2: {:?}",
+                out.events
+            );
+            assert!(sim.outcome().is_none());
+        }
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "completes on the tick-3 step: {:?}",
+            out.events
+        );
+        let outcome = sim.outcome().expect("the survive mission resolves");
+        assert_eq!(outcome.winner, PlayerId(0));
+        assert_eq!(outcome.ended_tick, 3);
+    }
+
+    #[test]
+    fn a_survive_objective_completes_after_the_same_window_s_deaths() {
+        // The clock is the input, and stage 10 sees the post-cleanup world:
+        // the protected structure decays on tick 0 (a real Died, no
+        // elimination — both players keep survivors), and the Survive { 1 }
+        // timer still completes on the tick-1 step exactly as authored. A
+        // survive timer is never lost to, nor advanced by, world changes.
+        let world = protect_world();
+        let mission = mission_for(
+            PlayerId(0),
+            &[MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks: 1 },
+                optional: false,
+            }],
+        );
+        let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+        let out = sim.step(&[]); // tick 0: the kind-1 death — timer pending.
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::ObjectiveState { .. })),
+            "pending through the death tick: {:?}",
+            out.events
+        );
+        assert!(sim.outcome().is_none(), "no elimination interfered");
+        let out = sim.step(&[]); // tick 1: the timer completes.
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "the timer completes at tick 1 after the window's deaths: {:?}",
+            out.events
+        );
+    }
+
+    #[test]
+    fn an_optional_survive_objective_never_gates_the_match() {
+        // Optional objectives feed the end screen, never the outcome: the
+        // timer completes, the match runs on (the enemy still stands and
+        // elimination alone decides it, exactly as mission-less).
+        let world = two_player_world();
+        let mission = mission_for(
+            PlayerId(0),
+            &[MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks: 1 },
+                optional: true,
+            }],
+        );
+        let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+        sim.step(&[]);
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "the optional objective completes"
+        );
+        assert!(
+            sim.outcome().is_none(),
+            "an optional survive objective does not end the match"
+        );
+    }
+
+    #[test]
+    fn a_protect_objective_fails_the_tick_the_last_protected_entity_dies() {
+        // Phase 2 (ADR-0201 §2): the protected structure decays away on
+        // tick 0 — the objective resolves Failed (the vocabulary's first
+        // failure), the AND-composition ends the match with the OPPONENT
+        // as winner, and the ObjectiveState event precedes MatchEnded in
+        // the same step.
+        let world = protect_world();
+        let mut sim = Sim::with_mission(&world, two_player_setup(), protect(PlayerId(0), 1, false));
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Failed
+                }
+            )),
+            "the protect objective fails when the last protected entity dies: {:?}",
+            out.events
+        );
+        let outcome = sim.outcome().expect("the failure resolves the match");
+        assert_eq!(outcome.winner, PlayerId(1), "the opponent wins the failure");
+        assert_eq!(outcome.ended_tick, 0);
+        // The mission player is NOT eliminated (their survivor stands) — the
+        // failure path ended the match, not the elimination rule.
+        assert!(
+            sim.snapshot()
+                .entities
+                .iter()
+                .any(|entity| entity.owner == PlayerId(0) && entity.kind.0 == 0),
+            "the mission player's other structures still stand"
+        );
+    }
+
+    #[test]
+    fn a_protect_objective_stays_pending_while_the_protected_entity_lives() {
+        // The mirror: protecting the surviving kind never fails and never
+        // completes — protection is a standing failure condition, so the
+        // match runs on (no events, no outcome) until something else ends it.
+        let world = protect_world();
+        let mut sim = Sim::with_mission(&world, two_player_setup(), protect(PlayerId(0), 0, false));
+        for _ in 0..10 {
+            let out = sim.step(&[]);
+            assert!(
+                !out.events
+                    .iter()
+                    .any(|event| matches!(event, Event::ObjectiveState { .. })),
+                "a living protected entity keeps the objective pending: {:?}",
+                out.events
+            );
+            assert!(sim.outcome().is_none());
+        }
+    }
+
+    #[test]
+    fn an_optional_protect_objective_fails_without_ending_the_match() {
+        // Optional failures feed the end screen like optional completions:
+        // the protected structure dies, the objective resolves Failed, and
+        // the match runs on (the mission player is not eliminated).
+        let world = protect_world();
+        let mut sim = Sim::with_mission(&world, two_player_setup(), protect(PlayerId(0), 1, true));
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Failed
+                }
+            )),
+            "the optional failure still reports its event"
+        );
+        assert!(
+            sim.outcome().is_none(),
+            "an optional protect failure does not end the match"
+        );
+    }
+
+    #[test]
+    fn a_required_protect_failure_outranks_a_pending_survive_timer() {
+        // The AND-composition over mixed kinds: protect fails at tick 0
+        // while survive is still pending — any_failed ends the match for
+        // the opponent immediately, never waiting for the timer.
+        let world = protect_world();
+        let mission = mission_for(
+            PlayerId(0),
+            &[
+                MissionObjective {
+                    kind: MissionObjectiveKind::Survive,
+                    parameters: MissionObjectiveParameters::Survive { ticks: 900 },
+                    optional: false,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::Protect,
+                    parameters: MissionObjectiveParameters::Protect { kind: KindId(1) },
+                    optional: false,
+                },
+            ],
+        );
+        let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::MatchEnded {
+                    winner: PlayerId(1)
+                }
+            )),
+            "the failure ends the match the tick it happens: {:?}",
+            out.events
+        );
     }
 
     #[test]

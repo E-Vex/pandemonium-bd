@@ -487,7 +487,10 @@ pub(crate) struct RawObjective {
 }
 
 /// Objective parameters, one variant per kind — the same authoring shape as
-/// capability blocks (`Health(( max: 500 ))`).
+/// capability blocks (`Health(( max: 500 ))`). Phase 2 (ADR-0201 §2/§9) adds
+/// the Survive and Protect kinds to the vocabulary; the spellings grow
+/// forward-only — an older loader refuses them loudly (`ObjectiveKind::
+/// from_schema`'s unknown-kind error), exactly FD-10's letter.
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum RawObjectiveParameters {
@@ -496,6 +499,10 @@ pub(crate) enum RawObjectiveParameters {
     Destroy(RawDestroyParams),
     /// Build/train parameters: which kind, and how many.
     BuildTrain(RawBuildTrainParams),
+    /// Survive parameters: how many ticks the match must reach.
+    Survive(RawSurviveParams),
+    /// Protect parameters: which kind must keep standing.
+    Protect(RawProtectParams),
 }
 
 /// Destroy parameters.
@@ -514,4 +521,24 @@ pub(crate) struct RawBuildTrainParams {
     pub kind: String,
     /// How many must exist.
     pub count: u32,
+}
+
+/// Survive parameters (ADR-0201 §2, Phase 2): how many ticks the mission
+/// player must keep the match running.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawSurviveParams {
+    /// The tick the objective completes at (the loader refuses zero — a
+    /// vacuously complete objective, the AUD-003 lesson).
+    pub ticks: u32,
+}
+
+/// Protect parameters (ADR-0201 §2, Phase 2): the entity kind the mission
+/// player must keep standing.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawProtectParams {
+    /// The protected kind (must exist in the tree, and the mission's faction
+    /// must start with it — validated at load).
+    pub kind: String,
 }

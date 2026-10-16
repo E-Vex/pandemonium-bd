@@ -30,8 +30,8 @@ use pandemonium_content::ContentTree;
 use pandemonium_sim::{CapTemplate, KindEconomy, KindTemplate, Sim, SpawnDef, TrivialWorld};
 use pandemonium_sim_api::{
     Command, CommandKind, ControllerKind, Event, FogPreset, KindId, MatchSetup, MissionData,
-    MissionObjectiveKind, MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup,
-    TileFog, Vec2Fx,
+    MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, ObjectiveState, PlayerId,
+    PlayerSetup, TileFog, Vec2Fx,
 };
 
 /// The repository's content directory.
@@ -606,5 +606,132 @@ fn the_visible_preset_settles_to_a_fully_explored_map() {
         plain.step(&[]);
         revealed.step(&[]);
         assert_eq!(plain.state_hash(), revealed.state_hash());
+    }
+}
+
+// ---- Phase 2, Package 3: the Survive and Protect kinds (B-017) -----------
+//
+// The same discipline as the Phase 1 set: the REAL content's bundle and
+// resolution drive the simulation end-to-end. The authored mission data is
+// assembled from the resolved vocabulary (the seam's public types), so the
+// behavior tests exercise the real world, real KindIds, and the real
+// stage-10 pipeline.
+
+/// The real command center's KindId, resolved through the tree's entity
+/// order — the exact id the bundled world's entities carry.
+fn real_command_center() -> (ContentTree, KindId) {
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let index = tree
+        .entities
+        .iter()
+        .position(|entity| entity.id == "command_center")
+        .expect("command_center exists in the tree");
+    (tree, KindId(index as u32))
+}
+
+#[test]
+fn a_survive_objective_over_the_real_content_completes_at_its_tick() {
+    // ADR-0201 §2, Phase 2: Survive { ticks: 150 } over the real bundle —
+    // pending through tick 149 (no event, no outcome), completing exactly on
+    // the tick-150 step with `MatchEnded` naming the mission player; the
+    // state hashes stay identical to the mission-less path at every
+    // checkpoint (derived state, A-066 — the new evaluator moves nothing).
+    let (tree, _) = real_command_center();
+    let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
+    let world = bundle.world();
+    let setup = two_player_setup();
+    let mission = MissionData {
+        player: PlayerId(0),
+        objectives: vec![MissionObjective {
+            kind: MissionObjectiveKind::Survive,
+            parameters: MissionObjectiveParameters::Survive { ticks: 150 },
+            optional: false,
+        }],
+        fog_preset: FogPreset::Default,
+    };
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut sim = Sim::with_mission(&world, setup, mission);
+    assert_eq!(plain.state_hash(), sim.state_hash(), "tick 0");
+
+    for _ in 0..150 {
+        let out = sim.step(&[]);
+        plain.step(&[]);
+        assert_eq!(plain.state_hash(), sim.state_hash());
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::ObjectiveState { .. })),
+            "pending through tick 149: {:?}",
+            out.events
+        );
+        assert!(sim.outcome().is_none());
+    }
+    let out = sim.step(&[]); // executes tick 150.
+    assert!(
+        out.events.iter().any(|event| matches!(
+            event,
+            Event::ObjectiveState {
+                index: 0,
+                state: ObjectiveState::Completed
+            }
+        )),
+        "completes exactly at the authored tick: {:?}",
+        out.events
+    );
+    assert!(
+        out.events.iter().any(|event| matches!(
+            event,
+            Event::MatchEnded {
+                winner: PlayerId(0)
+            }
+        )),
+        "the survive mission resolves for the mission player"
+    );
+    let outcome = sim.outcome().expect("the match resolved");
+    assert_eq!(outcome.ended_tick, 150);
+}
+
+#[test]
+fn a_protect_objective_over_the_real_content_stays_pending_while_the_center_stands() {
+    // ADR-0201 §2, Phase 2: Protect { command_center } over the real bundle
+    // — the mission player's command center stands through an idle opening,
+    // so the objective stays pending (no event, no outcome; the enemy center
+    // also stands, so elimination never fires) and the state hashes stay
+    // identical to the mission-less path. The failure path (the protected
+    // entity dies) is pinned by the match_rules unit tests over a decaying
+    // fixture; this test pins the real-content pending half.
+    let (tree, command_center) = real_command_center();
+    let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
+    let world = bundle.world();
+    let setup = two_player_setup();
+    let mission = MissionData {
+        player: PlayerId(0),
+        objectives: vec![MissionObjective {
+            kind: MissionObjectiveKind::Protect,
+            parameters: MissionObjectiveParameters::Protect {
+                kind: command_center,
+            },
+            optional: false,
+        }],
+        fog_preset: FogPreset::Default,
+    };
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut sim = Sim::with_mission(&world, setup, mission);
+    for _ in 0..600 {
+        let out = sim.step(&[]);
+        plain.step(&[]);
+        assert_eq!(
+            plain.state_hash(),
+            sim.state_hash(),
+            "the protect evaluator never touches the hashed state"
+        );
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::ObjectiveState { .. })),
+            "a standing command center keeps the objective pending: {:?}",
+            out.events
+        );
+        assert!(sim.outcome().is_none(), "the match runs on");
     }
 }

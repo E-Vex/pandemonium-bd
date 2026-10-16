@@ -521,9 +521,8 @@ pub enum ObjectiveState {
 /// A mission objective's kind in the simulation's resolved vocabulary
 /// (ADR-0201 §2): what the stage-10 evaluator checks. Content authors kinds
 /// by id string; the content seam resolves them to `KindId`s. Phase 1
-/// carries the two vertical-slice kinds — the remaining kinds (survive,
-/// reach, protect, gather) are Phase 2 and will extend this enum alongside
-/// the mission schema version.
+/// carries the two vertical-slice kinds; Phase 2 (ADR-0201 §9) adds the
+/// Survive and Protect kinds — reach and gather follow in the same pattern.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissionObjectiveKind {
     /// Destroy all enemy structures — or every enemy structure of a target
@@ -531,6 +530,12 @@ pub enum MissionObjectiveKind {
     Destroy,
     /// Build/train N entities of a kind (`MissionObjectiveParameters::BuildTrain`).
     BuildTrain,
+    /// Survive N ticks (`MissionObjectiveParameters::Survive`): completes
+    /// when the match's tick reaches N (Phase 2).
+    Survive,
+    /// Protect an entity of a kind (`MissionObjectiveParameters::Protect`):
+    /// fails the tick none remain standing for the mission player (Phase 2).
+    Protect,
 }
 
 /// A mission objective's parameters in the simulation's resolved vocabulary
@@ -552,6 +557,19 @@ pub enum MissionObjectiveParameters {
         kind: KindId,
         /// How many must exist.
         count: u32,
+    },
+    /// Survive: the tick the objective completes at (Phase 2, ADR-0201 §2).
+    /// Positive — the loader refuses a zero-tick timer.
+    Survive {
+        /// How many ticks the match must reach.
+        ticks: u32,
+    },
+    /// Protect: the kind that must keep standing for the mission player
+    /// (Phase 2, ADR-0201 §2) — the loader guarantees the mission's faction
+    /// starts with it.
+    Protect {
+        /// The protected kind.
+        kind: KindId,
     },
 }
 

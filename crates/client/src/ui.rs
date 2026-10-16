@@ -12,6 +12,7 @@
 
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
+use pandemonium_sim::TICKS_PER_SECOND;
 use pandemonium_sim_api::{
     EntityId, EntityView, KindId, MissionData, MissionObjectiveKind, MissionObjectiveParameters,
     ObjectiveState, QueueView, TilePos,
@@ -805,6 +806,20 @@ pub fn objective_lines(mission: &MissionData, bundle: &ContentBundle) -> Vec<Obj
                     "Grow to {count} {}",
                     kind_display_plural(bundle, *kind, *count)
                 ),
+                // Phase 2 (ADR-0201 §2): whole-tick durations read as seconds
+                // when they land on whole seconds (300 ticks = "10 seconds"),
+                // ticks otherwise — the HUD speaks player time, the authored
+                // unit stays ticks (ASCII only either way).
+                (MissionObjectiveKind::Survive, MissionObjectiveParameters::Survive { ticks }) => {
+                    if *ticks >= TICKS_PER_SECOND && ticks % TICKS_PER_SECOND == 0 {
+                        format!("Survive {} seconds", ticks / TICKS_PER_SECOND)
+                    } else {
+                        format!("Survive {ticks} ticks")
+                    }
+                }
+                (MissionObjectiveKind::Protect, MissionObjectiveParameters::Protect { kind }) => {
+                    format!("Protect your {}", kind_display(bundle, *kind))
+                }
                 // The content seam rejects kind/parameters mismatches loudly
                 // (the loader guarantees agreement); the defensive arm keeps
                 // an impossible shape readable rather than panicking the HUD.
