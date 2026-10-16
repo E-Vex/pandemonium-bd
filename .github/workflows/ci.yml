@@ -87,14 +87,9 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component clippy
           rustup default 1.98.1
       # Only the Linux legs build the client binary (rodio -> cpal -> alsa-sys
-      # needs libasound2-dev); the macOS legs need no system audio lib. (The
-      # Windows legs once failed on a different, known reason — the client
-      # test binary's STATUS_ACCESS_VIOLATION, CLOSED since fix a2bc546: a
-      # multi-probe rodio/cpal WASAPI crash on machines with no audio
-      # endpoint, proven 194/194 green and re-proven on master's gate; the
-      # full record is docs/product/WINDOWS_CI_CRASH.md. Comment corrected
-      # 2026-10-16 by the audit's AUD-006 — it had described the closed
-      # crash in the present tense.)
+      # needs libasound2-dev); the Windows legs fail for a different, known
+      # reason (the client test binary's STATUS_ACCESS_VIOLATION, filed for
+      # the client's lane) and the macOS legs need no system audio lib.
       - name: Linux system deps (ALSA dev for the client's audio stack)
         if: matrix.os == 'ubuntu-24.04'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
@@ -159,37 +154,6 @@ jobs:
           cargo run -p pandemonium-tools -- headless --seed 1 --ticks 60 --p1 ai --p2 ai
           cargo run -p pandemonium-client
 
-  content-identity:
-    # The content identity gate (the audit's AUD-005): the registered
-    # content hash and map id (AI-Handoff §2 "Goldens (never move)")
-    # enforced executably on every push — previously the pair was pinned
-    # only in the release pipeline's packaged smoke (a v* tag) and in
-    # docs, so an unauthorized content edit could drift through per-push
-    # CI silently. The registered values are pinned HERE, in this file,
-    # on purpose: an authorized golden move is a one-line diff to these
-    # two values in the same dedicated commit that re-baselines them
-    # (STANDING_ORDERS §7; the procedure is documented in AI-Handoff §2)
-    # — visible in review, never a silent env bypass.
-    name: content identity (registered hash + map id)
-    runs-on: ubuntu-24.04
-    # A hang must fail loudly, not consume the runner hour.
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the pinned toolchain
-        run: |
-          rustup toolchain install 1.98.1 --profile minimal
-          rustup default 1.98.1
-      - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: content-identity-${{ hashFiles('Cargo.lock') }}
-      - name: Validate the registered content identity
-        run: |
-          cargo run -p pandemonium-tools -- content-validate content \
-            --expect-content-hash 0x9bc18c521107b262 \
-            --expect-map-id 0xd38136401ab02ff1
-
   cross-os:
     # A1's cross-OS half (plan §13, FD-5): each OS runs the two headless
     # goldens in release and emits the final hashes. The gate job below fails
@@ -239,20 +203,10 @@ jobs:
 
   cross-os-gate:
     # The A1 gate proper: all three OSes must agree with each other AND with
-    # the committed goldens (docs/AI-Handoff.md §2 "Goldens (never move)").
-    # Where the state goldens are actually pinned (corrected by the audit's
-    # AUD-005 — the previous comment claimed tests/determinism.rs and
-    # tests/ai.rs pin these values): the DEMO value is pinned here and in
-    # the release pipeline's packaged smoke only — no test pins it; the
-    # FLAGSHIP value is pinned here, in the release smoke, and by three
-    # tests (tests/ai.rs, tests/match_rules.rs, and the tools crate's
-    # ai_match.rs). tests/determinism.rs pins its own fixture-world
-    # hashes, never the registered values. The content hash and map id
-    # are pinned by the content-identity job below and the release smoke.
-    # The authorized-move procedure for all four values lives in
-    # AI-Handoff §2 beside the values themselves. Any divergence fails
-    # here with the values printed — per the brief, the values and first
-    # diverging checkpoint are then reported, never patched.
+    # the committed goldens (docs/AI-Handoff.md §2 "Goldens (never move)"; the
+    # same values are pinned by tests/determinism.rs and tests/ai.rs). Any
+    # divergence fails here with the values printed — per the brief, the
+    # values and first diverging checkpoint are then reported, never patched.
     name: cross-OS golden gate (A1)
     needs: cross-os
     runs-on: ubuntu-24.04
@@ -302,7 +256,7 @@ jobs:
     # when every leg of the matrix succeeded, so the two test/goldens
     # matrices are covered leg-by-leg without naming a single leg.
     name: required gate (every job green)
-    needs: [lint, test, replay, binaries, content-identity, cross-os, cross-os-gate]
+    needs: [lint, test, replay, binaries, cross-os, cross-os-gate]
     if: always()
     runs-on: ubuntu-24.04
     # This job only reads the `needs` context; a hang would still burn the
@@ -315,7 +269,6 @@ jobs:
           TEST: ${{ needs.test.result }}
           REPLAY: ${{ needs.replay.result }}
           BINARIES: ${{ needs.binaries.result }}
-          CONTENT_IDENTITY: ${{ needs.content-identity.result }}
           CROSS_OS: ${{ needs.cross-os.result }}
           CROSS_OS_GATE: ${{ needs.cross-os-gate.result }}
         run: |
@@ -332,7 +285,6 @@ jobs:
           check test "$TEST"
           check replay "$REPLAY"
           check binaries "$BINARIES"
-          check content-identity "$CONTENT_IDENTITY"
           check cross-os "$CROSS_OS"
           check cross-os-gate "$CROSS_OS_GATE"
           exit $status

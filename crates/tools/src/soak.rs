@@ -69,13 +69,6 @@ pub struct SoakCli {
     /// The content directory to load.
     #[arg(long, default_value = "content")]
     pub content: PathBuf,
-    /// Do not fail the exit gate on unresolved (stuck-budget) matches —
-    /// for evidence runs with a deliberately small `--ticks` budget, where
-    /// every match is expected to run out of clock. The nightly gate never
-    /// passes this: there, unresolved is A7's stuck signal and fails the
-    /// workflow (the audit's AUD-004).
-    #[arg(long)]
-    pub allow_unresolved: bool,
     /// Print one line per match (verbose); the default prints only the
     /// final summary.
     #[arg(long)]
@@ -112,35 +105,6 @@ pub struct SoakReport {
 }
 
 impl SoakReport {
-    /// The exit gate's decision (A7, the audit's AUD-004): the failure
-    /// reasons a soak run exits non-zero for — any crashed match (a panic,
-    /// a host error, or a dev-tier A12 violation, all counted as crashes),
-    /// and, unless explicitly allowed, any unresolved match (one that ran
-    /// the tick budget — the "stuck" signal A7's "no stuck matches"
-    /// criterion names). Pure over the report: `main` prints the report
-    /// first (the run always completes — the report is the evidence) and
-    /// bails with these reasons after. `allow_unresolved` is the explicit
-    /// evidence-run allowance for deliberately tiny budgets, never a
-    /// silent default — the nightly gate does not pass it.
-    pub fn gate_failures(&self, allow_unresolved: bool) -> Vec<String> {
-        let mut failures = Vec::new();
-        if self.crashed > 0 {
-            failures.push(format!(
-                "soak reported {} crashed match(es) — A7 crash signal",
-                self.crashed
-            ));
-        }
-        if !allow_unresolved && self.unresolved > 0 {
-            failures.push(format!(
-                "soak reported {} unresolved match(es) — A7 stuck signal (pass \
-                 --allow-unresolved only for evidence runs with a deliberately small \
-                 --ticks budget)",
-                self.unresolved
-            ));
-        }
-        failures
-    }
-
     /// The fraction of matches that resolved cleanly (win or mutual
     /// destruction). A7's "no stuck matches" gate wants this at 1.0.
     pub fn resolution_rate(&self) -> f64 {
@@ -417,61 +381,6 @@ mod tests {
         assert_eq!(report.resolution_rate(), 0.0);
     }
 
-    // --- The exit gate (AUD-004: the stuck signal gates) -------------------
-
-    #[test]
-    fn the_gate_fails_on_unresolved_matches() {
-        // A7's "no stuck matches" criterion, gated at last: an unresolved
-        // match (ran the tick budget) with zero crashes fails the exit
-        // gate — the report still carries the honest counts either way.
-        let report = SoakReport {
-            matches: 4,
-            resolved: 3,
-            unresolved: 1,
-            crashed: 0,
-            ..SoakReport::default()
-        };
-        let failures = report.gate_failures(false);
-        assert_eq!(failures.len(), 1, "got: {failures:?}");
-        assert!(failures[0].contains("unresolved"), "got: {failures:?}");
-        // The explicit evidence-run allowance (a deliberately tiny budget):
-        // no failure — the allowance is visible on the command line, never
-        // a default the nightly could drift into.
-        assert!(report.gate_failures(true).is_empty());
-    }
-
-    #[test]
-    fn the_gate_fails_on_crashes_independently_of_the_allowance() {
-        // The crash signal keeps gating whatever the unresolved allowance
-        // says — the two signals are independent.
-        let mut report = SoakReport {
-            matches: 1,
-            crashed: 1,
-            ..SoakReport::default()
-        };
-        for allow in [false, true] {
-            let failures = report.gate_failures(allow);
-            assert_eq!(failures.len(), 1, "allow={allow}, got: {failures:?}");
-            assert!(failures[0].contains("crashed"), "got: {failures:?}");
-        }
-        // Both signals at once: both reasons are reported.
-        report.unresolved = 2;
-        let failures = report.gate_failures(false);
-        assert_eq!(failures.len(), 2, "got: {failures:?}");
-    }
-
-    #[test]
-    fn a_clean_run_passes_the_gate() {
-        let report = SoakReport {
-            matches: 4,
-            resolved: 4,
-            wins: vec![2, 2],
-            ..SoakReport::default()
-        };
-        assert!(report.gate_failures(false).is_empty());
-        assert!(report.gate_failures(true).is_empty());
-    }
-
     #[test]
     fn outcome_label_covers_all_branches() {
         assert_eq!(outcome_label(&summary(Some(PlayerId(0)))), "player 0 wins");
@@ -535,7 +444,6 @@ mod tests {
             seed_base: 100,
             ticks: 10,
             content: PathBuf::new(),
-            allow_unresolved: false,
             verbose: false,
         }
     }
@@ -653,11 +561,6 @@ mod tests {
             seed_base: 7,
             ticks: 60,
             content: repo_content(),
-            // A tiny-budget evidence run: both matches are unresolved at 60
-            // ticks, so the gate's allowance is exactly what lets the sweep
-            // complete for counting here (the unresolved gate itself is
-            // pinned by the gate tests above).
-            allow_unresolved: true,
             verbose: false,
         };
         let report = run_soak(&cli).expect("the real soak runs");

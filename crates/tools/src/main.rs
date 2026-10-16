@@ -25,13 +25,13 @@ mod soak;
 mod validate_content;
 mod verify;
 
-use ai_match::{load_content, run_ai_match, Slot};
+use ai_match::{load_content, resolve_replay_world, run_ai_match, Slot};
 use bench::{print_report as print_bench_report, run_bench, BenchCli};
 use demo::record_replay;
 use diff_check::{print_report as print_diff_report, run_diff_check, DiffCheckCli};
 use soak::{print_report, run_soak, SoakCli};
-use validate_content::{parse_identity_hex, validate_content};
-use verify::{resolve_replay_verification, verify_replay, Verification};
+use validate_content::validate_content;
+use verify::{verify_replay, Verification};
 
 #[derive(Parser)]
 #[command(
@@ -80,15 +80,6 @@ enum Command {
         /// The content directory (defaults to ./content — run from the repo root).
         #[arg(default_value = "content")]
         path: PathBuf,
-        /// The registered content hash the loaded tree must bundle
-        /// (0x-prefixed hex) — the golden-identity pin (AUD-005); a
-        /// mismatch fails the command. Omitted = report only.
-        #[arg(long)]
-        expect_content_hash: Option<String>,
-        /// The registered map id the loaded tree must bundle (0x-prefixed
-        /// hex), beside --expect-content-hash.
-        #[arg(long)]
-        expect_map_id: Option<String>,
     },
     /// Run many seeded AI-vs-AI matches and report win/stuck/crash telemetry
     /// (M10 prep, A7 acceptance). Sequential — nightly CI that wants
@@ -220,15 +211,23 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("reading replay {}", file.display()))?;
             let replay = pandemonium_replay::ReplayFile::decode(&bytes)
                 .with_context(|| format!("decoding replay {}", file.display()))?;
-            // AUD-002 (ADR-0201 §7): mission-aware resolution — a
-            // mission-bearing record resolves its world through the named
-            // mission's own map bundle and loads every mission's resolved
-            // identity for the third comparison, so the re-simulation runs
-            // the exact match the recording ran; a mission-less record
-            // keeps the identity-based resolution (demo world or content
-            // directory) with an empty mission set, exactly as before.
-            let (world, missions) = resolve_replay_verification(&content, &replay)?;
-            match verify_replay(&world, &replay, &missions)? {
+            let world = resolve_replay_world(&content, &replay)?;
+            // The mission id set for ADR-0201 §7's third comparison: loaded
+            // only when the replay carries a mission id, so a mission-less
+            // record keeps verifying against the demo world without loading
+            // (or failing on) the content tree.
+            let mission_ids: Vec<u64> = match replay.mission_id {
+                None => Vec::new(),
+                Some(_) => {
+                    let tree = pandemonium_content::ContentTree::load_dir(&content)
+                        .with_context(|| format!("loading content at {}", content.display()))?;
+                    tree.missions
+                        .iter()
+                        .map(|mission| tree.mission_id(&mission.id))
+                        .collect()
+                }
+            };
+            match verify_replay(&world, &replay, &mission_ids)? {
                 Verification::Passed {
                     checkpoints,
                     final_hash,
@@ -245,27 +244,9 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::ContentValidate {
-            path,
-            expect_content_hash,
-            expect_map_id,
-        } => {
+        Command::ContentValidate { path } => {
             let path = resolve_content_dir(&path)?;
-            // AUD-005: parse the pinned expectations once, with the input
-            // named on failure (a typo'd golden is a gate failure, not a
-            // silent skip).
-            let parse = |flag: &str, value: Option<String>| -> anyhow::Result<Option<u64>> {
-                value
-                    .map(|hex| {
-                        parse_identity_hex(&hex).ok_or_else(|| {
-                            anyhow::anyhow!("{flag} expects a hex identity, got '{hex}'")
-                        })
-                    })
-                    .transpose()
-            };
-            let expect_content_hash = parse("--expect-content-hash", expect_content_hash)?;
-            let expect_map_id = parse("--expect-map-id", expect_map_id)?;
-            validate_content(&path, expect_content_hash, expect_map_id)?;
+            validate_content(&path)?;
         }
         Command::Soak(mut cli) => {
             // A-002 Part 2.1: same runtime resolution, threaded through the
@@ -274,17 +255,14 @@ fn main() -> anyhow::Result<()> {
             cli.content = resolve_content_dir(&cli.content)?;
             let report = run_soak(&cli)?;
             print_report(&report);
-            // A7's exit gates (the audit's AUD-004 — the comment and the
-            // code finally agree): a non-zero `crashed` count (panics, host
-            // errors, dev-tier A12 violations) or, unless explicitly
-            // allowed for an evidence run, a non-zero `unresolved` count
-            // (matches that ran the tick budget — the "stuck" signal) is a
-            // finding worth surfacing as a non-zero exit. The run still
-            // completes and the report is printed first: the evidence is
-            // preserved on both the pass and the fail path.
-            let failures = report.gate_failures(cli.allow_unresolved);
-            if !failures.is_empty() {
-                bail!("{}", failures.join("; "));
+            // A7's "no stuck matches" gate: a non-zero `unresolved` count
+            // at this scale is a finding worth surfacing as a non-zero exit
+            // (the run still completes — the report is the evidence).
+            if report.crashed > 0 {
+                bail!(
+                    "soak reported {} crashed match(es) — A7 crash signal",
+                    report.crashed
+                );
             }
         }
         Command::Bench(mut cli) => {

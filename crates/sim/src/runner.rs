@@ -14,7 +14,7 @@
 //! The driver is pure: no I/O, no clocks, no randomness of its own — the
 //! only mutator it touches the world through is [`Sim::step`] (FD-2).
 
-use pandemonium_sim_api::{Command, MatchSetup, MissionObjectives, Tick};
+use pandemonium_sim_api::{Command, MatchSetup, Tick};
 
 use crate::fixture::TrivialWorld;
 use crate::sim::Sim;
@@ -46,32 +46,7 @@ pub fn run_command_log(
     commands: &[Command],
     ticks: u32,
 ) -> CommandLogRun {
-    run_command_log_with_mission(world, setup, commands, ticks, None)
-}
-
-/// The mission-carrying form of [`run_command_log`] (ADR-0201 §7): a mission
-/// match's re-simulation builds the simulation through [`Sim::with_mission`]
-/// — the same construction seam the engine's `MatchHost::with_mission` and
-/// the client's `begin_mission` use — so the record's objectives are
-/// evaluated during the re-simulation exactly as they were during the match
-/// (`tools replay-verify` passes the resolved set for a mission-bearing
-/// record; every existing caller keeps the mission-less `None` path through
-/// [`run_command_log`]). The objective state is derived and never hashed (the
-/// A-066 discipline, pinned by `tests/mission_phase1.rs::
-/// mission_less_path_is_byte_equivalent`), so both forms produce identical
-/// checkpoints for the same command log — the mission rides along for
-/// semantics (Phase 2 restrictions will gate real state), not for hashes.
-pub fn run_command_log_with_mission(
-    world: &TrivialWorld,
-    setup: &MatchSetup,
-    commands: &[Command],
-    ticks: u32,
-    mission: Option<MissionObjectives>,
-) -> CommandLogRun {
-    let mut sim = match mission {
-        Some(mission) => Sim::with_mission(world, setup.clone(), mission),
-        None => Sim::new(world, setup.clone()),
-    };
+    let mut sim = Sim::new(world, setup.clone());
     let mut checkpoints = vec![(0, sim.state_hash())];
 
     let mut sorted: Vec<&Command> = commands.iter().collect();
