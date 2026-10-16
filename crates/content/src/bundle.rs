@@ -21,7 +21,7 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, MissionObjectives,
+    KindId, MissionData, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
     PlayerId, ResourceId, Vec2Fx,
 };
 
@@ -240,22 +240,27 @@ impl ContentTree {
         h.finish()
     }
 
-    /// Resolves a mission's objective set into the simulation's vocabulary
-    /// (ADR-0201 §2a): kind-id strings become `KindId`s through this tree's
+    /// Resolves a mission's data into the simulation's vocabulary (ADR-0201
+    /// §2a, §3 Phase 2): kind-id strings become `KindId`s through this tree's
     /// entity order — the exact order [`ContentBundle::world`] builds its
     /// kinds in, so the ids the objectives carry are the ids the world's
-    /// entities carry. This is the mission data seam beside `world()`
-    /// (FD-6: mission data reaches the simulation only through the content
-    /// seam, and the sim depends on nothing above it).
+    /// entities carry — and the mission's fog preset rides along. This is
+    /// the mission data seam beside `world()` (FD-6: mission data reaches
+    /// the simulation only through the content seam, and the sim depends on
+    /// nothing above it).
     ///
     /// `player` is the mission player the objectives belong to — runtime
     /// data, not mission data: the caller picks the slot (Phase 1 tools and
     /// clients use the first map start's player).
-    pub fn mission_objectives(
+    ///
+    /// (Phase 2 rename: the Phase 1 `mission_objectives` returns the same
+    /// resolved objective set under the type's new name, `MissionData` — the
+    /// carrier the later Phase 2 fields extend.)
+    pub fn mission_data(
         &self,
         mission_id_str: &str,
         player: PlayerId,
-    ) -> Result<MissionObjectives, ContentError> {
+    ) -> Result<MissionData, ContentError> {
         let Some(mission) = self.mission(mission_id_str) else {
             return Err(ContentError::Bundle {
                 detail: format!(
@@ -326,7 +331,11 @@ impl ContentTree {
                 optional: objective.optional,
             });
         }
-        Ok(MissionObjectives { player, objectives })
+        Ok(MissionData {
+            player,
+            objectives,
+            fog_preset: mission.fog_preset.into(),
+        })
     }
 
     /// Builds the bundle for one map. Every faction travels along (the Alpha
@@ -1029,6 +1038,16 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
         }
         encode_bool(h, objective.optional);
     }
+    // The Phase 2 fog preset (ADR-0201 §3): a non-default preset appends a
+    // discriminant byte after the Phase 1 field set; the default appends
+    // nothing, so a default mission's encoding is the Phase 1 byte stream
+    // verbatim and its mission id is preserved ("identity follows the
+    // referenced bytes" — defaults reference nothing new).
+    match mission.fog_preset {
+        defs::FogPreset::Default => {}
+        defs::FogPreset::Explored => h.write_u8(1),
+        defs::FogPreset::Visible => h.write_u8(2),
+    }
 }
 
 #[cfg(test)]
@@ -1174,6 +1193,33 @@ mod tests {
 )
 "#;
 
+    /// The same mission authored at schema version 2 with the default preset —
+    /// encoding-identical to the v1 form per the extension rule (the mission
+    /// id must match).
+    const MISSION_V2_DEFAULT: &str = r#"
+(
+    schema_version: 2,
+    id: "testing_01",
+    display_name: "Testing Grounds Assault",
+    map: "testing",
+    faction: "testers",
+    rules: "alpha",
+    objectives: [
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: None )),
+            optional: false,
+        ),
+        (
+            kind: "BuildTrain",
+            parameters: BuildTrain(( kind: "worker", count: 4 )),
+            optional: true,
+        ),
+    ],
+    fog_preset: Default,
+)
+"#;
+
     fn factory() -> SourceMap {
         SourceMap::new()
             .rules("alpha.ron", RULES)
@@ -1313,13 +1359,13 @@ mod tests {
         // kinds vector assigns.
         let tree = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
             .expect("the mission-bearing tree loads");
-        let objectives = tree
-            .mission_objectives("testing_01", PlayerId(0))
-            .expect("the objective set resolves");
-        assert_eq!(objectives.player, PlayerId(0));
-        assert_eq!(objectives.objectives.len(), 2);
+        let mission = tree
+            .mission_data("testing_01", PlayerId(0))
+            .expect("the mission data resolves");
+        assert_eq!(mission.player, PlayerId(0));
+        assert_eq!(mission.objectives.len(), 2);
         assert_eq!(
-            objectives.objectives[0],
+            mission.objectives[0],
             MissionObjective {
                 kind: MissionObjectiveKind::Destroy,
                 parameters: MissionObjectiveParameters::Destroy { target_kind: None },
@@ -1327,7 +1373,7 @@ mod tests {
             }
         );
         assert_eq!(
-            objectives.objectives[1],
+            mission.objectives[1],
             MissionObjective {
                 kind: MissionObjectiveKind::BuildTrain,
                 parameters: MissionObjectiveParameters::BuildTrain {
@@ -1337,6 +1383,10 @@ mod tests {
                 optional: true,
             }
         );
+        // The v1 factory migrates with the default preset (Phase 2, ADR-0201
+        // §3): a mission authored before the preset existed resolves to
+        // today's fog behavior.
+        assert_eq!(mission.fog_preset, pandemonium_sim_api::FogPreset::Default);
         // And a named destroy target resolves too.
         let targeted = MISSION.replace(
             "Destroy(( target_kind: None ))",
@@ -1344,20 +1394,64 @@ mod tests {
         );
         let tree = ContentTree::load(&factory().mission("testing_01.ron", &targeted))
             .expect("the targeted mission loads");
-        let objectives = tree
-            .mission_objectives("testing_01", PlayerId(0))
+        let mission = tree
+            .mission_data("testing_01", PlayerId(0))
             .expect("resolves");
         assert_eq!(
-            objectives.objectives[0].parameters,
+            mission.objectives[0].parameters,
             MissionObjectiveParameters::Destroy {
                 target_kind: Some(KindId(0)), // "base" sorts first
             }
         );
         // Unknown missions are refused loudly.
-        let err = tree.mission_objectives("missing", PlayerId(0)).unwrap_err();
+        let err = tree.mission_data("missing", PlayerId(0)).unwrap_err();
         assert!(
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"
+        );
+    }
+
+    #[test]
+    fn the_fog_preset_resolves_and_is_identity_bearing() {
+        // Phase 2 (ADR-0201 §3): the preset flows through the seam into the
+        // sim vocabulary, and a non-default preset changes the mission id
+        // (identity follows the referenced bytes) while the default form —
+        // authored at v1, v2-without-field, or v2-with-Default — is one id.
+        let v1 = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the v1 mission loads");
+        let v2_default =
+            ContentTree::load(&factory().mission("testing_01.ron", MISSION_V2_DEFAULT))
+                .expect("the v2 default mission loads");
+        let v2_explored = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &MISSION_V2_DEFAULT.replace("fog_preset: Default,", "fog_preset: Explored,"),
+        ))
+        .expect("the v2 explored mission loads");
+
+        // (a) Same identity for every default spelling — the v1 migration, the
+        // absent field, and the explicit Default all encode identically.
+        assert_eq!(
+            v1.mission_id("testing_01"),
+            v2_default.mission_id("testing_01"),
+            "a default-valued mission keeps the Phase 1 mission id"
+        );
+        // (b) A non-default preset is a different mission.
+        assert_ne!(
+            v1.mission_id("testing_01"),
+            v2_explored.mission_id("testing_01"),
+            "the fog preset is identity-bearing"
+        );
+        // (c) The preset resolves through the seam.
+        let mission = v2_explored
+            .mission_data("testing_01", PlayerId(0))
+            .expect("resolves");
+        assert_eq!(mission.fog_preset, pandemonium_sim_api::FogPreset::Explored);
+        // (d) And none of it touches the bundle identity — the mission
+        // category still appends nothing to the content encoders.
+        assert_eq!(
+            v1.bundle("testing").unwrap().content_hash(),
+            v2_explored.bundle("testing").unwrap().content_hash(),
+            "the content hash never reads mission data"
         );
     }
 }

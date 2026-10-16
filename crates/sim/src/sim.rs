@@ -8,7 +8,7 @@
 
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
-    Command, EntityId, EntityView, Event, MatchSetup, MissionObjectives, PlayerId, PlayerView,
+    Command, EntityId, EntityView, Event, FogPreset, MatchSetup, MissionData, PlayerId, PlayerView,
     QueueItemView, QueueView, Snapshot, Stage, StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
 };
 
@@ -79,35 +79,38 @@ impl Sim {
     /// setup is code in M1, so a violation is a programmer error surfaced loudly
     /// and deterministically, not data to repair. Content validation is M2's job.
     pub fn new(world: &TrivialWorld, setup: MatchSetup) -> Self {
-        Self::build(world, setup)
+        Self::build(world, setup, FogPreset::Default)
     }
 
-    /// Builds the initial state for a mission match (ADR-0201 §2a, Phase 1):
-    /// the exact [`Sim::new`] construction path — the same RNG consumption, the
-    /// same spawn order, the same tick-0 state hash — with the mission's
-    /// objective set attached for stage 10 to evaluate per tick. Mission data
-    /// reaches the simulation only through this seam (FD-6): the caller
-    /// resolves the objective set from content (the content seam's
-    /// `mission_objectives`), and the sim never sees a mission file, a content
-    /// id, or anything above it.
+    /// Builds the initial state for a mission match (ADR-0201 §2a, Phase 1;
+    /// §3 Phase 2): the exact [`Sim::new`] construction path — the same RNG
+    /// consumption, the same spawn order, the same tick-0 state hash — with
+    /// the mission's data attached for stage 10 to evaluate per tick, and
+    /// the mission's fog preset seeding the filter's initial state (FD-8:
+    /// `FogPreset::Default` reproduces today's all-Hidden init exactly, so
+    /// the preset alone cannot move any hash). Mission data reaches the
+    /// simulation only through this seam (FD-6): the caller resolves the
+    /// data from content (the content seam's `mission_data`), and the sim
+    /// never sees a mission file, a content id, or anything above it.
     ///
-    /// The objective set is derived state (the A-066 pattern), so a mission
-    /// match over the same world and setup produces the same state hashes as
-    /// the mission-less one at every tick — only the outward event stream
-    /// gains the objective-state family, and the match may resolve through the
+    /// The mission state is derived (A-066 pattern), so a mission match over
+    /// the same world and setup produces the same state hashes as the
+    /// mission-less one at every tick — only the outward event stream gains
+    /// the objective-state family, and the match may resolve through the
     /// mission's AND-composition instead of (or before) elimination.
-    pub fn with_mission(
-        world: &TrivialWorld,
-        setup: MatchSetup,
-        mission: MissionObjectives,
-    ) -> Self {
-        let mut sim = Self::build(world, setup);
+    pub fn with_mission(world: &TrivialWorld, setup: MatchSetup, mission: MissionData) -> Self {
+        let fog_preset = mission.fog_preset;
+        let mut sim = Self::build(world, setup, fog_preset);
         sim.mission = Some(crate::match_rules::MissionState::new(mission));
         sim
     }
 
     /// The shared construction body of [`Sim::new`] and [`Sim::with_mission`].
-    fn build(world: &TrivialWorld, setup: MatchSetup) -> Self {
+    /// `fog_preset` selects the fog filter's initial state (ADR-0201 §3,
+    /// Phase 2); [`Sim::new`] passes `FogPreset::Default`, reproducing the
+    /// historical all-Hidden init byte-for-byte — the fog is derived and
+    /// unhashed (A-059), so the preset is invisible to every hash and golden.
+    fn build(world: &TrivialWorld, setup: MatchSetup, fog_preset: FogPreset) -> Self {
         let mut players = setup.players;
         players.sort_by_key(|p| p.player);
         assert!(
@@ -129,7 +132,12 @@ impl Sim {
             events: Vec::new(),
             spawn_queue: world.scheduled_spawns.clone(),
             spawn_cursor: 0,
-            fog: crate::vision::FogState::new(players.len(), world.width_tiles, world.height_tiles),
+            fog: crate::vision::FogState::new(
+                players.len(),
+                world.width_tiles,
+                world.height_tiles,
+                fog_preset,
+            ),
             outcome: None,
             mission: None,
         };

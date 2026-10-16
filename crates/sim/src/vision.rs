@@ -46,7 +46,7 @@
 //! status changed) is DEBT-004's full repayment and waits for the visible-
 //! profile cost call.
 
-use pandemonium_sim_api::{EntityId, PlayerId};
+use pandemonium_sim_api::{EntityId, FogPreset, PlayerId};
 
 use crate::world::World;
 
@@ -76,12 +76,19 @@ pub(crate) struct FogState {
 }
 
 impl FogState {
-    /// Builds an all-Hidden fog state for a match.
-    pub(crate) fn new(player_count: usize, width: u32, height: u32) -> Self {
+    /// Builds the fog state for a match (plan §9.5): every tile starts in the
+    /// preset's state — `FogPreset::Default` is the historical all-Hidden
+    /// init, byte-for-byte; `Explored`/`Visible` are ADR-0201 §3's Phase 2
+    /// presets, seeding the *filter's initial state* only (FD-8: never
+    /// simulation state; the fog remains derived and unhashed, A-059).
+    pub(crate) fn new(player_count: usize, width: u32, height: u32, preset: FogPreset) -> Self {
+        let tile = match preset {
+            FogPreset::Default => TileVisibility::Hidden,
+            FogPreset::Explored => TileVisibility::Explored,
+            FogPreset::Visible => TileVisibility::Visible,
+        };
         let tile_count = (width as u64 * height as u64) as usize;
-        let players = (0..player_count)
-            .map(|_| vec![TileVisibility::Hidden; tile_count])
-            .collect();
+        let players = (0..player_count).map(|_| vec![tile; tile_count]).collect();
         Self {
             players,
             width,
@@ -265,6 +272,55 @@ mod tests {
     use pandemonium_fx::{Fx, Vec2Fx};
     use pandemonium_sim_api::{EntityId, PlayerId};
 
+    #[test]
+    fn fog_state_seeds_every_tile_by_preset() {
+        // ADR-0201 §3 (Phase 2, Package 1): the preset selects the filter's
+        // initial state — Default is the historical all-Hidden, Explored
+        // seeds every tile Explored, Visible seeds every tile Visible.
+        // (What the vision pass does with the seed afterwards is the system's
+        // normal business; this pins the seeding itself.)
+        let hidden = FogState::new(1, 4, 4, FogPreset::Default);
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(hidden.tile(0, x, y), TileVisibility::Hidden);
+            }
+        }
+        let explored = FogState::new(1, 4, 4, FogPreset::Explored);
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(explored.tile(0, x, y), TileVisibility::Explored);
+            }
+        }
+        let visible = FogState::new(1, 4, 4, FogPreset::Visible);
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(visible.tile(0, x, y), TileVisibility::Visible);
+            }
+        }
+    }
+
+    #[test]
+    fn explored_seeds_survive_the_vision_pass() {
+        // FD-8's letter for the Explored preset: the filter starts wide and
+        // the vision pass only ever *adds* Visible on top and demotes
+        // last-tick-Visible to Explored — a pre-existing Explored tile is
+        // never reset to Hidden, so the explored map stays explored.
+        let (world, _) = fog_world();
+        let mut fog = FogState::new(1, 4, 4, FogPreset::Explored);
+        assert_eq!(fog.tile(0, 3, 3), TileVisibility::Explored);
+        advance_vision(&mut fog, &world);
+        assert_eq!(
+            fog.tile(0, 3, 3),
+            TileVisibility::Explored,
+            "outside vision, the explored seed is untouched"
+        );
+        assert_eq!(
+            fog.tile(0, 1, 1),
+            TileVisibility::Visible,
+            "inside vision, the tile is live"
+        );
+    }
+
     /// A 4x4 world with one player-0 vision-carrier at the center of tile
     /// (1,1) — pos (1.5, 1.5) tile — with radius 1500 milli (1.5 tiles).
     /// Tiles within 1.5 tiles of (1.5, 1.5) — tile (1,1) center at dist 0,
@@ -305,7 +361,7 @@ mod tests {
                 }),
             ],
         );
-        let fog = FogState::new(1, 4, 4);
+        let fog = FogState::new(1, 4, 4, FogPreset::Default);
         (world, fog)
     }
 

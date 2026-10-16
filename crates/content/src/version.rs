@@ -13,7 +13,10 @@
 //!   loads through a loader older than its schema.
 
 use crate::error::ContentError;
-use crate::schema::{RawMapV1, RawMapV2, VersionHeader, MAP_SCHEMA_VERSION};
+use crate::schema::{
+    RawMapV1, RawMapV2, RawMissionV1, RawMissionV2, VersionHeader, MAP_SCHEMA_VERSION,
+    MISSION_SCHEMA_VERSION,
+};
 
 /// Reads only the `schema_version` field of a file. Lenient by design: all other
 /// fields belong to the real schema, which is parsed after the version is known.
@@ -117,5 +120,62 @@ pub(crate) fn migrate_map_v1_to_v2(v1: RawMapV1) -> RawMapV2 {
         ore_nodes: v1.ore_nodes,
         symmetric: v1.symmetric,
         heightmap: None,
+    }
+}
+
+/// The current-version raw mission shape, after any forward migration. This is
+/// what `parse_mission` consumes.
+pub(crate) enum MissionAtCurrent {
+    /// A version-2 mission, parsed directly.
+    Current(RawMissionV2),
+    /// A version-1 mission, parsed in its historical shape and awaiting
+    /// migration.
+    NeedsMigration(RawMissionV1),
+}
+
+/// Parses a mission file at whatever (supported) version it declares,
+/// returning either the current shape or the historical shape plus a pending
+/// migration — the map discipline verbatim (the declared version is confirmed
+/// against the strict parse).
+pub(crate) fn parse_mission_at_declared_version(
+    file: &str,
+    text: &str,
+) -> Result<MissionAtCurrent, ContentError> {
+    let version = read_version(file, text)?;
+    check_version(file, version, MISSION_SCHEMA_VERSION)?;
+    match version {
+        1 => {
+            let raw: RawMissionV1 = ron::from_str(text).map_err(|error| ContentError::Parse {
+                file: file.to_string(),
+                detail: error.to_string(),
+            })?;
+            confirm_declared_version(file, raw.schema_version, version)?;
+            Ok(MissionAtCurrent::NeedsMigration(raw))
+        }
+        _ => {
+            let raw: RawMissionV2 = ron::from_str(text).map_err(|error| ContentError::Parse {
+                file: file.to_string(),
+                detail: error.to_string(),
+            })?;
+            confirm_declared_version(file, raw.schema_version, version)?;
+            Ok(MissionAtCurrent::Current(raw))
+        }
+    }
+}
+
+/// Migration step 1 -> 2 (ADR-0201 §3, Phase 2): version 2 added the optional
+/// fog preset. A version-1 mission simply has none — the default preset is
+/// today's all-Hidden init, so the migrated mission behaves identically and
+/// (by the encoder's non-default-only rule) keeps its Phase 1 mission id.
+pub(crate) fn migrate_mission_v1_to_v2(v1: RawMissionV1) -> RawMissionV2 {
+    RawMissionV2 {
+        schema_version: 2,
+        id: v1.id,
+        display_name: v1.display_name,
+        map: v1.map,
+        faction: v1.faction,
+        rules: v1.rules,
+        objectives: v1.objectives,
+        fog_preset: crate::schema::RawFogPreset::Default,
     }
 }

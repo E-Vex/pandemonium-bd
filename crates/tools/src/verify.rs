@@ -24,7 +24,7 @@ use pandemonium_replay::{Checkpoint, ReplayError, ReplayFile};
 use pandemonium_sim::run_command_log;
 use pandemonium_sim::run_command_log_with_mission;
 use pandemonium_sim::TrivialWorld;
-use pandemonium_sim_api::{MatchSetup, MissionObjectives, PlayerId};
+use pandemonium_sim_api::{MatchSetup, MissionData, PlayerId};
 
 /// One loaded mission, resolved for verification (AUD-002, ADR-0201 §7):
 /// the domain-separated id — the third comparison's key — beside the
@@ -37,7 +37,7 @@ pub struct LoadedMission {
     /// The mission's domain-separated identity.
     pub id: u64,
     /// The mission's resolved objective set (the mission player's side).
-    pub objectives: MissionObjectives,
+    pub data: MissionData,
 }
 
 /// The outcome of a verification run.
@@ -117,7 +117,7 @@ pub fn verify_replay(
             &setup,
             &replay.commands,
             end_tick,
-            Some(mission.objectives.clone()),
+            Some(mission.data.clone()),
         ),
         None => run_command_log(world, &setup, &replay.commands, end_tick),
     };
@@ -190,10 +190,10 @@ pub fn resolve_replay_verification(
         .with_context(|| format!("loading content at {}", content_path.display()))?;
     let mut missions = Vec::with_capacity(tree.missions.len());
     for def in &tree.missions {
-        let objectives = mission_objectives_for_player(&tree, &def.id, &def.map)?;
+        let data = mission_data_for_player(&tree, &def.id, &def.map)?;
         missions.push(LoadedMission {
             id: tree.mission_id(&def.id),
-            objectives,
+            data,
         });
     }
     // The world through the named mission's own map bundle — the client's
@@ -216,13 +216,13 @@ pub fn resolve_replay_verification(
 }
 
 /// One mission's objective set resolved for the mission player: the first
-/// start of the mission's map (`ContentTree::mission_objectives`' Phase 1
+/// start of the mission's map (`ContentTree::mission_data`' Phase 1
 /// law — the client's `begin_mission` passes the same player).
-fn mission_objectives_for_player(
+fn mission_data_for_player(
     tree: &ContentTree,
     mission_id_str: &str,
     map_id_str: &str,
-) -> Result<MissionObjectives> {
+) -> Result<MissionData> {
     let map = tree
         .map(map_id_str)
         .with_context(|| format!("mission '{mission_id_str}' references map '{map_id_str}'"))?;
@@ -231,7 +231,7 @@ fn mission_objectives_for_player(
         .first()
         .map(|start| PlayerId(start.player))
         .with_context(|| format!("map '{map_id_str}' declares no starts"))?;
-    tree.mission_objectives(mission_id_str, player)
+    tree.mission_data(mission_id_str, player)
         .with_context(|| format!("resolving mission '{mission_id_str}' objectives"))
 }
 
@@ -258,9 +258,10 @@ mod tests {
     fn loaded(id: u64) -> LoadedMission {
         LoadedMission {
             id,
-            objectives: MissionObjectives {
+            data: MissionData {
                 player: PlayerId(0),
                 objectives: Vec::new(),
+                fog_preset: pandemonium_sim_api::FogPreset::Default,
             },
         }
     }
@@ -320,8 +321,8 @@ mod tests {
             .bundle("crossroads_64")
             .expect("the mission's map bundles");
         let world = bundle.world();
-        let objectives = tree
-            .mission_objectives("crossroads_01", PlayerId(0))
+        let data = tree
+            .mission_data("crossroads_01", PlayerId(0))
             .expect("crossroads_01 resolves for the first map start's player");
         let setup = MatchSetup {
             seed: 9,
@@ -340,7 +341,7 @@ mod tests {
         // driver — the same seam the client's mission host runs; the record
         // mirrors the client recorder's bytes (no commands: a fresh match
         // dumped before the player acted).
-        let run = run_command_log_with_mission(&world, &setup, &[], 120, Some(objectives.clone()));
+        let run = run_command_log_with_mission(&world, &setup, &[], 120, Some(data.clone()));
         let checkpoints: Vec<Checkpoint> = run
             .checkpoints
             .iter()
@@ -363,7 +364,7 @@ mod tests {
 
         let loaded_missions = vec![LoadedMission {
             id: mission_id,
-            objectives,
+            data,
         }];
         // (a) Against the loaded content: PASS — the third comparison fires
         // and the re-simulation runs mission-carrying.
@@ -440,8 +441,8 @@ mod tests {
         assert_eq!(missions[0].id, mission_id);
         // The mission player is the mission's map's first start (player 0
         // on crossroads_64 — the client's begin_mission law).
-        assert_eq!(missions[0].objectives.player, PlayerId(0));
-        assert_eq!(missions[0].objectives.objectives.len(), 2);
+        assert_eq!(missions[0].data.player, PlayerId(0));
+        assert_eq!(missions[0].data.objectives.len(), 2);
         // The world is the mission's own map's bundle (identical bytes on
         // this one-map tree; the law is what a multi-map tree exercises).
         assert_eq!(mission_world.content_hash(), world.content_hash());

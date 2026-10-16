@@ -409,12 +409,47 @@ pub struct ObjectiveDef {
     pub optional: bool,
 }
 
+/// A mission's fog preset (ADR-0201 §3, Phase 2): the initial state of the
+/// per-player fog filter. `Default` is today's all-Hidden init; the canonical
+/// form mirrors [`pandemonium_sim_api::FogPreset`], which the content seam
+/// resolves into (FD-6: mission data reaches the sim only through the seam).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FogPreset {
+    /// Today's init: every tile starts Hidden.
+    #[default]
+    Default,
+    /// Every tile starts Explored — the terrain is known from tick 0.
+    Explored,
+    /// Every tile starts Visible — the whole map is revealed at tick 0.
+    Visible,
+}
+
+impl From<crate::schema::RawFogPreset> for FogPreset {
+    fn from(raw: crate::schema::RawFogPreset) -> Self {
+        match raw {
+            crate::schema::RawFogPreset::Default => FogPreset::Default,
+            crate::schema::RawFogPreset::Explored => FogPreset::Explored,
+            crate::schema::RawFogPreset::Visible => FogPreset::Visible,
+        }
+    }
+}
+
+impl From<FogPreset> for pandemonium_sim_api::FogPreset {
+    fn from(preset: FogPreset) -> Self {
+        match preset {
+            FogPreset::Default => pandemonium_sim_api::FogPreset::Default,
+            FogPreset::Explored => pandemonium_sim_api::FogPreset::Explored,
+            FogPreset::Visible => pandemonium_sim_api::FogPreset::Visible,
+        }
+    }
+}
+
 /// A validated mission (ADR-0201 §3): a closed reference set into the content
 /// tree — map, faction, rules — plus the ordered, AND-composed objective
-/// list. Reference existence is validated at load (the loader resolves
-/// objective entity references; the tree assembly resolves the map, faction
-/// and rules references); the objectives' content ids become `KindId`s at the
-/// sim seam.
+/// list, and (since schema version 2) the fog preset. Reference existence is
+/// validated at load (the loader resolves objective entity references; the
+/// tree assembly resolves the map, faction and rules references); the
+/// objectives' content ids become `KindId`s at the sim seam.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MissionDef {
     /// Stable mission id.
@@ -432,4 +467,8 @@ pub struct MissionDef {
     /// The ordered objective list — the indices are the objective-state event
     /// indices (ADR-0201 §2).
     pub objectives: Vec<ObjectiveDef>,
+    /// The fog preset selecting the filter's initial state (ADR-0201 §3,
+    /// Phase 2); `Default` for any mission authored before v2 — today's
+    /// behavior, byte-for-byte.
+    pub fog_preset: FogPreset,
 }

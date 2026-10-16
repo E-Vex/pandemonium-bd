@@ -1,8 +1,14 @@
 // The Phase 1 mission (ADR-0201 §9): the vertical slice — one mission on
 // crossroads_64 with the unchanged Legion content. The objective set is the
 // two kinds the slice proves: destroy the enemy (required) and grow the
-// workforce to eight (optional). No fog preset, no AI settings, no
-// restrictions — those are Phase 2; no campaign file — that is Phase 3.
+// workforce to eight (optional). No AI settings, no restrictions — those are
+// later Phase 2 packages; no campaign file — that is Phase 3.
+//
+// Schema version 2 (Phase 2, ADR-0201 §3): the fog preset. This mission
+// declares the default — today's all-Hidden init, byte-for-byte — which
+// encodes to the exact Phase 1 mission id (the encoder's extension rule:
+// a default preset appends no bytes), so the mission's identity is
+// unchanged by the declaration.
 //
 // The optional objective's count is authored above the Legion starting
 // force (1 command center + 4 workers per player, plan §9.7): the owner
@@ -13,12 +19,13 @@
 // 200 ore is exactly four workers' cost, so the goal is reachable by
 // pure production from the opening economy.
 (
-    schema_version: 1,
+    schema_version: 2,
     id: "crossroads_01",
     display_name: "Crossroads",
     map: "crossroads_64",
     faction: "legion",
     rules: "alpha",
+    fog_preset: Default,
     objectives: [
         // Destroy the enemy command center — a surgical target distinct from
         // the elimination rule, proving the objective model's expressiveness.

@@ -404,16 +404,39 @@ pub(crate) struct RawHeightmap {
 
 /// `schema_version` supported by this build for mission files (ADR-0201 §3:
 /// the mission schema is versioned and forward-only like every other kind).
-pub(crate) const MISSION_SCHEMA_VERSION: u32 = 1;
+/// Version 2 added the optional fog preset (ADR-0201 §3, Phase 2); version 1
+/// files migrate forward.
+pub(crate) const MISSION_SCHEMA_VERSION: u32 = 2;
 
-/// A mission file (ADR-0201 §3): a closed reference set into the content tree
-/// — the map, the faction, the rules — plus the ordered objective list
-/// (ADR-0201 §2). Phase 1 carries the destroy and build/train kinds; the
-/// vocabulary grows forward-only with the schema version (survive, reach,
-/// protect and gather are Phase 2 — ADR-0201 §9).
+/// A mission file, version 1 — the Phase 1 shape (no fog preset). Kept so
+/// old content keeps loading (FD-10); [`crate::version`] migrates it forward.
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RawMission {
+pub(crate) struct RawMissionV1 {
+    /// File schema version (always 1 in this shape).
+    pub schema_version: u32,
+    /// Stable mission id (must equal the file name stem).
+    pub id: String,
+    /// Human-facing name (ASCII only — the embedded font constraint,
+    /// ADR-0201 §5).
+    pub display_name: String,
+    /// The map this mission runs on (a map id in the same tree).
+    pub map: String,
+    /// The faction the mission player runs (a faction id in the same tree).
+    pub faction: String,
+    /// The ruleset the mission runs under (a rules id in the same tree).
+    pub rules: String,
+    /// The ordered objective list, AND-composed (ADR-0201 §2).
+    pub objectives: Vec<RawObjective>,
+}
+
+/// A mission file, version 2 — adds the optional fog preset (ADR-0201 §3,
+/// Phase 2). The preset selects the fog filter's initial state; absent means
+/// `Default`, today's all-Hidden init, so a v1 mission's behavior is
+/// unchanged by the migration.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawMissionV2 {
     /// File schema version.
     pub schema_version: u32,
     /// Stable mission id (must equal the file name stem).
@@ -429,6 +452,23 @@ pub(crate) struct RawMission {
     pub rules: String,
     /// The ordered objective list, AND-composed (ADR-0201 §2).
     pub objectives: Vec<RawObjective>,
+    /// The fog preset selecting the filter's initial state (ADR-0201 §3);
+    /// absent means `Default` — today's init, byte-for-byte.
+    #[serde(default)]
+    pub fog_preset: RawFogPreset,
+}
+
+/// The fog preset spelling (ADR-0201 §3): `Default | Explored | Visible`.
+/// Unknown spellings are loud parse errors — the strict schema's discipline.
+#[derive(serde::Deserialize, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RawFogPreset {
+    /// Today's all-Hidden init.
+    #[default]
+    Default,
+    /// Every tile starts Explored.
+    Explored,
+    /// Every tile starts Visible.
+    Visible,
 }
 
 /// One objective as authored: the kind spelling, the parameters block, and

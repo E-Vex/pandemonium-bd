@@ -33,7 +33,7 @@ use std::time::Duration;
 use pandemonium_ai::Controller;
 use pandemonium_sim::{MatchOutcome, Sim, TrivialWorld};
 use pandemonium_sim_api::{
-    Command, Event, MatchSetup, MissionObjectives, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
+    Command, Event, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
 };
 
 use crate::clock::FixedTimestep;
@@ -138,17 +138,19 @@ impl MatchHost {
     /// the exact [`MatchHost::with_controllers`] construction path with the
     /// simulation built by [`Sim::with_mission`] instead of [`Sim::new`] —
     /// the shared `Sim::build` body means tick-0 state is identical by
-    /// construction (the B-012 proof), so the mission's objective set is the
-    /// only difference. The mission's objectives are evaluated per tick by
-    /// stage 10 as derived state and surface outward as
-    /// [`Event::ObjectiveState`] / `MatchEnded` — never in the state hash, so
-    /// the mission-less paths and every golden are untouched. A peer of
+    /// construction (the B-012 proof), so the mission's data is the only
+    /// difference: the objective set for stage 10, and the fog preset for the
+    /// filter's initial state (FD-8 — `Default` reproduces today's init, so
+    /// the preset alone cannot move any hash or golden). The objectives are
+    /// evaluated per tick by stage 10 as derived state and surface outward
+    /// as [`Event::ObjectiveState`] / `MatchEnded` — never in the state hash,
+    /// so the mission-less paths and every golden are untouched. A peer of
     /// [`Self::with_controllers`], not a refactor of it.
     pub fn with_mission(
         world: &TrivialWorld,
         setup: MatchSetup,
         controllers: Vec<(PlayerId, Box<dyn Controller>)>,
-        mission: MissionObjectives,
+        mission: MissionData,
     ) -> Self {
         for (player, _) in &controllers {
             assert!(
@@ -367,8 +369,8 @@ mod tests {
         CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
     };
     use pandemonium_sim_api::{
-        CommandKind, ControllerKind, EntityId, KindId, MissionObjective, MissionObjectiveKind,
-        MissionObjectiveParameters, ObjectiveState, PlayerSetup, ResourceId,
+        CommandKind, ControllerKind, EntityId, FogPreset, KindId, MissionObjective,
+        MissionObjectiveKind, MissionObjectiveParameters, ObjectiveState, PlayerSetup, ResourceId,
     };
 
     fn world() -> TrivialWorld {
@@ -700,14 +702,15 @@ mod tests {
     /// as an authored objective). The test world fields no enemy at all, so
     /// the objective resolves on the first evaluated tick — a compact,
     /// deterministic drive of the seam.
-    fn test_mission() -> MissionObjectives {
-        MissionObjectives {
+    fn test_mission() -> MissionData {
+        MissionData {
             player: PlayerId(0),
             objectives: vec![MissionObjective {
                 kind: MissionObjectiveKind::Destroy,
                 parameters: MissionObjectiveParameters::Destroy { target_kind: None },
                 optional: false,
             }],
+            fog_preset: FogPreset::Default,
         }
     }
 

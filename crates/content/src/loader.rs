@@ -12,8 +12,8 @@ use std::path::Path;
 use crate::defs;
 use crate::error::ContentError;
 use crate::schema::{
-    self, RawCapability, RawEntity, RawFaction, RawMapV2, RawMission, RawObjective,
-    RawObjectiveParameters, RawRules,
+    self, RawCapability, RawEntity, RawFaction, RawMapV2, RawObjective, RawObjectiveParameters,
+    RawRules,
 };
 use crate::validate;
 use crate::version;
@@ -460,18 +460,17 @@ fn convert_terrain(
 /// references resolve against the tree's entities exactly like faction rosters
 /// and map ore nodes do. The map/faction/rules references are validated at
 /// tree assembly (they need the whole tree — see `ContentTree::load`).
+/// Version 1 files migrate forward to the current shape (the fog preset
+/// defaults — ADR-0201 §3, Phase 2).
 pub(crate) fn parse_mission(
     source: &Source,
     entities: &[defs::EntityDef],
 ) -> Result<defs::MissionDef, ContentError> {
     let file = display_path("missions", source);
-    let found = version::read_version(&file, &source.text)?;
-    version::check_version(&file, found, schema::MISSION_SCHEMA_VERSION)?;
-    let raw: RawMission = ron::from_str(&source.text).map_err(|error| ContentError::Parse {
-        file: file.clone(),
-        detail: error.to_string(),
-    })?;
-    version::confirm_declared_version(&file, raw.schema_version, found)?;
+    let raw = match version::parse_mission_at_declared_version(&file, &source.text)? {
+        version::MissionAtCurrent::Current(raw) => raw,
+        version::MissionAtCurrent::NeedsMigration(v1) => version::migrate_mission_v1_to_v2(v1),
+    };
     if raw.id != source.stem() {
         return Err(ContentError::IdMismatch {
             file,
@@ -503,6 +502,7 @@ pub(crate) fn parse_mission(
         faction: raw.faction,
         rules: raw.rules,
         objectives,
+        fog_preset: defs::FogPreset::from(raw.fog_preset),
     })
 }
 
@@ -686,7 +686,9 @@ mod tests {
         let def = parse(MISSION).expect("the factory mission parses");
         assert_eq!(def.id, "crossroads_01");
         assert_eq!(def.display_name, "Crossroads");
-        assert_eq!(def.schema_version, 1);
+        // The v1 factory migrates forward to the current shape (FD-10): the
+        // declared version is the file's, the canonical form is current.
+        assert_eq!(def.schema_version, 2);
         assert_eq!(def.map, "crossroads_64");
         assert_eq!(def.faction, "legion");
         assert_eq!(def.rules, "alpha");
@@ -773,11 +775,59 @@ mod tests {
     }
 
     #[test]
+    fn a_version_one_mission_migrates_to_the_default_fog_preset() {
+        // FD-10 / ADR-0201 §3 Phase 2: a v1 mission (no fog_preset field)
+        // migrates forward with `Default` — today's all-Hidden init, so the
+        // migrated mission's behavior and identity are unchanged.
+        let def = parse(MISSION).expect("the v1 mission parses and migrates");
+        assert_eq!(def.schema_version, 2);
+        assert_eq!(def.fog_preset, defs::FogPreset::Default);
+    }
+
+    #[test]
+    fn a_version_two_mission_carries_its_fog_preset() {
+        let explored = MISSION
+            .replace("schema_version: 1,", "schema_version: 2,")
+            .replace(
+                "    rules: \"alpha\",",
+                "    rules: \"alpha\",\n    fog_preset: Explored,",
+            );
+        let def = parse(&explored).expect("the v2 mission with a preset parses");
+        assert_eq!(def.schema_version, 2);
+        assert_eq!(def.fog_preset, defs::FogPreset::Explored);
+        // Absent on a v2 file: the serde default is `Default`.
+        let bare = MISSION.replace("schema_version: 1,", "schema_version: 2,");
+        let def = parse(&bare).expect("the v2 mission without a preset parses");
+        assert_eq!(def.fog_preset, defs::FogPreset::Default);
+        // All three spellings are distinct values.
+        let visible = MISSION
+            .replace("schema_version: 1,", "schema_version: 2,")
+            .replace(
+                "    rules: \"alpha\",",
+                "    rules: \"alpha\",\n    fog_preset: Visible,",
+            );
+        let def = parse(&visible).expect("the visible preset parses");
+        assert_eq!(def.fog_preset, defs::FogPreset::Visible);
+    }
+
+    #[test]
+    fn unknown_fog_presets_are_rejected_loudly() {
+        let bad = MISSION
+            .replace("schema_version: 1,", "schema_version: 2,")
+            .replace(
+                "    rules: \"alpha\",",
+                "    rules: \"alpha\",\n    fog_preset: Revealed,",
+            );
+        let err = parse(&bad).unwrap_err();
+        assert!(matches!(err, ContentError::Parse { .. }), "got: {err}");
+    }
+
+    #[test]
     fn newer_schema_versions_are_refused() {
-        let future = MISSION.replace("schema_version: 1,", "schema_version: 2,");
+        let future = MISSION.replace("schema_version: 1,", "schema_version: 3,");
         let err = parse(&future).unwrap_err();
         assert!(
-            err.to_string().contains("schema_version 2 is not loadable"),
+            err.to_string().contains("schema_version 3 is not loadable"),
             "got: {err}"
         );
     }

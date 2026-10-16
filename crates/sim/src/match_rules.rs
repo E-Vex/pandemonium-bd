@@ -60,7 +60,7 @@
 //! under the A12 checker without crashing", not "the match resolved".
 
 use pandemonium_sim_api::{
-    Event, KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
+    Event, KindId, MissionData, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
     ObjectiveState, PlayerId,
 };
 
@@ -79,26 +79,25 @@ pub struct MatchOutcome {
 }
 
 /// The live evaluation state of one loaded mission (ADR-0201 §2a): the
-/// objective set as resolved at the content seam, plus each objective's
-/// resolution. Derived state in the A-066 pattern — a pure function of the
-/// hashed world inputs, evaluated per tick, cached once resolved, and never
-/// part of the canonical state hash.
+/// mission data as resolved at the content seam (the mission player, the
+/// ordered objective list, and — carried for construction only — the fog
+/// preset, which `Sim::build` consumed before this state existed), plus each
+/// objective's resolution. Derived state in the A-066 pattern — a pure
+/// function of the hashed world inputs, evaluated per tick, cached once
+/// resolved, and never part of the canonical state hash.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct MissionState {
-    /// The objective set: the mission player plus the ordered objective list.
-    objectives: pandemonium_sim_api::MissionObjectives,
+    /// The mission data: the mission player plus the ordered objective list.
+    data: MissionData,
     /// Each objective's resolution, indexed with the objective list.
     statuses: Vec<ObjectiveStatus>,
 }
 
 impl MissionState {
     /// The state a loaded mission starts in: every objective pending.
-    pub(crate) fn new(objectives: pandemonium_sim_api::MissionObjectives) -> Self {
-        let statuses = vec![ObjectiveStatus::Pending; objectives.objectives.len()];
-        Self {
-            objectives,
-            statuses,
-        }
+    pub(crate) fn new(data: MissionData) -> Self {
+        let statuses = vec![ObjectiveStatus::Pending; data.objectives.len()];
+        Self { data, statuses }
     }
 }
 
@@ -216,8 +215,8 @@ fn evaluate_objectives(
     outcome: &mut Option<MatchOutcome>,
     events: &mut Vec<Event>,
 ) {
-    let player = mission.objectives.player;
-    for (index, objective) in mission.objectives.objectives.iter().enumerate() {
+    let player = mission.data.player;
+    for (index, objective) in mission.data.objectives.iter().enumerate() {
         if mission.statuses[index] != ObjectiveStatus::Pending {
             continue; // resolutions are monotonic — evaluate each objective once.
         }
@@ -237,7 +236,7 @@ fn evaluate_objectives(
     let mut required_seen = false;
     let mut all_completed = true;
     let mut any_failed = false;
-    for (objective, status) in mission.objectives.objectives.iter().zip(&mission.statuses) {
+    for (objective, status) in mission.data.objectives.iter().zip(&mission.statuses) {
         if objective.optional {
             continue;
         }
@@ -347,19 +346,21 @@ mod tests {
     use crate::fixture::TrivialWorld;
     use crate::sim::Sim;
     use pandemonium_sim_api::{
-        Command, CommandKind, ControllerKind, MatchSetup, MissionObjective, MissionObjectiveKind,
-        MissionObjectiveParameters, MissionObjectives, PlayerId, PlayerSetup,
+        Command, CommandKind, ControllerKind, FogPreset, MatchSetup, MissionData, MissionObjective,
+        MissionObjectiveKind, MissionObjectiveParameters, PlayerId, PlayerSetup,
     };
 
-    /// A mission objective set builder for the tests.
-    fn mission_for(player: PlayerId, objectives: &[MissionObjective]) -> MissionObjectives {
-        MissionObjectives {
+    /// A mission data builder for the tests (the default fog preset — the
+    /// evaluator never reads it; construction consumes it).
+    fn mission_for(player: PlayerId, objectives: &[MissionObjective]) -> MissionData {
+        MissionData {
             player,
             objectives: objectives.to_vec(),
+            fog_preset: FogPreset::Default,
         }
     }
 
-    fn destroy_all(player: PlayerId) -> MissionObjectives {
+    fn destroy_all(player: PlayerId) -> MissionData {
         mission_for(
             player,
             &[MissionObjective {

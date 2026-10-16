@@ -536,7 +536,7 @@ pub enum MissionObjectiveKind {
 /// A mission objective's parameters in the simulation's resolved vocabulary
 /// (ADR-0201 §2) — the `KindId`-resolved form of content's
 /// `ObjectiveParameters` (string ids). The content seam
-/// (`ContentTree::mission_objectives`) performs the resolution; the
+/// (`ContentTree::mission_data`) performs the resolution; the
 /// simulation never sees kind-name strings (FD-6).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissionObjectiveParameters {
@@ -570,15 +570,21 @@ pub struct MissionObjective {
     pub optional: bool,
 }
 
-/// A mission's objective set as the simulation receives it (ADR-0201 §2a):
-/// the mission player the objectives belong to, plus the ordered objective
-/// list — the indices are the [`Event::ObjectiveState`] indices. Match-
-/// defining input data, exactly the class [`MatchSetup`] belongs to: it
-/// crosses the sim boundary at construction (`Sim::with_mission`) and is
-/// evaluated per tick by stage 10 as derived state (the A-066 pattern), so it
-/// never enters the canonical state hash.
+/// A mission's data as the simulation receives it (ADR-0201 §2a, §3): the
+/// mission player the objectives belong to, the ordered objective list, and
+/// the mission's fog preset — the indices are the [`Event::ObjectiveState`]
+/// indices. Match-defining input data, exactly the class [`MatchSetup`]
+/// belongs to: it crosses the sim boundary at construction
+/// (`Sim::with_mission`) and is evaluated per tick by stage 10 as derived
+/// state (the A-066 pattern), so it never enters the canonical state hash.
+///
+/// Phase 2 (ADR-0201 §3) renames the Phase 1 `MissionObjectives` to
+/// `MissionData`: the type carries more than objectives now — the fog preset
+/// today, the AI settings and restriction effects later — exactly the
+/// `player` field's precedent (a non-objective from day one). The rename is
+/// mechanical; the carried contract is unchanged.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct MissionObjectives {
+pub struct MissionData {
     /// The player the objectives belong to — the mission player. The
     /// objective evaluator reads the world from this player's side: "enemy"
     /// means every non-neutral owner that is not this player.
@@ -586,6 +592,36 @@ pub struct MissionObjectives {
     /// The ordered objective list, AND-composed (ADR-0201 §2): the mission
     /// player wins when every non-optional objective completes.
     pub objectives: Vec<MissionObjective>,
+    /// The mission's fog preset (ADR-0201 §3): the initial state of the
+    /// per-player fog filter — `Default` reproduces today's all-Hidden init
+    /// byte-for-byte. Derived, unhashed, and deterministic for every
+    /// player's view alike (FD-8: fog filters information, never alters the
+    /// simulation; FD-7: the AI sees through the same filter as the human).
+    pub fog_preset: FogPreset,
+}
+
+/// A mission's fog preset (ADR-0201 §3): which initial state the per-player
+/// fog filter starts in. The fog remains derived and unhashed (A-059) — a
+/// preset changes the filter's *starting width*, never simulation state, so
+/// no checkpoint and no golden can move; `Default` is today's behavior
+/// exactly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FogPreset {
+    /// Today's init: every tile starts `Hidden` (never seen). The first
+    /// vision pass then marks the tiles inside friendly vision radii
+    /// `Visible`, exactly as before Phase 2.
+    #[default]
+    Default,
+    /// Every tile starts `Explored` (seen before, not currently visible):
+    /// the terrain is known from tick 0, live entities still require vision.
+    /// Stable across ticks — `advance_vision` only demotes tiles that were
+    /// `Visible` last tick, so an explored map stays explored.
+    Explored,
+    /// Every tile starts `Visible` (currently visible): the whole map is
+    /// live-revealed at tick 0; after the first vision pass, tiles outside
+    /// friendly vision radii settle to `Explored` (the fog system's normal
+    /// demotion), leaving the map permanently explored for that match.
+    Visible,
 }
 
 /// One of the eleven fixed pipeline stages of the simulation tick (plan
@@ -692,10 +728,11 @@ mod tests {
     }
 
     #[test]
-    fn mission_objective_sets_carry_their_player_and_ordered_objectives() {
-        // ADR-0201 §2a: the mission input vocabulary — resolved KindIds, the
-        // mission player, and the ordered list whose indices the events echo.
-        let objectives = MissionObjectives {
+    fn mission_data_carries_the_player_objectives_and_fog_preset() {
+        // ADR-0201 §2a/§3: the mission input vocabulary — resolved KindIds,
+        // the mission player, the ordered list whose indices the events echo,
+        // and the fog preset that seeds the filter's initial state.
+        let mission = MissionData {
             player: PlayerId(0),
             objectives: vec![
                 MissionObjective {
@@ -712,11 +749,25 @@ mod tests {
                     optional: true,
                 },
             ],
+            fog_preset: FogPreset::Default,
         };
-        assert_eq!(objectives.player, PlayerId(0));
-        assert_eq!(objectives.objectives.len(), 2);
-        assert!(objectives.objectives[0].kind == MissionObjectiveKind::Destroy);
-        assert!(!objectives.objectives[0].optional);
-        assert!(objectives.objectives[1].optional);
+        assert_eq!(mission.player, PlayerId(0));
+        assert_eq!(mission.objectives.len(), 2);
+        assert!(mission.objectives[0].kind == MissionObjectiveKind::Destroy);
+        assert!(!mission.objectives[0].optional);
+        assert!(mission.objectives[1].kind == MissionObjectiveKind::BuildTrain);
+        assert!(mission.objectives[1].optional);
+        assert_eq!(mission.fog_preset, FogPreset::Default);
+    }
+
+    #[test]
+    fn fog_presets_default_to_the_phase_1_behavior() {
+        // FD-8/ADR-0201 §3: the default preset is the zero value — a mission
+        // authored without a preset (or with `Default`) reproduces today's
+        // all-Hidden init; the two Phase 2 presets are distinct values.
+        assert_eq!(FogPreset::default(), FogPreset::Default);
+        assert_ne!(FogPreset::Default, FogPreset::Explored);
+        assert_ne!(FogPreset::Default, FogPreset::Visible);
+        assert_ne!(FogPreset::Explored, FogPreset::Visible);
     }
 }

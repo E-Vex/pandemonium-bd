@@ -6,7 +6,7 @@
 //! ADR's "destroy the enemy command center." The corrected fixture names the
 //! surgical target: `Some("command_center")`. These tests load the REAL
 //! content tree, resolve the REAL mission through the content seam
-//! (`ContentTree::mission_objectives`), and drive the REAL simulation
+//! (`ContentTree::mission_data`), and drive the REAL simulation
 //! (`Sim::with_mission`) end-to-end:
 //!
 //! - **Resolution** — the fixture resolves to exactly two objectives: a
@@ -29,8 +29,9 @@ use std::path::{Path, PathBuf};
 use pandemonium_content::ContentTree;
 use pandemonium_sim::{CapTemplate, KindEconomy, KindTemplate, Sim, SpawnDef, TrivialWorld};
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, Event, KindId, MatchSetup, MissionObjectiveKind,
-    MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup, Vec2Fx,
+    Command, CommandKind, ControllerKind, Event, FogPreset, KindId, MatchSetup, MissionData,
+    MissionObjectiveKind, MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup,
+    TileFog, Vec2Fx,
 };
 
 /// The repository's content directory.
@@ -134,7 +135,7 @@ fn command_center_world(command_center: KindId) -> TrivialWorld {
 fn crossroads_01_resolves_command_center_objective() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
 
     // The Phase 1 objective set: exactly two objectives.
@@ -181,7 +182,7 @@ fn crossroads_01_resolves_command_center_objective() {
     // Determinism: resolving twice produces the same objective set, and the
     // mission id is stable across calls.
     let again = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("the second resolution succeeds");
     assert_eq!(objectives, again);
     assert_eq!(
@@ -194,7 +195,7 @@ fn crossroads_01_resolves_command_center_objective() {
 fn command_center_destruction_completes_mission_with_other_structures_standing() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
     let command_center = match objectives.objectives[0].parameters {
         MissionObjectiveParameters::Destroy {
@@ -274,7 +275,7 @@ fn command_center_destruction_completes_mission_with_other_structures_standing()
 fn mission_less_path_is_byte_equivalent() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
     let command_center = match objectives.objectives[0].parameters {
         MissionObjectiveParameters::Destroy {
@@ -343,7 +344,7 @@ fn mission_less_path_is_byte_equivalent() {
 fn the_optional_objective_demands_growth_beyond_the_starting_forces() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
     let command_center = match objectives.objectives[0].parameters {
         MissionObjectiveParameters::Destroy {
@@ -470,4 +471,139 @@ fn the_optional_objective_demands_growth_beyond_the_starting_forces() {
         sim.outcome().is_none(),
         "an optional objective completes without ending the match"
     );
+}
+
+// ---- Phase 2, Package 1: fog presets (ADR-0201 §3, B-015) -----------------
+//
+// The acceptance set: the default preset is byte-identical to the mission-less
+// path (state hash AND fog bytes at every tick), the Explored preset seeds the
+// whole map Explored-or-Visible with no Hidden tile left (the terrain is known
+// from tick 0), and neither preset can move a state hash (FD-8: the fog is
+// derived and unhashed, A-059 — the filter's initial state is not sim state).
+
+/// The real content's mission data with the fog preset swapped — the sim-side
+/// vocabulary is public, so the seam's contract is testable directly over the
+/// real resolved objective set.
+fn mission_with_preset(preset: FogPreset) -> MissionData {
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let mut mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    mission.fog_preset = preset;
+    mission
+}
+
+#[test]
+fn the_default_preset_is_byte_identical_to_the_mission_less_path() {
+    // Package 1's headline proof: `Sim::new` and `Sim::with_mission` over the
+    // same world and setup produce identical state hashes AND identical fog
+    // bytes at every tick when the preset is Default — the seeding reproduces
+    // the historical all-Hidden init exactly (A-059, FD-8).
+    let bundle = ContentTree::load_dir(&repo_content())
+        .expect("the repository content loads")
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles");
+    let world = bundle.world();
+    let setup = two_player_setup();
+    let mission = mission_with_preset(FogPreset::Default);
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut wrapped = Sim::with_mission(&world, setup, mission);
+    assert_eq!(plain.state_hash(), wrapped.state_hash(), "tick 0 hash");
+    assert_eq!(
+        plain.player_view(PlayerId(0)).fog,
+        wrapped.player_view(PlayerId(0)).fog,
+        "tick 0 fog bytes — the default seed is the historical init"
+    );
+    for _ in 0..120 {
+        plain.step(&[]);
+        wrapped.step(&[]);
+        assert_eq!(plain.state_hash(), wrapped.state_hash());
+        assert_eq!(
+            plain.player_view(PlayerId(0)).fog,
+            wrapped.player_view(PlayerId(0)).fog
+        );
+    }
+}
+
+#[test]
+fn the_explored_preset_knows_the_whole_map_from_tick_0() {
+    // FD-8's outward shape: an Explored mission starts with every tile
+    // Explored-or-Visible — no Hidden tile anywhere — and the live vision
+    // pass maintains the Visible layer on top exactly as always. The state
+    // hash stays identical to the mission-less path at every tick: the fog
+    // is a derived filter, never canonical state.
+    let bundle = ContentTree::load_dir(&repo_content())
+        .expect("the repository content loads")
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles");
+    let world = bundle.world();
+    let setup = two_player_setup();
+    let mission = mission_with_preset(FogPreset::Explored);
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut explored = Sim::with_mission(&world, setup, mission);
+
+    let fog = explored.player_view(PlayerId(0)).fog;
+    assert!(
+        fog.iter()
+            .all(|tile| { matches!(tile, TileFog::Explored | TileFog::Visible) }),
+        "the explored preset leaves no Hidden tile ({} tiles)",
+        fog.len()
+    );
+    // The contrast: the default path still has Hidden tiles far from base.
+    assert!(
+        plain
+            .player_view(PlayerId(0))
+            .fog
+            .iter()
+            .any(|tile| matches!(tile, TileFog::Hidden)),
+        "the default preset keeps Hidden tiles — the presets are observably distinct"
+    );
+    for _ in 0..120 {
+        plain.step(&[]);
+        explored.step(&[]);
+        assert_eq!(
+            plain.state_hash(),
+            explored.state_hash(),
+            "the fog preset never enters the canonical state hash"
+        );
+        // The explored map stays explored across ticks (the vision pass only
+        // demotes last-tick-Visible, never a pre-existing Explored tile).
+        assert!(explored
+            .player_view(PlayerId(0))
+            .fog
+            .iter()
+            .all(|tile| matches!(tile, TileFog::Explored | TileFog::Visible)));
+    }
+}
+
+#[test]
+fn the_visible_preset_settles_to_a_fully_explored_map() {
+    // The Visible seed is all-tiles-Visible; the first vision pass then
+    // settles everything outside friendly radii to Explored (the fog
+    // system's normal demotion — FD-8: the preset seeds the filter, the pass
+    // owns the evolution). Observably: no Hidden tile, live vision intact,
+    // and the state hash still identical to the mission-less path.
+    let bundle = ContentTree::load_dir(&repo_content())
+        .expect("the repository content loads")
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles");
+    let world = bundle.world();
+    let setup = two_player_setup();
+    let mission = mission_with_preset(FogPreset::Visible);
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut revealed = Sim::with_mission(&world, setup, mission);
+    assert_eq!(plain.state_hash(), revealed.state_hash(), "tick 0");
+    assert!(
+        revealed
+            .player_view(PlayerId(0))
+            .fog
+            .iter()
+            .all(|tile| matches!(tile, TileFog::Explored | TileFog::Visible)),
+        "the visible preset leaves no Hidden tile"
+    );
+    for _ in 0..60 {
+        plain.step(&[]);
+        revealed.step(&[]);
+        assert_eq!(plain.state_hash(), revealed.state_hash());
+    }
 }
