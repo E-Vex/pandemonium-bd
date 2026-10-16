@@ -1,7 +1,7 @@
 # ADR-0201: Missions, campaigns and cutscenes — the objective model, mission data, and the single-player campaign
 
 - **Date:** 2026-10-14
-- **Status:** accepted
+- **Status:** proposed
 - **Frozen decision affected:** **FD-1** (plan §2, plan §6.5 — what a match is and
   what its identity covers): *clarified* — the match-defining data gains the
   **mission** dimension (map + setup + restrictions + objectives + AI settings +
@@ -61,10 +61,8 @@ FD-1..FD-10 (`plan.md:62-71`), integer-only determinism (FD-5, `plan.md:140-153`
 and **goldens never move without bundled, explicit owner authorization**
 (STANDING_ORDERS §7) — every design choice below is shaped by that last rule.
 
-Nothing mission-shaped existed at that pinned head — the pre-mission tree
-(this paragraph and §1 describe the state *before* the mission implementation,
-which landed after acceptance; see the Decision): no mission, campaign, cutscene
-or tutorial surface anywhere in the crates (verified by search at the pinned
+Nothing mission-shaped exists today: no mission, campaign, cutscene or
+tutorial surface anywhere in the crates (verified by search at the pinned
 head), no netcode (the workspace is nine crates + tests, `Cargo.toml:3`; the
 controller vocabulary is exactly `Human | Ai`, `crates/sim_api/src/lib.rs:76-81`),
 and no presentation-data channel beyond the map's display-only heightmap.
@@ -72,8 +70,6 @@ and no presentation-data channel beyond the map's display-only heightmap.
 ## Proposal
 
 ### 1. Current state — every claim cited at the pinned head `d989336`
-   (historical: the tree **before** the mission implementation — Phase 1 landed
-   after acceptance)
 
 **How a match is set up.** A match is `MatchSetup` — one seed plus the player
 slots (`crates/sim_api/src/lib.rs:92-101`) — plus the content. The windowed
@@ -708,14 +704,4 @@ Verification performed in this session (B-010):
 
 ## Decision
 
-**Accepted by the owner, 2026-10-16** — the mission/campaign architecture and
-its Phase 1 vertical slice as implemented (B-010…B-013, the `crossroads_01`
-slice) are approved: the FD-1 mission-identity clarification, the FD-4/FD-10
-mission data class, the domain-separated mission id, and the derived-state
-objective model are law. §1's current-state description is historical — it
-describes the pinned head `d989336`, the tree *before* the mission
-implementation, not the tree at acceptance. The owner's AUD-003 ruling
-(2026-10-16) keeps the BuildTrain "N exist" semantics with the `crossroads_01`
-optional objective's count raised from four to eight workers ("grow to 8
-workers") — a content-level correction of the §9 slice, not a change to this
-ADR's model.
+<Only filled in once accepted or rejected, with a one-line rationale.>
