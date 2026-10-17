@@ -96,11 +96,7 @@ impl Sim {
     /// the mission-less one at every tick — only the outward event stream
     /// gains the objective-state family, and the match may resolve through the
     /// mission's AND-composition instead of (or before) elimination.
-    pub fn with_mission(
-        world: &TrivialWorld,
-        setup: MatchSetup,
-        mission: MissionData,
-    ) -> Self {
+    pub fn with_mission(world: &TrivialWorld, setup: MatchSetup, mission: MissionData) -> Self {
         let mut sim = Self::build(world, setup);
         sim.mission = Some(crate::match_rules::MissionState::new(mission));
         sim

@@ -21,7 +21,7 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, MissionData,
+    KindId, MissionData, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
     PlayerId, ResourceId, Vec2Fx,
 };
 

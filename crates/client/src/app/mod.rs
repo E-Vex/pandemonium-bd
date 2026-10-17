@@ -28,8 +28,8 @@ use pandemonium_engine::{
     RtsCamera,
 };
 use pandemonium_sim_api::{
-    EntityId, Event, KindId, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot,
-    TileFog, Vec2Fx,
+    EntityId, Event, KindId, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot, TileFog,
+    Vec2Fx,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState};

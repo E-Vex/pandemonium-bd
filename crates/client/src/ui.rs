@@ -13,8 +13,8 @@
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
 use pandemonium_sim_api::{
-    EntityId, EntityView, KindId, MissionObjectiveKind, MissionObjectiveParameters,
-    MissionData, ObjectiveState, QueueView, TilePos,
+    EntityId, EntityView, KindId, MissionData, MissionObjectiveKind, MissionObjectiveParameters,
+    ObjectiveState, QueueView, TilePos,
 };
 
 /// What pressing a button asks the client to do (FD-2: it becomes a
