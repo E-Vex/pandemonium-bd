@@ -112,11 +112,9 @@ enum ObjectiveStatus {
     Pending,
     /// Resolved complete.
     Completed,
-    /// Resolved failed. B-017's protect arm constructs it (the next commit
-    /// of this series); a failed non-optional objective ends the match with
-    /// the opponent as winner (the AND-composition's failure path, live
-    /// since Phase 1).
-    #[allow(dead_code)]
+    /// Resolved failed. B-017's protect arm constructs it: a failed
+    /// non-optional objective ends the match with the opponent as winner
+    /// (the AND-composition's failure path, live since Phase 1).
     Failed,
 }
 
@@ -282,6 +280,11 @@ fn objective_status(
         (MissionObjectiveKind::Survive, MissionObjectiveParameters::Survive { ticks }) => {
             survive_status(tick, *ticks)
         }
+        // B-017: protect is fail-only — the status is the protected set's
+        // emptiness, observed after this tick's cleanup.
+        (MissionObjectiveKind::Protect, MissionObjectiveParameters::Protect { kind }) => {
+            protect_status(world, player, *kind)
+        }
         _ => None,
     }
 }
@@ -333,6 +336,23 @@ fn build_train_status(
 /// evaluator is total).
 fn survive_status(tick: u32, ticks: u32) -> Option<ObjectiveStatus> {
     (tick >= ticks).then_some(ObjectiveStatus::Completed)
+}
+
+/// Protect (B-017): a fail-only constraint — pending while the mission
+/// player owns at least one living entity of the protected kind, failed on
+/// the first tick none remains, never completed by itself (victory comes
+/// from the other objectives; the loader refuses a mission whose required
+/// objectives are all Protect). The evaluator reads the post-cleanup entity
+/// set: stage 8 removed this tick's dead and fired their outward `Died`
+/// events (FD-9 — the events flow outward, consumed after the step), so
+/// "none remains" is observed exactly the tick the last one died, in the
+/// same step as the `Died` event that carries the cause.
+fn protect_status(world: &World, player: PlayerId, kind: KindId) -> Option<ObjectiveStatus> {
+    let protected_stands = world
+        .entities
+        .iter()
+        .any(|entity| entity.owner == player && entity.kind == kind);
+    (!protected_stands).then_some(ObjectiveStatus::Failed)
 }
 
 /// Fires the match end exactly once: sets the outcome and emits `MatchEnded`.
@@ -875,6 +895,264 @@ mod tests {
             sim.step(&[]);
         }
         assert!(sim.outcome().is_none(), "the match runs on");
+    }
+
+    // -----------------------------------------------------------------------
+    // Protect (B-017): the fail-only constraint
+    // -----------------------------------------------------------------------
+
+    /// A protect objective over the protected kind.
+    fn protect_mission(player: PlayerId, kind: KindId, optional: bool) -> MissionData {
+        mission_for(
+            player,
+            &[MissionObjective {
+                kind: MissionObjectiveKind::Protect,
+                parameters: MissionObjectiveParameters::Protect { kind },
+                optional,
+            }],
+        )
+    }
+
+    /// The protect fixture: kind 0 is a surviving structure (10 hp, no
+    /// decay); kind 1 is a decaying unit (41 hp, -1 per tick, no Footprint —
+    /// protect guards any owned entity kind, not just structures) that dies
+    /// exactly at tick 40 (decay starts at tick 0, so H hp lasts H-1 ticks —
+    /// the 1-hp decaying command_center fixture dies at tick 0 by the same
+    /// arithmetic). Player 0 (the mission player) owns one of each; player 1
+    /// owns a surviving structure.
+    fn protect_world() -> TrivialWorld {
+        use crate::fixture::{CapTemplate, KindEconomy, KindTemplate, SpawnDef};
+        use pandemonium_fx::Vec2Fx;
+        TrivialWorld {
+            map_id: 0x004D_3854_4553_5407,
+            width_tiles: 32,
+            height_tiles: 32,
+            passability: TrivialWorld::open_passability(32, 32),
+            buildability: TrivialWorld::open_buildability(32, 32),
+            kinds: vec![
+                KindTemplate {
+                    // kind 0: a structure that survives.
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 10,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                    ],
+                    economy: KindEconomy::default(),
+                },
+                KindTemplate {
+                    // kind 1: a decaying unit — 41 hp, -1 per tick, hp
+                    // reaches zero in tick 40's cleanup.
+                    caps: vec![CapTemplate::Health {
+                        max_hp: 41,
+                        regen_per_tick: -1,
+                    }],
+                    economy: KindEconomy::default(),
+                },
+            ],
+            resources: vec![],
+            production: vec![],
+            base_population_cap: 0,
+            initial_spawns: vec![
+                // The mission player's surviving structure.
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(0),
+                    pos: Vec2Fx::from_ints(8, 8),
+                },
+                // The mission player's protected unit — dies at tick 40.
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(1),
+                    pos: Vec2Fx::from_ints(10, 10),
+                },
+                // The opponent's surviving structure.
+                SpawnDef {
+                    owner: PlayerId(1),
+                    kind: KindId(0),
+                    pos: Vec2Fx::from_ints(24, 24),
+                },
+            ],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+            roster: Vec::new(),
+        }
+        .with_default_roster()
+    }
+
+    #[test]
+    fn a_required_protect_objective_fails_the_match_when_the_last_of_the_kind_dies() {
+        // The binding semantics: pending while the mission player owns a
+        // living entity of the kind (ticks 0..39), failed on the first tick
+        // none remains (tick 40 — the same step as the `Died` event that
+        // carries the cause, FD-9), and a required failure ends the match
+        // with the opponent as winner through the same path other required
+        // failures use — while the mission player's structure still stands
+        // (NOT the elimination rule).
+        let world = protect_world();
+        let setup = two_player_setup();
+        let mut sim = Sim::with_mission(
+            &world,
+            setup.clone(),
+            protect_mission(PlayerId(0), KindId(1), false),
+        );
+        let mut plain = Sim::new(&world, setup);
+        for tick in 0..40 {
+            let out = sim.step(&[]);
+            plain.step(&[]);
+            assert!(
+                !out.events.iter().any(|event| matches!(
+                    event,
+                    Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+                )),
+                "tick {tick}: pending while the protected unit lives: {:?}",
+                out.events
+            );
+            assert!(sim.outcome().is_none(), "tick {tick}: the match runs");
+            assert_eq!(
+                sim.state_hash(),
+                plain.state_hash(),
+                "A-066 through tick {tick}"
+            );
+        }
+        // Tick 40: the unit's health reaches zero, stage 8 removes it and
+        // fires `Died`, and stage 10 fails the objective — the death event
+        // precedes the objective-state event in the same step's stream.
+        let out = sim.step(&[]);
+        let died = out
+            .events
+            .iter()
+            .position(|event| matches!(event, Event::Died { .. }))
+            .expect("the protected unit died this tick");
+        let failed = out
+            .events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Event::ObjectiveState {
+                        index: 0,
+                        state: ObjectiveState::Failed
+                    }
+                )
+            })
+            .expect("the protect objective fails the tick the last one died");
+        let ended = out
+            .events
+            .iter()
+            .position(|event| matches!(event, Event::MatchEnded { .. }))
+            .expect("a required failure ends the match");
+        assert!(died < failed, "Died precedes the failure: {:?}", out.events);
+        assert!(
+            failed < ended,
+            "the failure precedes MatchEnded: {:?}",
+            out.events
+        );
+        let outcome = sim.outcome().expect("the failure resolved the match");
+        assert_eq!(
+            outcome.winner,
+            PlayerId(1),
+            "the opponent wins a failed protect"
+        );
+        assert_eq!(outcome.ended_tick, 40);
+        // The mission player was NOT eliminated — their structure stands;
+        // the match ended through the failure path, not the defeat path.
+        assert!(
+            sim.snapshot()
+                .entities
+                .iter()
+                .any(|entity| entity.owner == PlayerId(0) && entity.kind == KindId(0)),
+            "the mission player's structure still stands"
+        );
+        // The contrast that proves the seam: the same world mission-less
+        // keeps running (the unit's death defeats no one).
+        assert!(plain.outcome().is_none());
+        // And the resolution is monotonic — no re-emission after the end.
+        let mut repeats = 0;
+        for _ in 0..5 {
+            for event in sim.step(&[]).events {
+                if matches!(
+                    event,
+                    Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+                ) {
+                    repeats += 1;
+                }
+            }
+        }
+        assert_eq!(repeats, 0);
+    }
+
+    #[test]
+    fn an_optional_protect_failure_never_ends_the_match() {
+        // The optional law: an optional protect failing fires its
+        // ObjectiveState::Failed event (the end screen's story hook) but
+        // never gates MatchEnded — the match runs on under the elimination
+        // rule, and no one here is eliminated.
+        let world = protect_world();
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            protect_mission(PlayerId(0), KindId(1), true),
+        );
+        for _ in 0..40 {
+            sim.step(&[]);
+        }
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Failed
+                }
+            )),
+            "the optional protect objective fails: {:?}",
+            out.events
+        );
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::MatchEnded { .. })),
+            "an optional protect failure never ends the match"
+        );
+        assert!(sim.outcome().is_none());
+        for _ in 0..50 {
+            sim.step(&[]);
+        }
+        assert!(sim.outcome().is_none(), "the match runs on");
+    }
+
+    #[test]
+    fn a_protect_objective_never_completes_by_itself() {
+        // Fail-only by construction: while the protected kind stands, the
+        // status is pending — protect alone can never fire MatchEnded with
+        // the mission player as winner (the loader separately refuses a
+        // mission whose required objectives are all Protect, so this shape
+        // can only arrive through optional objectives or a completable
+        // required sibling).
+        let world = two_player_world();
+        // Protect the mission player's own kind-0 structure, which stands
+        // forever in this fixture — with an optional flag so the mission
+        // loads even though it is the only objective (sim-level data has no
+        // loader; the composition law is what is under test).
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            protect_mission(PlayerId(0), KindId(0), true),
+        );
+        for _ in 0..300 {
+            let out = sim.step(&[]);
+            assert!(
+                !out.events.iter().any(|event| matches!(
+                    event,
+                    Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+                )),
+                "a standing protected kind keeps the objective pending, never completed: {:?}",
+                out.events
+            );
+        }
+        assert!(sim.outcome().is_none());
     }
 
     #[test]
