@@ -8,7 +8,7 @@
 
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
-    Command, EntityId, EntityView, Event, MatchSetup, MissionData, PlayerId, PlayerView,
+    Command, EntityId, EntityView, Event, FogPreset, MatchSetup, MissionData, PlayerId, PlayerView,
     QueueItemView, QueueView, Snapshot, Stage, StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
 };
 
@@ -79,31 +79,38 @@ impl Sim {
     /// setup is code in M1, so a violation is a programmer error surfaced loudly
     /// and deterministically, not data to repair. Content validation is M2's job.
     pub fn new(world: &TrivialWorld, setup: MatchSetup) -> Self {
-        Self::build(world, setup)
+        Self::build(world, setup, FogPreset::Default)
     }
 
     /// Builds the initial state for a mission match (ADR-0201 §2a, Phase 1):
     /// the exact [`Sim::new`] construction path — the same RNG consumption, the
-    /// same spawn order, the same tick-0 state hash — with the mission's
-    /// objective set attached for stage 10 to evaluate per tick. Mission data
+    /// same spawn order, the same tick-0 state hash — with the mission's data
+    /// set attached for stage 10 to evaluate per tick, and the mission's fog
+    /// preset (B-015) selecting the fog cache's initialization. Mission data
     /// reaches the simulation only through this seam (FD-6): the caller
-    /// resolves the objective set from content (the content seam's
-    /// `mission_data`), and the sim never sees a mission file, a content
-    /// id, or anything above it.
+    /// resolves the set from content (the content seam's `mission_data`), and
+    /// the sim never sees a mission file, a content id, or anything above it.
     ///
-    /// The objective set is derived state (the A-066 pattern), so a mission
+    /// The mission data is derived state (the A-066 pattern), so a mission
     /// match over the same world and setup produces the same state hashes as
     /// the mission-less one at every tick — only the outward event stream
-    /// gains the objective-state family, and the match may resolve through the
-    /// mission's AND-composition instead of (or before) elimination.
+    /// gains the objective-state family, the match may resolve through the
+    /// mission's AND-composition instead of (or before) elimination, and the
+    /// fog filter's initialization follows the preset (observable only
+    /// through the fog-filtered views — fog is non-hashed derived state,
+    /// A-059). The `Default` preset keeps the mission-less initialization
+    /// byte-identical.
     pub fn with_mission(world: &TrivialWorld, setup: MatchSetup, mission: MissionData) -> Self {
-        let mut sim = Self::build(world, setup);
+        let fog_preset = mission.fog_preset;
+        let mut sim = Self::build(world, setup, fog_preset);
         sim.mission = Some(crate::match_rules::MissionState::new(mission));
         sim
     }
 
     /// The shared construction body of [`Sim::new`] and [`Sim::with_mission`].
-    fn build(world: &TrivialWorld, setup: MatchSetup) -> Self {
+    /// `fog_preset` selects the fog cache's initialization (B-015); the
+    /// mission-less path always passes `Default`, byte-identically.
+    fn build(world: &TrivialWorld, setup: MatchSetup, fog_preset: FogPreset) -> Self {
         let mut players = setup.players;
         players.sort_by_key(|p| p.player);
         assert!(
@@ -125,7 +132,12 @@ impl Sim {
             events: Vec::new(),
             spawn_queue: world.scheduled_spawns.clone(),
             spawn_cursor: 0,
-            fog: crate::vision::FogState::new(players.len(), world.width_tiles, world.height_tiles),
+            fog: crate::vision::FogState::with_preset(
+                players.len(),
+                world.width_tiles,
+                world.height_tiles,
+                fog_preset,
+            ),
             outcome: None,
             mission: None,
         };
@@ -303,15 +315,22 @@ impl Sim {
         // The player's fog row and own production queues. A slot that is not
         // in the match has no fog row and no queues (empty vecs — the same
         // "absent player gets an empty view" rule the ledger follows).
+        // Under the `Visible` fog preset (B-015) the persistent reveal makes
+        // every in-map tile `Visible` for the entire match: the mapping reads
+        // the flag once and answers `Visible` per tile, leaving the per-tick
+        // rows underneath untouched (FD-8 — the filter reports, it never
+        // writes simulation state).
         let player_index = self.world.players.iter().position(|p| p.player == player);
+        let revealed = self.fog.revealed();
         let fog = player_index
             .and_then(|index| self.fog.players.get(index))
             .map(|row| {
                 row.iter()
                     .map(|tile| match tile {
+                        crate::vision::TileVisibility::Visible => TileFog::Visible,
+                        _ if revealed => TileFog::Visible,
                         crate::vision::TileVisibility::Hidden => TileFog::Hidden,
                         crate::vision::TileVisibility::Explored => TileFog::Explored,
-                        crate::vision::TileVisibility::Visible => TileFog::Visible,
                     })
                     .collect()
             })

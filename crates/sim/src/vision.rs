@@ -46,7 +46,7 @@
 //! status changed) is DEBT-004's full repayment and waits for the visible-
 //! profile cost call.
 
-use pandemonium_sim_api::{EntityId, PlayerId};
+use pandemonium_sim_api::{EntityId, FogPreset, PlayerId};
 
 use crate::world::World;
 
@@ -65,6 +65,15 @@ pub enum TileVisibility {
 /// Per-player fog state: a `Vec<Vec<TileVisibility>>` indexed `[player_index][tile_index]`,
 /// where `tile_index = y * width + x`. Not part of the canonical state hash
 /// (A-059 — fog is derived from positions + Vision radii, which ARE hashed).
+///
+/// The `reveal_all` flag (B-015) is the `Visible` fog preset's persistent
+/// reveal: when set, the fog filter reports every in-map tile `Visible` for
+/// every player for the entire match, however the per-tick vision pass
+/// churns the rows underneath. It is fog-filter input only — read by
+/// [`FogState::tile`] and the `player_view` mapping, never by any system
+/// that touches world state (FD-8: fog filters, never alters, simulation
+/// state) — and like the rest of `FogState` it is derived, non-hashed
+/// state, so the "hashes equal fog on/off" law (A10) still holds.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct FogState {
     /// One entry per player, indexed by the player's position in `world.players`.
@@ -73,6 +82,10 @@ pub(crate) struct FogState {
     width: u32,
     /// Map height in tiles.
     height: u32,
+    /// The `Visible` preset's persistent reveal (B-015): every in-map tile
+    /// reads as `Visible` for every player, for the entire match. `false`
+    /// keeps today's per-tick demotion behavior, byte-identically.
+    reveal_all: bool,
 }
 
 impl FogState {
@@ -86,16 +99,64 @@ impl FogState {
             players,
             width,
             height,
+            reveal_all: false,
         }
     }
 
-    /// The visibility of one tile for one player.
+    /// Builds the fog state a mission's fog preset selects (B-015). `Default`
+    /// is exactly [`FogState::new`] — the historical all-Hidden
+    /// initialization, byte-identical. `Explored` starts every tile
+    /// `Explored` (the per-tick vision pass still marks what units actually
+    /// see `Visible` on top). `Visible` starts every tile `Visible` and sets
+    /// the persistent reveal flag, so the filter reports the whole map
+    /// visible for the entire match — not just tick 0 — because
+    /// `advance_vision` would otherwise demote unrefreshed tiles back to
+    /// `Explored` (the flag is read by the filter, never by touching sim
+    /// state; FD-8). The same init applies to every player.
+    pub(crate) fn with_preset(
+        player_count: usize,
+        width: u32,
+        height: u32,
+        preset: FogPreset,
+    ) -> Self {
+        let mut fog = Self::new(player_count, width, height);
+        match preset {
+            FogPreset::Default => fog,
+            FogPreset::Explored => {
+                for state in &mut fog.players {
+                    state.fill(TileVisibility::Explored);
+                }
+                fog
+            }
+            FogPreset::Visible => {
+                for state in &mut fog.players {
+                    state.fill(TileVisibility::Visible);
+                }
+                fog.reveal_all = true;
+                fog
+            }
+        }
+    }
+
+    /// Whether the persistent reveal (the `Visible` preset) is active. The
+    /// `player_view` mapping consults this so the outward fog row is all
+    /// `Visible` without rewriting the per-tick rows underneath.
+    pub(crate) fn revealed(&self) -> bool {
+        self.reveal_all
+    }
+
+    /// The visibility of one tile for one player. With the persistent reveal
+    /// set (the `Visible` preset) every in-map tile is `Visible`, whatever
+    /// the per-tick pass last wrote.
     pub(crate) fn tile(&self, player_index: usize, x: i32, y: i32) -> TileVisibility {
         let Some(state) = self.players.get(player_index) else {
             return TileVisibility::Hidden;
         };
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return TileVisibility::Hidden;
+        }
+        if self.reveal_all {
+            return TileVisibility::Visible;
         }
         state[(y as u32 * self.width + x as u32) as usize]
     }
@@ -336,6 +397,87 @@ mod tests {
         assert_eq!(fog.tile(0, 0, 0), TileVisibility::Explored);
         // (3,3) is now Visible (the carrier stands there).
         assert_eq!(fog.tile(0, 3, 3), TileVisibility::Visible);
+    }
+
+    #[test]
+    fn the_explored_preset_starts_every_tile_explored() {
+        // B-015: the Explored preset initializes every tile Explored — the
+        // same init for every player — before the vision pass lights what
+        // the units actually see.
+        let fog = FogState::with_preset(2, 4, 4, FogPreset::Explored);
+        for player_index in 0..2 {
+            for y in 0..4 {
+                for x in 0..4 {
+                    assert_eq!(
+                        fog.tile(player_index, x, y),
+                        TileVisibility::Explored,
+                        "tile ({x},{y}) of player {player_index}"
+                    );
+                }
+            }
+        }
+        // The persistent reveal is NOT active: the demotion pass runs as
+        // today, so unrefreshed Visible tiles still settle to Explored.
+        assert!(!fog.revealed());
+    }
+
+    #[test]
+    fn the_explored_preset_lets_vision_light_visible_on_top() {
+        // The per-tick pass still marks what units see Visible on top of the
+        // Explored base.
+        let (world, _) = fog_world();
+        let mut fog = FogState::with_preset(1, 4, 4, FogPreset::Explored);
+        advance_vision(&mut fog, &world);
+        assert_eq!(fog.tile(0, 1, 1), TileVisibility::Visible);
+        assert_eq!(fog.tile(0, 0, 0), TileVisibility::Visible);
+        // Outside the radius the tile keeps its Explored base — not Hidden.
+        assert_eq!(fog.tile(0, 3, 3), TileVisibility::Explored);
+    }
+
+    #[test]
+    fn the_visible_preset_stays_visible_through_the_tick_pass() {
+        // B-015: the whole map is visible for the ENTIRE match, not just
+        // tick 0 — advance_vision demotes unrefreshed Visible tiles to
+        // Explored, so the preset is a persistent reveal flag read by the
+        // filter, and moving the carrier away cannot darken anything.
+        let (mut world, _) = fog_world();
+        let mut fog = FogState::with_preset(1, 4, 4, FogPreset::Visible);
+        assert!(fog.revealed(), "the persistent reveal is active");
+        // Tick 0: every in-map tile is Visible — the far corners included.
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(fog.tile(0, x, y), TileVisibility::Visible);
+            }
+        }
+        // Many ticks of vision churn with the carrier roaming: the pass runs
+        // as today underneath, but the filter's answer never darkens.
+        for tick in 0..50 {
+            world.entity_mut(EntityId(1)).unwrap().pos =
+                Vec2Fx::from_ints(tick % 4, (tick * 3) % 4);
+            advance_vision(&mut fog, &world);
+        }
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(
+                    fog.tile(0, x, y),
+                    TileVisibility::Visible,
+                    "tile ({x},{y}) stays Visible after the churn"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_preset_is_the_historical_all_hidden_initialization() {
+        // B-015: Default is byte-identical to FogState::new — every tile
+        // Hidden, no persistent reveal — so a mission without the field
+        // changes nothing observable in the fog.
+        let new_fog = FogState::new(2, 8, 6);
+        let preset_fog = FogState::with_preset(2, 8, 6, FogPreset::Default);
+        assert_eq!(new_fog, preset_fog);
+        assert!(!preset_fog.revealed());
+        assert_eq!(preset_fog.tile(0, 7, 5), TileVisibility::Hidden);
+        assert_eq!(preset_fog.tile(1, 0, 0), TileVisibility::Hidden);
     }
 
     #[test]
