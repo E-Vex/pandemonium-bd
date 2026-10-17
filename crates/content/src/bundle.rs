@@ -21,7 +21,7 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, MissionObjectives,
+    KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, MissionData,
     PlayerId, ResourceId, Vec2Fx,
 };
 
@@ -251,11 +251,11 @@ impl ContentTree {
     /// `player` is the mission player the objectives belong to — runtime
     /// data, not mission data: the caller picks the slot (Phase 1 tools and
     /// clients use the first map start's player).
-    pub fn mission_objectives(
+    pub fn mission_data(
         &self,
         mission_id_str: &str,
         player: PlayerId,
-    ) -> Result<MissionObjectives, ContentError> {
+    ) -> Result<MissionData, ContentError> {
         let Some(mission) = self.mission(mission_id_str) else {
             return Err(ContentError::Bundle {
                 detail: format!(
@@ -326,7 +326,7 @@ impl ContentTree {
                 optional: objective.optional,
             });
         }
-        Ok(MissionObjectives { player, objectives })
+        Ok(MissionData { player, objectives })
     }
 
     /// Builds the bundle for one map. Every faction travels along (the Alpha
@@ -1409,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_objectives_resolve_kind_ids_through_the_tree_entity_order() {
+    fn mission_data_resolve_kind_ids_through_the_tree_entity_order() {
         // The content seam (ADR-0201 §2a): string kind ids become KindIds in
         // the tree's entity order — base sorts before ore_node before worker
         // (id order), so worker is KindId(2) — the same index the world's
@@ -1417,7 +1417,7 @@ mod tests {
         let tree = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
             .expect("the mission-bearing tree loads");
         let objectives = tree
-            .mission_objectives("testing_01", PlayerId(0))
+            .mission_data("testing_01", PlayerId(0))
             .expect("the objective set resolves");
         assert_eq!(objectives.player, PlayerId(0));
         assert_eq!(objectives.objectives.len(), 2);
@@ -1448,7 +1448,7 @@ mod tests {
         let tree = ContentTree::load(&factory().mission("testing_01.ron", &targeted))
             .expect("the targeted mission loads");
         let objectives = tree
-            .mission_objectives("testing_01", PlayerId(0))
+            .mission_data("testing_01", PlayerId(0))
             .expect("resolves");
         assert_eq!(
             objectives.objectives[0].parameters,
@@ -1457,7 +1457,7 @@ mod tests {
             }
         );
         // Unknown missions are refused loudly.
-        let err = tree.mission_objectives("missing", PlayerId(0)).unwrap_err();
+        let err = tree.mission_data("missing", PlayerId(0)).unwrap_err();
         assert!(
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"

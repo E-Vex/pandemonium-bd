@@ -536,7 +536,7 @@ pub enum MissionObjectiveKind {
 /// A mission objective's parameters in the simulation's resolved vocabulary
 /// (ADR-0201 §2) — the `KindId`-resolved form of content's
 /// `ObjectiveParameters` (string ids). The content seam
-/// (`ContentTree::mission_objectives`) performs the resolution; the
+/// (`ContentTree::mission_data`) performs the resolution; the
 /// simulation never sees kind-name strings (FD-6).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissionObjectiveParameters {
@@ -578,7 +578,7 @@ pub struct MissionObjective {
 /// evaluated per tick by stage 10 as derived state (the A-066 pattern), so it
 /// never enters the canonical state hash.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct MissionObjectives {
+pub struct MissionData {
     /// The player the objectives belong to — the mission player. The
     /// objective evaluator reads the world from this player's side: "enemy"
     /// means every non-neutral owner that is not this player.
@@ -591,7 +591,7 @@ pub struct MissionObjectives {
 /// A mission's fog preset (ADR-0201 Phase 2, B-015): how the fog cache
 /// initializes for every player when the match carries this mission.
 /// Behaviour is data selecting code (FD-4) — the preset is mission data
-/// riding [`MissionObjectives`] into the sim (FD-6), and it only ever
+/// riding [`MissionData`] into the sim (FD-6), and it only ever
 /// selects the fog filter's initial view; it never touches simulation
 /// state (FD-8: fog filters, never alters).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -754,7 +754,7 @@ mod tests {
     fn mission_objective_sets_carry_their_player_and_ordered_objectives() {
         // ADR-0201 §2a: the mission input vocabulary — resolved KindIds, the
         // mission player, and the ordered list whose indices the events echo.
-        let objectives = MissionObjectives {
+        let objectives = MissionData {
             player: PlayerId(0),
             objectives: vec![
                 MissionObjective {

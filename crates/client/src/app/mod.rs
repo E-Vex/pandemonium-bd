@@ -28,7 +28,7 @@ use pandemonium_engine::{
     RtsCamera,
 };
 use pandemonium_sim_api::{
-    EntityId, Event, KindId, MatchSetup, MissionObjectives, PlayerId, PlayerView, Snapshot,
+    EntityId, Event, KindId, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot,
     TileFog, Vec2Fx,
 };
 use winit::event_loop::ActiveEventLoop;
@@ -403,7 +403,7 @@ impl App {
     pub(crate) fn build_mission_host(
         bundle: &ContentBundle,
         setup: MatchSetup,
-        mission: MissionObjectives,
+        mission: MissionData,
     ) -> MatchHost {
         let world = bundle.world();
         let controllers: Vec<(PlayerId, Box<dyn Controller>)> = [AI]
@@ -439,7 +439,7 @@ impl App {
 
     /// Starts a mission match (A-011 Task 1, ADR-0201 Phase 1): bundles the
     /// mission's map, resolves its objectives through the content seam
-    /// (`ContentTree::mission_objectives` — the mission player is the first
+    /// (`ContentTree::mission_data` — the mission player is the first
     /// map start's player, slot 0 on this content, the human), and builds
     /// the host through the engine mission seam. The setup is the Player vs
     /// AI shape (the human runs the mission player's slot; the scripted
@@ -470,7 +470,7 @@ impl App {
         // player — slot 0 on the Alpha content; the content seam's Phase 1
         // law). The objectives resolve to KindIds through the tree's entity
         // order — the exact ids the bundled world's entities carry.
-        let mission = match self.tree.mission_objectives(&def.id, HUMAN) {
+        let mission = match self.tree.mission_data(&def.id, HUMAN) {
             Ok(mission) => mission,
             Err(error) => {
                 println!(

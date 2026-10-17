@@ -1740,7 +1740,7 @@ mod mission_wiring {
         // the mission seam the recording ran, exercised end to end.
         let objectives = app
             .tree
-            .mission_objectives("crossroads_01", HUMAN)
+            .mission_data("crossroads_01", HUMAN)
             .expect("crossroads_01 resolves");
         let setup = app.setup.clone();
         let end_tick = replay.checkpoints.last().expect("the trail").tick;

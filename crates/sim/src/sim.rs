@@ -8,7 +8,7 @@
 
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
-    Command, EntityId, EntityView, Event, MatchSetup, MissionObjectives, PlayerId, PlayerView,
+    Command, EntityId, EntityView, Event, MatchSetup, MissionData, PlayerId, PlayerView,
     QueueItemView, QueueView, Snapshot, Stage, StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
 };
 
@@ -88,7 +88,7 @@ impl Sim {
     /// objective set attached for stage 10 to evaluate per tick. Mission data
     /// reaches the simulation only through this seam (FD-6): the caller
     /// resolves the objective set from content (the content seam's
-    /// `mission_objectives`), and the sim never sees a mission file, a content
+    /// `mission_data`), and the sim never sees a mission file, a content
     /// id, or anything above it.
     ///
     /// The objective set is derived state (the A-066 pattern), so a mission
@@ -99,7 +99,7 @@ impl Sim {
     pub fn with_mission(
         world: &TrivialWorld,
         setup: MatchSetup,
-        mission: MissionObjectives,
+        mission: MissionData,
     ) -> Self {
         let mut sim = Self::build(world, setup);
         sim.mission = Some(crate::match_rules::MissionState::new(mission));

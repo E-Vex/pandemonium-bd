@@ -6,7 +6,7 @@
 //! ADR's "destroy the enemy command center." The corrected fixture names the
 //! surgical target: `Some("command_center")`. These tests load the REAL
 //! content tree, resolve the REAL mission through the content seam
-//! (`ContentTree::mission_objectives`), and drive the REAL simulation
+//! (`ContentTree::mission_data`), and drive the REAL simulation
 //! (`Sim::with_mission`) end-to-end:
 //!
 //! - **Resolution** — the fixture resolves to exactly two objectives: a
@@ -134,7 +134,7 @@ fn command_center_world(command_center: KindId) -> TrivialWorld {
 fn crossroads_01_resolves_command_center_objective() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
 
     // The Phase 1 objective set: exactly two objectives.
@@ -181,7 +181,7 @@ fn crossroads_01_resolves_command_center_objective() {
     // Determinism: resolving twice produces the same objective set, and the
     // mission id is stable across calls.
     let again = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("the second resolution succeeds");
     assert_eq!(objectives, again);
     assert_eq!(
@@ -194,7 +194,7 @@ fn crossroads_01_resolves_command_center_objective() {
 fn command_center_destruction_completes_mission_with_other_structures_standing() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
     let command_center = match objectives.objectives[0].parameters {
         MissionObjectiveParameters::Destroy {
@@ -274,7 +274,7 @@ fn command_center_destruction_completes_mission_with_other_structures_standing()
 fn mission_less_path_is_byte_equivalent() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
     let command_center = match objectives.objectives[0].parameters {
         MissionObjectiveParameters::Destroy {
@@ -343,7 +343,7 @@ fn mission_less_path_is_byte_equivalent() {
 fn the_optional_objective_demands_growth_beyond_the_starting_forces() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
     let objectives = tree
-        .mission_objectives("crossroads_01", PlayerId(0))
+        .mission_data("crossroads_01", PlayerId(0))
         .expect("crossroads_01 resolves through the content seam");
     let command_center = match objectives.objectives[0].parameters {
         MissionObjectiveParameters::Destroy {

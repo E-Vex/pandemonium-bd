@@ -14,7 +14,7 @@
 //! The driver is pure: no I/O, no clocks, no randomness of its own — the
 //! only mutator it touches the world through is [`Sim::step`] (FD-2).
 
-use pandemonium_sim_api::{Command, MatchSetup, MissionObjectives, Tick};
+use pandemonium_sim_api::{Command, MatchSetup, MissionData, Tick};
 
 use crate::fixture::TrivialWorld;
 use crate::sim::Sim;
@@ -66,7 +66,7 @@ pub fn run_command_log_with_mission(
     setup: &MatchSetup,
     commands: &[Command],
     ticks: u32,
-    mission: Option<MissionObjectives>,
+    mission: Option<MissionData>,
 ) -> CommandLogRun {
     let mut sim = match mission {
         Some(mission) => Sim::with_mission(world, setup.clone(), mission),

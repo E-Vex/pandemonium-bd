@@ -14,7 +14,7 @@ use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
 use pandemonium_sim_api::{
     EntityId, EntityView, KindId, MissionObjectiveKind, MissionObjectiveParameters,
-    MissionObjectives, ObjectiveState, QueueView, TilePos,
+    MissionData, ObjectiveState, QueueView, TilePos,
 };
 
 /// What pressing a button asks the client to do (FD-2: it becomes a
@@ -777,12 +777,12 @@ impl ObjectiveHudState {
 }
 
 /// Builds a mission's objective display lines from the resolved objective
-/// set (ADR-0201 §2a) — the same `MissionObjectives` the simulation receives
+/// set (ADR-0201 §2a) — the same `MissionData` the simulation receives
 /// through the engine seam, so the HUD's indices are the event indices by
 /// construction. Kind ids resolve to display names through the bundle's
 /// entity order (the exact order the content seam resolved them by). All
 /// text is ASCII (the embedded font subset, ADR-0201 §5).
-pub fn objective_lines(mission: &MissionObjectives, bundle: &ContentBundle) -> Vec<ObjectiveLine> {
+pub fn objective_lines(mission: &MissionData, bundle: &ContentBundle) -> Vec<ObjectiveLine> {
     mission
         .objectives
         .iter()
@@ -820,7 +820,7 @@ pub fn objective_lines(mission: &MissionObjectives, bundle: &ContentBundle) -> V
 }
 
 /// One kind id's display name through the bundle's entity order (the same
-/// order `ContentTree::mission_objectives` resolved the ids by); an unknown
+/// order `ContentTree::mission_data` resolved the ids by); an unknown
 /// id falls back to its index, never a panic.
 fn kind_display(bundle: &ContentBundle, kind: KindId) -> String {
     bundle
@@ -2009,9 +2009,9 @@ mod tests {
 
     /// The Phase 1 mission's resolved objective set (the content seam, as
     /// `begin_mission` resolves it).
-    fn resolved_mission(tree: &ContentTree) -> MissionObjectives {
+    fn resolved_mission(tree: &ContentTree) -> MissionData {
         let mission = tree.missions.first().expect("the Phase 1 mission loads");
-        tree.mission_objectives(&mission.id.clone(), pandemonium_sim_api::PlayerId(0))
+        tree.mission_data(&mission.id.clone(), pandemonium_sim_api::PlayerId(0))
             .expect("the objectives resolve")
     }
 
