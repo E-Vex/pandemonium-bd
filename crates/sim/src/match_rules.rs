@@ -25,8 +25,9 @@
 //! each — and then the AND-composition: every non-optional objective
 //! completed fires `MatchEnded` with the mission player as winner; any
 //! non-optional objective failed fires it with the opponent as winner
-//! (Phase 1 kinds never fail — the path exists for Phase 2's protect and
-//! survive). The elimination rule still applies either way: a mission player
+//! (Phase 1's kinds never fail; B-017's protect is the fail-only kind, and
+//! survive completes when the mission tick reaches its window). The
+//! elimination rule still applies either way: a mission player
 //! with zero structures is defeated exactly as today. The mission state is
 //! derived in the A-066 pattern — a pure function of the hashed world
 //! inputs, never part of the canonical hash.
@@ -111,10 +112,10 @@ enum ObjectiveStatus {
     Pending,
     /// Resolved complete.
     Completed,
-    /// Resolved failed. The failure path ships now (ADR-0201 §2's
-    /// AND-composition names it: a failed non-optional objective ends the
-    /// match with the opponent as winner) — no Phase 1 objective kind can
-    /// produce it yet; the Phase 2 kinds (protect, survive) will.
+    /// Resolved failed. B-017's protect arm constructs it (the next commit
+    /// of this series); a failed non-optional objective ends the match with
+    /// the opponent as winner (the AND-composition's failure path, live
+    /// since Phase 1).
     #[allow(dead_code)]
     Failed,
 }
@@ -221,7 +222,7 @@ fn evaluate_objectives(
         if mission.statuses[index] != ObjectiveStatus::Pending {
             continue; // resolutions are monotonic — evaluate each objective once.
         }
-        if let Some(status) = objective_status(world, player, objective) {
+        if let Some(status) = objective_status(world, tick, player, objective) {
             mission.statuses[index] = status;
             events.push(Event::ObjectiveState {
                 index: index as u32,
@@ -262,6 +263,7 @@ fn evaluate_objectives(
 /// rather than resolving it wrongly.
 fn objective_status(
     world: &World,
+    tick: u32,
     player: PlayerId,
     objective: &MissionObjective,
 ) -> Option<ObjectiveStatus> {
@@ -273,6 +275,13 @@ fn objective_status(
             MissionObjectiveKind::BuildTrain,
             MissionObjectiveParameters::BuildTrain { kind, count },
         ) => build_train_status(world, player, *kind, *count),
+        // B-017: the survive window is a property of the tick counter, not
+        // the entity set — the mission starts at tick 0 by construction
+        // (mission data rides `Sim::with_mission`), so "counted from mission
+        // start" is exactly the stage-10 tick.
+        (MissionObjectiveKind::Survive, MissionObjectiveParameters::Survive { ticks }) => {
+            survive_status(tick, *ticks)
+        }
         _ => None,
     }
 }
@@ -312,6 +321,18 @@ fn build_train_status(
         .filter(|entity| entity.owner == player && entity.kind == kind)
         .count() as u32;
     (owned >= count).then_some(ObjectiveStatus::Completed)
+}
+
+/// Survive (B-017): the mission tick reaches the authored count. The
+/// evaluator runs in stage 10 of the tick in progress, so the objective is
+/// pending through tick `ticks - 1` and completes on the step whose tick
+/// equals `ticks`. The loader's 300-tick floor keeps the window from ever
+/// completing vacuously; this arm itself is total over the tick counter and
+/// would complete a degenerate 0-window at tick 0 — the loader rejects that
+/// shape before it can load (the AUD-003 division: content validates, the
+/// evaluator is total).
+fn survive_status(tick: u32, ticks: u32) -> Option<ObjectiveStatus> {
+    (tick >= ticks).then_some(ObjectiveStatus::Completed)
 }
 
 /// Fires the match end exactly once: sets the outcome and emits `MatchEnded`.
@@ -720,6 +741,140 @@ mod tests {
             sim.outcome().is_none(),
             "the required objective stays pending"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Survive (B-017): the mission tick reaches the authored window
+    // -----------------------------------------------------------------------
+
+    /// A survive objective with a small window. The loader's 300-tick floor
+    /// is a content-side gate (AUD-003); the evaluator itself is total over
+    /// the tick counter, so the sim-level semantics test uses a tight window
+    /// to pin the exact boundary tick. The acceptance-scale window (300) is
+    /// exercised against the real content in `tests/mission_phase1.rs`.
+    fn survive_mission(player: PlayerId, ticks: u32, optional: bool) -> MissionData {
+        mission_for(
+            player,
+            &[MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks },
+                optional,
+            }],
+        )
+    }
+
+    #[test]
+    fn a_survive_objective_is_pending_through_its_window_and_completes_at_its_tick() {
+        // The binding boundary: pending at tick `ticks - 1`, complete at
+        // tick `ticks` — the step whose stage-10 evaluation carries that
+        // tick. A required survive as the only objective ends the match for
+        // the mission player the same tick.
+        let world = two_player_world();
+        let setup = two_player_setup();
+        let mut sim = Sim::with_mission(
+            &world,
+            setup.clone(),
+            survive_mission(PlayerId(0), 3, false),
+        );
+        // Ticks 0, 1, 2 — all strictly inside the window: pending, no event,
+        // no outcome, and the mission state never touches the hash (A-066).
+        let mut plain = Sim::new(&world, setup);
+        for _ in 0..3 {
+            let out = sim.step(&[]);
+            plain.step(&[]);
+            assert!(
+                !out.events
+                    .iter()
+                    .any(|event| matches!(event, Event::ObjectiveState { .. })),
+                "pending through tick 2: {:?}",
+                out.events
+            );
+            assert!(sim.outcome().is_none(), "the match runs through the window");
+            assert_eq!(sim.state_hash(), plain.state_hash());
+        }
+        // Tick 3 — the boundary: the objective completes and the match ends
+        // with the mission player the winner (the only required objective).
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "the survive objective completes at tick 3: {:?}",
+            out.events
+        );
+        let outcome = sim
+            .outcome()
+            .expect("the survive window resolves the match");
+        assert_eq!(outcome.winner, PlayerId(0));
+        assert_eq!(outcome.ended_tick, 3);
+        // The objective-state event precedes MatchEnded in the same step.
+        let objective = out
+            .events
+            .iter()
+            .position(|event| matches!(event, Event::ObjectiveState { .. }))
+            .expect("the objective resolved");
+        let ended = out
+            .events
+            .iter()
+            .position(|event| matches!(event, Event::MatchEnded { .. }))
+            .expect("the match ended");
+        assert!(objective < ended, "{:?}", out.events);
+        // And the resolution is monotonic: further ticks never re-emit.
+        let mut repeats = 0;
+        for _ in 0..5 {
+            for event in sim.step(&[]).events {
+                if matches!(
+                    event,
+                    Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+                ) {
+                    repeats += 1;
+                }
+            }
+        }
+        assert_eq!(repeats, 0, "each resolution fires exactly once");
+    }
+
+    #[test]
+    fn an_optional_survive_objective_completes_but_never_gates_the_match() {
+        // The optional law applies to survive exactly as to destroy and
+        // build/train: the objective completes at its window, the match
+        // keeps running (nothing else resolves it here).
+        let world = two_player_world();
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            survive_mission(PlayerId(0), 2, true),
+        );
+        for _ in 0..2 {
+            sim.step(&[]);
+        }
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "the optional survive objective completes: {:?}",
+            out.events
+        );
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::MatchEnded { .. })),
+            "an optional objective never ends the match"
+        );
+        assert!(sim.outcome().is_none());
+        for _ in 0..50 {
+            sim.step(&[]);
+        }
+        assert!(sim.outcome().is_none(), "the match runs on");
     }
 
     #[test]
