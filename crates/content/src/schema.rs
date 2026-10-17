@@ -409,8 +409,9 @@ pub(crate) const MISSION_SCHEMA_VERSION: u32 = 1;
 /// A mission file (ADR-0201 §3): a closed reference set into the content tree
 /// — the map, the faction, the rules — plus the ordered objective list
 /// (ADR-0201 §2). Phase 1 carries the destroy and build/train kinds; the
-/// vocabulary grows forward-only with the schema version (survive, reach,
-/// protect and gather are Phase 2 — ADR-0201 §9).
+/// vocabulary grows forward-only with the schema version (survive and
+/// protect landed with Phase 2's B-017; reach and gather remain —
+/// ADR-0201 §9).
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawMission {
@@ -444,8 +445,8 @@ pub(crate) struct RawMission {
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawObjective {
-    /// The objective kind spelling ("Destroy" or "BuildTrain"; unknown
-    /// spellings are loud errors, never silently mapped).
+    /// The objective kind spelling ("Destroy", "BuildTrain", "Survive", or
+    /// "Protect"; unknown spellings are loud errors, never silently mapped).
     pub kind: String,
     /// The kind's parameters block.
     pub parameters: RawObjectiveParameters,
@@ -463,6 +464,14 @@ pub(crate) enum RawObjectiveParameters {
     Destroy(RawDestroyParams),
     /// Build/train parameters: which kind, and how many.
     BuildTrain(RawBuildTrainParams),
+    /// Survive parameters: the tick count the mission tick must reach
+    /// (B-017). Integer ticks (FD-5); the loader rejects windows below the
+    /// 300-tick floor.
+    Survive(RawSurviveParams),
+    /// Protect parameters: which entity kind the mission player must keep
+    /// alive (B-017). The loader resolves the entity reference and rejects a
+    /// kind the mission player's starting forces do not carry.
+    Protect(RawProtectParams),
 }
 
 /// Destroy parameters.
@@ -481,4 +490,20 @@ pub(crate) struct RawBuildTrainParams {
     pub kind: String,
     /// How many must exist.
     pub count: u32,
+}
+
+/// Survive parameters (B-017).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawSurviveParams {
+    /// The tick the objective completes at, counted from mission start.
+    pub ticks: u32,
+}
+
+/// Protect parameters (B-017).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawProtectParams {
+    /// The entity kind the mission player must keep alive.
+    pub kind: String,
 }

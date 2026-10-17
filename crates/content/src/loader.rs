@@ -495,6 +495,30 @@ pub(crate) fn parse_mission(
         .enumerate()
         .map(|(index, objective)| convert_objective(&file, &raw.id, index, objective, entities))
         .collect::<Result<Vec<_>, _>>()?;
+    // B-017's victory-reachability gate: a protect objective is fail-only —
+    // it never completes — so a mission whose required objectives are all
+    // Protect has no path to victory and the match could only ever be
+    // lost. The loader rejects that shape loudly (victory must be
+    // reachable); the escape hatches are a completable required objective
+    // (Destroy, BuildTrain, Survive — present or later) or marking the
+    // protect objectives optional. A mission with no required objectives
+    // at all stays legal (the pre-existing all-optional law: it never ends
+    // through its objectives, only through the elimination rule).
+    let has_required = objectives.iter().any(|objective| !objective.optional);
+    let any_required_completable = objectives
+        .iter()
+        .any(|objective| !objective.optional && objective.kind != defs::ObjectiveKind::Protect);
+    if has_required && !any_required_completable {
+        return Err(ContentError::Parse {
+            file: file.clone(),
+            detail: format!(
+                "every required objective of mission '{}' is Protect — protect objectives \
+                 never complete (they are fail-only), so victory would be unreachable; add a \
+                 completable required objective or mark the protect objectives optional",
+                raw.id
+            ),
+        });
+    }
     // The fog preset (B-015): absent is `Default` — the historical
     // initialization, so pre-B-015 mission files parse exactly as before
     // (FD-10: new fields are optional with a default). A present spelling
@@ -528,6 +552,12 @@ pub(crate) fn parse_mission(
     })
 }
 
+/// The Survive floor (B-017): a survive window must demand real play —
+/// 300 ticks is ten seconds at the fixed 30 ticks/s. Anything shorter
+/// (including 0, which would complete vacuously at mission start) is a
+/// loud loader error, the AUD-003 discipline applied to the kind.
+const SURVIVE_MIN_TICKS: u32 = 300;
+
 /// Converts one raw objective into its canonical form (ADR-0201 §2): resolves
 /// the kind spelling — the vocabulary is fixed and unknown spellings are loud
 /// errors, never silently mapped — cross-checks the spelling against the
@@ -543,12 +573,15 @@ fn convert_objective(
         return Err(ContentError::Parse {
             file: file.to_string(),
             detail: format!(
-                "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', '{}')",
+                "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', \
+                 '{}', '{}', '{}')",
                 index + 1,
                 mission,
                 raw.kind,
                 defs::ObjectiveKind::Destroy.as_str(),
                 defs::ObjectiveKind::BuildTrain.as_str(),
+                defs::ObjectiveKind::Survive.as_str(),
+                defs::ObjectiveKind::Protect.as_str(),
             ),
         });
     };
@@ -597,6 +630,48 @@ fn convert_objective(
                     kind: params.kind,
                     count: params.count,
                 },
+            )
+        }
+        RawObjectiveParameters::Survive(params) => {
+            // B-017's AUD-003 gate: the floor rejects the vacuous window
+            // (ticks 0 — complete at mission start) and the trivial one
+            // (anything under 300 ticks, ten seconds of play).
+            if params.ticks < SURVIVE_MIN_TICKS {
+                return Err(ContentError::Parse {
+                    file: file.to_string(),
+                    detail: format!(
+                        "objective {} of mission '{}' has ticks {} (survive objectives \
+                         need at least {} ticks)",
+                        index + 1,
+                        mission,
+                        params.ticks,
+                        SURVIVE_MIN_TICKS
+                    ),
+                });
+            }
+            (
+                defs::ObjectiveKind::Survive,
+                defs::ObjectiveParameters::Survive {
+                    ticks: params.ticks,
+                },
+            )
+        }
+        RawObjectiveParameters::Protect(params) => {
+            // The entity reference resolves exactly like a BuildTrain kind
+            // or a Destroy target — the same check faction rosters and map
+            // ore nodes get. The starting-forces check is tree-level (it
+            // needs the mission's faction; see ContentTree::load).
+            check_objective_entity_ref(
+                file,
+                mission,
+                index,
+                "Protect kind",
+                &params.kind,
+                entities,
+            )?;
+            (
+                defs::ObjectiveKind::Protect,
+                defs::ObjectiveParameters::Protect { kind: params.kind },
             )
         }
     };
@@ -761,13 +836,178 @@ mod tests {
 
     #[test]
     fn unknown_objective_kinds_are_rejected_loudly() {
-        let bad = MISSION.replace("\"BuildTrain\",", "\"Survive\",");
+        // B-017 made "Survive" and "Protect" known kinds, so the unknown-kind
+        // probe uses a spelling outside the vocabulary — the rejection must
+        // stay loud and name every known kind.
+        let bad = MISSION.replace("\"BuildTrain\",", "\"Timed\",");
         let err = parse(&bad).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("unknown kind 'Survive' (known kinds: 'Destroy', 'BuildTrain')"),
+            err.to_string().contains(
+                "unknown kind 'Timed' (known kinds: 'Destroy', 'BuildTrain', 'Survive', 'Protect')"
+            ),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn a_survive_objective_parses_with_its_tick_count() {
+        // B-017: the survive kind — plain integer ticks (FD-5), carried
+        // verbatim into the canonical form.
+        let survive = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 300 )),\n            optional: true,",
+        );
+        let def = parse(&survive).expect("a survive objective parses");
+        assert_eq!(
+            def.objectives[1],
+            defs::ObjectiveDef {
+                kind: defs::ObjectiveKind::Survive,
+                parameters: defs::ObjectiveParameters::Survive { ticks: 300 },
+                optional: true,
+            }
+        );
+    }
+
+    #[test]
+    fn survive_windows_below_the_floor_are_rejected() {
+        // B-017's binding floor: 0 is the vacuous window (complete at
+        // mission start), 299 the not-yet-real-play window — both are loud
+        // errors; 300 is the first legal window.
+        for ticks in [0u32, 299] {
+            let bad = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"Survive\",\n            parameters: Survive(( ticks: {ticks} )),\n            optional: true,"
+                ),
+            );
+            let err = parse(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!(
+                    "has ticks {ticks} (survive objectives need at least 300 ticks)"
+                )),
+                "ticks {ticks} must be a loud error, got: {err}"
+            );
+        }
+        let floor = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 300 )),\n            optional: true,",
+        );
+        parse(&floor).expect("300 ticks is the first legal window");
+    }
+
+    #[test]
+    fn survive_kind_and_parameters_must_agree() {
+        // The cross-check every kind gets: declaring Survive with a BuildTrain
+        // parameters block is a loud parse error, never a silent reinterpret.
+        let mismatched = MISSION.replace("kind: \"BuildTrain\",", "kind: \"Survive\",");
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'Survive' but carries 'BuildTrain' parameters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn protect_kind_and_parameters_must_agree() {
+        let mismatched = MISSION.replace("kind: \"BuildTrain\",", "kind: \"Protect\",");
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'Protect' but carries 'BuildTrain' parameters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_protect_objective_parses_and_resolves_its_entity_reference() {
+        // B-017: the protect kind — the entity reference resolves exactly
+        // like a BuildTrain kind (the same check faction rosters and map
+        // ore nodes get), and the canonical form carries the kind's id
+        // verbatim. The starting-forces check is tree-level (bundle.rs).
+        let protect = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"worker\" )),\n            optional: true,",
+        );
+        let def = parse(&protect).expect("a protect objective parses");
+        assert_eq!(
+            def.objectives[1],
+            defs::ObjectiveDef {
+                kind: defs::ObjectiveKind::Protect,
+                parameters: defs::ObjectiveParameters::Protect {
+                    kind: "worker".to_string(),
+                },
+                optional: true,
+            }
+        );
+        // An unknown entity is a loud reference error, the BuildTrain law.
+        let unknown = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"barracks\" )),\n            optional: true,",
+        );
+        let err = parse(&unknown).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("references unknown entity 'barracks'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_mission_whose_required_objectives_are_all_protect_is_refused() {
+        // B-017's victory-reachability gate: protect is fail-only, so a
+        // required set of nothing but protect objectives has no path to
+        // victory — the loader rejects the mission loudly (victory must be
+        // reachable).
+        let all_protect = MISSION
+            .replace(
+                "kind: \"Destroy\",\n            parameters: Destroy(( target_kind: None )),\n            optional: false,",
+                "kind: \"Protect\",\n            parameters: Protect(( kind: \"command_center\" )),\n            optional: false,",
+            )
+            .replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                "kind: \"Protect\",\n            parameters: Protect(( kind: \"worker\" )),\n            optional: false,",
+            );
+        let err = parse(&all_protect).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("every required objective of mission 'crossroads_01' is Protect")
+                && err.to_string().contains("victory would be unreachable"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_required_protect_alongside_a_completable_objective_parses() {
+        // The gate's escape hatch: one completable required objective (the
+        // factory's Destroy) keeps victory reachable, so a required protect
+        // objective parses fine — the composition the kind exists for.
+        let mixed = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"worker\" )),\n            optional: false,",
+        );
+        let def = parse(&mixed).expect("a required protect beside a completable objective parses");
+        assert_eq!(def.objectives[1].kind, defs::ObjectiveKind::Protect);
+        assert!(!def.objectives[1].optional);
+    }
+
+    #[test]
+    fn an_all_optional_protect_mission_parses() {
+        // The other escape hatch, and the pre-existing law: optional
+        // objectives never gate the match, so a mission of nothing but
+        // optional protect objectives parses — it can only end through the
+        // elimination rule, exactly like every all-optional mission.
+        let optional_only = MISSION
+            .replace(
+                "kind: \"Destroy\",\n            parameters: Destroy(( target_kind: None )),\n            optional: false,",
+                "kind: \"Protect\",\n            parameters: Protect(( kind: \"command_center\" )),\n            optional: true,",
+            )
+            .replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                "kind: \"Protect\",\n            parameters: Protect(( kind: \"worker\" )),\n            optional: true,",
+            );
+        let def = parse(&optional_only).expect("an all-optional protect mission parses");
+        assert!(def.objectives.iter().all(|objective| objective.optional));
     }
 
     #[test]

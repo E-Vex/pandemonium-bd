@@ -506,8 +506,9 @@ pub enum Event {
 }
 
 /// How one mission objective resolved (ADR-0201 §2) — the payload of
-/// [`Event::ObjectiveState`]. Phase 1 objectives complete, never fail
-/// (failure arrives with the Phase 2 kinds — protect, survive); the state is
+/// [`Event::ObjectiveState`]. The Phase 1 kinds complete, never fail; the
+/// failure arm lights up with Phase 2's protect kind (B-017: a protect
+/// objective fails when the last protected entity dies). The state is
 /// monotonic per objective: once resolved, it never reverts, and the event
 /// fires exactly once per objective.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -521,8 +522,8 @@ pub enum ObjectiveState {
 /// A mission objective's kind in the simulation's resolved vocabulary
 /// (ADR-0201 §2): what the stage-10 evaluator checks. Content authors kinds
 /// by id string; the content seam resolves them to `KindId`s. Phase 1
-/// carries the two vertical-slice kinds — the remaining kinds (survive,
-/// reach, protect, gather) are Phase 2 and will extend this enum alongside
+/// carried the two vertical-slice kinds; Phase 2's B-017 adds survive and
+/// protect — the remaining kinds (reach, gather) extend this enum alongside
 /// the mission schema version.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissionObjectiveKind {
@@ -531,6 +532,14 @@ pub enum MissionObjectiveKind {
     Destroy,
     /// Build/train N entities of a kind (`MissionObjectiveParameters::BuildTrain`).
     BuildTrain,
+    /// Survive N ticks from mission start (B-017): pending until the
+    /// mission tick reaches the authored count, then completed.
+    Survive,
+    /// Protect the mission player's entities of a kind (B-017): a fail-only
+    /// constraint — pending while at least one living entity of the kind
+    /// stands, failed on the first tick none remains. It never completes
+    /// by itself; victory comes from the other objectives.
+    Protect,
 }
 
 /// A mission objective's parameters in the simulation's resolved vocabulary
@@ -552,6 +561,23 @@ pub enum MissionObjectiveParameters {
         kind: KindId,
         /// How many must exist.
         count: u32,
+    },
+    /// How many ticks the mission player must survive
+    /// (`MissionObjectiveKind::Survive`, B-017). The count is from mission
+    /// start — the tick the match began at, 0 for every mission loaded at
+    /// construction. Integer ticks (FD-5); the loader enforces a floor of
+    /// 300 so the window always demands real play.
+    Survive {
+        /// The tick the objective completes at.
+        ticks: u32,
+    },
+    /// The entity kind the mission player must keep alive
+    /// (`MissionObjectiveKind::Protect`, B-017). The loader rejects a kind
+    /// the mission player's starting forces do not carry — a protect
+    /// objective with nothing to protect fails on the first tick.
+    Protect {
+        /// The protected kind.
+        kind: KindId,
     },
 }
 
@@ -776,14 +802,44 @@ mod tests {
                     },
                     optional: true,
                 },
+                // B-017: survive is plain data — an integer tick count from
+                // mission start, carried beside the resolved kinds.
+                MissionObjective {
+                    kind: MissionObjectiveKind::Survive,
+                    parameters: MissionObjectiveParameters::Survive { ticks: 300 },
+                    optional: false,
+                },
+                // B-017: protect carries its protected kind as a resolved
+                // KindId — the fail-only twin of BuildTrain's kind field.
+                MissionObjective {
+                    kind: MissionObjectiveKind::Protect,
+                    parameters: MissionObjectiveParameters::Protect { kind: KindId(3) },
+                    optional: false,
+                },
             ],
             fog_preset: FogPreset::Explored,
         };
         assert_eq!(objectives.player, PlayerId(0));
-        assert_eq!(objectives.objectives.len(), 2);
+        assert_eq!(objectives.objectives.len(), 4);
         assert!(objectives.objectives[0].kind == MissionObjectiveKind::Destroy);
         assert!(!objectives.objectives[0].optional);
         assert!(objectives.objectives[1].optional);
+        assert_eq!(
+            objectives.objectives[2],
+            MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks: 300 },
+                optional: false,
+            }
+        );
+        assert_eq!(
+            objectives.objectives[3],
+            MissionObjective {
+                kind: MissionObjectiveKind::Protect,
+                parameters: MissionObjectiveParameters::Protect { kind: KindId(3) },
+                optional: false,
+            }
+        );
         assert_eq!(objectives.fog_preset, FogPreset::Explored);
     }
 }
