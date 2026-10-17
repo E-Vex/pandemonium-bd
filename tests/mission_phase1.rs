@@ -26,10 +26,14 @@
 
 use std::path::{Path, PathBuf};
 
-use pandemonium_content::ContentTree;
-use pandemonium_sim::{CapTemplate, KindEconomy, KindTemplate, Sim, SpawnDef, TrivialWorld};
+use pandemonium_content::{ContentTree, SourceMap};
+use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
+use pandemonium_sim::{
+    run_command_log_with_mission, CapTemplate, KindEconomy, KindTemplate, ScheduledSpawnDef, Sim,
+    SpawnDef, TrivialWorld,
+};
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, Event, FogPreset, KindId, MatchSetup,
+    Command, CommandKind, ControllerKind, Event, FogPreset, KindId, MatchSetup, MissionObjective,
     MissionObjectiveKind, MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup,
     TileFog, Vec2Fx,
 };
@@ -725,4 +729,570 @@ fn worker_kind(tree: &ContentTree) -> KindId {
             .position(|entity| entity.id == "worker")
             .expect("worker exists in the tree") as u32,
     )
+}
+
+// -------------------------------------------------------------------------
+// B-017 — Survive + Protect (ADR-0201 Phase 2): the two new objective
+// kinds against the REAL content tree and the REAL seam. Loader-level
+// gates run over in-memory SourceMaps built on the real content (no
+// content file is added to the repository — the frozen tree is untouched);
+// behavioral acceptance runs over the real bundle world or a fixture
+// world whose kinds resolve through the real tree's entity order.
+// -------------------------------------------------------------------------
+
+/// A probe mission file over the real content's closed reference set
+/// (crossroads_64 / legion / alpha), carrying the given objectives text.
+/// Used with `SourceMap::from_dir(&repo_content()).mission(...)` — the
+/// tree-level gates (references, protect starting forces, the
+/// all-Protect-required refusal) run exactly as they would for a file on
+/// disk, without the repository's frozen content gaining a file.
+fn probe_mission(id: &str, objectives: &str) -> String {
+    format!(
+        r#"
+(
+    schema_version: 1,
+    id: "{id}",
+    display_name: "Probe",
+    map: "crossroads_64",
+    faction: "legion",
+    rules: "alpha",
+    objectives: [
+{objectives}
+    ],
+)
+"#
+    )
+}
+
+/// The real content sources with one probe mission added in memory.
+fn sources_with_probe(id: &str, objectives: &str) -> SourceMap {
+    SourceMap::from_dir(&repo_content())
+        .expect("the real content reads")
+        .mission(&format!("{id}.ron"), &probe_mission(id, objectives))
+}
+
+#[test]
+fn survive_300_is_pending_at_tick_299_and_completes_at_tick_300() {
+    // The brief's binding acceptance, at the authored scale: pending at
+    // tick 299, complete at 300. The mission data is crossroads_01 resolved
+    // through the real seam with its objective list replaced by a single
+    // required Survive (the fog tests' mutation pattern — the carrier is
+    // the same seam the client uses); the world is the real bundle's, the
+    // same one begin_mission builds. Idle play: nothing dies, so only the
+    // survive window can resolve the match.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let world = tree
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles")
+        .world();
+    let mut mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    mission.objectives = vec![MissionObjective {
+        kind: MissionObjectiveKind::Survive,
+        parameters: MissionObjectiveParameters::Survive { ticks: 300 },
+        optional: false,
+    }];
+    let setup = two_player_setup();
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut sim = Sim::with_mission(&world, setup, mission);
+
+    // Ticks 0 through 299 — 300 steps, the last of which evaluates stage 10
+    // at tick 299: the objective is pending, the match unresolved, and the
+    // mission state never touches the canonical hash (A-066).
+    for _ in 0..300 {
+        let out = sim.step(&[]);
+        plain.step(&[]);
+        assert!(
+            !out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+            )),
+            "pending through tick 299: {:?}",
+            out.events
+        );
+    }
+    assert_eq!(sim.tick(), 300);
+    assert!(sim.outcome().is_none(), "tick 299: pending, no resolution");
+    assert_eq!(
+        sim.state_hash(),
+        plain.state_hash(),
+        "the mission data never enters the canonical hash"
+    );
+
+    // Tick 300 — the 301st step's stage-10 evaluation carries tick 300: the
+    // objective completes and the AND-composition (its only required
+    // objective) ends the match with the mission player the winner.
+    let out = sim.step(&[]);
+    plain.step(&[]);
+    assert!(
+        out.events.iter().any(|event| matches!(
+            event,
+            Event::ObjectiveState {
+                index: 0,
+                state: ObjectiveState::Completed
+            }
+        )),
+        "the survive objective completes at tick 300: {:?}",
+        out.events
+    );
+    let outcome = sim
+        .outcome()
+        .expect("the survive window resolves the match");
+    assert_eq!(outcome.winner, PlayerId(0));
+    assert_eq!(outcome.ended_tick, 300);
+    // The mission-less twin stays unresolved through the same ticks (the
+    // goldens' byte path, unchanged).
+    assert!(plain.outcome().is_none());
+    assert_eq!(
+        sim.state_hash(),
+        plain.state_hash(),
+        "even the resolution tick's hash is mission-independent (derived state)"
+    );
+}
+
+#[test]
+fn the_loader_rejects_survive_windows_below_the_floor() {
+    // The brief's loader acceptance: ticks 0 and 299 are refused, 300 is
+    // the first legal window. The probes run against the REAL content tree
+    // (in-memory sources) so the gate fires exactly as it would for an
+    // authored file.
+    for ticks in [0u32, 299] {
+        let sources = sources_with_probe(
+            "survive_bad",
+            &format!(
+                "( kind: \"Survive\", parameters: Survive(( ticks: {ticks} )), optional: false, )"
+            ),
+        );
+        let err = ContentTree::load(&sources).unwrap_err();
+        assert!(
+            err.to_string().contains(&format!(
+                "has ticks {ticks} (survive objectives need at least 300 ticks)"
+            )),
+            "ticks {ticks}: got: {err}"
+        );
+    }
+    let sources = sources_with_probe(
+        "survive_ok",
+        "( kind: \"Survive\", parameters: Survive(( ticks: 300 )), optional: false, )",
+    );
+    let tree = ContentTree::load(&sources).expect("300 ticks is the first legal window");
+    // And the resolved objective set carries the authored window verbatim.
+    let objectives = tree
+        .mission_data("survive_ok", PlayerId(0))
+        .expect("the probe resolves");
+    assert_eq!(
+        objectives.objectives,
+        vec![MissionObjective {
+            kind: MissionObjectiveKind::Survive,
+            parameters: MissionObjectiveParameters::Survive { ticks: 300 },
+            optional: false,
+        }]
+    );
+}
+
+#[test]
+fn the_loader_rejects_protect_kinds_the_legion_does_not_start_with() {
+    // The brief's loader acceptance: a kind not present in the mission
+    // player's starting forces is refused. The ore node is a real entity
+    // in the tree (the reference check passes) but the Legion starts with
+    // one command center and four workers — protecting anything else
+    // would fail on the first tick (the vacuous-failure guard, AUD-003).
+    // A completable required objective rides along so the all-Protect gate
+    // stays out of the way.
+    let objectives = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"Protect\", parameters: Protect(( kind: \"ore_node\" )), optional: true, )";
+    let sources = sources_with_probe("protect_bad", objectives);
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "mission 'protect_bad' protects kind 'ore_node' that the starting forces of \
+             faction 'legion' do not carry"
+        ),
+        "got: {err}"
+    );
+    // A kind the tree does not carry at all is the entity-reference law's
+    // error (the same check BuildTrain kinds and Destroy targets get).
+    let objectives = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"Protect\", parameters: Protect(( kind: \"battlecruiser\" )), optional: true, )";
+    let sources = sources_with_probe("protect_unknown", objectives);
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("references unknown entity 'battlecruiser'"),
+        "got: {err}"
+    );
+    // A kind the Legion starts with (worker) is legal, and the seam
+    // resolves it through the tree's entity order.
+    let objectives = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"Protect\", parameters: Protect(( kind: \"worker\" )), optional: true, )";
+    let sources = sources_with_probe("protect_ok", objectives);
+    let tree = ContentTree::load(&sources).expect("protecting a starting kind is legal");
+    let resolved = tree
+        .mission_data("protect_ok", PlayerId(0))
+        .expect("the probe resolves");
+    assert_eq!(
+        resolved.objectives[1],
+        MissionObjective {
+            kind: MissionObjectiveKind::Protect,
+            parameters: MissionObjectiveParameters::Protect {
+                kind: worker_kind(&tree)
+            },
+            optional: true,
+        }
+    );
+}
+
+#[test]
+fn a_mission_whose_required_objectives_are_all_protect_is_refused_at_load() {
+    // The victory-reachability gate against the real tree: a mission whose
+    // required objectives are all Protect has no path to victory (protect
+    // never completes), so the loader refuses it. The escape hatches both
+    // load: a completable required objective beside a required protect, and
+    // the all-optional law (the pre-existing shape that ends only through
+    // the elimination rule).
+    let all_protect = "( kind: \"Protect\", parameters: Protect(( kind: \"worker\" )), optional: false, ),\n        ( kind: \"Protect\", parameters: Protect(( kind: \"command_center\" )), optional: false, )";
+    let sources = sources_with_probe("all_protect", all_protect);
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "every required objective of mission 'all_protect' is Protect — protect \
+             objectives never complete (they are fail-only), so victory would be unreachable"
+        ),
+        "got: {err}"
+    );
+    // A completable required objective (Survive) beside a required protect
+    // keeps victory reachable — the composition the kinds exist for.
+    let mixed = "( kind: \"Survive\", parameters: Survive(( ticks: 300 )), optional: false, ),\n        ( kind: \"Protect\", parameters: Protect(( kind: \"worker\" )), optional: false, )";
+    let sources = sources_with_probe("mixed", mixed);
+    ContentTree::load(&sources).expect("a required protect beside a completable objective loads");
+    // All-optional protects stay legal (optional never gates the match).
+    let optional_only = "( kind: \"Protect\", parameters: Protect(( kind: \"worker\" )), optional: true, ),\n        ( kind: \"Protect\", parameters: Protect(( kind: \"command_center\" )), optional: true, )";
+    let sources = sources_with_probe("optional_only", optional_only);
+    ContentTree::load(&sources).expect("an all-optional protect mission loads");
+}
+
+/// The protect fixture: the real worker kind (resolved through the tree's
+/// entity order — the exact id the bundle's world assigns) as a decaying
+/// unit (41 hp, -1 per tick, no Footprint: protect guards any owned entity
+/// kind, not just structures), every other kind up to that index a
+/// surviving structure. Player 0 (the mission player) owns a surviving
+/// structure, one initial worker, and one worker scheduled for tick 30 —
+/// the initial worker dies at tick 40, the scheduled one at tick 70, so
+/// the protected set is non-empty through tick 69 and empty from tick 70.
+/// Player 1 owns a surviving structure (the failure's winner).
+fn dying_workers_world(worker: KindId) -> TrivialWorld {
+    let kinds = (0..=worker.0)
+        .map(|index| KindTemplate {
+            caps: if index == worker.0 {
+                vec![CapTemplate::Health {
+                    max_hp: 41,
+                    regen_per_tick: -1,
+                }]
+            } else {
+                vec![
+                    CapTemplate::Health {
+                        max_hp: 10,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Footprint { w: 2, h: 2 },
+                ]
+            },
+            economy: KindEconomy::default(),
+        })
+        .collect();
+    TrivialWorld {
+        map_id: 0x0050_524F_5445_4230,
+        width_tiles: 32,
+        height_tiles: 32,
+        passability: TrivialWorld::open_passability(32, 32),
+        buildability: TrivialWorld::open_buildability(32, 32),
+        kinds,
+        resources: vec![],
+        production: vec![],
+        base_population_cap: 0,
+        initial_spawns: vec![
+            // The mission player's surviving structure.
+            SpawnDef {
+                owner: PlayerId(0),
+                kind: KindId(0),
+                pos: Vec2Fx::from_ints(8, 8),
+            },
+            // The mission player's protected worker — dies at tick 40.
+            SpawnDef {
+                owner: PlayerId(0),
+                kind: worker,
+                pos: Vec2Fx::from_ints(10, 10),
+            },
+            // The opponent's surviving structure.
+            SpawnDef {
+                owner: PlayerId(1),
+                kind: KindId(0),
+                pos: Vec2Fx::from_ints(24, 24),
+            },
+        ],
+        // The second protected worker — spawns during tick 30, dies at
+        // tick 70: the stagger proves "pending while at least one living
+        // entity of the kind remains" (not "while any ever lived", not
+        // "until the first one dies").
+        scheduled_spawns: vec![ScheduledSpawnDef {
+            tick: 30,
+            spawn: SpawnDef {
+                owner: PlayerId(0),
+                kind: worker,
+                pos: Vec2Fx::from_ints(12, 12),
+            },
+        }],
+        spawn_jitter_milli: 0,
+        roster: Vec::new(),
+    }
+    .with_default_roster()
+}
+
+#[test]
+fn protect_is_pending_while_any_worker_lives_and_fails_when_the_last_dies() {
+    // The brief's behavioral acceptance on a fixture world whose worker
+    // kind is the REAL tree's: pending while at least one living worker
+    // remains — including after the first one dies (tick 40) — failed on
+    // the first tick none remains (tick 70, the same step as the last
+    // worker's Died event, FD-9), and a required failure ends the match
+    // as lost for the mission player through the same path other required
+    // failures use, while their structure still stands (NOT elimination).
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let worker = worker_kind(&tree);
+    let mut mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    mission.objectives = vec![MissionObjective {
+        kind: MissionObjectiveKind::Protect,
+        parameters: MissionObjectiveParameters::Protect { kind: worker },
+        optional: false,
+    }];
+    let world = dying_workers_world(worker);
+    let setup = two_player_setup();
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut sim = Sim::with_mission(&world, setup, mission);
+
+    // Ticks 0..39: both workers live — pending, no events.
+    for _ in 0..40 {
+        let out = sim.step(&[]);
+        plain.step(&[]);
+        assert!(
+            !out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+            )),
+            "pending while the workers live: {:?}",
+            out.events
+        );
+    }
+    // Tick 40: the first worker dies — its Died event fires, but the
+    // second still lives, so the protect objective stays PENDING (the
+    // "at least one living entity" law, not "no death ever").
+    let out = sim.step(&[]);
+    plain.step(&[]);
+    assert!(
+        out.events
+            .iter()
+            .any(|event| matches!(event, Event::Died { .. })),
+        "the first worker dies at tick 40: {:?}",
+        out.events
+    );
+    assert!(
+        !out.events.iter().any(|event| matches!(
+            event,
+            Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+        )),
+        "one worker still lives — the protect stays pending: {:?}",
+        out.events
+    );
+    assert_eq!(sim.state_hash(), plain.state_hash(), "A-066 at tick 40");
+
+    // Ticks 41..69: the second worker lives — still pending.
+    for _ in 0..29 {
+        let out = sim.step(&[]);
+        plain.step(&[]);
+        assert!(
+            !out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+            )),
+            "pending through tick 69: {:?}",
+            out.events
+        );
+    }
+
+    // Tick 70: the last worker dies — Died, then the failure, then
+    // MatchEnded with the opponent the winner, in that order in the same
+    // step's stream.
+    let out = sim.step(&[]);
+    plain.step(&[]);
+    let died = out
+        .events
+        .iter()
+        .position(|event| matches!(event, Event::Died { .. }))
+        .expect("the last worker died this tick");
+    let failed = out
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Failed
+                }
+            )
+        })
+        .expect("the protect objective fails when none remains");
+    let ended = out
+        .events
+        .iter()
+        .position(|event| matches!(event, Event::MatchEnded { .. }))
+        .expect("a required failure ends the match as lost");
+    assert!(died < failed, "FD-9: {out:?}");
+    assert!(failed < ended, "{out:?}");
+    let outcome = sim.outcome().expect("the failure resolved the match");
+    assert_eq!(outcome.winner, PlayerId(1), "the mission player lost");
+    assert_eq!(outcome.ended_tick, 70);
+    // The mission player was NOT eliminated — the failure path, not the
+    // defeat path, ended the match.
+    assert!(
+        sim.snapshot()
+            .entities
+            .iter()
+            .any(|entity| entity.owner == PlayerId(0) && entity.kind == KindId(0)),
+        "the mission player's structure still stands"
+    );
+    // The mission-less twin: both workers die, no one is eliminated, the
+    // match runs on (the same world, the same ticks).
+    assert!(plain.outcome().is_none());
+    assert_eq!(sim.state_hash(), plain.state_hash(), "A-066 past the end");
+}
+
+#[test]
+fn an_optional_protect_failure_reports_but_never_ends_the_match() {
+    // The optional law at the seam: the failed protect objective fires its
+    // ObjectiveState::Failed event (the end screen's story hook) but never
+    // gates MatchEnded — the match runs on under the elimination rule, and
+    // no one here is eliminated.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let worker = worker_kind(&tree);
+    let mut mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    mission.objectives = vec![MissionObjective {
+        kind: MissionObjectiveKind::Protect,
+        parameters: MissionObjectiveParameters::Protect { kind: worker },
+        optional: true,
+    }];
+    let world = dying_workers_world(worker);
+    let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+    for _ in 0..70 {
+        sim.step(&[]);
+    }
+    let out = sim.step(&[]);
+    assert!(
+        out.events.iter().any(|event| matches!(
+            event,
+            Event::ObjectiveState {
+                index: 0,
+                state: ObjectiveState::Failed
+            }
+        )),
+        "the optional protect objective fails: {:?}",
+        out.events
+    );
+    assert!(
+        !out.events
+            .iter()
+            .any(|event| matches!(event, Event::MatchEnded { .. })),
+        "an optional protect failure never ends the match"
+    );
+    assert!(sim.outcome().is_none());
+    for _ in 0..50 {
+        sim.step(&[]);
+    }
+    assert!(sim.outcome().is_none(), "the match runs on");
+}
+
+#[test]
+fn a_survive_mission_replay_roundtrips() {
+    // The brief's replay acceptance: a mission-carrying record of a Survive
+    // mission round-trips — the codec carries the mission id (AUD-002),
+    // the record validates, and the mission-carrying re-simulation through
+    // the same `run_command_log_with_mission` seam the tools' verifier
+    // uses reproduces every checkpoint and the final hash. The Survive
+    // mission lives in an in-memory tree built on the real content (no
+    // repository content file is added — the frozen tree is untouched),
+    // and the tree's bundle identities are the registered goldens exactly
+    // (a mission file changes nothing the content hash or map id reads).
+    let sources = sources_with_probe(
+        "survive_probe",
+        "( kind: \"Survive\", parameters: Survive(( ticks: 300 )), optional: false, )",
+    );
+    let tree = ContentTree::load(&sources).expect("the tree with the survive probe loads");
+    let mission_id = tree.mission_id("survive_probe");
+    let mission = tree
+        .mission_data("survive_probe", PlayerId(0))
+        .expect("the probe resolves");
+    let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
+    let world = bundle.world();
+    // A mission file changes nothing the registered identities read: the
+    // bundle's content hash and map id are the goldens exactly (the mission
+    // category appends nothing to their encoders).
+    assert_eq!(
+        bundle.content_hash(),
+        0x9bc1_8c52_1107_b262,
+        "the content hash never moves"
+    );
+    assert_eq!(
+        bundle.map_id(),
+        0xd381_3640_1ab0_2ff1,
+        "the map id never moves"
+    );
+    assert_ne!(
+        mission_id, CROSSROADS_01_MISSION_ID,
+        "the probe is its own mission (identity-bearing)"
+    );
+
+    // The recording: seed 7, two players, 400 idle ticks — the window at
+    // 300 resolves inside the recording, and the checkpoints pin the same
+    // hashed trail the mission-less path produces (derived state, A-066).
+    let setup = two_player_setup();
+    let run = run_command_log_with_mission(&world, &setup, &[], 400, Some(mission.clone()));
+    let replay = ReplayFile {
+        format_version: FORMAT_VERSION,
+        content_hash: world.content_hash(),
+        map_id: world.map_id,
+        mission_id: Some(mission_id),
+        seed: setup.seed,
+        player_setup: setup.players.clone(),
+        commands: Vec::new(),
+        checkpoints: run
+            .checkpoints
+            .iter()
+            .map(|&(tick, hash)| Checkpoint { tick, hash })
+            .collect(),
+        final_hash: run.final_hash,
+    };
+    replay.validate().expect("the record is structurally sound");
+
+    // The codec round-trip: bytes carry the mission id; the decoded record
+    // equals the written one field for field.
+    let bytes = replay.encode();
+    let decoded = ReplayFile::decode(&bytes).expect("the record decodes");
+    assert_eq!(decoded, replay);
+    assert_eq!(decoded.mission_id, Some(mission_id));
+
+    // The re-simulation: mission-carrying, through the same seam — every
+    // checkpoint and the final hash reproduce (the verifier's comparison,
+    // run in-process; the CLI run lives in the B-017 report's verification
+    // table).
+    let resim = run_command_log_with_mission(&world, &setup, &[], 400, Some(mission));
+    assert_eq!(
+        resim.checkpoints, run.checkpoints,
+        "every checkpoint reproduces"
+    );
+    assert_eq!(
+        resim.final_hash, run.final_hash,
+        "the final hash reproduces"
+    );
 }
