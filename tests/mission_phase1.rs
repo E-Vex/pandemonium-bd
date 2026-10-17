@@ -29,8 +29,9 @@ use std::path::{Path, PathBuf};
 use pandemonium_content::ContentTree;
 use pandemonium_sim::{CapTemplate, KindEconomy, KindTemplate, Sim, SpawnDef, TrivialWorld};
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, Event, KindId, MatchSetup, MissionObjectiveKind,
-    MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup, Vec2Fx,
+    Command, CommandKind, ControllerKind, Event, FogPreset, KindId, MatchSetup,
+    MissionObjectiveKind, MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup,
+    TileFog, Vec2Fx,
 };
 
 /// The repository's content directory.
@@ -470,4 +471,256 @@ fn the_optional_objective_demands_growth_beyond_the_starting_forces() {
         sim.outcome().is_none(),
         "an optional objective completes without ending the match"
     );
+}
+
+// -------------------------------------------------------------------------
+// B-015 — fog presets (ADR-0201 Phase 2): the preset rides MissionData,
+// initializes the fog cache, and never touches the canonical hash.
+// -------------------------------------------------------------------------
+
+/// crossroads_01's registered mission id, captured before B-015 touched
+/// anything (pre-flight at master 428d55d) and re-checked after every
+/// identity-bearing step. The mission does not use the fog-preset field, so
+/// its id must never move — recordings carry `mission_id` (AUD-002) and a
+/// silent id change breaks replays.
+const CROSSROADS_01_MISSION_ID: u64 = 0xc837_9403_777e_4286;
+
+#[test]
+fn crossroads_01s_mission_id_survives_b015() {
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    assert_eq!(
+        tree.mission_id("crossroads_01"),
+        CROSSROADS_01_MISSION_ID,
+        "a mission that does not use the fog-preset field keeps exactly the \
+         same mission id (the encode-only-if-non-default rule)"
+    );
+    // And the bundle identities the content goldens pin are equally intact
+    // (the mission category appends nothing to their encoders).
+    let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
+    assert_eq!(
+        bundle.content_hash(),
+        0x9bc1_8c52_1107_b262,
+        "the registered content hash never moves"
+    );
+    assert_eq!(
+        bundle.map_id(),
+        0xd381_3640_1ab0_2ff1,
+        "the registered map id never moves"
+    );
+}
+
+#[test]
+fn the_default_preset_matches_the_mission_less_path_at_the_checked_ticks() {
+    // B-015 acceptance: `Sim::new` vs `Sim::with_mission(fog_preset=Default)`
+    // — identical state hash at every tick checked (0, 300, 7200) — on the
+    // real content's world, the exact world the client's begin_mission
+    // builds. Fog state is derived and non-hashed (A-059), and the Default
+    // preset is byte-identical to the mission-less initialization, so the
+    // hashes agree tick for tick.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    assert_eq!(
+        mission.fog_preset,
+        FogPreset::Default,
+        "crossroads_01 carries no fog preset — the seam resolves Default"
+    );
+
+    let world = tree
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles")
+        .world();
+    let setup = two_player_setup();
+    let mut plain = Sim::new(&world, setup.clone());
+    let mut wrapped = Sim::with_mission(&world, setup, mission);
+
+    assert_eq!(plain.state_hash(), wrapped.state_hash(), "tick 0");
+    for tick in 1..=7200u32 {
+        plain.step(&[]);
+        wrapped.step(&[]);
+        if tick == 300 || tick == 7200 {
+            assert_eq!(
+                plain.state_hash(),
+                wrapped.state_hash(),
+                "tick {tick}: the Default preset never diverges from the mission-less path"
+            );
+        }
+    }
+    // The mission-less match stays unresolved either way (both command
+    // centers stand; nothing ever dies in an idle opening).
+    assert!(plain.outcome().is_none() && wrapped.outcome().is_none());
+}
+
+/// The fog row of one player, straight out of the `player_view` the client's
+/// fog renderer and the AI read.
+fn fog_row(sim: &Sim, player: PlayerId) -> Vec<TileFog> {
+    let view = sim.player_view(player);
+    assert!(!view.fog.is_empty(), "the player is in the match");
+    view.fog
+}
+
+#[test]
+fn each_preset_initializes_the_fog_rows_as_its_kind_promises() {
+    // B-015 acceptance: Default starts all Hidden (outside vision), Explored
+    // starts every tile at least Explored (vision lights Visible on top),
+    // Visible starts — and keeps — every tile Visible. The same init applies
+    // to every player.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let world = tree
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles")
+        .world();
+    let base = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+
+    let mut sim_default = Sim::with_mission(&world, two_player_setup(), base.clone());
+    let mut explored = base.clone();
+    explored.fog_preset = FogPreset::Explored;
+    let mut sim_explored = Sim::with_mission(&world, two_player_setup(), explored);
+    let mut visible = base;
+    visible.fog_preset = FogPreset::Visible;
+    let mut sim_visible = Sim::with_mission(&world, two_player_setup(), visible);
+
+    // Default at tick 0: today's fog — the far corners are Hidden, the
+    // starting positions' surroundings are Visible.
+    let default_row = fog_row(&sim_default, PlayerId(0));
+    assert!(
+        default_row.contains(&TileFog::Hidden),
+        "Default starts Hidden outside vision"
+    );
+    assert!(
+        default_row.contains(&TileFog::Visible),
+        "Default marks what units see Visible"
+    );
+    assert!(
+        !default_row.contains(&TileFog::Explored),
+        "nothing is Explored at tick 0"
+    );
+
+    // Explored at tick 0: nothing is Hidden; everything outside vision is
+    // exactly Explored; vision still lights Visible on top.
+    let explored_row = fog_row(&sim_explored, PlayerId(0));
+    assert!(
+        !explored_row.contains(&TileFog::Hidden),
+        "Explored starts with no Hidden tile"
+    );
+    assert!(explored_row.contains(&TileFog::Explored));
+    assert!(
+        explored_row.contains(&TileFog::Visible),
+        "vision lights Visible on the base"
+    );
+    // Same init for every player.
+    let explored_row_p1 = fog_row(&sim_explored, PlayerId(1));
+    assert!(!explored_row_p1.contains(&TileFog::Hidden));
+
+    // Visible at tick 0: the whole map, every player.
+    let visible_row = fog_row(&sim_visible, PlayerId(0));
+    assert!(
+        visible_row.iter().all(|tile| *tile == TileFog::Visible),
+        "Visible starts every tile Visible"
+    );
+    let visible_row_p1 = fog_row(&sim_visible, PlayerId(1));
+    assert!(visible_row_p1.iter().all(|tile| *tile == TileFog::Visible));
+
+    // And after 300 idle ticks the initializations hold: Default keeps its
+    // Hidden frontier (nothing moved, so nothing new was explored), Explored
+    // keeps its no-Hidden floor, Visible keeps every tile Visible.
+    for _ in 0..300 {
+        sim_default.step(&[]);
+        sim_explored.step(&[]);
+        sim_visible.step(&[]);
+    }
+    let default_row = fog_row(&sim_default, PlayerId(0));
+    assert!(
+        default_row.contains(&TileFog::Hidden),
+        "Default keeps its Hidden frontier"
+    );
+    let explored_row = fog_row(&sim_explored, PlayerId(0));
+    assert!(
+        !explored_row.contains(&TileFog::Hidden),
+        "Explored never regains Hidden tiles"
+    );
+    let visible_row = fog_row(&sim_visible, PlayerId(0));
+    assert!(
+        visible_row.iter().all(|tile| *tile == TileFog::Visible),
+        "Visible keeps every tile Visible after many ticks"
+    );
+}
+
+#[test]
+fn the_visible_preset_outlasts_vision_churn_through_the_public_view() {
+    // The persistence proof: `advance_vision` demotes every previously-
+    // Visible tile that is no longer inside a radius to Explored, so an
+    // init-only reveal would collapse within one moving unit's wake. The
+    // preset instead holds the whole map Visible for the entire match —
+    // through the same `player_view` the client's fog renderer and the AI's
+    // targeting read — while the sim state underneath is never touched
+    // (FD-8: fog filters, never alters).
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
+    let world = bundle.world();
+    let mut mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    mission.fog_preset = FogPreset::Visible;
+    let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+
+    // A player-0 worker marches away from its starting cluster: the tiles it
+    // leaves are exactly the ones `advance_vision` would demote.
+    let worker = sim
+        .snapshot()
+        .entities
+        .iter()
+        .find(|entity| entity.owner == PlayerId(0) && entity.kind == worker_kind(&tree))
+        .expect("the Legion fields workers")
+        .id;
+    // The opposite corner of the 64x64 map — the worker's vision cannot
+    // reach its origin from there.
+    let tick = sim.tick();
+    sim.step(&[Command::new(
+        PlayerId(0),
+        tick,
+        0,
+        CommandKind::Move {
+            units: vec![worker],
+            target: Vec2Fx::from_ints(63, 63),
+        },
+    )]);
+    for _ in 0..1200 {
+        sim.step(&[]);
+    }
+    // The worker really did cross the map (the order executed).
+    let arrived = sim
+        .snapshot()
+        .entities
+        .iter()
+        .find(|entity| entity.id == worker)
+        .expect("the worker lives")
+        .pos;
+    assert!(
+        arrived.x.raw() > (40 << 16),
+        "the worker marched to the far side (pos {arrived:?})"
+    );
+    // And the fog never darkened: every tile of every player is still
+    // Visible — the origin tiles included, long after their unit left.
+    for player in [PlayerId(0), PlayerId(1)] {
+        let row = fog_row(&sim, player);
+        assert!(
+            row.iter().all(|tile| *tile == TileFog::Visible),
+            "player {player:?}: the whole map stays Visible for the entire match"
+        );
+    }
+}
+
+/// The worker kind's id in the tree's entity order (the same order the
+/// bundle's world builds its kinds in).
+fn worker_kind(tree: &ContentTree) -> KindId {
+    KindId(
+        tree.entities
+            .iter()
+            .position(|entity| entity.id == "worker")
+            .expect("worker exists in the tree") as u32,
+    )
 }
