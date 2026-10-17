@@ -588,6 +588,51 @@ pub struct MissionObjectives {
     pub objectives: Vec<MissionObjective>,
 }
 
+/// A mission's fog preset (ADR-0201 Phase 2, B-015): how the fog cache
+/// initializes for every player when the match carries this mission.
+/// Behaviour is data selecting code (FD-4) — the preset is mission data
+/// riding [`MissionObjectives`] into the sim (FD-6), and it only ever
+/// selects the fog filter's initial view; it never touches simulation
+/// state (FD-8: fog filters, never alters).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum FogPreset {
+    /// Today's initialization, byte-identical: every tile starts `Hidden`
+    /// and vision radii light up from there. The default when the mission
+    /// file omits the field.
+    #[default]
+    Default,
+    /// Every tile starts `Explored` (seen before, not currently visible);
+    /// the per-tick vision pass still marks what units actually see
+    /// `Visible` on top.
+    Explored,
+    /// The whole map is visible for the entire match, not just tick 0: the
+    /// fog filter reports every tile `Visible` persistently, so the
+    /// per-tick demotion of unrefreshed tiles can never darken them.
+    Visible,
+}
+
+impl FogPreset {
+    /// The schema spelling of this preset (what appears in the mission file).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FogPreset::Default => "Default",
+            FogPreset::Explored => "Explored",
+            FogPreset::Visible => "Visible",
+        }
+    }
+
+    /// Parses a schema spelling. Unknown spellings are `None` so the loader
+    /// can reject them loudly — never silently mapped.
+    pub fn from_schema(preset: &str) -> Option<Self> {
+        match preset {
+            "Default" => Some(FogPreset::Default),
+            "Explored" => Some(FogPreset::Explored),
+            "Visible" => Some(FogPreset::Visible),
+            _ => None,
+        }
+    }
+}
+
 /// One of the eleven fixed pipeline stages of the simulation tick (plan
 /// §6.3's update order, verbatim). The stages exist as an enum so an
 /// instrumentation seam ([`StageObserver`]) can name them without depending
@@ -689,6 +734,20 @@ mod tests {
             }
         );
         assert_ne!(ObjectiveState::Completed, ObjectiveState::Failed);
+    }
+
+    #[test]
+    fn fog_presets_round_trip_their_schema_spellings() {
+        // B-015: the fog-preset vocabulary is schema-facing — every preset
+        // parses from its own spelling and only its own spelling, and the
+        // default (an absent mission field) is `Default`.
+        for preset in [FogPreset::Default, FogPreset::Explored, FogPreset::Visible] {
+            assert_eq!(FogPreset::from_schema(preset.as_str()), Some(preset));
+        }
+        assert_eq!(FogPreset::default(), FogPreset::Default);
+        assert_eq!(FogPreset::from_schema("Hidden"), None);
+        assert_eq!(FogPreset::from_schema("default"), None);
+        assert_eq!(FogPreset::from_schema(""), None);
     }
 
     #[test]
