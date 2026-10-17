@@ -528,6 +528,12 @@ pub(crate) fn parse_mission(
     })
 }
 
+/// The Survive floor (B-017): a survive window must demand real play —
+/// 300 ticks is ten seconds at the fixed 30 ticks/s. Anything shorter
+/// (including 0, which would complete vacuously at mission start) is a
+/// loud loader error, the AUD-003 discipline applied to the kind.
+const SURVIVE_MIN_TICKS: u32 = 300;
+
 /// Converts one raw objective into its canonical form (ADR-0201 §2): resolves
 /// the kind spelling — the vocabulary is fixed and unknown spellings are loud
 /// errors, never silently mapped — cross-checks the spelling against the
@@ -543,12 +549,14 @@ fn convert_objective(
         return Err(ContentError::Parse {
             file: file.to_string(),
             detail: format!(
-                "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', '{}')",
+                "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', \
+                 '{}', '{}')",
                 index + 1,
                 mission,
                 raw.kind,
                 defs::ObjectiveKind::Destroy.as_str(),
                 defs::ObjectiveKind::BuildTrain.as_str(),
+                defs::ObjectiveKind::Survive.as_str(),
             ),
         });
     };
@@ -596,6 +604,30 @@ fn convert_objective(
                 defs::ObjectiveParameters::BuildTrain {
                     kind: params.kind,
                     count: params.count,
+                },
+            )
+        }
+        RawObjectiveParameters::Survive(params) => {
+            // B-017's AUD-003 gate: the floor rejects the vacuous window
+            // (ticks 0 — complete at mission start) and the trivial one
+            // (anything under 300 ticks, ten seconds of play).
+            if params.ticks < SURVIVE_MIN_TICKS {
+                return Err(ContentError::Parse {
+                    file: file.to_string(),
+                    detail: format!(
+                        "objective {} of mission '{}' has ticks {} (survive objectives \
+                         need at least {} ticks)",
+                        index + 1,
+                        mission,
+                        params.ticks,
+                        SURVIVE_MIN_TICKS
+                    ),
+                });
+            }
+            (
+                defs::ObjectiveKind::Survive,
+                defs::ObjectiveParameters::Survive {
+                    ticks: params.ticks,
                 },
             )
         }
@@ -761,11 +793,73 @@ mod tests {
 
     #[test]
     fn unknown_objective_kinds_are_rejected_loudly() {
-        let bad = MISSION.replace("\"BuildTrain\",", "\"Survive\",");
+        // B-017 made "Survive" a known kind, so the unknown-kind probe uses
+        // a spelling outside the vocabulary — the rejection must stay loud
+        // and name every known kind.
+        let bad = MISSION.replace("\"BuildTrain\",", "\"Timed\",");
         let err = parse(&bad).unwrap_err();
         assert!(
             err.to_string()
-                .contains("unknown kind 'Survive' (known kinds: 'Destroy', 'BuildTrain')"),
+                .contains("unknown kind 'Timed' (known kinds: 'Destroy', 'BuildTrain', 'Survive')"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_survive_objective_parses_with_its_tick_count() {
+        // B-017: the survive kind — plain integer ticks (FD-5), carried
+        // verbatim into the canonical form.
+        let survive = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 300 )),\n            optional: true,",
+        );
+        let def = parse(&survive).expect("a survive objective parses");
+        assert_eq!(
+            def.objectives[1],
+            defs::ObjectiveDef {
+                kind: defs::ObjectiveKind::Survive,
+                parameters: defs::ObjectiveParameters::Survive { ticks: 300 },
+                optional: true,
+            }
+        );
+    }
+
+    #[test]
+    fn survive_windows_below_the_floor_are_rejected() {
+        // B-017's binding floor: 0 is the vacuous window (complete at
+        // mission start), 299 the not-yet-real-play window — both are loud
+        // errors; 300 is the first legal window.
+        for ticks in [0u32, 299] {
+            let bad = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"Survive\",\n            parameters: Survive(( ticks: {ticks} )),\n            optional: true,"
+                ),
+            );
+            let err = parse(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!(
+                    "has ticks {ticks} (survive objectives need at least 300 ticks)"
+                )),
+                "ticks {ticks} must be a loud error, got: {err}"
+            );
+        }
+        let floor = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 300 )),\n            optional: true,",
+        );
+        parse(&floor).expect("300 ticks is the first legal window");
+    }
+
+    #[test]
+    fn survive_kind_and_parameters_must_agree() {
+        // The cross-check every kind gets: declaring Survive with a BuildTrain
+        // parameters block is a loud parse error, never a silent reinterpret.
+        let mismatched = MISSION.replace("kind: \"BuildTrain\",", "kind: \"Survive\",");
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'Survive' but carries 'BuildTrain' parameters"),
             "got: {err}"
         );
     }

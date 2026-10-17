@@ -316,10 +316,17 @@ impl ContentTree {
                         count: *count,
                     }
                 }
+                // B-017: survive parameters are plain data — the integer
+                // tick count crosses the seam verbatim (FD-5: no floats, no
+                // unit conversion; the tick is the sim's own unit).
+                defs::ObjectiveParameters::Survive { ticks } => {
+                    MissionObjectiveParameters::Survive { ticks: *ticks }
+                }
             };
             let kind = match parameters {
                 MissionObjectiveParameters::Destroy { .. } => MissionObjectiveKind::Destroy,
                 MissionObjectiveParameters::BuildTrain { .. } => MissionObjectiveKind::BuildTrain,
+                MissionObjectiveParameters::Survive { .. } => MissionObjectiveKind::Survive,
             };
             objectives.push(MissionObjective {
                 kind,
@@ -1039,10 +1046,13 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
     encode_str(h, &mission.rules);
     h.write_u32(mission.objectives.len() as u32);
     for objective in &mission.objectives {
-        // The kind tag: fixed, ordered, exhaustive over the Phase 1 vocabulary.
+        // The kind tag: fixed, ordered, exhaustive over the vocabulary.
+        // New kinds append (B-017's Survive is 3), so every pre-existing
+        // mission's byte stream is verbatim — the mission identity rule.
         h.write_u8(match objective.kind {
             defs::ObjectiveKind::Destroy => 1,
             defs::ObjectiveKind::BuildTrain => 2,
+            defs::ObjectiveKind::Survive => 3,
         });
         match &objective.parameters {
             defs::ObjectiveParameters::Destroy { target_kind } => match target_kind {
@@ -1055,6 +1065,14 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             defs::ObjectiveParameters::BuildTrain { kind, count } => {
                 encode_str(h, kind);
                 h.write_u32(*count);
+            }
+            // B-017: the survive window's integer tick count, in the same
+            // fixed little-endian discipline. The kind tag ahead of it is
+            // the domain separation — no pre-existing objective's bytes can
+            // misparse it, and a mission without a survive objective keeps
+            // exactly the id it had before.
+            defs::ObjectiveParameters::Survive { ticks } => {
+                h.write_u32(*ticks);
             }
         }
         encode_bool(h, objective.optional);
@@ -1476,6 +1494,70 @@ mod tests {
             err.to_string()
                 .contains("duplicate id 'testing_01' in category 'missions'"),
             "got: {err}"
+        );
+    }
+
+    #[test]
+    fn survive_objectives_are_identity_bearing_and_domain_separated() {
+        // B-017: the survive window enters the mission id — a mission whose
+        // objectives carry a survive window is a different mission from the
+        // same mission without one, and a different window is a different
+        // mission. The kind tag (3, after Destroy's 1 and BuildTrain's 2)
+        // keeps the byte streams apart, so the identity is domain-separated
+        // by construction, never by hash accident.
+        let base = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the BuildTrain-bearing mission loads");
+        let survive = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 300 )),\n            optional: true,",
+        );
+        let tree_survive = ContentTree::load(&factory().mission("testing_01.ron", &survive))
+            .expect("the Survive-bearing mission loads");
+        assert_ne!(
+            base.mission_id("testing_01"),
+            tree_survive.mission_id("testing_01"),
+            "replacing an objective with a survive objective changes the mission id"
+        );
+        let longer = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 600 )),\n            optional: true,",
+        );
+        let tree_longer = ContentTree::load(&factory().mission("testing_01.ron", &longer))
+            .expect("the longer survive window loads");
+        assert_ne!(
+            tree_survive.mission_id("testing_01"),
+            tree_longer.mission_id("testing_01"),
+            "a different survive window is a different mission"
+        );
+        // And the identity move is mission-scoped: the bundle identities the
+        // goldens pin never move, whatever the missions carry.
+        let base_bundle = base.bundle("testing").expect("bundle");
+        let survive_bundle = tree_survive.bundle("testing").expect("bundle");
+        assert_eq!(base_bundle.content_hash(), survive_bundle.content_hash());
+        assert_eq!(base_bundle.map_id(), survive_bundle.map_id());
+    }
+
+    #[test]
+    fn mission_data_resolves_survive_verbatim_through_the_seam() {
+        // B-017: survive parameters are plain data — the integer tick count
+        // crosses the content seam verbatim (no kind to resolve, no unit to
+        // convert), and the kind spelling resolves to the sim's vocabulary.
+        let survive = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Survive\",\n            parameters: Survive(( ticks: 300 )),\n            optional: true,",
+        );
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", &survive))
+            .expect("the Survive-bearing mission loads");
+        let objectives = tree
+            .mission_data("testing_01", PlayerId(0))
+            .expect("the objective set resolves");
+        assert_eq!(
+            objectives.objectives[1],
+            MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks: 300 },
+                optional: true,
+            }
         );
     }
 
