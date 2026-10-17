@@ -529,7 +529,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
+            roster: Vec::new(),
         }
+        .with_default_roster()
     }
 
     fn setup() -> MatchSetup {
@@ -879,7 +881,9 @@ pub(crate) mod tests_support {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
+            roster: Vec::new(),
         }
+        .with_default_roster()
     }
 }
 
@@ -965,6 +969,8 @@ pub(crate) mod construction_support {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
+            roster: Vec::new(),
         }
+        .with_default_roster()
     }
 }

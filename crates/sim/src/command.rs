@@ -810,7 +810,9 @@ mod tests {
             initial_spawns: vec![],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
+            roster: Vec::new(),
         }
+        .with_default_roster()
     }
 
     fn cmd(issuer: u8, tick: u32, seq: u32, kind: CommandKind) -> Command {

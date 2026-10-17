@@ -50,6 +50,17 @@ pub struct TrivialWorld {
     /// seam (plan §10.4: which kinds a producer trains is faction data; the
     /// Produce capability itself stays parameterless). M5.
     pub production: Vec<(KindId, Vec<KindId>)>,
+    /// The build roster: the structure kinds this world's faction fields —
+    /// the Build gate's authority (B-016, ADR-0201 §3's closed asymmetry:
+    /// Train has always been gated by the faction's production lists; Build
+    /// is now gated by the faction's roster). Faction data flows to the
+    /// simulation through this seam exactly like `production` (FD-4:
+    /// behaviour is data — a restricted roster is a data decision, never a
+    /// code path). Deliberately NOT part of [`Self::content_hash`]: the
+    /// fixture hash stays the world's content identity, and a restricted
+    /// roster's identity rides the mission id on recordings that carry one
+    /// (AUD-002), never a silent hash change.
+    pub roster: Vec<KindId>,
     /// The population cap before structures add to it (plan §10.4: 0).
     pub base_population_cap: u32,
     /// Entities present when the match begins, spawned in this order.
@@ -64,6 +75,42 @@ pub struct TrivialWorld {
 }
 
 impl TrivialWorld {
+    /// The hand-built-fixture roster default: every structure kind in
+    /// `kinds`, in kind order (a kind is a structure when it carries a
+    /// Footprint). Content-loaded worlds never use this —
+    /// `ContentBundle::world` fills the roster from the faction's own list
+    /// (the production lists' exact pattern).
+    pub fn default_roster(&self) -> Vec<KindId> {
+        self.kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| {
+                kind.caps
+                    .iter()
+                    .any(|cap| matches!(cap, CapTemplate::Footprint { .. }))
+            })
+            .map(|(index, _)| KindId(index as u32))
+            .collect()
+    }
+
+    /// The hand-built constructor's closing step: defaults the roster to
+    /// every structure kind in `kinds` ([`Self::default_roster`]), so a
+    /// hand-built world builds exactly what it always built — existing
+    /// fixtures behave identically under the roster-gated Build command
+    /// (B-016).
+    pub fn with_default_roster(mut self) -> Self {
+        self.roster = self.default_roster();
+        self
+    }
+
+    /// The explicit roster override: replaces the roster with `roster` — the
+    /// restricted-faction shape (gate tests today; mission-file variants
+    /// later, ADR-0201 §6: behaviour is data selecting code). Never hashed.
+    pub fn with_roster(mut self, roster: Vec<KindId>) -> Self {
+        self.roster = roster;
+        self
+    }
+
     /// A fully-passable `width` x `height` grid — the spine-test default for
     /// worlds that do not care about terrain.
     pub fn open_passability(width_tiles: u32, height_tiles: u32) -> Vec<u8> {
@@ -487,6 +534,7 @@ mod tests {
                 starting: 200,
             }],
             production: vec![],
+            roster: Vec::new(),
             base_population_cap: 0,
             initial_spawns: vec![SpawnDef {
                 owner: PlayerId(0),
@@ -496,11 +544,41 @@ mod tests {
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
         }
+        .with_default_roster()
     }
 
     #[test]
     fn fixture_hash_is_stable_for_equal_worlds() {
         assert_eq!(demo_world().content_hash(), demo_world().content_hash());
+    }
+
+    #[test]
+    fn default_roster_lists_exactly_the_structure_kinds() {
+        // The demo kinds (0 mover, 1 watcher) carry no Footprint: the default
+        // roster is empty — nothing is a structure.
+        assert!(demo_world().roster.is_empty());
+        // One structure kind joins (kind 2): the default roster names it.
+        let mut world = demo_world();
+        world.kinds.push(KindTemplate {
+            caps: vec![CapTemplate::Footprint { w: 2, h: 2 }],
+            economy: KindEconomy::default(),
+        });
+        let rostered = world.with_default_roster();
+        assert_eq!(rostered.roster, vec![KindId(2)]);
+        // The explicit override replaces, never unions.
+        let restricted = rostered.with_roster(vec![KindId(0)]);
+        assert_eq!(restricted.roster, vec![KindId(0)]);
+    }
+
+    #[test]
+    fn the_roster_is_never_hashed() {
+        // Two worlds identical in every content-identity byte except the
+        // roster hash the same: the roster is build authority, not content
+        // identity (B-016 — the content hash comes from the bundle).
+        let unrestricted = demo_world().with_default_roster();
+        let restricted = demo_world().with_roster(vec![KindId(1)]);
+        assert_ne!(unrestricted.roster, restricted.roster);
+        assert_eq!(unrestricted.content_hash(), restricted.content_hash());
     }
 
     #[test]

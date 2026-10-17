@@ -412,7 +412,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
+            roster: Vec::new(),
         }
+        .with_default_roster()
     }
 
     fn two_player_setup() -> MatchSetup {
@@ -540,7 +542,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
-        };
+            roster: Vec::new(),
+        }
+        .with_default_roster();
         let mut sim = Sim::new(&world, two_player_setup());
         sim.step(&[]);
         let outcome = sim.outcome().expect("player 0 lost their last structure");
@@ -604,7 +608,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
+            roster: Vec::new(),
         }
+        .with_default_roster()
     }
 
     #[test]
@@ -769,7 +775,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
-        };
+            roster: Vec::new(),
+        }
+        .with_default_roster();
         // The mission's objectives cannot resolve (the enemy stands).
         let mut sim = Sim::with_mission(&world, two_player_setup(), destroy_all(PlayerId(0)));
         sim.step(&[]);
@@ -895,7 +903,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
-        };
+            roster: Vec::new(),
+        }
+        .with_default_roster();
         // Aimed at the surviving kind: pending, and nothing ends the match
         // (the enemy still owns a structure, so even elimination holds).
         let aimed_at_survivor = mission_for(

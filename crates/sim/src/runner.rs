@@ -150,7 +150,9 @@ mod tests {
             }],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
+            roster: Vec::new(),
         }
+        .with_default_roster()
     }
 
     fn setup() -> MatchSetup {
