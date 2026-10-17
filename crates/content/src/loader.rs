@@ -495,6 +495,27 @@ pub(crate) fn parse_mission(
         .enumerate()
         .map(|(index, objective)| convert_objective(&file, &raw.id, index, objective, entities))
         .collect::<Result<Vec<_>, _>>()?;
+    // The fog preset (B-015): absent is `Default` — the historical
+    // initialization, so pre-B-015 mission files parse exactly as before
+    // (FD-10: new fields are optional with a default). A present spelling
+    // must parse through the canonical vocabulary; unknown spellings are
+    // loud errors, never silently mapped to `Default`.
+    let fog_preset = match raw.fog_preset.as_deref() {
+        None => defs::FogPreset::Default,
+        Some(spelling) => {
+            defs::FogPreset::from_schema(spelling).ok_or_else(|| ContentError::Parse {
+                file: file.clone(),
+                detail: format!(
+                    "mission '{}' has unknown fog_preset '{}' (known presets: '{}', '{}', '{}')",
+                    raw.id,
+                    spelling,
+                    defs::FogPreset::Default.as_str(),
+                    defs::FogPreset::Explored.as_str(),
+                    defs::FogPreset::Visible.as_str(),
+                ),
+            })?
+        }
+    };
     Ok(defs::MissionDef {
         id: raw.id,
         display_name: raw.display_name,
@@ -502,6 +523,7 @@ pub(crate) fn parse_mission(
         map: raw.map,
         faction: raw.faction,
         rules: raw.rules,
+        fog_preset,
         objectives,
     })
 }
@@ -746,6 +768,58 @@ mod tests {
                 .contains("unknown kind 'Survive' (known kinds: 'Destroy', 'BuildTrain')"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn an_absent_fog_preset_parses_as_default() {
+        // B-015: pre-B-015 mission files carry no fog_preset — the field is
+        // forward-only optional (FD-10), and absent means the historical
+        // all-Hidden initialization.
+        let def = parse(MISSION).expect("the factory mission parses");
+        assert_eq!(def.fog_preset, defs::FogPreset::Default);
+    }
+
+    #[test]
+    fn every_fog_preset_spelling_parses_and_the_field_is_positional() {
+        // Each canonical spelling parses into its preset, in place, with the
+        // rest of the mission untouched. The authored shape follows the
+        // schema's established Option convention (`target_kind:
+        // Some("...")`): an explicit `Some(...)` around the spelling.
+        for (spelling, expected) in [
+            ("Some(\"Default\")", defs::FogPreset::Default),
+            ("Some(\"Explored\")", defs::FogPreset::Explored),
+            ("Some(\"Visible\")", defs::FogPreset::Visible),
+        ] {
+            let sourced = MISSION.replace(
+                "rules: \"alpha\",",
+                &format!("rules: \"alpha\",\n    fog_preset: {spelling},"),
+            );
+            let def = parse(&sourced).expect("the mission with a fog preset parses");
+            assert_eq!(def.fog_preset, expected, "spelling {spelling}");
+            assert_eq!(def.objectives.len(), 2, "the rest of the mission is intact");
+        }
+    }
+
+    #[test]
+    fn unknown_fog_preset_spellings_are_rejected_loudly() {
+        // Not silently mapped to Default, not silently ignored — a typo'd
+        // preset is a precise parse error naming the vocabulary.
+        for spelling in [
+            "Some(\"Hidden\")",
+            "Some(\"visible\")",
+            "Some(\"\")",
+            "Some(\"Fogless\")",
+        ] {
+            let bad = MISSION.replace(
+                "rules: \"alpha\",",
+                &format!("rules: \"alpha\",\n    fog_preset: {spelling},"),
+            );
+            let err = parse(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown fog_preset"),
+                "spelling {spelling} must be a loud error, got: {err}"
+            );
+        }
     }
 
     #[test]
