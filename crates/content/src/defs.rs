@@ -409,6 +409,43 @@ pub struct ObjectiveDef {
     pub optional: bool,
 }
 
+/// A mission's fog preset (B-015): the canonical mirror of
+/// `pandemonium_sim_api::FogPreset`. The mission seam converts one into the
+/// other at load — content never hands the sim its own types (FD-6), and
+/// the sim never sees a content type.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FogPreset {
+    /// Every tile starts `Hidden` — the historical initialization,
+    /// byte-identical; the default when the mission file omits the field.
+    Default,
+    /// Every tile starts `Explored`; vision still lights what units see.
+    Explored,
+    /// The whole map stays `Visible` for the entire match.
+    Visible,
+}
+
+impl FogPreset {
+    /// The schema spelling of this preset (what appears in the mission file).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FogPreset::Default => "Default",
+            FogPreset::Explored => "Explored",
+            FogPreset::Visible => "Visible",
+        }
+    }
+
+    /// Parses a schema spelling. Unknown spellings are `None` so the loader
+    /// can reject them loudly — never silently mapped.
+    pub fn from_schema(preset: &str) -> Option<Self> {
+        match preset {
+            "Default" => Some(FogPreset::Default),
+            "Explored" => Some(FogPreset::Explored),
+            "Visible" => Some(FogPreset::Visible),
+            _ => None,
+        }
+    }
+}
+
 /// A validated mission (ADR-0201 §3): a closed reference set into the content
 /// tree — map, faction, rules — plus the ordered, AND-composed objective
 /// list. Reference existence is validated at load (the loader resolves
@@ -429,6 +466,11 @@ pub struct MissionDef {
     pub faction: String,
     /// The ruleset the mission runs under (validated to exist in the tree).
     pub rules: String,
+    /// The fog preset (B-015): how the fog cache initializes for every
+    /// player. `Default` when the file omits the field — the historical
+    /// initialization, so a mission that does not use the new field keeps
+    /// exactly the same mission id and behavior as before.
+    pub fog_preset: FogPreset,
     /// The ordered objective list — the indices are the objective-state event
     /// indices (ADR-0201 §2).
     pub objectives: Vec<ObjectiveDef>,

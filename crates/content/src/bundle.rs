@@ -21,8 +21,8 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, MissionObjectives,
-    PlayerId, ResourceId, Vec2Fx,
+    FogPreset, KindId, MissionData, MissionObjective, MissionObjectiveKind,
+    MissionObjectiveParameters, PlayerId, ResourceId, Vec2Fx,
 };
 
 use crate::defs;
@@ -240,22 +240,23 @@ impl ContentTree {
         h.finish()
     }
 
-    /// Resolves a mission's objective set into the simulation's vocabulary
+    /// Resolves a mission's data set into the simulation's vocabulary
     /// (ADR-0201 §2a): kind-id strings become `KindId`s through this tree's
     /// entity order — the exact order [`ContentBundle::world`] builds its
     /// kinds in, so the ids the objectives carry are the ids the world's
-    /// entities carry. This is the mission data seam beside `world()`
-    /// (FD-6: mission data reaches the simulation only through the content
-    /// seam, and the sim depends on nothing above it).
+    /// entities carry — and the fog preset (B-015) converts from the content
+    /// mirror into the sim's `FogPreset`. This is the mission data seam
+    /// beside `world()` (FD-6: mission data reaches the simulation only
+    /// through the content seam, and the sim depends on nothing above it).
     ///
     /// `player` is the mission player the objectives belong to — runtime
     /// data, not mission data: the caller picks the slot (Phase 1 tools and
     /// clients use the first map start's player).
-    pub fn mission_objectives(
+    pub fn mission_data(
         &self,
         mission_id_str: &str,
         player: PlayerId,
-    ) -> Result<MissionObjectives, ContentError> {
+    ) -> Result<MissionData, ContentError> {
         let Some(mission) = self.mission(mission_id_str) else {
             return Err(ContentError::Bundle {
                 detail: format!(
@@ -326,7 +327,17 @@ impl ContentTree {
                 optional: objective.optional,
             });
         }
-        Ok(MissionObjectives { player, objectives })
+        Ok(MissionData {
+            player,
+            objectives,
+            // B-015: the fog preset crosses the seam with the objectives —
+            // the mirror-to-sim conversion, variant for variant.
+            fog_preset: match mission.fog_preset {
+                defs::FogPreset::Default => FogPreset::Default,
+                defs::FogPreset::Explored => FogPreset::Explored,
+                defs::FogPreset::Visible => FogPreset::Visible,
+            },
+        })
     }
 
     /// Builds the bundle for one map. Every faction travels along (the Alpha
@@ -1029,7 +1040,27 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
         }
         encode_bool(h, objective.optional);
     }
+    // The fog preset (B-015) enters the encoding ONLY when non-default and
+    // only behind its own domain tag: a mission that does not use the field
+    // keeps exactly the id it had before (the mission identity rule), and
+    // the tag delimits the bytes so a future tail field can never misread
+    // them. Default writes nothing — the historical byte stream, verbatim.
+    if mission.fog_preset != defs::FogPreset::Default {
+        encode_bool(h, true);
+        h.write_u8(FOG_PRESET_ENCODING_TAG);
+        h.write_u8(match mission.fog_preset {
+            defs::FogPreset::Explored => 1,
+            defs::FogPreset::Visible => 2,
+            defs::FogPreset::Default => 0,
+        });
+    }
 }
+
+/// The domain tag of the optional fog-preset tail (B-015): a fixed byte
+/// between the presence flag and the preset value, so the non-default tail
+/// is self-describing and future mission fields appended after it can never
+/// collide with or misparse these bytes.
+const FOG_PRESET_ENCODING_TAG: u8 = 0xF0;
 
 #[cfg(test)]
 mod tests {
@@ -1262,6 +1293,89 @@ mod tests {
     }
 
     #[test]
+    fn a_default_fog_preset_keeps_exactly_the_same_mission_id() {
+        // The mission identity rule (B-015): a mission that does not use the
+        // new field keeps exactly the same mission id as before. Absent,
+        // explicit `Some("Default")`, and the pre-B-015 byte stream are the
+        // same mission — the fog-preset tail enters the encoding only when
+        // non-default, and Default writes nothing at all.
+        let absent = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the absent-field mission loads");
+        let explicit = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    fog_preset: Some(\"Default\"),",
+        );
+        let tree_explicit = ContentTree::load(&factory().mission("testing_01.ron", &explicit))
+            .expect("the explicit-Default mission loads");
+        assert_eq!(
+            absent.mission_id("testing_01"),
+            tree_explicit.mission_id("testing_01"),
+            "explicit Default is the same mission as absent"
+        );
+        assert_eq!(
+            absent.mission("testing_01").expect("found").fog_preset,
+            defs::FogPreset::Default
+        );
+    }
+
+    #[test]
+    fn a_non_default_fog_preset_is_a_different_mission() {
+        // A mission's fog preset is identity-bearing the moment it is used:
+        // Explored and Visible change what every player sees, so two trees
+        // differing only in a non-default preset are different missions
+        // (and a Default-carrying mission is still the pre-B-015 mission).
+        let absent = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the absent-field mission loads");
+        let explored = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    fog_preset: Some(\"Explored\"),",
+        );
+        let tree_explored = ContentTree::load(&factory().mission("testing_01.ron", &explored))
+            .expect("the Explored mission loads");
+        let visible = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    fog_preset: Some(\"Visible\"),",
+        );
+        let tree_visible = ContentTree::load(&factory().mission("testing_01.ron", &visible))
+            .expect("the Visible mission loads");
+        assert_ne!(
+            absent.mission_id("testing_01"),
+            tree_explored.mission_id("testing_01"),
+            "Explored is a different mission from Default"
+        );
+        assert_ne!(
+            absent.mission_id("testing_01"),
+            tree_visible.mission_id("testing_01"),
+            "Visible is a different mission from Default"
+        );
+        assert_ne!(
+            tree_explored.mission_id("testing_01"),
+            tree_visible.mission_id("testing_01"),
+            "Explored and Visible are different missions from each other"
+        );
+        assert_eq!(
+            tree_explored
+                .mission("testing_01")
+                .expect("found")
+                .fog_preset,
+            defs::FogPreset::Explored
+        );
+        assert_eq!(
+            tree_visible
+                .mission("testing_01")
+                .expect("found")
+                .fog_preset,
+            defs::FogPreset::Visible
+        );
+        // And the identity move is mission-scoped: the bundle identities the
+        // goldens pin never move, whatever the missions carry.
+        let plain_bundle = absent.bundle("testing").expect("bundle");
+        let explored_bundle = tree_explored.bundle("testing").expect("bundle");
+        assert_eq!(plain_bundle.content_hash(), explored_bundle.content_hash());
+        assert_eq!(plain_bundle.map_id(), explored_bundle.map_id());
+    }
+
+    #[test]
     fn mission_references_are_validated_against_the_tree() {
         let bad_map = MISSION.replace("map: \"testing\",", "map: \"elsewhere\",");
         let err = ContentTree::load(&factory().mission("testing_01.ron", &bad_map)).unwrap_err();
@@ -1306,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_objectives_resolve_kind_ids_through_the_tree_entity_order() {
+    fn mission_data_resolve_kind_ids_through_the_tree_entity_order() {
         // The content seam (ADR-0201 §2a): string kind ids become KindIds in
         // the tree's entity order — base sorts before ore_node before worker
         // (id order), so worker is KindId(2) — the same index the world's
@@ -1314,7 +1428,7 @@ mod tests {
         let tree = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
             .expect("the mission-bearing tree loads");
         let objectives = tree
-            .mission_objectives("testing_01", PlayerId(0))
+            .mission_data("testing_01", PlayerId(0))
             .expect("the objective set resolves");
         assert_eq!(objectives.player, PlayerId(0));
         assert_eq!(objectives.objectives.len(), 2);
@@ -1345,7 +1459,7 @@ mod tests {
         let tree = ContentTree::load(&factory().mission("testing_01.ron", &targeted))
             .expect("the targeted mission loads");
         let objectives = tree
-            .mission_objectives("testing_01", PlayerId(0))
+            .mission_data("testing_01", PlayerId(0))
             .expect("resolves");
         assert_eq!(
             objectives.objectives[0].parameters,
@@ -1354,7 +1468,7 @@ mod tests {
             }
         );
         // Unknown missions are refused loudly.
-        let err = tree.mission_objectives("missing", PlayerId(0)).unwrap_err();
+        let err = tree.mission_data("missing", PlayerId(0)).unwrap_err();
         assert!(
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"

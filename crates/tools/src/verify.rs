@@ -24,7 +24,7 @@ use pandemonium_replay::{Checkpoint, ReplayError, ReplayFile};
 use pandemonium_sim::run_command_log;
 use pandemonium_sim::run_command_log_with_mission;
 use pandemonium_sim::TrivialWorld;
-use pandemonium_sim_api::{MatchSetup, MissionObjectives, PlayerId};
+use pandemonium_sim_api::{MatchSetup, MissionData, PlayerId};
 
 /// One loaded mission, resolved for verification (AUD-002, ADR-0201 §7):
 /// the domain-separated id — the third comparison's key — beside the
@@ -37,7 +37,7 @@ pub struct LoadedMission {
     /// The mission's domain-separated identity.
     pub id: u64,
     /// The mission's resolved objective set (the mission player's side).
-    pub objectives: MissionObjectives,
+    pub objectives: MissionData,
 }
 
 /// The outcome of a verification run.
@@ -190,7 +190,7 @@ pub fn resolve_replay_verification(
         .with_context(|| format!("loading content at {}", content_path.display()))?;
     let mut missions = Vec::with_capacity(tree.missions.len());
     for def in &tree.missions {
-        let objectives = mission_objectives_for_player(&tree, &def.id, &def.map)?;
+        let objectives = mission_data_for_player(&tree, &def.id, &def.map)?;
         missions.push(LoadedMission {
             id: tree.mission_id(&def.id),
             objectives,
@@ -216,13 +216,13 @@ pub fn resolve_replay_verification(
 }
 
 /// One mission's objective set resolved for the mission player: the first
-/// start of the mission's map (`ContentTree::mission_objectives`' Phase 1
+/// start of the mission's map (`ContentTree::mission_data`' Phase 1
 /// law — the client's `begin_mission` passes the same player).
-fn mission_objectives_for_player(
+fn mission_data_for_player(
     tree: &ContentTree,
     mission_id_str: &str,
     map_id_str: &str,
-) -> Result<MissionObjectives> {
+) -> Result<MissionData> {
     let map = tree
         .map(map_id_str)
         .with_context(|| format!("mission '{mission_id_str}' references map '{map_id_str}'"))?;
@@ -231,7 +231,7 @@ fn mission_objectives_for_player(
         .first()
         .map(|start| PlayerId(start.player))
         .with_context(|| format!("map '{map_id_str}' declares no starts"))?;
-    tree.mission_objectives(mission_id_str, player)
+    tree.mission_data(mission_id_str, player)
         .with_context(|| format!("resolving mission '{mission_id_str}' objectives"))
 }
 
@@ -258,9 +258,10 @@ mod tests {
     fn loaded(id: u64) -> LoadedMission {
         LoadedMission {
             id,
-            objectives: MissionObjectives {
+            objectives: MissionData {
                 player: PlayerId(0),
                 objectives: Vec::new(),
+                fog_preset: pandemonium_sim_api::FogPreset::Default,
             },
         }
     }
@@ -321,7 +322,7 @@ mod tests {
             .expect("the mission's map bundles");
         let world = bundle.world();
         let objectives = tree
-            .mission_objectives("crossroads_01", PlayerId(0))
+            .mission_data("crossroads_01", PlayerId(0))
             .expect("crossroads_01 resolves for the first map start's player");
         let setup = MatchSetup {
             seed: 9,

@@ -86,14 +86,14 @@ pub struct MatchOutcome {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct MissionState {
     /// The objective set: the mission player plus the ordered objective list.
-    objectives: pandemonium_sim_api::MissionObjectives,
+    objectives: pandemonium_sim_api::MissionData,
     /// Each objective's resolution, indexed with the objective list.
     statuses: Vec<ObjectiveStatus>,
 }
 
 impl MissionState {
     /// The state a loaded mission starts in: every objective pending.
-    pub(crate) fn new(objectives: pandemonium_sim_api::MissionObjectives) -> Self {
+    pub(crate) fn new(objectives: pandemonium_sim_api::MissionData) -> Self {
         let statuses = vec![ObjectiveStatus::Pending; objectives.objectives.len()];
         Self {
             objectives,
@@ -347,19 +347,22 @@ mod tests {
     use crate::fixture::TrivialWorld;
     use crate::sim::Sim;
     use pandemonium_sim_api::{
-        Command, CommandKind, ControllerKind, MatchSetup, MissionObjective, MissionObjectiveKind,
-        MissionObjectiveParameters, MissionObjectives, PlayerId, PlayerSetup,
+        Command, CommandKind, ControllerKind, FogPreset, MatchSetup, MissionData, MissionObjective,
+        MissionObjectiveKind, MissionObjectiveParameters, PlayerId, PlayerSetup,
     };
 
     /// A mission objective set builder for the tests.
-    fn mission_for(player: PlayerId, objectives: &[MissionObjective]) -> MissionObjectives {
-        MissionObjectives {
+    fn mission_for(player: PlayerId, objectives: &[MissionObjective]) -> MissionData {
+        MissionData {
             player,
             objectives: objectives.to_vec(),
+            // The fog preset only matters to the fog cache's construction;
+            // the objective-evaluation tests run the Default initialization.
+            fog_preset: FogPreset::Default,
         }
     }
 
-    fn destroy_all(player: PlayerId) -> MissionObjectives {
+    fn destroy_all(player: PlayerId) -> MissionData {
         mission_for(
             player,
             &[MissionObjective {

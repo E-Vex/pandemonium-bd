@@ -33,7 +33,7 @@ use std::time::Duration;
 use pandemonium_ai::Controller;
 use pandemonium_sim::{MatchOutcome, Sim, TrivialWorld};
 use pandemonium_sim_api::{
-    Command, Event, MatchSetup, MissionObjectives, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
+    Command, Event, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
 };
 
 use crate::clock::FixedTimestep;
@@ -148,7 +148,7 @@ impl MatchHost {
         world: &TrivialWorld,
         setup: MatchSetup,
         controllers: Vec<(PlayerId, Box<dyn Controller>)>,
-        mission: MissionObjectives,
+        mission: MissionData,
     ) -> Self {
         for (player, _) in &controllers {
             assert!(
@@ -700,14 +700,15 @@ mod tests {
     /// as an authored objective). The test world fields no enemy at all, so
     /// the objective resolves on the first evaluated tick — a compact,
     /// deterministic drive of the seam.
-    fn test_mission() -> MissionObjectives {
-        MissionObjectives {
+    fn test_mission() -> MissionData {
+        MissionData {
             player: PlayerId(0),
             objectives: vec![MissionObjective {
                 kind: MissionObjectiveKind::Destroy,
                 parameters: MissionObjectiveParameters::Destroy { target_kind: None },
                 optional: false,
             }],
+            fog_preset: pandemonium_sim_api::FogPreset::Default,
         }
     }
 

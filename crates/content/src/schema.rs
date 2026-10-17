@@ -427,6 +427,13 @@ pub(crate) struct RawMission {
     pub faction: String,
     /// The ruleset the mission runs under (a rules id in the same tree).
     pub rules: String,
+    /// The fog preset spelling (`"Default"`, `"Explored"`, or `"Visible"`;
+    /// B-015). Optional, default `"Default"` — the field is Phase 2
+    /// forward-only (FD-10): absent keeps the historical all-Hidden
+    /// initialization. The loader validates the spelling against the
+    /// canonical vocabulary; unknown spellings are loud errors.
+    #[serde(default)]
+    pub fog_preset: Option<String>,
     /// The ordered objective list, AND-composed (ADR-0201 §2).
     pub objectives: Vec<RawObjective>,
 }
