@@ -128,7 +128,9 @@ fn command_center_world(command_center: KindId) -> TrivialWorld {
         ],
         scheduled_spawns: vec![],
         spawn_jitter_milli: 0,
+        roster: Vec::new(),
     }
+    .with_default_roster()
 }
 
 #[test]
