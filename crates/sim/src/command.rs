@@ -182,6 +182,15 @@ fn validate(
             if !has_footprint_kind(content, *structure) {
                 return Err(RejectReason::InvalidTarget);
             }
+            // Roster membership is authoritative for Build (B-016, ADR-0201
+            // §3's closed asymmetry): a structure the faction does not field
+            // is refused here, with the is-structure check's reason and
+            // before the economy checks — the roster decision wins over an
+            // economy failure. The Train gate's mirror is producible_by,
+            // which stays the only authority for Train.
+            if !content.roster.contains(structure) {
+                return Err(RejectReason::InvalidTarget);
+            }
             check_economy(world, content, cmd.issuer, *structure)?;
             check_placement(world, content, nav, *structure, *at)
         }
@@ -669,8 +678,11 @@ pub(crate) fn visible_to(world: &World, viewer: PlayerId, target: EntityId) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture::{CapTemplate, KindEconomy, KindTemplate};
-    use crate::world::{CapabilityData, HealthDef, MoveDef, PlayerState, VisionDef};
+    use crate::fixture::{CapTemplate, KindEconomy, KindTemplate, TrivialWorld};
+    use crate::world::{
+        BuildDef, CapabilityData, FootprintDef, HealthDef, MoveDef, PlayerState, ProduceDef,
+        VisionDef,
+    };
     use pandemonium_fx::Fx;
     use pandemonium_sim_api::{ControllerKind, PlayerSetup, ResourceId, Vec2Fx};
 
@@ -821,6 +833,17 @@ mod tests {
 
     fn apply(world: &mut World, tick: u32, commands: &[Command]) -> Vec<Event> {
         let fixture = demo_fixture();
+        apply_with_fixture(world, &fixture, tick, commands)
+    }
+
+    /// Runs commands against an explicit fixture — the roster tests need
+    /// restricted rosters, which the default demo fixture does not carry.
+    fn apply_with_fixture(
+        world: &mut World,
+        fixture: &TrivialWorld,
+        tick: u32,
+        commands: &[Command],
+    ) -> Vec<Event> {
         let mut nav = crate::nav::NavGrid::new(
             fixture.width_tiles,
             fixture.height_tiles,
@@ -830,7 +853,7 @@ mod tests {
         let mut events = Vec::new();
         apply_commands(
             world,
-            &fixture,
+            fixture,
             &mut nav,
             &mut next_id,
             tick,
@@ -838,6 +861,24 @@ mod tests {
             &mut events,
         );
         events
+    }
+
+    /// Spawns a player-0 builder (Health + Build) — the Build arm's worker.
+    fn spawn_builder(world: &mut World, id: EntityId) {
+        world.spawn(
+            id,
+            PlayerId(0),
+            KindId(0),
+            Vec2Fx::from_ints(10, 10),
+            vec![
+                CapabilityData::Health(HealthDef {
+                    max_hp: 10,
+                    hp: 10,
+                    regen_per_tick: 0,
+                }),
+                CapabilityData::Build(BuildDef {}),
+            ],
+        );
     }
 
     fn reason_of(events: &[Event]) -> Option<RejectReason> {
@@ -1126,6 +1167,180 @@ mod tests {
             )],
         );
         assert_eq!(reason_of(&events), Some(RejectReason::MissingCapability));
+    }
+
+    #[test]
+    fn build_gate_roster_membership_is_authoritative() {
+        // B-016: the faction's roster gates Build — the asymmetry the Train
+        // gate never had. The demo fixture's only structure kind is 2 (the
+        // producer), so the default roster names exactly it.
+        let fixture = demo_fixture();
+        assert_eq!(fixture.roster, vec![KindId(2)]);
+
+        // In-roster Build passes and pays.
+        let mut world = demo_world();
+        spawn_builder(&mut world, EntityId(4));
+        let events = apply_with_fixture(
+            &mut world,
+            &fixture,
+            0,
+            &[cmd(
+                0,
+                0,
+                1,
+                CommandKind::Build {
+                    worker: EntityId(4),
+                    structure: KindId(2),
+                    at: TilePos { x: 3, y: 3 },
+                },
+            )],
+        );
+        assert!(
+            matches!(events.first(), Some(Event::ConstructionStarted { .. })),
+            "in-roster build accepted, got {events:?}"
+        );
+        assert_eq!(
+            world.player(PlayerId(0)).unwrap().resources,
+            vec![(ResourceId(0), 50)],
+            "the site costs 150 of the 200"
+        );
+
+        // Out-of-roster Build: InvalidTarget, no side effects — no ore
+        // spent, no site spawned.
+        let restricted = fixture.clone().with_roster(vec![KindId(3)]);
+        let mut world = demo_world();
+        spawn_builder(&mut world, EntityId(4));
+        let events = apply_with_fixture(
+            &mut world,
+            &restricted,
+            0,
+            &[cmd(
+                0,
+                0,
+                1,
+                CommandKind::Build {
+                    worker: EntityId(4),
+                    structure: KindId(2),
+                    at: TilePos { x: 3, y: 3 },
+                },
+            )],
+        );
+        assert_eq!(reason_of(&events), Some(RejectReason::InvalidTarget));
+        assert_eq!(
+            world.player(PlayerId(0)).unwrap().resources,
+            vec![(ResourceId(0), 200)],
+            "the refusal spends nothing"
+        );
+        assert!(
+            world.entity(EntityId(100)).is_none(),
+            "the refusal spawns nothing"
+        );
+
+        // The roster decision wins over an economy failure: the same
+        // out-of-roster build with an empty purse is still InvalidTarget.
+        let mut world = demo_world();
+        spawn_builder(&mut world, EntityId(4));
+        world
+            .player_mut(PlayerId(0))
+            .unwrap()
+            .spend(&[(ResourceId(0), 150)]);
+        let events = apply_with_fixture(
+            &mut world,
+            &restricted,
+            0,
+            &[cmd(
+                0,
+                0,
+                1,
+                CommandKind::Build {
+                    worker: EntityId(4),
+                    structure: KindId(2),
+                    at: TilePos { x: 3, y: 3 },
+                },
+            )],
+        );
+        assert_eq!(
+            reason_of(&events),
+            Some(RejectReason::InvalidTarget),
+            "roster refusal precedes the affordability check"
+        );
+        // And the in-roster mirror proves the economy check runs after the
+        // roster check passes: the same broke builder hits CannotAfford,
+        // not InvalidTarget.
+        let mut world = demo_world();
+        spawn_builder(&mut world, EntityId(4));
+        world
+            .player_mut(PlayerId(0))
+            .unwrap()
+            .spend(&[(ResourceId(0), 150)]);
+        let events = apply_with_fixture(
+            &mut world,
+            &fixture,
+            0,
+            &[cmd(
+                0,
+                0,
+                1,
+                CommandKind::Build {
+                    worker: EntityId(4),
+                    structure: KindId(2),
+                    at: TilePos { x: 3, y: 3 },
+                },
+            )],
+        );
+        assert_eq!(reason_of(&events), Some(RejectReason::CannotAfford));
+    }
+
+    #[test]
+    fn train_gate_ignores_the_roster() {
+        // The roster is Build's authority only: Train keeps producible_by —
+        // the production lists. A roster that fields nothing (Build would
+        // refuse every kind) must not restrict what a standing producer
+        // trains.
+        let restricted = demo_fixture().with_roster(vec![]);
+        let mut world = demo_world();
+        world.spawn(
+            EntityId(5),
+            PlayerId(0),
+            KindId(2),
+            Vec2Fx::from_ints(6, 6),
+            vec![
+                CapabilityData::Health(HealthDef {
+                    max_hp: 300,
+                    hp: 300,
+                    regen_per_tick: 0,
+                }),
+                CapabilityData::Footprint(FootprintDef { w: 2, h: 2 }),
+                CapabilityData::Produce(ProduceDef::new()),
+            ],
+        );
+        let events = apply_with_fixture(
+            &mut world,
+            &restricted,
+            0,
+            &[cmd(
+                0,
+                0,
+                1,
+                CommandKind::Train {
+                    producer: EntityId(5),
+                    unit: KindId(3),
+                },
+            )],
+        );
+        assert!(
+            events.is_empty(),
+            "the train must be accepted, got {events:?}"
+        );
+        assert_eq!(
+            world
+                .produce_of(EntityId(5))
+                .expect("the queue")
+                .queue
+                .len(),
+            1,
+            "the unit joined the producer's queue"
+        );
     }
 
     #[test]
