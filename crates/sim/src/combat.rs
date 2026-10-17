@@ -626,7 +626,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
-        };
+            roster: Vec::new(),
+        }
+        .with_default_roster();
         let setup = MatchSetup {
             seed: 42,
             players: vec![
@@ -800,7 +802,9 @@ mod tests {
             ],
             scheduled_spawns: vec![],
             spawn_jitter_milli: 0,
-        };
+            roster: Vec::new(),
+        }
+        .with_default_roster();
         let setup = MatchSetup {
             seed: 42,
             players: vec![

@@ -150,7 +150,9 @@ fn acceptance_world() -> TrivialWorld {
             },
         ],
         spawn_jitter_milli: 250,
+        roster: Vec::new(),
     }
+    .with_default_roster()
 }
 
 /// The acceptance match setup.

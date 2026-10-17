@@ -541,7 +541,10 @@ impl ContentBundle {
     /// and — since M5 — the economy set flow into the world: `Gather`, `Build`,
     /// `Produce`, `Storage`, `ProvidesPopulation`, `Resource`, and `Footprint`.
     /// Since M6, `Attack` flows in too (DEBT-006 retired): the combat pipeline
-    /// consumes it as the immediate-hit capability (plan §9.2).
+    /// consumes it as the immediate-hit capability (plan §9.2). Since B-016,
+    /// the faction's `roster` flows in as well (in authored order, resolved
+    /// through the entity order like the production lists) — the Build gate's
+    /// authority, beside the Train gate's production lists.
     pub fn world(&self) -> TrivialWorld {
         let kind_index: BTreeMap<&str, u32> = self
             .entities
@@ -632,6 +635,21 @@ impl ContentBundle {
             })
             .collect();
 
+        // The faction's build roster, in authored order, resolved through the
+        // entity order — the production lists' exact pattern (plan §10.6: the
+        // kinds a faction fields are faction data). The Build gate reads it
+        // (B-016, ADR-0201 §3's closed asymmetry — Train has always been
+        // gated by the production lists; Build is now gated by the roster).
+        // The bundle's content hash already encodes the authored roster
+        // through `encode_factions`; the world's fixture hash deliberately
+        // does not see this field.
+        let roster: Vec<pandemonium_sim_api::KindId> = faction
+            .roster
+            .iter()
+            .filter_map(|member| kind_of(member))
+            .map(pandemonium_sim_api::KindId)
+            .collect();
+
         let mut initial_spawns: Vec<SpawnDef> = Vec::new();
         for start in &self.map.starts {
             for force in &faction.starting_forces {
@@ -677,6 +695,7 @@ impl ContentBundle {
             kinds,
             resources,
             production,
+            roster,
             base_population_cap: self.rules.base_population_cap,
             initial_spawns,
             scheduled_spawns: Vec::new(),
@@ -1223,6 +1242,47 @@ mod tests {
         let mission = tree.mission("testing_01").expect("the mission is found");
         assert_eq!(mission.display_name, "Testing Grounds Assault");
         assert!(tree.mission("missing").is_none());
+    }
+
+    #[test]
+    fn world_resolves_the_faction_roster_through_the_entity_order() {
+        // B-016: the build roster flows to the simulation through the world
+        // seam — the production lists' exact pattern. The factory's faction
+        // fields base + worker (authored order); the entities sort to
+        // base = 0, ore_node = 1, worker = 2, so the authored roster
+        // resolves to [0, 2].
+        let tree = ContentTree::load(&factory()).expect("the factory loads");
+        let bundle = tree.bundle("testing").expect("bundle");
+        let world = bundle.world();
+        assert_eq!(
+            world.roster,
+            vec![
+                pandemonium_sim_api::KindId(0),
+                pandemonium_sim_api::KindId(2)
+            ],
+            "the roster is the faction's authored list in entity-order ids"
+        );
+        // Membership is the faction's decision, not "every structure kind":
+        // the ore node carries a Footprint, but the faction does not field
+        // it — so it is not in the roster (the Build gate's future refusal).
+        let ore_node_kind = bundle
+            .entities
+            .iter()
+            .position(|entity| entity.id == "ore_node")
+            .expect("the factory registers the ore node");
+        assert!(!world
+            .roster
+            .contains(&pandemonium_sim_api::KindId(ore_node_kind as u32)));
+        // The authored order survives the resolution: roster[i] is the
+        // entity-order id of faction.roster[i].
+        for (member, kind) in bundle.faction().roster.iter().zip(world.roster.iter()) {
+            let expected = bundle
+                .entities
+                .iter()
+                .position(|entity| entity.id == *member)
+                .expect("validators reject a roster naming an unknown entity");
+            assert_eq!(*kind, pandemonium_sim_api::KindId(expected as u32));
+        }
     }
 
     #[test]

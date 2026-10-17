@@ -156,7 +156,9 @@ pub fn demo_world() -> TrivialWorld {
         ],
         // Nonzero jitter exercises the seeded RNG inside the hashed state.
         spawn_jitter_milli: 250,
+        roster: Vec::new(),
     }
+    .with_default_roster()
 }
 
 /// The demo match setup for a seed (two AI slots, per plan §12's `--p1 ai --p2 ai`

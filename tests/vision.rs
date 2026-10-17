@@ -60,7 +60,9 @@ fn fog_world() -> TrivialWorld {
         initial_spawns: vec![],
         scheduled_spawns: vec![],
         spawn_jitter_milli: 0,
+        roster: Vec::new(),
     }
+    .with_default_roster()
 }
 
 fn two_player_setup(seed: u64) -> MatchSetup {

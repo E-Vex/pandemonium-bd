@@ -78,7 +78,9 @@ fn fifty_unit_world() -> TrivialWorld {
         initial_spawns: spawns,
         scheduled_spawns: vec![],
         spawn_jitter_milli: 0,
+        roster: Vec::new(),
     }
+    .with_default_roster()
 }
 
 fn one_player_setup(seed: u64) -> MatchSetup {

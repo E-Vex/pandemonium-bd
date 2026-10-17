@@ -107,7 +107,9 @@ fn combat_world() -> TrivialWorld {
         initial_spawns: vec![],
         scheduled_spawns: vec![],
         spawn_jitter_milli: 0,
+        roster: Vec::new(),
     }
+    .with_default_roster()
 }
 
 /// Two players, both humans (no AI in M6 — the soak harness will script
