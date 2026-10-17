@@ -21,8 +21,8 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    KindId, MissionData, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
-    PlayerId, ResourceId, Vec2Fx,
+    FogPreset, KindId, MissionData, MissionObjective, MissionObjectiveKind,
+    MissionObjectiveParameters, PlayerId, ResourceId, Vec2Fx,
 };
 
 use crate::defs;
@@ -240,13 +240,14 @@ impl ContentTree {
         h.finish()
     }
 
-    /// Resolves a mission's objective set into the simulation's vocabulary
+    /// Resolves a mission's data set into the simulation's vocabulary
     /// (ADR-0201 §2a): kind-id strings become `KindId`s through this tree's
     /// entity order — the exact order [`ContentBundle::world`] builds its
     /// kinds in, so the ids the objectives carry are the ids the world's
-    /// entities carry. This is the mission data seam beside `world()`
-    /// (FD-6: mission data reaches the simulation only through the content
-    /// seam, and the sim depends on nothing above it).
+    /// entities carry — and the fog preset (B-015) converts from the content
+    /// mirror into the sim's `FogPreset`. This is the mission data seam
+    /// beside `world()` (FD-6: mission data reaches the simulation only
+    /// through the content seam, and the sim depends on nothing above it).
     ///
     /// `player` is the mission player the objectives belong to — runtime
     /// data, not mission data: the caller picks the slot (Phase 1 tools and
@@ -326,7 +327,17 @@ impl ContentTree {
                 optional: objective.optional,
             });
         }
-        Ok(MissionData { player, objectives })
+        Ok(MissionData {
+            player,
+            objectives,
+            // B-015: the fog preset crosses the seam with the objectives —
+            // the mirror-to-sim conversion, variant for variant.
+            fog_preset: match mission.fog_preset {
+                defs::FogPreset::Default => FogPreset::Default,
+                defs::FogPreset::Explored => FogPreset::Explored,
+                defs::FogPreset::Visible => FogPreset::Visible,
+            },
+        })
     }
 
     /// Builds the bundle for one map. Every faction travels along (the Alpha

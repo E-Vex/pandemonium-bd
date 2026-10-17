@@ -570,13 +570,13 @@ pub struct MissionObjective {
     pub optional: bool,
 }
 
-/// A mission's objective set as the simulation receives it (ADR-0201 §2a):
-/// the mission player the objectives belong to, plus the ordered objective
-/// list — the indices are the [`Event::ObjectiveState`] indices. Match-
-/// defining input data, exactly the class [`MatchSetup`] belongs to: it
-/// crosses the sim boundary at construction (`Sim::with_mission`) and is
-/// evaluated per tick by stage 10 as derived state (the A-066 pattern), so it
-/// never enters the canonical state hash.
+/// A mission's data set as the simulation receives it (ADR-0201 §2a): the
+/// mission player the objectives belong to, the ordered objective list —
+/// the indices are the [`Event::ObjectiveState`] indices — and the fog
+/// preset (B-015). Match-defining input data, exactly the class
+/// [`MatchSetup`] belongs to: it crosses the sim boundary at construction
+/// (`Sim::with_mission`) and is evaluated per tick by stage 10 as derived
+/// state (the A-066 pattern), so it never enters the canonical state hash.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MissionData {
     /// The player the objectives belong to — the mission player. The
@@ -586,6 +586,11 @@ pub struct MissionData {
     /// The ordered objective list, AND-composed (ADR-0201 §2): the mission
     /// player wins when every non-optional objective completes.
     pub objectives: Vec<MissionObjective>,
+    /// The fog preset (B-015): how the fog cache initializes for every
+    /// player, applied once at construction. The `Default` preset is
+    /// byte-identical to the mission-less initialization, so a mission that
+    /// does not use the field changes nothing observable in the fog.
+    pub fog_preset: FogPreset,
 }
 
 /// A mission's fog preset (ADR-0201 Phase 2, B-015): how the fog cache
@@ -751,9 +756,10 @@ mod tests {
     }
 
     #[test]
-    fn mission_objective_sets_carry_their_player_and_ordered_objectives() {
+    fn mission_data_sets_carry_their_player_ordered_objectives_and_fog_preset() {
         // ADR-0201 §2a: the mission input vocabulary — resolved KindIds, the
-        // mission player, and the ordered list whose indices the events echo.
+        // mission player, the ordered list whose indices the events echo,
+        // and (B-015) the fog preset the fog cache initializes from.
         let objectives = MissionData {
             player: PlayerId(0),
             objectives: vec![
@@ -771,11 +777,13 @@ mod tests {
                     optional: true,
                 },
             ],
+            fog_preset: FogPreset::Explored,
         };
         assert_eq!(objectives.player, PlayerId(0));
         assert_eq!(objectives.objectives.len(), 2);
         assert!(objectives.objectives[0].kind == MissionObjectiveKind::Destroy);
         assert!(!objectives.objectives[0].optional);
         assert!(objectives.objectives[1].optional);
+        assert_eq!(objectives.fog_preset, FogPreset::Explored);
     }
 }

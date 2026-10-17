@@ -261,6 +261,7 @@ mod tests {
             objectives: MissionData {
                 player: PlayerId(0),
                 objectives: Vec::new(),
+                fog_preset: pandemonium_sim_api::FogPreset::Default,
             },
         }
     }

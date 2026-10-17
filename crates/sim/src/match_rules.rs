@@ -347,7 +347,7 @@ mod tests {
     use crate::fixture::TrivialWorld;
     use crate::sim::Sim;
     use pandemonium_sim_api::{
-        Command, CommandKind, ControllerKind, MatchSetup, MissionData, MissionObjective,
+        Command, CommandKind, ControllerKind, FogPreset, MatchSetup, MissionData, MissionObjective,
         MissionObjectiveKind, MissionObjectiveParameters, PlayerId, PlayerSetup,
     };
 
@@ -356,6 +356,9 @@ mod tests {
         MissionData {
             player,
             objectives: objectives.to_vec(),
+            // The fog preset only matters to the fog cache's construction;
+            // the objective-evaluation tests run the Default initialization.
+            fog_preset: FogPreset::Default,
         }
     }
 

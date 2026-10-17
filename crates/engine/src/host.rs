@@ -708,6 +708,7 @@ mod tests {
                 parameters: MissionObjectiveParameters::Destroy { target_kind: None },
                 optional: false,
             }],
+            fog_preset: pandemonium_sim_api::FogPreset::Default,
         }
     }
 
