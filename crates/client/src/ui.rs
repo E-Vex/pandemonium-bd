@@ -805,6 +805,18 @@ pub fn objective_lines(mission: &MissionData, bundle: &ContentBundle) -> Vec<Obj
                     "Grow to {count} {}",
                     kind_display_plural(bundle, *kind, *count)
                 ),
+                // B-017: the survive window, in ticks — the integer the
+                // mission authored and the evaluator counts (FD-5; the HUD
+                // mirrors the data, never converts it).
+                (MissionObjectiveKind::Survive, MissionObjectiveParameters::Survive { ticks }) => {
+                    format!("Survive {ticks} ticks")
+                }
+                // B-017: the protected kind, from the mission player's side
+                // of the line ("your") — the fail-only constraint reads as a
+                // guard order, the same voice as the destroy lines.
+                (MissionObjectiveKind::Protect, MissionObjectiveParameters::Protect { kind }) => {
+                    format!("Protect your {}", kind_display(bundle, *kind))
+                }
                 // The content seam rejects kind/parameters mismatches loudly
                 // (the loader guarantees agreement); the defensive arm keeps
                 // an impossible shape readable rather than panicking the HUD.
@@ -1385,6 +1397,7 @@ fn panel_border_pub(atlas: &TextAtlas, rect: [f32; 4], color: [f32; 3], t: f32) 
 mod tests {
     use super::*;
     use pandemonium_content::ContentTree;
+    use pandemonium_sim_api::MissionObjective;
     use pandemonium_sim_api::Vec2Fx;
 
     fn bundle() -> ContentBundle {
@@ -2090,6 +2103,65 @@ mod tests {
         assert!(MissionHud::new("Crossroads".to_string(), lines.clone())
             .intro_line()
             .is_ascii());
+    }
+
+    #[test]
+    fn the_survive_and_protect_objectives_render_their_hud_lines() {
+        // B-017: the two new objective kinds get short HUD lines in the
+        // established style — every string ASCII (the embedded font subset,
+        // ADR-0201 §5), the line indices the event indices by construction
+        // (the same resolved-objective contract). The survive window renders
+        // in the authored integer ticks (FD-5: the HUD mirrors the data,
+        // never converts it); the protect line names the protected kind from
+        // the mission player's side.
+        let (tree, bundle) = tree_and_mission_bundle();
+        let command_center = tree
+            .entities
+            .iter()
+            .position(|entity| entity.id == "command_center")
+            .expect("command_center exists in the tree");
+        let worker = tree
+            .entities
+            .iter()
+            .position(|entity| entity.id == "worker")
+            .expect("worker exists in the tree");
+        let resolved = MissionData {
+            player: pandemonium_sim_api::PlayerId(0),
+            objectives: vec![
+                MissionObjective {
+                    kind: MissionObjectiveKind::Survive,
+                    parameters: MissionObjectiveParameters::Survive { ticks: 300 },
+                    optional: false,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::Protect,
+                    parameters: MissionObjectiveParameters::Protect {
+                        kind: KindId(worker as u32),
+                    },
+                    optional: true,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::Protect,
+                    parameters: MissionObjectiveParameters::Protect {
+                        kind: KindId(command_center as u32),
+                    },
+                    optional: false,
+                },
+            ],
+            fog_preset: pandemonium_sim_api::FogPreset::Default,
+        };
+        let lines = objective_lines(&resolved, &bundle);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].text, "Survive 300 ticks");
+        assert!(!lines[0].optional);
+        assert_eq!(lines[1].text, "Protect your Worker");
+        assert!(lines[1].optional);
+        assert_eq!(lines[2].text, "Protect your Command Center");
+        assert!(!lines[2].optional);
+        for line in &lines {
+            assert!(line.text.is_ascii(), "{} is ASCII", line.text);
+            assert!(line.display_text().is_ascii());
+        }
     }
 
     #[test]
