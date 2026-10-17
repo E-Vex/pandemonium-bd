@@ -1029,7 +1029,27 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
         }
         encode_bool(h, objective.optional);
     }
+    // The fog preset (B-015) enters the encoding ONLY when non-default and
+    // only behind its own domain tag: a mission that does not use the field
+    // keeps exactly the id it had before (the mission identity rule), and
+    // the tag delimits the bytes so a future tail field can never misread
+    // them. Default writes nothing — the historical byte stream, verbatim.
+    if mission.fog_preset != defs::FogPreset::Default {
+        encode_bool(h, true);
+        h.write_u8(FOG_PRESET_ENCODING_TAG);
+        h.write_u8(match mission.fog_preset {
+            defs::FogPreset::Explored => 1,
+            defs::FogPreset::Visible => 2,
+            defs::FogPreset::Default => 0,
+        });
+    }
 }
+
+/// The domain tag of the optional fog-preset tail (B-015): a fixed byte
+/// between the presence flag and the preset value, so the non-default tail
+/// is self-describing and future mission fields appended after it can never
+/// collide with or misparse these bytes.
+const FOG_PRESET_ENCODING_TAG: u8 = 0xF0;
 
 #[cfg(test)]
 mod tests {
@@ -1259,6 +1279,89 @@ mod tests {
             tree_renamed.mission_id("testing_01"),
             "editing the display name changes the mission id"
         );
+    }
+
+    #[test]
+    fn a_default_fog_preset_keeps_exactly_the_same_mission_id() {
+        // The mission identity rule (B-015): a mission that does not use the
+        // new field keeps exactly the same mission id as before. Absent,
+        // explicit `Some("Default")`, and the pre-B-015 byte stream are the
+        // same mission — the fog-preset tail enters the encoding only when
+        // non-default, and Default writes nothing at all.
+        let absent = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the absent-field mission loads");
+        let explicit = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    fog_preset: Some(\"Default\"),",
+        );
+        let tree_explicit = ContentTree::load(&factory().mission("testing_01.ron", &explicit))
+            .expect("the explicit-Default mission loads");
+        assert_eq!(
+            absent.mission_id("testing_01"),
+            tree_explicit.mission_id("testing_01"),
+            "explicit Default is the same mission as absent"
+        );
+        assert_eq!(
+            absent.mission("testing_01").expect("found").fog_preset,
+            defs::FogPreset::Default
+        );
+    }
+
+    #[test]
+    fn a_non_default_fog_preset_is_a_different_mission() {
+        // A mission's fog preset is identity-bearing the moment it is used:
+        // Explored and Visible change what every player sees, so two trees
+        // differing only in a non-default preset are different missions
+        // (and a Default-carrying mission is still the pre-B-015 mission).
+        let absent = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the absent-field mission loads");
+        let explored = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    fog_preset: Some(\"Explored\"),",
+        );
+        let tree_explored = ContentTree::load(&factory().mission("testing_01.ron", &explored))
+            .expect("the Explored mission loads");
+        let visible = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    fog_preset: Some(\"Visible\"),",
+        );
+        let tree_visible = ContentTree::load(&factory().mission("testing_01.ron", &visible))
+            .expect("the Visible mission loads");
+        assert_ne!(
+            absent.mission_id("testing_01"),
+            tree_explored.mission_id("testing_01"),
+            "Explored is a different mission from Default"
+        );
+        assert_ne!(
+            absent.mission_id("testing_01"),
+            tree_visible.mission_id("testing_01"),
+            "Visible is a different mission from Default"
+        );
+        assert_ne!(
+            tree_explored.mission_id("testing_01"),
+            tree_visible.mission_id("testing_01"),
+            "Explored and Visible are different missions from each other"
+        );
+        assert_eq!(
+            tree_explored
+                .mission("testing_01")
+                .expect("found")
+                .fog_preset,
+            defs::FogPreset::Explored
+        );
+        assert_eq!(
+            tree_visible
+                .mission("testing_01")
+                .expect("found")
+                .fog_preset,
+            defs::FogPreset::Visible
+        );
+        // And the identity move is mission-scoped: the bundle identities the
+        // goldens pin never move, whatever the missions carry.
+        let plain_bundle = absent.bundle("testing").expect("bundle");
+        let explored_bundle = tree_explored.bundle("testing").expect("bundle");
+        assert_eq!(plain_bundle.content_hash(), explored_bundle.content_hash());
+        assert_eq!(plain_bundle.map_id(), explored_bundle.map_id());
     }
 
     #[test]
