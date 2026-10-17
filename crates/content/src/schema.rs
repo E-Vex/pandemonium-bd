@@ -468,6 +468,10 @@ pub(crate) enum RawObjectiveParameters {
     /// (B-017). Integer ticks (FD-5); the loader rejects windows below the
     /// 300-tick floor.
     Survive(RawSurviveParams),
+    /// Protect parameters: which entity kind the mission player must keep
+    /// alive (B-017). The loader resolves the entity reference and rejects a
+    /// kind the mission player's starting forces do not carry.
+    Protect(RawProtectParams),
 }
 
 /// Destroy parameters.
@@ -494,4 +498,12 @@ pub(crate) struct RawBuildTrainParams {
 pub(crate) struct RawSurviveParams {
     /// The tick the objective completes at, counted from mission start.
     pub ticks: u32,
+}
+
+/// Protect parameters (B-017).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawProtectParams {
+    /// The entity kind the mission player must keep alive.
+    pub kind: String,
 }

@@ -174,6 +174,46 @@ impl ContentTree {
                     ),
                 });
             }
+            // B-017's vacuous-failure guard (AUD-003): a Protect objective
+            // must name a kind the mission player's faction actually
+            // starts with — the faction's starting forces are the effective
+            // force at tick 0 (placement legality is validated below), so
+            // protecting anything else would fail on the first tick the
+            // evaluator runs. The check is tree-level because it needs the
+            // mission's faction — the same reason the faction reference
+            // check above lives here.
+            if let Some(faction) = factions
+                .iter()
+                .find(|faction| faction.id == mission.faction)
+            {
+                for objective in &mission.objectives {
+                    if let defs::ObjectiveParameters::Protect { kind } = &objective.parameters {
+                        if !faction
+                            .starting_forces
+                            .iter()
+                            .any(|force| &force.entity == kind)
+                        {
+                            return Err(ContentError::Bundle {
+                                detail: format!(
+                                    "mission '{}' protects kind '{}' that the starting \
+                                     forces of faction '{}' do not carry (starting \
+                                     forces: {}): a protect objective with nothing to \
+                                     protect fails on the first tick",
+                                    mission.id,
+                                    kind,
+                                    faction.id,
+                                    faction
+                                        .starting_forces
+                                        .iter()
+                                        .map(|force| force.entity.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         // Placement-level validation: every faction must sit legally on every
@@ -322,11 +362,31 @@ impl ContentTree {
                 defs::ObjectiveParameters::Survive { ticks } => {
                     MissionObjectiveParameters::Survive { ticks: *ticks }
                 }
+                // B-017: the protected kind resolves through the entity
+                // order — the exact resolution BuildTrain's kind gets, so
+                // the objective's KindId is the id the world's entities
+                // carry.
+                defs::ObjectiveParameters::Protect { kind } => {
+                    let Some(resolved) = kind_index.get(kind.as_str()).copied() else {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "mission '{}' references kind '{}' that the tree's \
+                                 entities do not carry — the loader rejected this shape, \
+                                 so this is a content-seam bug, please report it",
+                                mission.id, kind
+                            ),
+                        });
+                    };
+                    MissionObjectiveParameters::Protect {
+                        kind: KindId(resolved),
+                    }
+                }
             };
             let kind = match parameters {
                 MissionObjectiveParameters::Destroy { .. } => MissionObjectiveKind::Destroy,
                 MissionObjectiveParameters::BuildTrain { .. } => MissionObjectiveKind::BuildTrain,
                 MissionObjectiveParameters::Survive { .. } => MissionObjectiveKind::Survive,
+                MissionObjectiveParameters::Protect { .. } => MissionObjectiveKind::Protect,
             };
             objectives.push(MissionObjective {
                 kind,
@@ -1047,12 +1107,14 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
     h.write_u32(mission.objectives.len() as u32);
     for objective in &mission.objectives {
         // The kind tag: fixed, ordered, exhaustive over the vocabulary.
-        // New kinds append (B-017's Survive is 3), so every pre-existing
-        // mission's byte stream is verbatim — the mission identity rule.
+        // New kinds append (B-017's Survive is 3, Protect is 4), so every
+        // pre-existing mission's byte stream is verbatim — the mission
+        // identity rule.
         h.write_u8(match objective.kind {
             defs::ObjectiveKind::Destroy => 1,
             defs::ObjectiveKind::BuildTrain => 2,
             defs::ObjectiveKind::Survive => 3,
+            defs::ObjectiveKind::Protect => 4,
         });
         match &objective.parameters {
             defs::ObjectiveParameters::Destroy { target_kind } => match target_kind {
@@ -1073,6 +1135,13 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             // exactly the id it had before.
             defs::ObjectiveParameters::Survive { ticks } => {
                 h.write_u32(*ticks);
+            }
+            // B-017: the protected kind's entity id, the same string
+            // encoding BuildTrain's kind gets. The kind tag (4) is the
+            // domain separation; the loader's reference check guarantees
+            // the string names a real entity in the tree.
+            defs::ObjectiveParameters::Protect { kind } => {
+                encode_str(h, kind);
             }
         }
         encode_bool(h, objective.optional);
@@ -1556,6 +1625,94 @@ mod tests {
             MissionObjective {
                 kind: MissionObjectiveKind::Survive,
                 parameters: MissionObjectiveParameters::Survive { ticks: 300 },
+                optional: true,
+            }
+        );
+    }
+
+    #[test]
+    fn protect_objectives_are_identity_bearing_and_domain_separated() {
+        // B-017: the protected kind enters the mission id — a mission whose
+        // objectives carry a protect objective is a different mission from
+        // the same mission without one, and a different protected kind is a
+        // different mission. The kind tag (4, after Destroy's 1,
+        // BuildTrain's 2, and Survive's 3) keeps the byte streams apart.
+        let base = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the BuildTrain-bearing mission loads");
+        let protect_worker = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"worker\" )),\n            optional: true,",
+        );
+        let tree_worker = ContentTree::load(&factory().mission("testing_01.ron", &protect_worker))
+            .expect("the Protect-bearing mission loads");
+        assert_ne!(
+            base.mission_id("testing_01"),
+            tree_worker.mission_id("testing_01"),
+            "replacing an objective with a protect objective changes the mission id"
+        );
+        let protect_base = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"base\" )),\n            optional: true,",
+        );
+        let tree_base = ContentTree::load(&factory().mission("testing_01.ron", &protect_base))
+            .expect("the other protected kind loads");
+        assert_ne!(
+            tree_worker.mission_id("testing_01"),
+            tree_base.mission_id("testing_01"),
+            "a different protected kind is a different mission"
+        );
+        // And the identity move is mission-scoped: the bundle identities the
+        // goldens pin never move, whatever the missions carry.
+        let base_bundle = base.bundle("testing").expect("bundle");
+        let protect_bundle = tree_worker.bundle("testing").expect("bundle");
+        assert_eq!(base_bundle.content_hash(), protect_bundle.content_hash());
+        assert_eq!(base_bundle.map_id(), protect_bundle.map_id());
+    }
+
+    #[test]
+    fn the_loader_rejects_a_protect_kind_the_starting_forces_do_not_carry() {
+        // B-017's vacuous-failure guard (AUD-003): the factory's ore_node is
+        // a real entity in the tree (the reference check passes), but the
+        // testers faction does not start with one — protecting it would fail
+        // on the first tick, so the tree assembly refuses the mission
+        // loudly, naming the faction and its actual starting forces.
+        let protect_node = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"ore_node\" )),\n            optional: true,",
+        );
+        let err =
+            ContentTree::load(&factory().mission("testing_01.ron", &protect_node)).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "mission 'testing_01' protects kind 'ore_node' that the starting forces of \
+                 faction 'testers' do not carry"
+            ) && err
+                .to_string()
+                .contains("starting forces: base, worker, worker"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn mission_data_resolves_protect_through_the_entity_order() {
+        // B-017: the protected kind resolves through the tree's entity order
+        // — worker is KindId(2), the same id the world's entities carry —
+        // and the loader's starting-forces gate guarantees the faction
+        // actually fields the kind at tick 0.
+        let protect = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"Protect\",\n            parameters: Protect(( kind: \"worker\" )),\n            optional: true,",
+        );
+        let tree = ContentTree::load(&factory().mission("testing_01.ron", &protect))
+            .expect("the Protect-bearing mission loads");
+        let objectives = tree
+            .mission_data("testing_01", PlayerId(0))
+            .expect("the objective set resolves");
+        assert_eq!(
+            objectives.objectives[1],
+            MissionObjective {
+                kind: MissionObjectiveKind::Protect,
+                parameters: MissionObjectiveParameters::Protect { kind: KindId(2) },
                 optional: true,
             }
         );

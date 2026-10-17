@@ -345,8 +345,8 @@ impl MapDef {
 
 /// A mission objective's kind (ADR-0201 §2): what the stage-10 evaluator
 /// checks. Phase 1 carried the vertical slice's two kinds; Phase 2's B-017
-/// adds survive — the vocabulary grows forward-only with the mission
-/// schema version (reach and gather remain — ADR-0201 §9).
+/// adds survive and protect — the vocabulary grows forward-only with the
+/// mission schema version (reach and gather remain — ADR-0201 §9).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ObjectiveKind {
     /// Destroy all enemy structures — or every enemy structure of a target
@@ -357,6 +357,11 @@ pub enum ObjectiveKind {
     /// Survive N ticks from mission start (`ObjectiveParameters::Survive`,
     /// B-017): pending until the mission tick reaches the authored count.
     Survive,
+    /// Protect the mission player's entities of a kind
+    /// (`ObjectiveParameters::Protect`, B-017): a fail-only constraint —
+    /// pending while one stands, failed when the last falls. It never
+    /// completes by itself.
+    Protect,
 }
 
 impl ObjectiveKind {
@@ -366,6 +371,7 @@ impl ObjectiveKind {
             ObjectiveKind::Destroy => "Destroy",
             ObjectiveKind::BuildTrain => "BuildTrain",
             ObjectiveKind::Survive => "Survive",
+            ObjectiveKind::Protect => "Protect",
         }
     }
 
@@ -376,6 +382,7 @@ impl ObjectiveKind {
             "Destroy" => Some(ObjectiveKind::Destroy),
             "BuildTrain" => Some(ObjectiveKind::BuildTrain),
             "Survive" => Some(ObjectiveKind::Survive),
+            "Protect" => Some(ObjectiveKind::Protect),
             _ => None,
         }
     }
@@ -405,6 +412,15 @@ pub enum ObjectiveParameters {
     Survive {
         /// The tick the objective completes at.
         ticks: u32,
+    },
+    /// The entity kind the mission player must keep alive (B-017). The
+    /// loader resolves the reference and rejects a kind the mission
+    /// player's faction does not start with — the vacuous-failure guard
+    /// (AUD-003): a protect objective with nothing to protect would fail
+    /// on the first tick.
+    Protect {
+        /// The protected kind's entity id.
+        kind: String,
     },
 }
 
