@@ -458,10 +458,21 @@ pub enum Event {
         /// The site entity.
         site: EntityId,
     },
-    /// A worker deposited cargo (M5).
+    /// A worker deposited cargo (M5). B-018: the event carries the
+    /// credited player (`owner` — the ledger that received the ore), so
+    /// per-player delivery totals are exact AT CONSUMPTION TIME: ids die
+    /// (a worker that delivers at stage 4 and falls at stage 8 is gone by
+    /// stage 10), and the only authoritative attribution moment is the
+    /// deposit itself. The mission evaluator's cumulative gather objective
+    /// reads this field (FD-9 — the ADR's §2 expressible basis for the
+    /// kind); the event stays outward and unhashed exactly as before.
     ResourceDelivered {
         /// The delivering worker.
         worker: EntityId,
+        /// The player whose ledger was credited (the storage owner — the
+        /// gather loop selects the worker's own player's storage, so this
+        /// is the worker's player at deposit time).
+        owner: PlayerId,
         /// Which resource.
         resource: ResourceId,
         /// How much was deposited.

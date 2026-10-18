@@ -61,8 +61,8 @@
 //! under the A12 checker without crashing", not "the match resolved".
 
 use pandemonium_sim_api::{
-    AreaSpec, Event, KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
-    ObjectiveState, PlayerId,
+    AreaSpec, Event, GatherSemantics, KindId, MissionObjective, MissionObjectiveKind,
+    MissionObjectiveParameters, ObjectiveState, PlayerId, ResourceId,
 };
 
 use crate::world::World;
@@ -90,15 +90,26 @@ pub(crate) struct MissionState {
     objectives: pandemonium_sim_api::MissionData,
     /// Each objective's resolution, indexed with the objective list.
     statuses: Vec<ObjectiveStatus>,
+    /// The mission player's cumulative delivered ore (B-018): the running
+    /// total of their `ResourceDelivered` amounts, accumulated by
+    /// `accumulate_deliveries` from the delivery events each tick — the
+    /// ADR §2's expressible basis for the cumulative gather semantics,
+    /// derived (never hashed: the accumulator is a deterministic function
+    /// of the match inputs, rebuilt identically in every re-simulation).
+    /// Zero for missions with no Cumulative gather objective (the scan
+    /// only runs when one is present).
+    delivered: i64,
 }
 
 impl MissionState {
-    /// The state a loaded mission starts in: every objective pending.
+    /// The state a loaded mission starts in: every objective pending, the
+    /// delivered total zero (no deliveries have happened at tick 0).
     pub(crate) fn new(objectives: pandemonium_sim_api::MissionData) -> Self {
         let statuses = vec![ObjectiveStatus::Pending; objectives.objectives.len()];
         Self {
             objectives,
             statuses,
+            delivered: 0,
         }
     }
 }
@@ -145,6 +156,19 @@ pub(crate) fn evaluate(
     // either way, so a mission player who loses their last structure is
     // defeated exactly as today.
     if let Some(mission) = mission {
+        // B-018: the cumulative delivered total first — an immutable read
+        // of the events this tick has produced so far (stage 4's
+        // `ResourceDelivered`s are in; the evaluator runs at stage 10),
+        // before the objective pass takes the vector mutably to push its
+        // own events. Accumulating BEFORE the status checks lets a
+        // delivery complete its objective on the SAME tick it happens,
+        // with `ResourceDelivered` preceding `ObjectiveState` in the
+        // outward stream — the causal-order law. Reading the events here
+        // is the ADR §2's own expressible basis for the kind
+        // ("cumulative ResourceDelivered"); the events still flow
+        // outward after the step (FD-9 — nothing flows inward, and no
+        // event is consumed).
+        accumulate_deliveries(events, mission);
         evaluate_objectives(world, tick, mission, outcome, events);
         if outcome.is_some() {
             return;
@@ -220,7 +244,7 @@ fn evaluate_objectives(
         if mission.statuses[index] != ObjectiveStatus::Pending {
             continue; // resolutions are monotonic — evaluate each objective once.
         }
-        if let Some(status) = objective_status(world, tick, player, objective) {
+        if let Some(status) = objective_status(world, tick, player, objective, mission.delivered) {
             mission.statuses[index] = status;
             events.push(Event::ObjectiveState {
                 index: index as u32,
@@ -254,16 +278,63 @@ fn evaluate_objectives(
     }
 }
 
+/// Accumulates the mission player's cumulative delivered ore from the
+/// events this tick has produced (B-018). No-op unless the mission carries
+/// a Cumulative gather objective — the only consumer — so the scan costs
+/// nothing for every other mission. The per-event owner field is the
+/// attribution (resolved at deposit time, immune to same-tick deaths);
+/// the resource match is the objective's own (ore by definition — the
+/// schema names no other resource).
+fn accumulate_deliveries(events: &[Event], mission: &mut MissionState) {
+    let has_cumulative = mission.objectives.objectives.iter().any(|objective| {
+        matches!(
+            objective.parameters,
+            MissionObjectiveParameters::Gather {
+                semantics: GatherSemantics::Cumulative,
+                ..
+            }
+        )
+    });
+    if !has_cumulative {
+        return;
+    }
+    let player = mission.objectives.player;
+    let resource = mission
+        .objectives
+        .objectives
+        .iter()
+        .find_map(|objective| match objective.parameters {
+            MissionObjectiveParameters::Gather { resource, .. } => Some(resource),
+            _ => None,
+        })
+        .expect("a mission with a Cumulative gather objective carries the objective");
+    for event in events {
+        if let Event::ResourceDelivered {
+            owner,
+            resource: delivered_resource,
+            amount,
+            ..
+        } = event
+        {
+            if *owner == player && *delivered_resource == resource {
+                mission.delivered += *amount as i64;
+            }
+        }
+    }
+}
+
 /// One objective's current satisfaction from the world state: `Some(status)`
 /// when the objective resolves this tick, `None` while it stays pending.
 /// Kind/parameters mismatches cannot cross the content seam (the loader
 /// rejects them loudly); the defensive arm keeps such a shape pending forever
-/// rather than resolving it wrongly.
+/// rather than resolving it wrongly. `delivered` is the mission player's
+/// cumulative delivered ore (B-018) — the accumulator's current value.
 fn objective_status(
     world: &World,
     tick: u32,
     player: PlayerId,
     objective: &MissionObjective,
+    delivered: i64,
 ) -> Option<ObjectiveStatus> {
     match (&objective.kind, &objective.parameters) {
         (MissionObjectiveKind::Destroy, MissionObjectiveParameters::Destroy { target_kind }) => {
@@ -293,6 +364,18 @@ fn objective_status(
         (MissionObjectiveKind::ReachArea, MissionObjectiveParameters::ReachArea { area }) => {
             reach_status(world, player, area)
         }
+        // B-018: gather crosses when the mission player's ore crosses the
+        // authored amount — the ledger (Balance) or the cumulative
+        // delivered total (Cumulative), exactly the semantics the mission
+        // picked at the seam.
+        (
+            MissionObjectiveKind::Gather,
+            MissionObjectiveParameters::Gather {
+                resource,
+                amount,
+                semantics,
+            },
+        ) => gather_status(world, player, *resource, *amount, *semantics, delivered),
         _ => None,
     }
 }
@@ -379,6 +462,34 @@ fn reach_status(world: &World, player: PlayerId, area: &AreaSpec) -> Option<Obje
     inside.then_some(ObjectiveStatus::Completed)
 }
 
+/// Gather (B-018): pending until the mission player's ore crosses the
+/// authored amount, completed the first tick it does — the semantics the
+/// mission picked at the seam decides WHICH total: `Balance` reads the
+/// hashed ledger (spending sets it back below the target while the
+/// objective is still pending; the resolution itself is monotone once
+/// fired, like every objective), `Cumulative` reads the event-derived
+/// accumulator (spending never touches it). The evaluator is total over
+/// both — the loader's amount gate (above the starting ore, both
+/// semantics) is what keeps a mission from demanding nothing (the
+/// AUD-003 division).
+fn gather_status(
+    world: &World,
+    player: PlayerId,
+    resource: ResourceId,
+    amount: i64,
+    semantics: GatherSemantics,
+    delivered: i64,
+) -> Option<ObjectiveStatus> {
+    let current = match semantics {
+        GatherSemantics::Balance => world
+            .player(player)
+            .map(|state| state.balance(resource))
+            .unwrap_or(0),
+        GatherSemantics::Cumulative => delivered,
+    };
+    (current >= amount).then_some(ObjectiveStatus::Completed)
+}
+
 /// Fires the match end exactly once: sets the outcome and emits `MatchEnded`.
 fn end_match(
     winner: PlayerId,
@@ -419,7 +530,7 @@ mod tests {
 
     // Re-exported at the sim root for the test bodies (fixture types).
     use crate::fixture::SpawnDef;
-    use pandemonium_sim_api::{KindId, Vec2Fx};
+    use pandemonium_sim_api::{EntityId, KindId, Vec2Fx};
 
     /// A mission objective set builder for the tests.
     fn mission_for(player: PlayerId, objectives: &[MissionObjective]) -> MissionData {
@@ -1536,6 +1647,439 @@ mod tests {
             "a worker exactly on the circle's boundary is inside — completed: {:?}",
             out.events
         );
+    }
+
+    /// A gather mission over one amount and semantics, required or optional.
+    fn gather_mission(
+        player: PlayerId,
+        amount: i64,
+        semantics: GatherSemantics,
+        optional: bool,
+    ) -> MissionData {
+        mission_for(
+            player,
+            &[MissionObjective {
+                kind: MissionObjectiveKind::Gather,
+                parameters: MissionObjectiveParameters::Gather {
+                    resource: ResourceId(0),
+                    amount,
+                    semantics,
+                },
+                optional,
+            }],
+        )
+    }
+
+    /// The gather fixture (the economy test module's shape, two-player):
+    /// player 0 (the mission player) owns a worker, a depot that both
+    /// stores ore and trains workers (cost 50, the spending path), and
+    /// nothing else; player 1 owns a surviving depot (the elimination
+    /// rule's "other side"). One rich neutral ore node (500 ore, 10 per
+    /// trip, a 30-tick gather cycle) feeds the loop. Kinds: 0 worker,
+    /// 1 depot, 2 ore node.
+    fn gather_world() -> TrivialWorld {
+        use crate::fixture::{CapTemplate, KindEconomy, KindTemplate};
+        TrivialWorld {
+            map_id: 0x0047_4154_4845_5230,
+            width_tiles: 32,
+            height_tiles: 32,
+            passability: TrivialWorld::open_passability(32, 32),
+            buildability: TrivialWorld::open_buildability(32, 32),
+            kinds: vec![
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 40,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Move {
+                            speed_milli_tiles_per_s: 2600,
+                            radius_milli_tiles: 300,
+                        },
+                        CapTemplate::Gather {
+                            carry_amount: 10,
+                            gather_time_ms: 1000,
+                        },
+                        CapTemplate::Vision {
+                            radius_milli_tiles: 7000,
+                        },
+                    ],
+                    economy: KindEconomy {
+                        cost: vec![(ResourceId(0), 50)],
+                        build_time_ticks: 30,
+                        population: 1,
+                        requires: vec![],
+                    },
+                },
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Health {
+                            max_hp: 300,
+                            regen_per_tick: 0,
+                        },
+                        CapTemplate::Vision {
+                            radius_milli_tiles: 6000,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                        CapTemplate::Storage {
+                            resources: vec![ResourceId(0)],
+                        },
+                        CapTemplate::ProvidesPopulation { amount: 10 },
+                        CapTemplate::Produce {},
+                    ],
+                    economy: KindEconomy::default(),
+                },
+                KindTemplate {
+                    caps: vec![
+                        CapTemplate::Resource {
+                            resource: ResourceId(0),
+                            amount: 500,
+                        },
+                        CapTemplate::Footprint { w: 2, h: 2 },
+                    ],
+                    economy: KindEconomy::default(),
+                },
+            ],
+            resources: vec![crate::fixture::ResourceDef {
+                resource: ResourceId(0),
+                starting: 200,
+            }],
+            production: vec![(KindId(1), vec![KindId(0)])],
+            base_population_cap: 0,
+            initial_spawns: vec![
+                // Player 0: the worker and the depot (storage + producer).
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(0),
+                    pos: Vec2Fx::from_ints(4, 4),
+                },
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(1),
+                    pos: Vec2Fx::from_ints(8, 3),
+                },
+                // Player 1: a surviving structure (the other side).
+                SpawnDef {
+                    owner: PlayerId(1),
+                    kind: KindId(1),
+                    pos: Vec2Fx::from_ints(24, 24),
+                },
+                // The rich neutral node.
+                SpawnDef {
+                    owner: PlayerId::NEUTRAL,
+                    kind: KindId(2),
+                    pos: Vec2Fx::from_ints(4, 10),
+                },
+            ],
+            scheduled_spawns: vec![],
+            spawn_jitter_milli: 0,
+            roster: Vec::new(),
+        }
+        .with_default_roster()
+    }
+
+    /// Steps the gather fixture until the mission player's worker has made
+    /// `wanted` deliveries (each 10 ore), returning the tick they landed
+    /// on. The worker is ordered to gather from the node at tick 0 and
+    /// never re-commanded (auto-seek retargets after depletion).
+    fn run_until_deliveries(sim: &mut Sim, wanted: usize, seq: &mut u32) -> u32 {
+        let node = sim
+            .snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.kind == KindId(2))
+            .expect("the ore node stands")
+            .id;
+        sim.step(&[Command::new(
+            PlayerId(0),
+            sim.tick(),
+            {
+                *seq += 1;
+                *seq
+            },
+            CommandKind::Gather {
+                units: vec![EntityId(1)],
+                node,
+            },
+        )]);
+        let mut delivered = 0usize;
+        let mut guard = 0u32;
+        while delivered < wanted && guard < 4000 {
+            let out = sim.step(&[]);
+            for event in &out.events {
+                if let Event::ResourceDelivered { owner, .. } = event {
+                    if *owner == PlayerId(0) {
+                        delivered += 1;
+                    }
+                }
+            }
+            guard += 1;
+        }
+        assert!(
+            delivered >= wanted,
+            "only {delivered} deliveries by tick {guard}"
+        );
+        sim.tick() - 1
+    }
+
+    #[test]
+    fn a_cumulative_gather_objective_completes_on_the_delivery_tick() {
+        // B-018's cumulative law: the objective completes on EXACTLY the
+        // tick the mission player's Nth delivery lands (the accumulator
+        // runs before the status check, inside the same step — stage 4
+        // produced the `ResourceDelivered`, stage 10 consumes it), so the
+        // outward stream carries `ResourceDelivered` before
+        // `ObjectiveState` in one step — the causal-order law — and the
+        // mission-less twin, driven with the SAME command stream in
+        // lockstep, hashes identically at every checked tick (A-066: the
+        // accumulator is derived, never hashed).
+        let world = gather_world();
+        let setup = two_player_setup();
+        let mut plain = Sim::new(&world, setup.clone());
+        let mut sim = Sim::with_mission(
+            &world,
+            setup,
+            gather_mission(PlayerId(0), 15, GatherSemantics::Cumulative, false),
+        );
+        // The same gather order drives both sims; the worker (entity 1)
+        // gathers the rich node from tick 0.
+        let node = sim
+            .snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.kind == KindId(2))
+            .expect("the ore node stands")
+            .id;
+        let order = Command::new(
+            PlayerId(0),
+            0,
+            1,
+            CommandKind::Gather {
+                units: vec![EntityId(1)],
+                node,
+            },
+        );
+        sim.step(std::slice::from_ref(&order));
+        plain.step(&[order]);
+        let mut delivered: Vec<u32> = Vec::new();
+        for tick in 1..4000u32 {
+            let out = sim.step(&[]);
+            plain.step(&[]);
+            for event in &out.events {
+                if let Event::ResourceDelivered { owner, amount, .. } = event {
+                    if *owner == PlayerId(0) {
+                        assert_eq!(*amount, 10, "one trip carries 10");
+                        delivered.push(tick);
+                    }
+                }
+            }
+            // One delivery (10) is below 15: pending.
+            if delivered.len() == 1 {
+                assert!(sim.outcome().is_none(), "10 delivered is below 15");
+            }
+            if delivered.len() == 2 {
+                // The second delivery (20 >= 15) completed the objective
+                // THIS tick, with ResourceDelivered before ObjectiveState
+                // in the same step's stream (the causal order).
+                let delivered_at = out
+                    .events
+                    .iter()
+                    .position(|event| matches!(event, Event::ResourceDelivered { .. }))
+                    .expect("the delivery is in this step's stream");
+                let resolved_at = out
+                    .events
+                    .iter()
+                    .position(|event| {
+                        matches!(
+                            event,
+                            Event::ObjectiveState {
+                                index: 0,
+                                state: ObjectiveState::Completed
+                            }
+                        )
+                    })
+                    .expect("the objective resolved this tick");
+                let ended_at = out
+                    .events
+                    .iter()
+                    .position(|event| matches!(event, Event::MatchEnded { .. }))
+                    .expect("the match ended this tick");
+                assert!(
+                    delivered_at < resolved_at && resolved_at < ended_at,
+                    "ResourceDelivered precedes ObjectiveState precedes MatchEnded: {:?}",
+                    out.events
+                );
+                let outcome = sim.outcome().expect("the objective completed");
+                assert_eq!(outcome.winner, PlayerId(0));
+                assert_eq!(outcome.ended_tick, tick);
+                break;
+            }
+            if tick.is_multiple_of(100) {
+                assert_eq!(
+                    sim.state_hash(),
+                    plain.state_hash(),
+                    "tick {tick}: the accumulator is derived, never hashed"
+                );
+            }
+        }
+        assert_eq!(delivered.len(), 2, "the loop ran to the second delivery");
+        assert_eq!(
+            sim.state_hash(),
+            plain.state_hash(),
+            "the resolving tick itself: identical hashes"
+        );
+    }
+
+    #[test]
+    fn a_balance_gather_objective_completes_when_the_ledger_crosses() {
+        // B-018's balance law: the objective completes the tick the
+        // mission player's LEDGER crosses the amount (200 starting + 10
+        // delivered = 210 >= 205) — the same tick as the delivery, the
+        // same event order.
+        let world = gather_world();
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            gather_mission(PlayerId(0), 205, GatherSemantics::Balance, false),
+        );
+        let mut seq = 0;
+        let resolving = run_until_deliveries(&mut sim, 1, &mut seq);
+        let outcome = sim.outcome().expect("the objective completed");
+        assert_eq!(outcome.winner, PlayerId(0));
+        assert_eq!(outcome.ended_tick, resolving);
+    }
+
+    #[test]
+    fn spending_reduces_the_balance_semantics_but_not_the_cumulative() {
+        // The differential — the brief's acceptance: the SAME command
+        // script (gather, gather, TRAIN a 50-ore worker, keep gathering),
+        // two missions. Cumulative 25 completes on the third delivery
+        // regardless of the spend; Balance 225 stays pending while the
+        // spend holds the ledger down, completing only six deliveries
+        // later when the balance actually holds the amount again. The
+        // balance is read from the ledger (hashed state); the cumulative
+        // from the delivery events (derived accumulator) — the two
+        // semantics, side by side.
+        let script = |sim: &mut Sim| {
+            let mut seq = 0;
+            // Two deliveries: balance 220, delivered 20.
+            run_until_deliveries(sim, 2, &mut seq);
+            // Spend 50 on a trained worker: balance 170.
+            let depot = sim
+                .snapshot()
+                .entities
+                .iter()
+                .find(|entity| entity.owner == PlayerId(0) && entity.kind == KindId(1))
+                .expect("the depot stands")
+                .id;
+            sim.step(&[Command::new(
+                PlayerId(0),
+                sim.tick(),
+                {
+                    seq += 1;
+                    seq
+                },
+                CommandKind::Train {
+                    producer: depot,
+                    unit: KindId(0),
+                },
+            )]);
+            seq
+        };
+        // Cumulative 25: the third delivery (30 >= 25) completes it — the
+        // spend never reduces the delivered total (the trained worker
+        // stands idle at the depot; only the original gathers).
+        let mut cumulative = Sim::with_mission(
+            &gather_world(),
+            two_player_setup(),
+            gather_mission(PlayerId(0), 25, GatherSemantics::Cumulative, false),
+        );
+        let mut seq = script(&mut cumulative);
+        let resolving = run_until_deliveries(&mut cumulative, 1, &mut seq);
+        let outcome = cumulative
+            .outcome()
+            .expect("the cumulative objective completed");
+        assert_eq!(outcome.ended_tick, resolving);
+        // Balance 225: after the spend the ledger holds 170; six more
+        // deliveries (170 + 60 = 230 >= 225) are what it takes.
+        let mut balance = Sim::with_mission(
+            &gather_world(),
+            two_player_setup(),
+            gather_mission(PlayerId(0), 225, GatherSemantics::Balance, false),
+        );
+        let mut seq = script(&mut balance);
+        assert!(
+            balance.outcome().is_none(),
+            "the spend holds the balance below the amount — pending"
+        );
+        let resolving = run_until_deliveries(&mut balance, 6, &mut seq);
+        let outcome = balance.outcome().expect("the balance objective completed");
+        assert_eq!(outcome.ended_tick, resolving);
+    }
+
+    #[test]
+    fn the_accumulator_attributes_deliveries_by_owner_and_resource() {
+        // The attribution law, pinned at the accumulator: only the mission
+        // player's deliveries of the objective's resource count — the
+        // opponent's ore never inflates the mission player's total, and a
+        // hypothetical second resource never matches. The events are
+        // constructed directly (the deposit site pins its own side: the
+        // owner is resolved at deposit time, economy.rs's own tests).
+        let mission = gather_mission(PlayerId(0), 100, GatherSemantics::Cumulative, false);
+        let mut state = MissionState::new(mission);
+        let events = vec![
+            Event::ResourceDelivered {
+                worker: EntityId(1),
+                owner: PlayerId(1),
+                resource: ResourceId(0),
+                amount: 10,
+            },
+            Event::ResourceDelivered {
+                worker: EntityId(2),
+                owner: PlayerId(0),
+                resource: ResourceId(0),
+                amount: 10,
+            },
+            Event::ResourceDelivered {
+                worker: EntityId(3),
+                owner: PlayerId(0),
+                resource: ResourceId(1),
+                amount: 10,
+            },
+        ];
+        accumulate_deliveries(&events, &mut state);
+        assert_eq!(
+            state.delivered, 10,
+            "one ore delivery of the mission player's"
+        );
+        // A step with no deliveries adds nothing (the scan runs every
+        // step; only the events it finds move the total).
+        accumulate_deliveries(&[], &mut state);
+        assert_eq!(state.delivered, 10, "an empty step's scan adds nothing");
+        // A Balance-only mission never scans: the accumulator stays zero.
+        let balance_mission = gather_mission(PlayerId(0), 100, GatherSemantics::Balance, false);
+        let mut balance_state = MissionState::new(balance_mission);
+        accumulate_deliveries(&events, &mut balance_state);
+        assert_eq!(balance_state.delivered, 0, "no consumer, no scan");
+    }
+
+    #[test]
+    fn an_optional_gather_objective_completes_but_never_gates_the_match() {
+        // The optional law: the completion fires its event and nothing
+        // else — the match runs on (nothing dies; the elimination rule
+        // cannot end it).
+        let mut sim = Sim::with_mission(
+            &gather_world(),
+            two_player_setup(),
+            gather_mission(PlayerId(0), 15, GatherSemantics::Cumulative, true),
+        );
+        let mut seq = 0;
+        run_until_deliveries(&mut sim, 2, &mut seq);
+        assert!(sim.outcome().is_none(), "an optional objective never gates");
+        for _ in 0..100 {
+            sim.step(&[]);
+        }
+        assert!(sim.outcome().is_none(), "the match runs on");
     }
 
     #[test]

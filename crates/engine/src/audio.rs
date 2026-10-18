@@ -195,6 +195,7 @@ mod tests {
     fn delivered() -> Event {
         Event::ResourceDelivered {
             worker: EntityId(3),
+            owner: PlayerId(0),
             resource: pandemonium_sim_api::ResourceId(0),
             amount: 10,
         }
