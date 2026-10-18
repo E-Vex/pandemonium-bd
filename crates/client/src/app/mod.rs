@@ -22,6 +22,7 @@ use crate::ui::{Button, MenuButton};
 use pandemonium_ai::Controller;
 use pandemonium_content::{ContentBundle, ContentTree};
 use pandemonium_engine::audio::{AudioCue, AudioSink};
+use pandemonium_engine::mesh::terrain_mesh;
 use pandemonium_engine::renderer::{Frame, HudState};
 use pandemonium_engine::{
     alpha_controller, alpha_plan, FrameOutcome, Interpolator, MatchHost, MatchOutcome, Renderer,
@@ -493,6 +494,11 @@ impl App {
         let host = Self::build_mission_host(&bundle, setup.clone(), mission);
         self.matches_started += 1;
         self.bundle = bundle;
+        self.camera
+            .set_bounds(self.bundle.map.width, self.bundle.map.height);
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_terrain(&terrain_mesh(&self.bundle.map, crate::HEIGHT_SCALE));
+        }
         self.match_mode = MatchMode::PlayerVsAi;
         self.setup = setup;
         self.map_index = self
@@ -622,6 +628,11 @@ impl App {
         let host = Self::build_host(&bundle, setup.clone(), mode);
         self.matches_started += 1;
         self.bundle = bundle;
+        self.camera
+            .set_bounds(self.bundle.map.width, self.bundle.map.height);
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_terrain(&terrain_mesh(&self.bundle.map, crate::HEIGHT_SCALE));
+        }
         self.match_mode = mode;
         self.setup = setup;
         self.map_index = map_index;
@@ -682,6 +693,33 @@ impl App {
         self.reset_match_state();
         self.checkpoints.clear();
         self.record_written = false;
+        // The menu backdrop returns to the default map; keep its terrain,
+        // camera bounds, and framing in sync after a larger map was played.
+        if let Some(default_map) = self.tree.maps.first().cloned() {
+            if let Ok(bundle) = self.tree.bundle(&default_map.id) {
+                self.bundle = bundle;
+            }
+            self.map_index = 0;
+            self.start_anchor = default_map
+                .starts
+                .iter()
+                .find(|start| start.player == 0)
+                .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+                .unwrap_or((
+                    default_map.width as f32 / 2.0,
+                    default_map.height as f32 / 2.0,
+                ));
+            self.camera
+                .set_bounds(default_map.width, default_map.height);
+            self.camera.focus(
+                self.start_anchor.0,
+                self.start_anchor.1,
+                START_CAMERA_DISTANCE,
+            );
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_terrain(&terrain_mesh(&default_map, crate::HEIGHT_SCALE));
+            }
+        }
         self.screen = AppState::at_main_menu();
     }
 
@@ -1699,7 +1737,7 @@ impl App {
                 maps: &maps,
                 missions: &missions,
                 end_lines: headline,
-                backdrop: [0.0, 0.0, 0.0, 0.55],
+                backdrop: [0.0, 0.0, 0.0, 0.30],
                 info_lines,
                 // A-009 task 4: the pause menu (this in-match draw path)
                 // also draws the build-identity footer. version_line was

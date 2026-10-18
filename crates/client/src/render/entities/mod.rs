@@ -7,9 +7,10 @@ use bytemuck::{Pod, Zeroable};
 
 use pandemonium_sim_api::{MoveState, PlayerId};
 
+use super::overlay::DECAL_SOFT_RADIAL;
 use super::{DecalInstance, KindShape, DECAL_LIFT};
 
-/// One entity instance: a rotated, non-uniformly-scaled colored box (40
+/// One entity instance: a rotated, non-uniformly-scaled colored box (48
 /// bytes). One *entity* renders as one or more instances — its silhouette
 /// (per [`KindShape`]) is composed from boxes on the CPU side.
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -23,8 +24,10 @@ pub(super) struct EntityInstance {
     pub(super) scale: [f32; 3],
     /// Placeholder color (team color, brighter when selected).
     pub(super) color: [f32; 3],
-    /// Padding to a 40-byte stride (keeps vec3 attributes 4-byte aligned).
+    /// Padding keeps the instance fields 4-byte aligned.
     pub(super) _pad: f32,
+    /// 1.0 selects the procedural stone surface; 0.0 keeps painted metal.
+    pub(super) material: f32,
 }
 
 pub(super) const ENTITY_SHADER_SRC: &str = r#"
@@ -33,7 +36,7 @@ struct CameraUniform { view_projection: mat4x4<f32> };
 
 const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
 
-struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32> };
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) material: f32 };
 
 @vertex fn vs_main(
     @location(0) corner: vec3<f32>,
@@ -42,21 +45,68 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>
     @location(3) instance_scale: vec3<f32>,
     @location(4) instance_color: vec3<f32>,
     @location(5) normal: vec3<f32>,
+    @location(6) instance_material: f32,
 ) -> VsOut {
     var out: VsOut;
     let c = cos(instance_yaw);
     let s = sin(instance_yaw);
     let rot = mat3x3<f32>(vec3<f32>(c, 0.0, -s), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(s, 0.0, c));
     let world = rot * (corner * instance_scale) + instance_position;
-    let n = rot * normalize(normal);
-    let light = 0.42 + 0.58 * max(dot(n, normalize(SUN)), 0.0);
+    // Normals are authored on the unscaled cube, so inverse-scale before
+    // rotating. This keeps the soft corner shading correct on long, thin
+    // silhouette details as well as on the main body parts.
+    let n = rot * normalize(normal / instance_scale);
+    // Hemisphere lighting, matched to the terrain pass: cool sky above,
+    // warm bounce below, warm sun on top. Tops stay near-full brightness so
+    // team colors read at a glance, while sun-turned sides drop toward the
+    // ambient floor — box silhouettes gain the volume the flat one-lamp
+    // light flattened away.
+    let up = n.y * 0.5 + 0.5;
+    let sky = vec3<f32>(0.46, 0.50, 0.58);
+    let bounce = vec3<f32>(0.30, 0.27, 0.22);
+    let ambient = mix(bounce, sky, up);
+    let sun = vec3<f32>(1.00, 0.94, 0.80) * max(dot(n, normalize(SUN)), 0.0) * 0.62;
     out.clip = camera.view_projection * vec4<f32>(world, 1.0);
-    out.color = instance_color * light;
+    out.color = instance_color * (ambient + sun);
+    out.world = world;
+    out.normal = n;
+    out.material = instance_material;
     return out;
 }
 
+fn hash2(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+fn value_noise(p: vec2<f32>) -> f32 {
+    let cell = floor(p);
+    let local = fract(p);
+    let blend = local * local * (3.0 - 2.0 * local);
+    let a = hash2(cell);
+    let b = hash2(cell + vec2<f32>(1.0, 0.0));
+    let c = hash2(cell + vec2<f32>(0.0, 1.0));
+    let d = hash2(cell + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y);
+}
+
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    var color = in.color;
+    if in.material > 0.5 {
+        // Triplanar stone grain keeps mortar lines aligned on roofs and walls.
+        let weights = pow(abs(normalize(in.normal)), vec3<f32>(4.0));
+        let total = max(weights.x + weights.y + weights.z, 0.001);
+        let uv = (in.world.zy * weights.x + in.world.xz * weights.y + in.world.xy * weights.z) / total;
+        let stone = value_noise(uv * 5.0);
+        let tile = uv * vec2<f32>(2.0, 3.0);
+        let row = floor(tile.y);
+        let staggered = tile + vec2<f32>(fract(row * 0.5) * 0.5, 0.0);
+        let edge = min(min(fract(staggered.x), 1.0 - fract(staggered.x)),
+                       min(fract(staggered.y), 1.0 - fract(staggered.y)));
+        let mortar = 1.0 - smoothstep(0.025, 0.075, edge);
+        color *= 0.86 + stone * 0.20;
+        color = mix(color, color * vec3<f32>(0.48, 0.50, 0.53), mortar * 0.75);
+    }
+    return vec4<f32>(color, 1.0);
 }
 "#;
 
@@ -134,6 +184,11 @@ pub(super) fn build_entity_instances(
             scale: [part.scale[0], part.scale[1] * squat, part.scale[2]],
             color: crate::silhouette::part_color(part.tone, base),
             _pad: 0.0,
+            material: if part.tone == crate::silhouette::Tone::Stone {
+                1.0
+            } else {
+                0.0
+            },
         });
     }
 }
@@ -176,7 +231,9 @@ pub(super) fn build_instances(
 }
 
 /// Builds the shadow blob stream: one dark ellipse under every entity,
-/// sized by the silhouette's derived ground radius.
+/// sized by the silhouette's derived ground radius, soft-edged (the
+/// soft-radial decal mode) so the blobs read as cast shade, not stamped
+/// circles.
 pub(super) fn build_shadows(
     snapshot: &pandemonium_engine::RenderSnapshot,
     kind_specs: &[KindShape],
@@ -195,7 +252,8 @@ pub(super) fn build_shadows(
         decals.push(DecalInstance {
             position: [entity.pos.x, DECAL_LIFT, entity.pos.z],
             scale: [radius * 2.0, radius * 2.0],
-            color: [0.0, 0.0, 0.0, 0.32],
+            color: [0.0, 0.0, 0.0, 0.34],
+            mode: DECAL_SOFT_RADIAL,
         });
     }
     decals
@@ -248,5 +306,6 @@ pub(super) fn death_instance(cue: &DyingCue, shape: &KindShape) -> EntityInstanc
         scale,
         color: charred,
         _pad: 0.0,
+        material: 0.0,
     }
 }

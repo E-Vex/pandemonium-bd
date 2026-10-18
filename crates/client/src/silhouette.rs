@@ -32,6 +32,8 @@
 pub enum Tone {
     /// The team color itself (the main mass).
     Body,
+    /// Natural masonry with a subtle team tint (building walls).
+    Stone,
     /// A darker detail of the team color (heads, treads, doors).
     Dark,
     /// A lighter detail of the team color (roofs, cabins, caps).
@@ -147,6 +149,7 @@ pub fn part_color(tone: Tone, team: [f32; 3]) -> [f32; 3] {
     };
     match tone {
         Tone::Body => team,
+        Tone::Stone => mix([0.52, 0.49, 0.43], team, 0.10),
         Tone::Dark => mix(team, [0.10, 0.10, 0.12], 0.45),
         Tone::Light => mix(team, [0.95, 0.95, 1.0], 0.45),
         Tone::Steel => mix(team, [0.42, 0.44, 0.48], 0.78),
@@ -163,14 +166,16 @@ pub fn part_color(tone: Tone, team: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// The worker: a small round-ish body, a dark head, and a visible tool —
-/// a steel shaft with a heavier head, held out to the right side.
+/// The worker: a small round-ish body, a dark head, a packed backpack, and
+/// a visible tool — a steel shaft with a heavier head, held out to the
+/// right side.
 fn worker() -> Silhouette {
     Silhouette::from_parts(
         true,
         vec![
             Part::at([0.0, 0.15, 0.0], [0.34, 0.30, 0.34], Tone::Body),
             Part::at([0.0, 0.39, 0.0], [0.22, 0.18, 0.22], Tone::Dark),
+            Part::at([-0.19, 0.26, 0.0], [0.12, 0.20, 0.22], Tone::Dark),
             Part {
                 offset: [0.22, 0.24, 0.14],
                 scale: [0.30, 0.05, 0.05],
@@ -187,21 +192,25 @@ fn worker() -> Silhouette {
     )
 }
 
-/// The rifleman: a taller capsule-ish body, a dark head, and a thin rifle
-/// held forward along the facing, off to the right.
+/// The rifleman: a taller capsule-ish body, a dark head, a packed
+/// backpack, a light shoulder yoke, and a thin rifle held forward along
+/// the facing, off to the right.
 fn rifleman() -> Silhouette {
     Silhouette::from_parts(
         true,
         vec![
             Part::at([0.0, 0.24, 0.0], [0.32, 0.48, 0.32], Tone::Body),
             Part::at([0.0, 0.57, 0.0], [0.18, 0.16, 0.18], Tone::Dark),
+            Part::at([-0.17, 0.32, 0.0], [0.12, 0.26, 0.24], Tone::Dark),
+            Part::at([0.02, 0.465, 0.0], [0.15, 0.07, 0.44], Tone::Light),
             Part::at([0.10, 0.36, 0.13], [0.46, 0.05, 0.05], Tone::Steel),
         ],
     )
 }
 
 /// The raider: a medium, low, fast-looking buggy — wide chassis, a darker
-/// wedge nose, a light cabin and a steel roll bar.
+/// wedge nose, a light cabin, a steel roll bar, and dark wheels showing on
+/// both flanks.
 fn raider() -> Silhouette {
     Silhouette::from_parts(
         true,
@@ -210,12 +219,15 @@ fn raider() -> Silhouette {
             Part::at([0.38, 0.13, 0.0], [0.16, 0.14, 0.28], Tone::Dark),
             Part::at([-0.08, 0.32, 0.0], [0.28, 0.16, 0.30], Tone::Light),
             Part::at([-0.08, 0.46, 0.0], [0.05, 0.10, 0.34], Tone::Steel),
+            Part::at([0.05, 0.10, 0.25], [0.52, 0.20, 0.08], Tone::Dark),
+            Part::at([0.05, 0.10, -0.25], [0.52, 0.20, 0.08], Tone::Dark),
         ],
     )
 }
 
 /// The Guardian (the tank): a large hull with dark treads on both flanks,
-/// a lighter turret on top, and a steel barrel pointing forward.
+/// a light glacis plate up front, a lighter turret with a hatch, a steel
+/// barrel with a heavier muzzle tip, and an antenna.
 fn guardian() -> Silhouette {
     Silhouette::from_parts(
         true,
@@ -223,65 +235,83 @@ fn guardian() -> Silhouette {
             Part::at([0.0, 0.16, 0.0], [0.86, 0.32, 0.58], Tone::Body),
             Part::at([0.0, 0.08, 0.30], [0.92, 0.16, 0.09], Tone::Dark),
             Part::at([0.0, 0.08, -0.30], [0.92, 0.16, 0.09], Tone::Dark),
+            Part::at([0.36, 0.20, 0.0], [0.14, 0.14, 0.50], Tone::Light),
             Part::at([-0.05, 0.42, 0.0], [0.42, 0.22, 0.38], Tone::Light),
+            Part::at([-0.05, 0.565, 0.0], [0.16, 0.07, 0.16], Tone::Dark),
             Part::at([0.32, 0.44, 0.0], [0.44, 0.08, 0.08], Tone::Steel),
+            Part::at([0.56, 0.44, 0.0], [0.09, 0.12, 0.12], Tone::Steel),
+            Part::at([-0.20, 0.72, 0.15], [0.03, 0.40, 0.03], Tone::Steel),
         ],
     )
 }
 
 /// The Command Center: a large, tall slab with a lighter mid tier and a
-/// distinct corner tower capped in the team band — it reads as THE base.
+/// distinct corner tower capped in the team band — plus roof vents, an
+/// antenna, and a ground-level band trim so the base reads as THE base
+/// from any angle.
 fn command_center() -> Silhouette {
     Silhouette::from_parts(
         false,
         vec![
-            Part::at([0.0, 0.30, 0.0], [3.6, 0.60, 3.6], Tone::Body),
+            Part::at([0.0, 0.30, 0.0], [3.6, 0.60, 3.6], Tone::Stone),
+            Part::at([0.0, 0.05, 0.0], [3.72, 0.10, 3.72], Tone::Band),
             Part::at([0.0, 0.75, 0.0], [2.9, 0.55, 2.9], Tone::Light),
-            Part::at([0.95, 1.45, 0.95], [0.95, 1.75, 0.95], Tone::Body),
-            Part::at([0.95, 2.42, 0.95], [1.15, 0.20, 1.15], Tone::Band),
             Part::at([0.0, 0.35, -1.83], [1.1, 0.70, 0.14], Tone::Dark),
+            Part::at([-0.60, 1.085, 0.60], [0.45, 0.12, 0.45], Tone::Dark),
+            Part::at([0.60, 1.085, -0.60], [0.45, 0.12, 0.45], Tone::Dark),
+            Part::at([0.95, 1.45, 0.95], [0.95, 1.75, 0.95], Tone::Stone),
+            Part::at([0.95, 2.42, 0.95], [1.15, 0.20, 1.15], Tone::Band),
+            Part::at([0.95, 2.72, 0.95], [0.05, 0.60, 0.05], Tone::Steel),
         ],
     )
 }
 
-/// The Barracks: wide and low, with a dark door on the front face and a
-/// steel flag pole flying the team-colored banner at a corner.
+/// The Barracks: wide and low, with a dark door on the front face, a lit
+/// window strip on the back, a dark roof ridge, and a steel flag pole
+/// flying the team-colored banner at a corner.
 fn barracks() -> Silhouette {
     Silhouette::from_parts(
         false,
         vec![
-            Part::at([0.0, 0.25, 0.0], [2.7, 0.50, 2.7], Tone::Body),
+            Part::at([0.0, 0.25, 0.0], [2.7, 0.50, 2.7], Tone::Stone),
             Part::at([0.0, 0.62, 0.0], [2.3, 0.26, 2.3], Tone::Light),
+            Part::at([0.0, 0.82, 0.0], [2.4, 0.14, 0.6], Tone::Dark),
             Part::at([0.0, 0.28, -1.38], [0.8, 0.56, 0.14], Tone::Dark),
+            Part::at([0.0, 0.32, 1.38], [0.9, 0.32, 0.06], Tone::Dark),
             Part::at([1.28, 0.85, 1.28], [0.07, 1.70, 0.07], Tone::Steel),
             Part::at([1.46, 1.50, 1.28], [0.34, 0.24, 0.05], Tone::Band),
         ],
     )
 }
 
-/// The Supply Depot: a small crate with two more stacked on top — the
-/// stacked-crates read.
+/// The Supply Depot: a crate with two more stacked on top and steel straps
+/// binding the main crate — the stacked-crates read.
 fn supply_depot() -> Silhouette {
     Silhouette::from_parts(
         false,
         vec![
-            Part::at([0.0, 0.24, 0.0], [1.55, 0.48, 1.55], Tone::Body),
+            Part::at([0.0, 0.24, 0.0], [1.55, 0.48, 1.55], Tone::Stone),
             Part::at([0.0, 0.06, 0.0], [1.62, 0.12, 1.62], Tone::Band),
+            Part::at([-0.45, 0.25, 0.0], [0.08, 0.50, 1.57], Tone::Steel),
+            Part::at([0.45, 0.25, 0.0], [0.08, 0.50, 1.57], Tone::Steel),
             Part::at([-0.30, 0.66, 0.12], [0.75, 0.36, 0.75], Tone::Light),
             Part::at([0.42, 0.62, -0.32], [0.60, 0.28, 0.60], Tone::Dark),
         ],
     )
 }
 
-/// The Turret: a pedestal, a darker cap, and a raised steel barrel.
+/// The Turret: a pedestal, a darker cap, a raised steel barrel with a
+/// heavier muzzle tip, and a side ammo box.
 fn turret() -> Silhouette {
     Silhouette::from_parts(
         false,
         vec![
-            Part::at([0.0, 0.26, 0.0], [1.35, 0.52, 1.35], Tone::Body),
+            Part::at([0.0, 0.26, 0.0], [1.35, 0.52, 1.35], Tone::Stone),
             Part::at([0.0, 0.10, 0.0], [1.42, 0.14, 1.42], Tone::Band),
             Part::at([0.0, 0.60, 0.0], [0.95, 0.16, 0.95], Tone::Dark),
             Part::at([0.42, 0.70, 0.0], [0.72, 0.11, 0.11], Tone::Steel),
+            Part::at([0.82, 0.70, 0.0], [0.09, 0.14, 0.14], Tone::Steel),
+            Part::at([-0.48, 0.36, 0.0], [0.30, 0.22, 0.30], Tone::Dark),
         ],
     )
 }
@@ -378,7 +408,7 @@ pub fn capability_fallback(
             Silhouette::from_parts(
                 false,
                 vec![
-                    Part::at([0.0, 0.25, 0.0], [w * 0.65, 0.5, h * 0.65], Tone::Body),
+                    Part::at([0.0, 0.25, 0.0], [w * 0.65, 0.5, h * 0.65], Tone::Stone),
                     Part::at([0.0, 0.58, 0.0], [w * 0.45, 0.16, h * 0.45], Tone::Dark),
                     Part::at([w * 0.30, 0.66, 0.0], [w * 0.34, 0.11, 0.11], Tone::Steel),
                 ],
@@ -392,7 +422,7 @@ pub fn capability_fallback(
                     Part::at(
                         [0.0, height * 0.5, 0.0],
                         [w * 0.94, height, h * 0.94],
-                        Tone::Body,
+                        Tone::Stone,
                     ),
                     Part::at(
                         [0.0, height + height * 0.22, 0.0],
@@ -464,15 +494,15 @@ mod tests {
         // face of an instanced cube), so a kind's vertex count is
         // parts * 36 — pinned here per kind.
         let expected = [
-            ("barracks", 5),
-            ("command_center", 5),
-            ("guardian", 5),
+            ("barracks", 7),
+            ("command_center", 9),
+            ("guardian", 9),
             ("ore_node", 4),
-            ("raider", 4),
-            ("rifleman", 3),
-            ("supply_depot", 4),
-            ("turret", 4),
-            ("worker", 4),
+            ("raider", 6),
+            ("rifleman", 5),
+            ("supply_depot", 6),
+            ("turret", 6),
+            ("worker", 5),
         ];
         for (name, parts) in expected {
             let silhouette = named(name).expect("authored");
@@ -581,6 +611,11 @@ mod tests {
         let orange = [0.95, 0.55, 0.15];
         // Body passes the team color straight through.
         assert_eq!(part_color(Tone::Body, blue), blue);
+        let stone = part_color(Tone::Stone, blue);
+        assert!(
+            stone[0] > stone[2],
+            "stone stays warm rather than team blue"
+        );
         // Band stays team-dominant: blue band vs orange band differ clearly.
         let blue_band = part_color(Tone::Band, blue);
         let orange_band = part_color(Tone::Band, orange);
