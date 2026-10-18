@@ -21,7 +21,7 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    FogPreset, KindId, MissionData, MissionObjective, MissionObjectiveKind,
+    AreaSpec, FogPreset, KindId, MissionData, MissionObjective, MissionObjectiveKind,
     MissionObjectiveParameters, PlayerId, ResourceId, Vec2Fx,
 };
 
@@ -213,6 +213,27 @@ impl ContentTree {
                         }
                     }
                 }
+                // B-018's vacuous-completion guard (AUD-003), tree-level
+                // because it needs the mission's map and faction: a
+                // ReachArea objective must demand actual movement. Three
+                // shapes are refused — an area that leaves the map (the
+                // mission would reference ground no entity can stand on),
+                // an area that covers the whole map (every position is
+                // already "inside" — vacuous by authoring), and an area
+                // that already contains a starting entity of the mission
+                // player at tick 0 (the objective completes on the first
+                // evaluated tick without a single order). The tick-0
+                // check runs the SIM's own containment predicate over the
+                // exact positions the world seam builds (tile_center),
+                // so the gate and the evaluator can never disagree.
+                if let Some(map) = maps.iter().find(|map| map.id == mission.map) {
+                    for objective in &mission.objectives {
+                        if let defs::ObjectiveParameters::ReachArea { area } = &objective.parameters
+                        {
+                            validate_reach_area(mission, area, map, faction, &entities)?;
+                        }
+                    }
+                }
             }
         }
 
@@ -381,12 +402,26 @@ impl ContentTree {
                         kind: KindId(resolved),
                     }
                 }
+                // B-018: the area crosses the seam as plain data — the
+                // shapes are unit-tagged (tiles / milli-tiles by variant),
+                // so there is nothing to resolve and nothing to convert
+                // except the type mirror itself (the FogPreset pattern).
+                // The containment law lives on the sim's type; the
+                // loader's gates already proved the area lies inside the
+                // mission's map, covers something less than the whole
+                // map, and starts empty of the mission player's forces.
+                defs::ObjectiveParameters::ReachArea { area } => {
+                    MissionObjectiveParameters::ReachArea {
+                        area: sim_area(area),
+                    }
+                }
             };
             let kind = match parameters {
                 MissionObjectiveParameters::Destroy { .. } => MissionObjectiveKind::Destroy,
                 MissionObjectiveParameters::BuildTrain { .. } => MissionObjectiveKind::BuildTrain,
                 MissionObjectiveParameters::Survive { .. } => MissionObjectiveKind::Survive,
                 MissionObjectiveParameters::Protect { .. } => MissionObjectiveKind::Protect,
+                MissionObjectiveParameters::ReachArea { .. } => MissionObjectiveKind::ReachArea,
             };
             objectives.push(MissionObjective {
                 kind,
@@ -788,6 +823,166 @@ fn tile_center(x: i32, y: i32, w: u32, h: u32) -> Vec2Fx {
     )
 }
 
+/// Converts a validated content area into the sim's vocabulary (B-018, the
+/// `FogPreset` conversion's pattern — plain data, variant for variant, no
+/// unit conversion anywhere: the shapes are unit-tagged). Shared by the
+/// mission seam (`mission_data`) and the tree-level tick-0 gate, so both
+/// evaluate the exact area the evaluator will see.
+fn sim_area(area: &defs::AreaSpec) -> AreaSpec {
+    match *area {
+        defs::AreaSpec::Rect { x, y, w, h } => AreaSpec::Rect { x, y, w, h },
+        defs::AreaSpec::Circle { cx, cy, radius } => AreaSpec::Circle { cx, cy, radius },
+    }
+}
+
+/// B-018's tree-level reach-area gates (AUD-003) — every rejection names the
+/// mission, the objective's area, and the law it broke. Two checks, coverage
+/// first (the semantic authoring error — "every position is already
+/// inside"), bounds second (the structural one — "ground no entity can
+/// stand on"):
+///
+/// 1. **Whole-map coverage** — a rect spanning the full grid (`x <= 0`,
+///    `y <= 0`, `x + w >= width`, `y + h >= height` — the exact grid match
+///    and any overspan of it), or a circle containing all four map corners
+///    (the map rectangle is the convex hull of its corners and the disk is
+///    convex, so corners inside imply every point inside), makes "reach the
+///    area" vacuous by authoring. Coverage is checked before bounds
+///    deliberately: a circle that covers the whole map ALWAYS leaves it
+///    (containing the corners needs `2r >= diagonal > min(W, H) >= 2r`
+///    in-bounds — a contradiction), so bounds-first would swallow the
+///    semantic error into the structural one.
+/// 2. **Bounds** — the area must lie inside the mission's map. A rect fits
+///    when `[x, x+w) x [y, y+h)` sits in the tile grid; a circle fits when
+///    its disk fits the map rectangle, which is exactly its bounding box
+///    `[cx-r, cx+r] x [cy-r, cy+r]` fitting (the disk is a subset of its
+///    bounding box, so the box inside the map implies the disk inside).
+///    i64 math throughout — authored values are far from the
+///    representable edge, and the gate stays total over absurd inputs.
+/// 3. **Tick-0 containment** — the area must not already contain a
+///    starting-force entity of the mission player (the mission's faction
+///    placed at the map's first start — the mission-player convention
+///    every Phase 1/2 caller uses; `verify.rs`'s re-simulation picks the
+///    same slot). The check evaluates each force's exact spawn position —
+///    `tile_center(start + offset, footprint)` — through the SIM's
+///    `AreaSpec::contains`, the same predicate the stage-10 evaluator
+///    runs, so the gate and the evaluation can never drift. Content
+///    worlds carry no spawn jitter (`spawn_jitter_milli: 0`), so the
+///    positions at tick 0 are exactly these.
+fn validate_reach_area(
+    mission: &defs::MissionDef,
+    area: &defs::AreaSpec,
+    map: &defs::MapDef,
+    faction: &defs::FactionDef,
+    entities: &[defs::EntityDef],
+) -> Result<(), ContentError> {
+    let width = map.width as i64;
+    let height = map.height as i64;
+    match *area {
+        defs::AreaSpec::Rect { x, y, w, h } => {
+            let (x, y) = (x as i64, y as i64);
+            let (w, h) = (w as i64, h as i64);
+            if x <= 0 && y <= 0 && x + w >= width && y + h >= height {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "mission '{}' reaches a rect [x {}, y {}, w {}, h {}] covering the \
+                         whole map '{}' ({}x{} tiles): every position is already inside — \
+                         the objective would complete without a single order",
+                        mission.id, x, y, w, h, map.id, map.width, map.height
+                    ),
+                });
+            }
+            if x < 0 || y < 0 || x + w > width || y + h > height {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "mission '{}' reaches a rect [x {}, y {}, w {}, h {}] that leaves \
+                         the map '{}' ({}x{} tiles): reach areas must lie inside the map",
+                        mission.id, x, y, w, h, map.id, map.width, map.height
+                    ),
+                });
+            }
+        }
+        defs::AreaSpec::Circle { cx, cy, radius } => {
+            let (cx, cy, radius) = (cx as i64, cy as i64, radius as i64);
+            let width_milli = width * 1000;
+            let height_milli = height * 1000;
+            // Corners in milli-tiles; the disk is convex, so all four
+            // corners inside implies the whole map rectangle inside.
+            let corners = [
+                (0, 0),
+                (width_milli, 0),
+                (0, height_milli),
+                (width_milli, height_milli),
+            ];
+            let covers = corners.iter().all(|&(corner_x, corner_y)| {
+                let dx = corner_x - cx;
+                let dy = corner_y - cy;
+                dx * dx + dy * dy <= radius * radius
+            });
+            if covers {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "mission '{}' reaches a circle (center {}x{} milli-tiles, radius \
+                         {}) containing all four corners of the map '{}': every position \
+                         is already inside — the objective would complete without a \
+                         single order",
+                        mission.id, cx, cy, radius, map.id
+                    ),
+                });
+            }
+            if cx - radius < 0
+                || cy - radius < 0
+                || cx + radius > width_milli
+                || cy + radius > height_milli
+            {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "mission '{}' reaches a circle (center {}x{} milli-tiles, radius \
+                         {}) that leaves the map '{}' ({}x{} tiles): reach areas must lie \
+                         inside the map",
+                        mission.id, cx, cy, radius, map.id, map.width, map.height
+                    ),
+                });
+            }
+        }
+    }
+    // The tick-0 gate: the mission player's convention slot is the map's
+    // first start (the slot every Phase 1/2 caller passes `mission_data`);
+    // its forces are the mission's faction placed at that anchor. Each
+    // force's tick-0 position is the exact `tile_center` the world seam
+    // builds (footprint from the entity kind, defaulting to 1x1 for units
+    // — the same default), tested through the sim's own predicate.
+    let Some(start) = map.starts.first() else {
+        // A map with no starts cannot carry a mission at all (the world
+        // seam would spawn nothing); the placement validator below refuses
+        // start-less maps for every faction. Defensive only.
+        return Ok(());
+    };
+    let sim = sim_area(area);
+    for force in &faction.starting_forces {
+        let (w, h) = entities
+            .iter()
+            .find(|entity| entity.id == force.entity)
+            .and_then(|entity| entity.footprint())
+            .unwrap_or((1, 1));
+        let pos = tile_center(start.x + force.offset.0, start.y + force.offset.1, w, h);
+        if sim.contains(pos) {
+            return Err(ContentError::Bundle {
+                detail: format!(
+                    "mission '{}' reaches an area that already contains the starting {} \
+                     of faction '{}' at tick 0 (tile {}x{}): a reach objective must \
+                     demand movement",
+                    mission.id,
+                    force.entity,
+                    faction.id,
+                    start.x + force.offset.0,
+                    start.y + force.offset.1
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Maps a validated capability into the simulation's capability template, when
 /// the simulation has a system for it (the M5 economy mapping — see
 /// [`ContentBundle::world`]; Attack remains for M6). `resources` resolves
@@ -1107,14 +1302,15 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
     h.write_u32(mission.objectives.len() as u32);
     for objective in &mission.objectives {
         // The kind tag: fixed, ordered, exhaustive over the vocabulary.
-        // New kinds append (B-017's Survive is 3, Protect is 4), so every
-        // pre-existing mission's byte stream is verbatim — the mission
-        // identity rule.
+        // New kinds append (B-017's Survive is 3, Protect is 4; B-018's
+        // ReachArea is 5), so every pre-existing mission's byte stream is
+        // verbatim — the mission identity rule.
         h.write_u8(match objective.kind {
             defs::ObjectiveKind::Destroy => 1,
             defs::ObjectiveKind::BuildTrain => 2,
             defs::ObjectiveKind::Survive => 3,
             defs::ObjectiveKind::Protect => 4,
+            defs::ObjectiveKind::ReachArea => 5,
         });
         match &objective.parameters {
             defs::ObjectiveParameters::Destroy { target_kind } => match target_kind {
@@ -1143,6 +1339,27 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             defs::ObjectiveParameters::Protect { kind } => {
                 encode_str(h, kind);
             }
+            // B-018: the area — a shape tag (Rect 1, Circle 2) followed by
+            // the shape's fields in the fixed little-endian discipline.
+            // The kind tag (5) ahead of the block is the domain
+            // separation, and the shape tag delimits the two forms so
+            // neither's bytes can misparse the other's; a mission without
+            // a reach objective keeps exactly the id it had before.
+            defs::ObjectiveParameters::ReachArea { area } => match *area {
+                defs::AreaSpec::Rect { x, y, w, h: height } => {
+                    h.write_u8(1);
+                    h.write_i32(x);
+                    h.write_i32(y);
+                    h.write_u32(w);
+                    h.write_u32(height);
+                }
+                defs::AreaSpec::Circle { cx, cy, radius } => {
+                    h.write_u8(2);
+                    h.write_i32(cx);
+                    h.write_i32(cy);
+                    h.write_i32(radius);
+                }
+            },
         }
         encode_bool(h, objective.optional);
     }
@@ -1716,6 +1933,168 @@ mod tests {
                 optional: true,
             }
         );
+    }
+
+    /// A probe mission whose second objective is a ReachArea objective with
+    /// the given area text (the first stays the factory's Destroy).
+    fn reach_mission(area: &str) -> String {
+        MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            &format!(
+                "kind: \"ReachArea\",\n            parameters: ReachArea(( area: {area} )),\n            optional: true,"
+            ),
+        )
+    }
+
+    #[test]
+    fn reach_areas_that_leave_the_map_are_refused() {
+        // B-018's bounds gate, tree-level (it needs the mission's map): a
+        // rect whose span exits the 16x16 grid and a circle whose disk
+        // exits it — each refused loudly with the area's numbers and the
+        // map's dimensions.
+        for (area, needle) in [
+            (
+                "Rect(( x: 10, y: 10, w: 8, h: 4 ))",
+                "reaches a rect [x 10, y 10, w 8, h 4] that leaves the map 'testing' (16x16 tiles)",
+            ),
+            (
+                "Rect(( x: -2, y: 12, w: 8, h: 4 ))",
+                "reaches a rect [x -2, y 12, w 8, h 4] that leaves the map 'testing'",
+            ),
+            (
+                "Circle(( cx: 15000, cy: 8000, radius: 2000 ))",
+                "reaches a circle (center 15000x8000 milli-tiles, radius 2000) that leaves \
+                 the map 'testing'",
+            ),
+            (
+                "Circle(( cx: 8000, cy: 3000, radius: 4000 ))",
+                "reaches a circle (center 8000x3000 milli-tiles, radius 4000) that leaves \
+                 the map 'testing'",
+            ),
+        ] {
+            let err = ContentTree::load(&factory().mission("testing_01.ron", &reach_mission(area)))
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(needle),
+                "area {area} must be refused, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn reach_areas_that_cover_the_whole_map_are_refused() {
+        // B-018's coverage gate: the exact grid match and any overspan of
+        // it, plus a circle containing all four corners. Coverage is
+        // checked BEFORE bounds deliberately — the overspan rect and the
+        // covering circle both leave the map too, and the semantic error
+        // ("every position is already inside") is the author's actual
+        // mistake, so it is the one reported.
+        for (area, needle) in [
+            (
+                "Rect(( x: 0, y: 0, w: 16, h: 16 ))",
+                "reaches a rect [x 0, y 0, w 16, h 16] covering the whole map 'testing'",
+            ),
+            (
+                "Rect(( x: -2, y: -2, w: 20, h: 20 ))",
+                "reaches a rect [x -2, y -2, w 20, h 20] covering the whole map 'testing'",
+            ),
+            // The diagonal of the 16x16 map is ~22627 milli-tiles; a
+            // 22628-radius circle at the center contains all four corners.
+            (
+                "Circle(( cx: 8000, cy: 8000, radius: 22628 ))",
+                "containing all four corners of the map 'testing'",
+            ),
+        ] {
+            let err = ContentTree::load(&factory().mission("testing_01.ron", &reach_mission(area)))
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(needle),
+                "area {area} must be refused, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn reach_areas_that_already_hold_a_starting_entity_are_refused() {
+        // B-018's tick-0 gate (AUD-003): the factory's first start (3, 3)
+        // fields a 2x2 base centered at tile (4, 4) — tile_center(3, 3,
+        // 2, 2) = ((3*2+2)*500, ...) milli = tile 4.0 — and workers at
+        // tiles (2, 6) and (4, 6) (centers (2.5, 6.5) and (4.5, 6.5)). An
+        // area that already contains any of them completes the objective
+        // on the first evaluated tick without a single order — refused
+        // loudly, naming the force and its tile.
+        for (area, needle) in [
+            (
+                // [3,5) x [3,5) holds the base's center (4.0, 4.0).
+                "Rect(( x: 3, y: 3, w: 2, h: 2 ))",
+                "already contains the starting base of faction 'testers' at tick 0 (tile 3x3)",
+            ),
+            (
+                // [2,3) x [6,7) holds worker A's center (2.5, 6.5).
+                "Rect(( x: 2, y: 6, w: 1, h: 1 ))",
+                "already contains the starting worker of faction 'testers' at tick 0 (tile 2x6)",
+            ),
+            (
+                // A circle on the base's center.
+                "Circle(( cx: 4000, cy: 4000, radius: 500 ))",
+                "already contains the starting base of faction 'testers' at tick 0 (tile 3x3)",
+            ),
+        ] {
+            let err = ContentTree::load(&factory().mission("testing_01.ron", &reach_mission(area)))
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("a reach objective must demand movement")
+                    && err.to_string().contains(needle),
+                "area {area} must be refused, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reach_area_beside_the_opponents_start_loads() {
+        // The gate's scope is the MISSION PLAYER's starting forces (the
+        // first start's convention slot), not every start: an area around
+        // the opponent's base — [12, 15) x [12, 15) — holds none of player
+        // 0's forces at tick 0, so it loads: "reach the enemy base" is a
+        // real objective, even though the opponent stands inside it from
+        // tick 0. The area crosses the seam verbatim (the sim mirror).
+        for area in [
+            "Rect(( x: 12, y: 12, w: 3, h: 3 ))",
+            // Centered on player 1's base center (tile 11, 11).
+            "Circle(( cx: 11000, cy: 11000, radius: 1500 ))",
+        ] {
+            let tree =
+                ContentTree::load(&factory().mission("testing_01.ron", &reach_mission(area)))
+                    .expect("an area beside the opponent's start loads");
+            let objectives = tree
+                .mission_data("testing_01", PlayerId(0))
+                .expect("the objective set resolves");
+            let expected_area = match area {
+                "Rect(( x: 12, y: 12, w: 3, h: 3 ))" => AreaSpec::Rect {
+                    x: 12,
+                    y: 12,
+                    w: 3,
+                    h: 3,
+                },
+                _ => AreaSpec::Circle {
+                    cx: 11000,
+                    cy: 11000,
+                    radius: 1500,
+                },
+            };
+            assert_eq!(
+                objectives.objectives[1],
+                MissionObjective {
+                    kind: MissionObjectiveKind::ReachArea,
+                    parameters: MissionObjectiveParameters::ReachArea {
+                        area: expected_area
+                    },
+                    optional: true,
+                },
+                "area {area} crosses the seam verbatim"
+            );
+        }
     }
 
     #[test]

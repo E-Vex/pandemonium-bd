@@ -345,8 +345,9 @@ impl MapDef {
 
 /// A mission objective's kind (ADR-0201 §2): what the stage-10 evaluator
 /// checks. Phase 1 carried the vertical slice's two kinds; Phase 2's B-017
-/// adds survive and protect — the vocabulary grows forward-only with the
-/// mission schema version (reach and gather remain — ADR-0201 §9).
+/// added survive and protect, B-018 adds reach — the vocabulary grows
+/// forward-only with the mission schema version (gather remains —
+/// ADR-0201 §9).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ObjectiveKind {
     /// Destroy all enemy structures — or every enemy structure of a target
@@ -362,6 +363,11 @@ pub enum ObjectiveKind {
     /// pending while one stands, failed when the last falls. It never
     /// completes by itself.
     Protect,
+    /// Reach an area with any mission player entity
+    /// (`ObjectiveParameters::ReachArea`, B-018): pending until one stands
+    /// inside the authored area (an `AreaSpec` — a rectangle in tiles or a
+    /// circle in milli-tiles).
+    ReachArea,
 }
 
 impl ObjectiveKind {
@@ -372,6 +378,7 @@ impl ObjectiveKind {
             ObjectiveKind::BuildTrain => "BuildTrain",
             ObjectiveKind::Survive => "Survive",
             ObjectiveKind::Protect => "Protect",
+            ObjectiveKind::ReachArea => "ReachArea",
         }
     }
 
@@ -383,6 +390,7 @@ impl ObjectiveKind {
             "BuildTrain" => Some(ObjectiveKind::BuildTrain),
             "Survive" => Some(ObjectiveKind::Survive),
             "Protect" => Some(ObjectiveKind::Protect),
+            "ReachArea" => Some(ObjectiveKind::ReachArea),
             _ => None,
         }
     }
@@ -421,6 +429,52 @@ pub enum ObjectiveParameters {
     Protect {
         /// The protected kind's entity id.
         kind: String,
+    },
+    /// The area the mission player must reach with any entity (B-018) —
+    /// authored as an [`AreaSpec`]: a rectangle in whole tiles or a circle
+    /// in milli-tiles. Pure data here (FD-4): the containment law is code
+    /// living at the sim seam (`pandemonium_sim_api::AreaSpec::contains`);
+    /// the loader's gates (map bounds, whole-map coverage, the tick-0
+    /// starting-entity guard) keep every vacuous shape out of the tree
+    /// (AUD-003).
+    ReachArea {
+        /// The area to reach.
+        area: AreaSpec,
+    },
+}
+
+/// An area as canonically validated (B-018): a rectangle in whole tiles or
+/// a circle in milli-tiles, plain integers (FD-5). The authoring mirror of
+/// `pandemonium_sim_api::AreaSpec`; the mission seam converts one into the
+/// other at load — content never hands the sim its own types (FD-6), and
+/// the sim's type carries the containment predicate the evaluator runs.
+/// This type is data only: no behavior, exactly like every other defs
+/// type (the geometry code lives at the seam where the evaluator can
+/// reach it).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AreaSpec {
+    /// An axis-aligned rectangle in whole tiles: the half-open tile span
+    /// `[x, x+w) x [y, y+h)` (left/top edges inclusive, right/bottom
+    /// exclusive).
+    Rect {
+        /// The left edge's tile column (inclusive).
+        x: i32,
+        /// The top edge's tile row (inclusive).
+        y: i32,
+        /// The width in tiles (non-zero; the loader rejects 0).
+        w: u32,
+        /// The height in tiles (non-zero; the loader rejects 0).
+        h: u32,
+    },
+    /// A circle in milli-tiles, boundary inclusive.
+    Circle {
+        /// The center's x, in milli-tiles.
+        cx: i32,
+        /// The center's y, in milli-tiles.
+        cy: i32,
+        /// The radius, in milli-tiles (positive; the loader rejects 0 and
+        /// negatives).
+        radius: i32,
     },
 }
 
