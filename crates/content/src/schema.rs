@@ -410,8 +410,8 @@ pub(crate) const MISSION_SCHEMA_VERSION: u32 = 1;
 /// — the map, the faction, the rules — plus the ordered objective list
 /// (ADR-0201 §2). Phase 1 carries the destroy and build/train kinds; the
 /// vocabulary grows forward-only with the schema version (survive and
-/// protect landed with Phase 2's B-017, reach with B-018; gather remains —
-/// ADR-0201 §9).
+/// protect landed with Phase 2's B-017, reach and gather with B-018 —
+/// ADR-0201 §9's Phase 2 objective set is complete).
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawMission {
@@ -446,8 +446,8 @@ pub(crate) struct RawMission {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawObjective {
     /// The objective kind spelling ("Destroy", "BuildTrain", "Survive",
-    /// "Protect", or "ReachArea"; unknown spellings are loud errors, never
-    /// silently mapped).
+    /// "Protect", "ReachArea", or "Gather"; unknown spellings are loud
+    /// errors, never silently mapped).
     pub kind: String,
     /// The kind's parameters block.
     pub parameters: RawObjectiveParameters,
@@ -477,6 +477,10 @@ pub(crate) enum RawObjectiveParameters {
     /// with any entity — a rectangle in whole tiles or a circle in
     /// milli-tiles (ADR-0201 §2's table).
     ReachArea(RawReachParams),
+    /// Gather parameters (B-018): how much ore, and which semantics the
+    /// objective counts — cumulative delivered or held balance (the
+    /// ADR's §2 "semantics choice: mission data picks").
+    Gather(RawGatherParams),
 }
 
 /// Destroy parameters.
@@ -561,4 +565,17 @@ pub(crate) struct RawCircleArea {
     pub cy: i32,
     /// The radius, in milli-tiles (must be positive; boundary inclusive).
     pub radius: i32,
+}
+
+/// Gather parameters (B-018): the ore amount and the counting semantics.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawGatherParams {
+    /// How much ore the objective demands. The tree-level gate rejects an
+    /// amount at or below the ruleset's effective starting ore (200 in the
+    /// Alpha) — the objective must demand play (AUD-003).
+    pub amount: i64,
+    /// The semantics spelling ("Cumulative" or "Balance"); unknown
+    /// spellings are loud parse errors, never silently mapped.
+    pub semantics: String,
 }

@@ -523,8 +523,8 @@ pub enum ObjectiveState {
 /// (ADR-0201 §2): what the stage-10 evaluator checks. Content authors kinds
 /// by id string; the content seam resolves them to `KindId`s. Phase 1
 /// carried the two vertical-slice kinds; Phase 2's B-017 added survive and
-/// protect, B-018 adds reach — the remaining kind (gather) extends this enum
-/// alongside the mission schema version.
+/// protect, B-018 adds reach and gather — ADR-0201 §9's Phase 2 objective
+/// set is complete.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissionObjectiveKind {
     /// Destroy all enemy structures — or every enemy structure of a target
@@ -540,12 +540,14 @@ pub enum MissionObjectiveKind {
     /// stands, failed on the first tick none remains. It never completes
     /// by itself; victory comes from the other objectives.
     Protect,
-    /// Reach an area (B-018): pending until any entity of the mission
-    /// player stands inside [`AreaSpec`], then completed. Any entity —
-    /// unit or structure; the loader's tick-0 gate is what keeps a
-    /// mission whose starting forces already stand inside from loading
-    /// (the vacuous-completion guard, AUD-003).
+    /// Reach an area with any mission player entity (B-018): pending until
+    /// one stands inside [`AreaSpec`], then completed.
     ReachArea,
+    /// Gather N ore (B-018): pending until the mission player's ore crosses
+    /// the authored amount under the mission's chosen semantics
+    /// (`MissionObjectiveParameters::Gather`) — cumulative delivered, or
+    /// held balance.
+    Gather,
 }
 
 /// A mission objective's parameters in the simulation's resolved vocabulary
@@ -596,6 +598,61 @@ pub enum MissionObjectiveParameters {
         /// The area to reach.
         area: AreaSpec,
     },
+    /// The ore amount the mission player must gather
+    /// (`MissionObjectiveKind::Gather`, B-018). The resource is ore by
+    /// the objective's definition (the Alpha's single registered
+    /// resource); the seam resolves the resource id through the rules
+    /// registry — the exact id the world's ledger carries — and the
+    /// semantics chooses what the evaluator counts. The loader rejects an
+    /// amount at or below the ruleset's effective starting ore for both
+    /// semantics (AUD-003: the objective must demand play).
+    Gather {
+        /// The ore resource, resolved through the rules registry order.
+        resource: ResourceId,
+        /// How much ore the objective demands.
+        amount: i64,
+        /// Which ore total the objective counts.
+        semantics: GatherSemantics,
+    },
+}
+
+/// A gather objective's counting semantics (B-018, ADR-0201 §2's table:
+/// "cumulative-delivered vs hold-balance (mission data picks)") — the
+/// sim-side mirror of content's `GatherSemantics`, converted at the seam
+/// the way `FogPreset` is (FD-6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GatherSemantics {
+    /// The mission player's cumulative delivered ore: the running total of
+    /// their `ResourceDelivered` amounts, accumulated by the evaluator
+    /// from the delivery events (FD-9 — the ADR's expressible basis for
+    /// the kind). Spending never reduces it.
+    Cumulative,
+    /// The mission player's current ore balance — the hashed ledger the
+    /// economy credits. Spending sets it back below the target; the
+    /// objective completes only when the balance actually holds the
+    /// amount (the resolution itself fires once, like every objective).
+    Balance,
+}
+
+impl GatherSemantics {
+    /// The schema spelling of this semantics (what appears in the mission
+    /// file — the same spellings the content mirror parses).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GatherSemantics::Cumulative => "Cumulative",
+            GatherSemantics::Balance => "Balance",
+        }
+    }
+
+    /// Parses a schema spelling. Unknown spellings are `None` so callers
+    /// can reject them loudly — never silently mapped.
+    pub fn from_schema(semantics: &str) -> Option<Self> {
+        match semantics {
+            "Cumulative" => Some(GatherSemantics::Cumulative),
+            "Balance" => Some(GatherSemantics::Balance),
+            _ => None,
+        }
+    }
 }
 
 /// An area a reach objective names (B-018, ADR-0201 §2's table): a

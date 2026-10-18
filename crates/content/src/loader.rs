@@ -574,7 +574,7 @@ fn convert_objective(
             file: file.to_string(),
             detail: format!(
                 "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', \
-                 '{}', '{}', '{}', '{}')",
+                 '{}', '{}', '{}', '{}', '{}')",
                 index + 1,
                 mission,
                 raw.kind,
@@ -583,6 +583,7 @@ fn convert_objective(
                 defs::ObjectiveKind::Survive.as_str(),
                 defs::ObjectiveKind::Protect.as_str(),
                 defs::ObjectiveKind::ReachArea.as_str(),
+                defs::ObjectiveKind::Gather.as_str(),
             ),
         });
     };
@@ -728,6 +729,34 @@ fn convert_objective(
             (
                 defs::ObjectiveKind::ReachArea,
                 defs::ObjectiveParameters::ReachArea { area },
+            )
+        }
+        RawObjectiveParameters::Gather(params) => {
+            // B-018's file-level vocabulary gate: the semantics spelling
+            // must parse through the canonical vocabulary — the ADR's
+            // "semantics choice: mission data picks", picked loudly, never
+            // silently defaulted. The amount gate is tree-level (it needs
+            // the ruleset's starting ore; see ContentTree::load).
+            let Some(semantics) = defs::GatherSemantics::from_schema(&params.semantics) else {
+                return Err(ContentError::Parse {
+                    file: file.to_string(),
+                    detail: format!(
+                        "objective {} of mission '{}' has unknown gather semantics '{}' \
+                         (known semantics: '{}', '{}')",
+                        index + 1,
+                        mission,
+                        params.semantics,
+                        defs::GatherSemantics::Cumulative.as_str(),
+                        defs::GatherSemantics::Balance.as_str(),
+                    ),
+                });
+            };
+            (
+                defs::ObjectiveKind::Gather,
+                defs::ObjectiveParameters::Gather {
+                    amount: params.amount,
+                    semantics,
+                },
             )
         }
     };
@@ -893,15 +922,15 @@ mod tests {
     #[test]
     fn unknown_objective_kinds_are_rejected_loudly() {
         // B-017 made "Survive" and "Protect" known kinds, and B-018 added
-        // "ReachArea", so the unknown-kind probe uses a spelling outside the
-        // vocabulary — the rejection must stay loud and name every known
-        // kind.
+        // "ReachArea" and "Gather", so the unknown-kind probe uses a
+        // spelling outside the vocabulary — the rejection must stay loud
+        // and name every known kind.
         let bad = MISSION.replace("\"BuildTrain\",", "\"Timed\",");
         let err = parse(&bad).unwrap_err();
         assert!(
             err.to_string().contains(
                 "unknown kind 'Timed' (known kinds: 'Destroy', 'BuildTrain', 'Survive', \
-                 'Protect', 'ReachArea')"
+                 'Protect', 'ReachArea', 'Gather')"
             ),
             "got: {err}"
         );
@@ -1045,6 +1074,73 @@ mod tests {
             err.to_string().contains("Hexagon"),
             "an unknown area shape is a loud parse error, got: {err}"
         );
+    }
+
+    #[test]
+    fn gather_kind_and_parameters_must_agree() {
+        // B-018: the cross-check every kind gets — declaring Gather with a
+        // BuildTrain parameters block is a loud parse error, never a
+        // silent reinterpret.
+        let mismatched = MISSION.replace("kind: \"BuildTrain\",", "kind: \"Gather\",");
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'Gather' but carries 'BuildTrain' parameters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_gather_objective_parses_both_semantics() {
+        // B-018: the gather kind — the amount (i64, the ledger's domain)
+        // and the semantics spelling both parse into the canonical form;
+        // the amount gate is tree-level (it needs the ruleset's starting
+        // ore; see bundle.rs's tests).
+        for (spelling, expected) in [
+            ("Cumulative", defs::GatherSemantics::Cumulative),
+            ("Balance", defs::GatherSemantics::Balance),
+        ] {
+            let gather = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"Gather\",\n            parameters: Gather(( amount: 400, semantics: \"{spelling}\" )),\n            optional: true,"
+                ),
+            );
+            let def = parse(&gather).expect("a gather objective parses");
+            assert_eq!(
+                def.objectives[1],
+                defs::ObjectiveDef {
+                    kind: defs::ObjectiveKind::Gather,
+                    parameters: defs::ObjectiveParameters::Gather {
+                        amount: 400,
+                        semantics: expected,
+                    },
+                    optional: true,
+                },
+                "semantics {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_gather_semantics_are_rejected_loudly() {
+        // The semantics choice is mission data's pick — a typo'd spelling
+        // is a precise parse error naming the vocabulary, never a silent
+        // default (the fog_preset law).
+        for spelling in ["Total", "cumulative", "Stockpile", ""] {
+            let bad = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"Gather\",\n            parameters: Gather(( amount: 400, semantics: \"{spelling}\" )),\n            optional: true,"
+                ),
+            );
+            let err = parse(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown gather semantics")
+                    && err.to_string().contains("'Cumulative', 'Balance'"),
+                "spelling {spelling} must be a loud error, got: {err}"
+            );
+        }
     }
 
     #[test]

@@ -345,9 +345,8 @@ impl MapDef {
 
 /// A mission objective's kind (ADR-0201 §2): what the stage-10 evaluator
 /// checks. Phase 1 carried the vertical slice's two kinds; Phase 2's B-017
-/// added survive and protect, B-018 adds reach — the vocabulary grows
-/// forward-only with the mission schema version (gather remains —
-/// ADR-0201 §9).
+/// added survive and protect, B-018 adds reach and gather — ADR-0201 §9's
+/// Phase 2 objective set is complete.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ObjectiveKind {
     /// Destroy all enemy structures — or every enemy structure of a target
@@ -368,6 +367,10 @@ pub enum ObjectiveKind {
     /// inside the authored area (an `AreaSpec` — a rectangle in tiles or a
     /// circle in milli-tiles).
     ReachArea,
+    /// Gather N ore (`ObjectiveParameters::Gather`, B-018): pending until
+    /// the mission player's ore crosses the authored amount under the
+    /// mission's chosen semantics — cumulative delivered, or held balance.
+    Gather,
 }
 
 impl ObjectiveKind {
@@ -379,6 +382,7 @@ impl ObjectiveKind {
             ObjectiveKind::Survive => "Survive",
             ObjectiveKind::Protect => "Protect",
             ObjectiveKind::ReachArea => "ReachArea",
+            ObjectiveKind::Gather => "Gather",
         }
     }
 
@@ -391,6 +395,7 @@ impl ObjectiveKind {
             "Survive" => Some(ObjectiveKind::Survive),
             "Protect" => Some(ObjectiveKind::Protect),
             "ReachArea" => Some(ObjectiveKind::ReachArea),
+            "Gather" => Some(ObjectiveKind::Gather),
             _ => None,
         }
     }
@@ -441,6 +446,62 @@ pub enum ObjectiveParameters {
         /// The area to reach.
         area: AreaSpec,
     },
+    /// The ore amount the mission player must gather, and the semantics
+    /// the objective counts (B-018 — the ADR §2 "semantics choice:
+    /// mission data picks"): `Cumulative` counts the mission player's
+    /// total delivered ore (never reduced by spending), `Balance` counts
+    /// the current ledger (spending sets it back). The tree-level gate
+    /// rejects an amount at or below the ruleset's effective starting
+    /// ore (200 in the Alpha) for BOTH semantics — the objective must
+    /// demand play (AUD-003).
+    Gather {
+        /// How much ore the objective demands.
+        amount: i64,
+        /// Which ore total the objective counts.
+        semantics: GatherSemantics,
+    },
+}
+
+/// A gather objective's counting semantics (B-018, ADR-0201 §2's table:
+/// "cumulative-delivered vs hold-balance (mission data picks)"). The
+/// resource is ore by the objective's definition — the Alpha's single
+/// registered resource — so the choice is only HOW the total is counted;
+/// the seam resolves the resource id through the rules registry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GatherSemantics {
+    /// The mission player's cumulative delivered ore: the total of their
+    /// `ResourceDelivered` amounts over the match, derived by the
+    /// evaluator from the delivery events (FD-9 — the ADR's own expressible
+    /// basis). Spending never reduces it; the objective is monotone by
+    /// construction.
+    Cumulative,
+    /// The mission player's current ore balance (the hashed ledger the
+    /// economy credits): spending sets it back below the target, and the
+    /// objective completes only while the balance actually holds the
+    /// amount (the resolution itself is monotone once fired — one
+    /// `ObjectiveState` event, exactly once, like every objective).
+    Balance,
+}
+
+impl GatherSemantics {
+    /// The schema spelling of this semantics (what appears in the mission
+    /// file).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GatherSemantics::Cumulative => "Cumulative",
+            GatherSemantics::Balance => "Balance",
+        }
+    }
+
+    /// Parses a schema spelling. Unknown spellings are `None` so the loader
+    /// can reject them loudly — never silently mapped.
+    pub fn from_schema(semantics: &str) -> Option<Self> {
+        match semantics {
+            "Cumulative" => Some(GatherSemantics::Cumulative),
+            "Balance" => Some(GatherSemantics::Balance),
+            _ => None,
+        }
+    }
 }
 
 /// An area as canonically validated (B-018): a rectangle in whole tiles or

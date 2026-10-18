@@ -21,8 +21,8 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    AreaSpec, FogPreset, KindId, MissionData, MissionObjective, MissionObjectiveKind,
-    MissionObjectiveParameters, PlayerId, ResourceId, Vec2Fx,
+    AreaSpec, FogPreset, GatherSemantics, KindId, MissionData, MissionObjective,
+    MissionObjectiveKind, MissionObjectiveParameters, PlayerId, ResourceId, Vec2Fx,
 };
 
 use crate::defs;
@@ -235,6 +235,48 @@ impl ContentTree {
                     }
                 }
             }
+
+            // B-018's gather gate (AUD-003), tree-level because it
+            // needs the ruleset: a gather objective must demand play —
+            // an amount at or below the ruleset's effective starting
+            // ore (200 in the Alpha) would complete at (or before) the
+            // first delivery for BOTH semantics: the balance starts
+            // there, and the cumulative total crosses it with the
+            // first trip. Also, the resource is ore by the
+            // objective's definition, so a ruleset that registers no
+            // "ore" cannot carry a gather objective at all.
+            for objective in &mission.objectives {
+                if let defs::ObjectiveParameters::Gather { amount, .. } = &objective.parameters {
+                    let Some(ore) = rules.resources.iter().find(|r| r.id == "ore") else {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "mission '{}' gathers ore but ruleset '{}' registers no \
+                                 'ore' resource (registered: {}): the gather objective \
+                                 counts ore by definition",
+                                mission.id,
+                                rules.id,
+                                rules
+                                    .resources
+                                    .iter()
+                                    .map(|resource| resource.id.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        });
+                    };
+                    if *amount <= ore.starting {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "mission '{}' gathers {} ore, at or below the starting \
+                                 ore {} of ruleset '{}' (both semantics): the objective \
+                                 must demand play — raise the amount above the \
+                                 starting ore",
+                                mission.id, amount, ore.starting, rules.id
+                            ),
+                        });
+                    }
+                }
+            }
         }
 
         // Placement-level validation: every faction must sit legally on every
@@ -415,6 +457,37 @@ impl ContentTree {
                         area: sim_area(area),
                     }
                 }
+                // B-018: the gather objective's resource is ore by
+                // definition, resolved through the rules registry's order
+                // — the exact order `world()` assigns ResourceIds (the
+                // ledger order), so the id the objective carries is the
+                // id the world's ledger carries. The semantics converts
+                // mirror-to-sim, variant for variant. The tree-level gate
+                // guarantees the ruleset registers ore; the missing
+                // lookup arm is unreachable defense that errors loudly.
+                defs::ObjectiveParameters::Gather { amount, semantics } => {
+                    let resource_index = self
+                        .rules
+                        .resources
+                        .iter()
+                        .position(|resource| resource.id == "ore")
+                        .ok_or_else(|| ContentError::Bundle {
+                            detail: format!(
+                                "mission '{}' gathers ore but ruleset '{}' registers no \
+                                 'ore' resource — the loader rejected this shape, so this \
+                                 is a content-seam bug, please report it",
+                                mission.id, self.rules.id
+                            ),
+                        })?;
+                    MissionObjectiveParameters::Gather {
+                        resource: ResourceId(resource_index as u32),
+                        amount: *amount,
+                        semantics: match semantics {
+                            defs::GatherSemantics::Cumulative => GatherSemantics::Cumulative,
+                            defs::GatherSemantics::Balance => GatherSemantics::Balance,
+                        },
+                    }
+                }
             };
             let kind = match parameters {
                 MissionObjectiveParameters::Destroy { .. } => MissionObjectiveKind::Destroy,
@@ -422,6 +495,7 @@ impl ContentTree {
                 MissionObjectiveParameters::Survive { .. } => MissionObjectiveKind::Survive,
                 MissionObjectiveParameters::Protect { .. } => MissionObjectiveKind::Protect,
                 MissionObjectiveParameters::ReachArea { .. } => MissionObjectiveKind::ReachArea,
+                MissionObjectiveParameters::Gather { .. } => MissionObjectiveKind::Gather,
             };
             objectives.push(MissionObjective {
                 kind,
@@ -1303,14 +1377,15 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
     for objective in &mission.objectives {
         // The kind tag: fixed, ordered, exhaustive over the vocabulary.
         // New kinds append (B-017's Survive is 3, Protect is 4; B-018's
-        // ReachArea is 5), so every pre-existing mission's byte stream is
-        // verbatim — the mission identity rule.
+        // ReachArea is 5, Gather is 6), so every pre-existing mission's
+        // byte stream is verbatim — the mission identity rule.
         h.write_u8(match objective.kind {
             defs::ObjectiveKind::Destroy => 1,
             defs::ObjectiveKind::BuildTrain => 2,
             defs::ObjectiveKind::Survive => 3,
             defs::ObjectiveKind::Protect => 4,
             defs::ObjectiveKind::ReachArea => 5,
+            defs::ObjectiveKind::Gather => 6,
         });
         match &objective.parameters {
             defs::ObjectiveParameters::Destroy { target_kind } => match target_kind {
@@ -1360,6 +1435,20 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
                     h.write_i32(radius);
                 }
             },
+            // B-018: the gather amount and a semantics tag (Cumulative 1,
+            // Balance 2) in the fixed little-endian discipline, behind
+            // kind tag 6 — the domain separation. The resource is ore by
+            // definition and rides the ruleset reference the encoding
+            // already carries, so only the counting choice is
+            // identity-bearing; a mission without a gather objective
+            // keeps exactly the id it had before.
+            defs::ObjectiveParameters::Gather { amount, semantics } => {
+                h.write_i64(*amount);
+                h.write_u8(match semantics {
+                    defs::GatherSemantics::Cumulative => 1,
+                    defs::GatherSemantics::Balance => 2,
+                });
+            }
         }
         encode_bool(h, objective.optional);
     }
@@ -2093,6 +2182,132 @@ mod tests {
                     optional: true,
                 },
                 "area {area} crosses the seam verbatim"
+            );
+        }
+    }
+
+    /// A probe mission whose second objective is a Gather objective with
+    /// the given amount and semantics (the first stays the factory's
+    /// Destroy).
+    fn gather_mission(amount: i64, semantics: &str) -> String {
+        MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            &format!(
+                "kind: \"Gather\",\n            parameters: Gather(( amount: {amount}, semantics: \"{semantics}\" )),\n            optional: true,"
+            ),
+        )
+    }
+
+    #[test]
+    fn gather_amounts_at_or_below_the_starting_ore_are_refused_for_both_semantics() {
+        // B-018's tree-level gather gate (AUD-003): the factory's rules
+        // start every player at 200 ore, so a gather objective demanding
+        // 200 or less would complete at (or before) the first delivery for
+        // BOTH semantics — the balance starts there, the cumulative total
+        // crosses it with the first trip. Refused loudly, naming the
+        // amount, the ruleset's starting value, and both semantics; 201 is
+        // the first legal amount.
+        for (amount, semantics) in [
+            (200i64, "Cumulative"),
+            (200, "Balance"),
+            (199, "Cumulative"),
+            (0, "Balance"),
+        ] {
+            let err = ContentTree::load(
+                &factory().mission("testing_01.ron", &gather_mission(amount, semantics)),
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains(&format!(
+                    "mission 'testing_01' gathers {amount} ore, at or below the starting ore \
+                     200 of ruleset 'alpha' (both semantics)"
+                )),
+                "amount {amount} ({semantics}) must be refused, got: {err}"
+            );
+        }
+        // The first legal amount loads, both semantics.
+        for semantics in ["Cumulative", "Balance"] {
+            ContentTree::load(
+                &factory().mission("testing_01.ron", &gather_mission(201, semantics)),
+            )
+            .expect("an amount above the starting ore loads");
+        }
+    }
+
+    #[test]
+    fn a_ruleset_without_ore_refuses_any_gather_objective() {
+        // The resource is ore by the objective's definition (the Alpha's
+        // single registered resource): a ruleset that registers something
+        // else cannot carry a gather objective at all — loud, naming what
+        // it does register. The factory's entity costs also drop to zero
+        // so the entity-cost reference law (which fires first, exactly as
+        // it should for a real tree) stays out of the probe's way and the
+        // gather gate's own message is the one under test.
+        let no_ore_rules = RULES.replace(
+            "( id: \"ore\", display_name: \"Ore\", starting: 200 )",
+            "( id: \"timber\", display_name: \"Timber\", starting: 100 )",
+        );
+        let free_base = BASE.replace("cost: ( ore: 100 ),", "cost: ( ore: 0 ),");
+        let free_worker = WORKER.replace("cost: ( ore: 50 ),", "cost: ( ore: 0 ),");
+        let timber_node = ORE_NODE.replace(
+            "Resource(( resource: \"ore\", amount: 1500 ))",
+            "Resource(( resource: \"timber\", amount: 1500 ))",
+        );
+        let sources = factory()
+            .rules("alpha.ron", &no_ore_rules)
+            .entity("base.ron", &free_base)
+            .entity("worker.ron", &free_worker)
+            .entity("ore_node.ron", &timber_node)
+            .mission("testing_01.ron", &gather_mission(400, "Cumulative"));
+        let err = ContentTree::load(&sources).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "mission 'testing_01' gathers ore but ruleset 'alpha' registers no 'ore' \
+                 resource (registered: timber)"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn mission_data_resolves_the_gather_resource_through_the_rules_registry() {
+        // The seam: the objective's ResourceId is the registry's ore index
+        // — the exact id `world()` assigns the ledger (0 in the factory) —
+        // and the semantics converts mirror-to-sim, variant for variant.
+        for (semantics, expected) in [
+            (
+                "Cumulative",
+                pandemonium_sim_api::GatherSemantics::Cumulative,
+            ),
+            ("Balance", pandemonium_sim_api::GatherSemantics::Balance),
+        ] {
+            let tree = ContentTree::load(
+                &factory().mission("testing_01.ron", &gather_mission(400, semantics)),
+            )
+            .expect("the gather-bearing mission loads");
+            let objectives = tree
+                .mission_data("testing_01", PlayerId(0))
+                .expect("the objective set resolves");
+            assert_eq!(
+                objectives.objectives[1],
+                MissionObjective {
+                    kind: MissionObjectiveKind::Gather,
+                    parameters: MissionObjectiveParameters::Gather {
+                        resource: ResourceId(0),
+                        amount: 400,
+                        semantics: expected,
+                    },
+                    optional: true,
+                },
+                "semantics {semantics}"
+            );
+            // The world's fixture registry assigns ore the same id — the
+            // id pair the evaluator reads the ledger by.
+            let world = tree.bundle("testing").expect("bundle").world();
+            assert_eq!(
+                world.resources.first().map(|def| def.resource),
+                Some(ResourceId(0)),
+                "the ledger's first resource is the objective's resource id"
             );
         }
     }
