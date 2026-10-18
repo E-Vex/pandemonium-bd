@@ -27,15 +27,16 @@
 use std::path::{Path, PathBuf};
 
 use pandemonium_content::{ContentTree, SourceMap};
+use pandemonium_fx::Fx;
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
 use pandemonium_sim::{
     run_command_log_with_mission, CapTemplate, KindEconomy, KindTemplate, ScheduledSpawnDef, Sim,
     SpawnDef, TrivialWorld,
 };
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, Event, FogPreset, KindId, MatchSetup, MissionObjective,
-    MissionObjectiveKind, MissionObjectiveParameters, ObjectiveState, PlayerId, PlayerSetup,
-    TileFog, Vec2Fx,
+    AreaSpec, Command, CommandKind, ControllerKind, EntityId, Event, FogPreset, GatherSemantics,
+    KindId, MatchSetup, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
+    ObjectiveState, PlayerId, PlayerSetup, ResourceId, TileFog, Vec2Fx,
 };
 
 /// The repository's content directory.
@@ -1287,6 +1288,680 @@ fn a_survive_mission_replay_roundtrips() {
     // run in-process; the CLI run lives in the B-017 report's verification
     // table).
     let resim = run_command_log_with_mission(&world, &setup, &[], 400, Some(mission));
+    assert_eq!(
+        resim.checkpoints, run.checkpoints,
+        "every checkpoint reproduces"
+    );
+    assert_eq!(
+        resim.final_hash, run.final_hash,
+        "the final hash reproduces"
+    );
+}
+
+// -------------------------------------------------------------------------
+// B-018 — ReachArea + Gather (ADR-0201 Phase 2): the two new objective
+// kinds against the REAL content tree and the REAL seam. Loader-level
+// gates run over in-memory SourceMaps built on the real content (no
+// content file is added to the repository — the frozen tree is untouched);
+// behavioral acceptance runs over the real bundle world with real
+// commands (Move marches a worker into the area, Gather drives the
+// economy loop), the authored scale respected (gather amounts above the
+// 200 starting ore).
+// -------------------------------------------------------------------------
+
+/// The B-018 geometry vocabulary, resolved through the real seam: the
+/// rect's half-open law and the circle's inclusive boundary, observed at
+/// the loader's tick-0 gate against the REAL starting forces (the
+/// command center's center is exactly tile (14, 14) — anchor (12, 12)
+/// offset (0, 0), footprint 4x4).
+#[test]
+fn reach_gates_pin_the_exact_boundaries_against_the_real_starting_forces() {
+    // The rect [14, 15) x [14, 15) holds the command center's exact center
+    // (14.0, 14.0) — the left/top edges are INCLUSIVE, so this area is
+    // refused at tick 0 even though the point sits exactly ON the edge.
+    let on_left_edge = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 14, y: 14, w: 1, h: 1 )) )), optional: true, )";
+    let err = ContentTree::load(&sources_with_probe("reach_edge", on_left_edge)).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "already contains the starting command_center of faction 'legion' at tick 0 \
+             (tile 12x12)"
+        ),
+        "the inclusive left edge holds the CC's center exactly on it, got: {err}"
+    );
+    // One tile to the right the area is empty of the starting forces and
+    // loads — the half-open law's other side.
+    let one_right = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 15, y: 14, w: 1, h: 1 )) )), optional: true, )";
+    ContentTree::load(&sources_with_probe("reach_right", one_right))
+        .expect("one tile right of the edge holds nothing at tick 0");
+    // A circle centered 500 milli-tiles left of the CC's center with
+    // radius 500 puts the center EXACTLY on the boundary — inclusive, so
+    // the area is refused at tick 0.
+    let on_circle = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"ReachArea\", parameters: ReachArea(( area: Circle(( cx: 13500, cy: 14000, radius: 500 )) )), optional: true, )";
+    let err = ContentTree::load(&sources_with_probe("reach_circle", on_circle)).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("already contains the starting command_center of faction 'legion' at tick 0"),
+        "the inclusive circle boundary holds the CC's center exactly on it, got: {err}"
+    );
+    // One milli-tile further left (distance 501 > 500) and the area is
+    // legal — the boundary's other side, at the authored scale.
+    let just_outside = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"ReachArea\", parameters: ReachArea(( area: Circle(( cx: 13499, cy: 14000, radius: 500 )) )), optional: true, )";
+    let tree = ContentTree::load(&sources_with_probe("reach_out", just_outside))
+        .expect("just outside the boundary holds nothing at tick 0");
+    let resolved = tree
+        .mission_data("reach_out", PlayerId(0))
+        .expect("the probe resolves");
+    assert_eq!(
+        resolved.objectives[1].parameters,
+        MissionObjectiveParameters::ReachArea {
+            area: AreaSpec::Circle {
+                cx: 13499,
+                cy: 14000,
+                radius: 500
+            },
+        },
+        "the area crosses the seam verbatim"
+    );
+}
+
+#[test]
+fn every_reach_rejection_is_refused_against_the_real_tree() {
+    // The brief's rejection list, one probe each over the real content
+    // (crossroads_64 is 64x64): out of map bounds (both shapes), zero
+    // extent, whole-map coverage, and the tick-0 guard — plus the legal
+    // shape that loads.
+    let destroy = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ";
+    for (objectives, needle) in [
+        // Bounds: the rect's span exits the 64x64 grid.
+        (
+            format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 60, y: 60, w: 8, h: 4 )) )), optional: true, )"),
+            "reaches a rect [x 60, y 60, w 8, h 4] that leaves the map 'crossroads_64' (64x64 tiles)",
+        ),
+        // Bounds: the circle's disk exits the map (in milli-tiles).
+        (
+            format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Circle(( cx: 62000, cy: 32000, radius: 3000 )) )), optional: true, )"),
+            "leaves the map 'crossroads_64'",
+        ),
+        // Zero extent: the empty rect.
+        (
+            format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 40, y: 40, w: 0, h: 4 )) )), optional: true, )"),
+            "reaches a rect with w 0 x h 4",
+        ),
+        // Zero extent: the empty disk.
+        (
+            format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Circle(( cx: 32000, cy: 32000, radius: 0 )) )), optional: true, )"),
+            "reaches a circle with radius 0",
+        ),
+        // Whole-map coverage: the exact grid match.
+        (
+            format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 0, y: 0, w: 64, h: 64 )) )), optional: true, )"),
+            "covering the whole map 'crossroads_64'",
+        ),
+        // Whole-map coverage: a circle containing all four corners (the
+        // diagonal is ~90499 milli-tiles).
+        (
+            format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Circle(( cx: 32000, cy: 32000, radius: 90500 )) )), optional: true, )"),
+            "containing all four corners of the map 'crossroads_64'",
+        ),
+        // Tick 0: the rect around the mission player's workers (the
+        // worker at anchor + (0, 4) stands at tile center (12.5, 16.5)).
+        (
+            format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 12, y: 16, w: 1, h: 1 )) )), optional: true, )"),
+            "already contains the starting worker of faction 'legion' at tick 0 (tile 12x16)",
+        ),
+    ] {
+        let err = ContentTree::load(&sources_with_probe("reach_bad", &objectives)).unwrap_err();
+        assert!(
+            err.to_string().contains(needle),
+            "must be refused: {needle}, got: {err}"
+        );
+    }
+    // The legal shape: a rect around the map's contested plaza, empty of
+    // both players' starting forces — loads, and the seam resolves it
+    // verbatim.
+    let legal = format!("{destroy}( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 28, y: 29, w: 8, h: 4 )) )), optional: true, )");
+    let tree = ContentTree::load(&sources_with_probe("reach_ok", &legal))
+        .expect("the plaza rect is a legal reach area");
+    let resolved = tree
+        .mission_data("reach_ok", PlayerId(0))
+        .expect("the probe resolves");
+    assert_eq!(
+        resolved.objectives[1].parameters,
+        MissionObjectiveParameters::ReachArea {
+            area: AreaSpec::Rect {
+                x: 28,
+                y: 29,
+                w: 8,
+                h: 4
+            },
+        },
+        "the plaza area crosses the seam verbatim"
+    );
+}
+
+#[test]
+fn a_reach_objective_is_pending_at_tick_0_and_completes_when_a_worker_enters() {
+    // The brief's behavioral acceptance, both shapes, on the real bundle
+    // world with a real Move order: pending through tick 0 (the area is
+    // far from the start), completed the first tick the worker's position
+    // enters the area, the mission ending that tick for the mission
+    // player with the enemy's structures still standing (NOT the
+    // elimination rule), and the mission-less twin hashing identically at
+    // every checked tick.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let world = tree
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles")
+        .world();
+    let worker = worker_kind(&tree);
+    for area in [
+        AreaSpec::Rect {
+            x: 28,
+            y: 29,
+            w: 8,
+            h: 4,
+        },
+        AreaSpec::Circle {
+            cx: 32000,
+            cy: 31000,
+            radius: 4000,
+        },
+    ] {
+        let mut mission = tree
+            .mission_data("crossroads_01", PlayerId(0))
+            .expect("crossroads_01 resolves through the content seam");
+        mission.objectives = vec![MissionObjective {
+            kind: MissionObjectiveKind::ReachArea,
+            parameters: MissionObjectiveParameters::ReachArea { area },
+            optional: false,
+        }];
+        let setup = two_player_setup();
+        let mut plain = Sim::new(&world, setup.clone());
+        let mut sim = Sim::with_mission(&world, setup, mission);
+
+        // Tick 0: pending — nothing stands inside, no events.
+        let out = sim.step(&[]);
+        plain.step(&[]);
+        assert!(
+            !out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+            )),
+            "tick 0: pending, got {:?}",
+            out.events
+        );
+
+        // A real Move order: march the farthest worker (16.5, 16.5) into
+        // the area's heart.
+        let marcher = sim
+            .snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.owner == PlayerId(0) && entity.kind == worker)
+            .expect("the Legion fields workers")
+            .id;
+        let target = match area {
+            AreaSpec::Rect { x, y, w, h } => Vec2Fx::from_ints(x + w as i32 / 2, y + h as i32 / 2),
+            AreaSpec::Circle { cx, cy, .. } => Vec2Fx::new(Fx::from_milli(cx), Fx::from_milli(cy)),
+        };
+        let order = Command::new(
+            PlayerId(0),
+            sim.tick(),
+            1,
+            CommandKind::Move {
+                units: vec![marcher],
+                target,
+            },
+        );
+        // The twin marches too — the same command stream, so the hashes
+        // compare like for like.
+        sim.step(std::slice::from_ref(&order));
+        plain.step(&[order]);
+
+        // March: the objective completes the tick the worker's position
+        // enters the area, and the match ends that tick. The loop's step
+        // evaluates the sim's CURRENT tick (stage 10 runs before stage
+        // 11's increment), so the evaluated tick is captured before each
+        // step.
+        let mut resolved_tick = None;
+        for _ in 1..=1500u32 {
+            let evaluated = sim.tick();
+            let out = sim.step(&[]);
+            plain.step(&[]);
+            if out.events.iter().any(|event| {
+                matches!(
+                    event,
+                    Event::ObjectiveState {
+                        index: 0,
+                        state: ObjectiveState::Completed
+                    }
+                )
+            }) {
+                assert!(
+                    out.events.iter().any(|event| matches!(
+                        event,
+                        Event::MatchEnded {
+                            winner: PlayerId(0)
+                        }
+                    )),
+                    "the required completion ends the match for the mission player"
+                );
+                let outcome = sim.outcome().expect("the match resolved");
+                assert_eq!(outcome.winner, PlayerId(0));
+                assert_eq!(outcome.ended_tick, evaluated);
+                // The marcher really is inside the area at the resolving
+                // tick, and the enemy's structures stand (NOT elimination).
+                let marcher_pos = sim
+                    .snapshot()
+                    .entities
+                    .iter()
+                    .find(|entity| entity.id == marcher)
+                    .expect("the marcher lives")
+                    .pos;
+                assert!(
+                    area.contains(marcher_pos),
+                    "the marcher stands inside the area at the resolving tick"
+                );
+                resolved_tick = Some(evaluated);
+                break;
+            }
+            if evaluated.is_multiple_of(100) {
+                assert_eq!(
+                    sim.state_hash(),
+                    plain.state_hash(),
+                    "tick {evaluated}: the mission state is derived, never hashed"
+                );
+            }
+        }
+        resolved_tick.expect("the marcher reaches the area within the tick budget");
+        // The twin stepped in lockstep through the same command stream:
+        // identical hashes at the resolving tick itself (A-066).
+        assert_eq!(
+            sim.state_hash(),
+            plain.state_hash(),
+            "the resolving tick: identical hashes"
+        );
+    }
+}
+
+#[test]
+fn every_gather_rejection_is_refused_against_the_real_tree() {
+    // The brief's rejection list over the real content: the amount at or
+    // below the effective starting ore (200, both semantics), and the
+    // unknown semantics spelling; the first legal amount (201) loads and
+    // resolves through the seam with the ore ResourceId (the registry's
+    // first resource) and the authored semantics.
+    let destroy = "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ";
+    for (amount, semantics, needle) in [
+        (
+            200i64,
+            "Cumulative",
+            "gathers 200 ore, at or below the starting ore 200 of ruleset 'alpha' (both semantics)",
+        ),
+        (
+            200,
+            "Balance",
+            "gathers 200 ore, at or below the starting ore 200 of ruleset 'alpha' (both semantics)",
+        ),
+        (
+            199,
+            "Cumulative",
+            "gathers 199 ore, at or below the starting ore 200 of ruleset 'alpha' (both semantics)",
+        ),
+    ] {
+        let objectives = format!(
+            "{destroy}( kind: \"Gather\", parameters: Gather(( amount: {amount}, semantics: \"{semantics}\" )), optional: true, )"
+        );
+        let err = ContentTree::load(&sources_with_probe("gather_bad", &objectives)).unwrap_err();
+        assert!(
+            err.to_string().contains(needle),
+            "must be refused: {needle}, got: {err}"
+        );
+    }
+    // Unknown semantics spellings are loud parse errors naming the
+    // vocabulary (never silently defaulted).
+    let objectives = format!(
+        "{destroy}( kind: \"Gather\", parameters: Gather(( amount: 400, semantics: \"Total\" )), optional: true, )"
+    );
+    let err = ContentTree::load(&sources_with_probe("gather_spelling", &objectives)).unwrap_err();
+    assert!(
+        err.to_string().contains("unknown gather semantics 'Total'"),
+        "got: {err}"
+    );
+    // The first legal amount, both semantics: the seam resolves the ore
+    // ResourceId (the registry's first and only resource — id 0) and the
+    // authored semantics, exactly as the world's ledger carries them.
+    for (semantics, expected) in [
+        ("Cumulative", GatherSemantics::Cumulative),
+        ("Balance", GatherSemantics::Balance),
+    ] {
+        let objectives = format!(
+            "{destroy}( kind: \"Gather\", parameters: Gather(( amount: 201, semantics: \"{semantics}\" )), optional: true, )"
+        );
+        let tree = ContentTree::load(&sources_with_probe("gather_ok", &objectives))
+            .expect("201 is the first legal amount");
+        let resolved = tree
+            .mission_data("gather_ok", PlayerId(0))
+            .expect("the probe resolves");
+        assert_eq!(
+            resolved.objectives[1].parameters,
+            MissionObjectiveParameters::Gather {
+                resource: ResourceId(0),
+                amount: 201,
+                semantics: expected,
+            },
+            "semantics {semantics}"
+        );
+    }
+}
+
+#[test]
+fn a_balance_gather_objective_completes_on_the_first_real_delivery() {
+    // The brief's behavioral acceptance at the authored scale, Balance
+    // semantics: the mission player's ledger starts at 200 (the Alpha's
+    // starting ore), so amount 201 completes on the first delivery's tick
+    // (200 + 10 = 210 >= 201) — the same step as the ResourceDelivered
+    // event, which precedes ObjectiveState in the outward stream, and the
+    // match ends for the mission player while every structure stands
+    // (NOT elimination). Real content world, real Gather order.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let world = tree
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles")
+        .world();
+    let worker = worker_kind(&tree);
+    let mut mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    mission.objectives = vec![MissionObjective {
+        kind: MissionObjectiveKind::Gather,
+        parameters: MissionObjectiveParameters::Gather {
+            resource: ResourceId(0),
+            amount: 201,
+            semantics: GatherSemantics::Balance,
+        },
+        optional: false,
+    }];
+    let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+
+    // A real Gather order: the nearest worker to the (17, 17) node (its
+    // center is tile (18, 18)) — the worker at tile center (16.5, 16.5),
+    // the Legion's fourth starting worker.
+    let node = sim
+        .snapshot()
+        .entities
+        .iter()
+        .find(|entity| {
+            entity.kind.0
+                == tree
+                    .entities
+                    .iter()
+                    .position(|def| def.id == "ore_node")
+                    .expect("ore_node is registered") as u32
+                && entity.pos == Vec2Fx::new(Fx::from_milli(18000), Fx::from_milli(18000))
+        })
+        .expect("the (17, 17) node stands")
+        .id;
+    let marcher = sim
+        .snapshot()
+        .entities
+        .iter()
+        .find(|entity| entity.owner == PlayerId(0) && entity.kind == worker)
+        .expect("the Legion fields workers")
+        .id;
+    sim.step(&[Command::new(
+        PlayerId(0),
+        0,
+        1,
+        CommandKind::Gather {
+            units: vec![marcher],
+            node,
+        },
+    )]);
+
+    let mut resolved_tick = None;
+    for tick in 1..=1200u32 {
+        let out = sim.step(&[]);
+        let delivered_at = out
+            .events
+            .iter()
+            .position(|event| matches!(event, Event::ResourceDelivered { owner, .. } if *owner == PlayerId(0)));
+        if let Some(delivered_at) = delivered_at {
+            // The delivery completes the objective THIS tick, after the
+            // ResourceDelivered event in the same step's stream.
+            let resolved_at = out
+                .events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        Event::ObjectiveState {
+                            index: 0,
+                            state: ObjectiveState::Completed
+                        }
+                    )
+                })
+                .expect("the objective resolved on the delivery tick");
+            assert!(
+                delivered_at < resolved_at,
+                "ResourceDelivered precedes ObjectiveState: {:?}",
+                out.events
+            );
+            let outcome = sim.outcome().expect("the match resolved");
+            assert_eq!(outcome.winner, PlayerId(0));
+            assert_eq!(outcome.ended_tick, tick);
+            resolved_tick = Some(tick);
+            break;
+        }
+    }
+    assert!(
+        resolved_tick.is_some(),
+        "the worker delivers within the tick budget"
+    );
+}
+
+#[test]
+fn a_cumulative_gather_objective_completes_at_the_authored_scale() {
+    // The cumulative semantics at the authored scale: amount 201 needs
+    // 21 ten-ore trips, so all four starting workers gather the two nodes
+    // beside the start. The objective completes the tick the 21st
+    // delivery lands (210 >= 201) and the mission player wins.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repository content loads");
+    let world = tree
+        .bundle("crossroads_64")
+        .expect("crossroads_64 bundles")
+        .world();
+    let worker = worker_kind(&tree);
+    let node_kind = tree
+        .entities
+        .iter()
+        .position(|def| def.id == "ore_node")
+        .expect("ore_node is registered") as u32;
+    let mut mission = tree
+        .mission_data("crossroads_01", PlayerId(0))
+        .expect("crossroads_01 resolves through the content seam");
+    mission.objectives = vec![MissionObjective {
+        kind: MissionObjectiveKind::Gather,
+        parameters: MissionObjectiveParameters::Gather {
+            resource: ResourceId(0),
+            amount: 201,
+            semantics: GatherSemantics::Cumulative,
+        },
+        optional: false,
+    }];
+    let mut sim = Sim::with_mission(&world, two_player_setup(), mission);
+
+    // Split the four workers over the two nearest nodes: (7, 17) center
+    // (8, 18) and (17, 17) center (18, 18).
+    let snapshot = sim.snapshot();
+    let workers: Vec<EntityId> = snapshot
+        .entities
+        .iter()
+        .filter(|entity| entity.owner == PlayerId(0) && entity.kind == worker)
+        .map(|entity| entity.id)
+        .collect();
+    assert_eq!(workers.len(), 4, "the Legion starts four workers");
+    let node_at = |milli_x: i32, milli_y: i32| {
+        snapshot
+            .entities
+            .iter()
+            .find(|entity| {
+                entity.kind.0 == node_kind
+                    && entity.pos == Vec2Fx::new(Fx::from_milli(milli_x), Fx::from_milli(milli_y))
+            })
+            .expect("the node stands")
+            .id
+    };
+    let node_near = node_at(8000, 18000);
+    let node_far = node_at(18000, 18000);
+    let mut commands = Vec::new();
+    for (index, worker_id) in workers.iter().enumerate() {
+        let node = if index < 2 { node_near } else { node_far };
+        commands.push(Command::new(
+            PlayerId(0),
+            0,
+            index as u32 + 1,
+            CommandKind::Gather {
+                units: vec![*worker_id],
+                node,
+            },
+        ));
+    }
+    sim.step(&commands);
+
+    let mut delivered = 0i64;
+    for tick in 1..=4000u32 {
+        let out = sim.step(&[]);
+        for event in &out.events {
+            if let Event::ResourceDelivered { owner, amount, .. } = event {
+                if *owner == PlayerId(0) {
+                    delivered += *amount as i64;
+                }
+            }
+        }
+        if delivered >= 201 {
+            let outcome = sim.outcome().expect("the match resolved");
+            assert_eq!(outcome.winner, PlayerId(0));
+            assert_eq!(outcome.ended_tick, tick);
+            assert_eq!(delivered, 210, "the 21st trip completes the objective");
+            return;
+        }
+        assert!(
+            sim.outcome().is_none(),
+            "pending until the 21st delivery (delivered {delivered})"
+        );
+    }
+    panic!("the workers deliver {delivered} ore within the budget — below 201");
+}
+
+#[test]
+fn a_reach_and_gather_mission_replay_roundtrips() {
+    // The brief's replay acceptance: a mission-carrying record of a
+    // Reach + Gather mission round-trips — the codec carries the mission
+    // id (AUD-002), the record validates, and the mission-carrying
+    // re-simulation through `run_command_log_with_mission` reproduces
+    // every checkpoint and the final hash, resolving the reach objective
+    // from the recorded Move order exactly as the recording did. The
+    // probe mission lives in an in-memory tree built on the real content
+    // (no repository content file is added — the frozen tree is
+    // untouched), and the tree's bundle identities are the registered
+    // goldens exactly.
+    let sources = sources_with_probe(
+        "reach_gather_probe",
+        "( kind: \"ReachArea\", parameters: ReachArea(( area: Rect(( x: 24, y: 24, w: 4, h: 4 )) )), optional: false, ),\n        ( kind: \"Gather\", parameters: Gather(( amount: 210, semantics: \"Cumulative\" )), optional: true, )",
+    );
+    let tree = ContentTree::load(&sources).expect("the tree with the probe loads");
+    let mission_id = tree.mission_id("reach_gather_probe");
+    let mission = tree
+        .mission_data("reach_gather_probe", PlayerId(0))
+        .expect("the probe resolves");
+    let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
+    let world = bundle.world();
+    // The probe tree's bundle identities are the registered goldens
+    // exactly — a mission file moves nothing.
+    assert_eq!(
+        bundle.content_hash(),
+        0x9bc1_8c52_1107_b262,
+        "the content hash never moves"
+    );
+    assert_eq!(
+        bundle.map_id(),
+        0xd381_3640_1ab0_2ff1,
+        "the map id never moves"
+    );
+    assert_ne!(
+        mission_id, CROSSROADS_01_MISSION_ID,
+        "the probe is its own mission (identity-bearing)"
+    );
+
+    // The recording: seed 7, two players, 400 ticks with one Move order
+    // — the mission player's farthest worker (16.5, 16.5) marches into
+    // the rect [24, 28) x [24, 28), resolving the required reach inside
+    // the recording; the optional gather stays pending (no gathering
+    // order), feeding the end screen.
+    let setup = two_player_setup();
+    let worker = worker_kind(&tree);
+    // The marcher's entity id: initial spawns take ids 1..N in the
+    // fixture's fixed order (players in map-start order, each start's
+    // forces in faction order, then the nodes) — the world seam's
+    // documented determinism contract, so the spawn's INDEX is its id
+    // minus one.
+    let marcher = EntityId(
+        1 + world
+            .initial_spawns
+            .iter()
+            .position(|spawn| {
+                spawn.owner == PlayerId(0)
+                    && spawn.kind == worker
+                    && spawn.pos == Vec2Fx::new(Fx::from_milli(16500), Fx::from_milli(16500))
+            })
+            .expect("the farthest starting worker stands at (16.5, 16.5)") as u64,
+    );
+    let command = Command::new(
+        PlayerId(0),
+        0,
+        1,
+        CommandKind::Move {
+            units: vec![marcher],
+            target: Vec2Fx::from_ints(26, 26),
+        },
+    );
+    let run = run_command_log_with_mission(
+        &world,
+        &setup,
+        std::slice::from_ref(&command),
+        400,
+        Some(mission.clone()),
+    );
+    let replay = ReplayFile {
+        format_version: FORMAT_VERSION,
+        content_hash: world.content_hash(),
+        map_id: world.map_id,
+        mission_id: Some(mission_id),
+        seed: setup.seed,
+        player_setup: setup.players.clone(),
+        commands: vec![command.clone()],
+        checkpoints: run
+            .checkpoints
+            .iter()
+            .map(|&(tick, hash)| Checkpoint { tick, hash })
+            .collect(),
+        final_hash: run.final_hash,
+    };
+    replay.validate().expect("the record is structurally sound");
+
+    // The codec round-trip: bytes carry the mission id; the decoded
+    // record equals the written one field for field.
+    let bytes = replay.encode();
+    let decoded = ReplayFile::decode(&bytes).expect("the record decodes");
+    assert_eq!(decoded, replay);
+    assert_eq!(decoded.mission_id, Some(mission_id));
+
+    // The re-simulation: mission-carrying, through the same seam — every
+    // checkpoint and the final hash reproduce (the verifier's
+    // comparison, run in-process; the CLI run lives in the B-018
+    // report's verification table).
+    let resim = run_command_log_with_mission(&world, &setup, &[command], 400, Some(mission));
     assert_eq!(
         resim.checkpoints, run.checkpoints,
         "every checkpoint reproduces"
