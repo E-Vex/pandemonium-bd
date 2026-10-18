@@ -458,10 +458,21 @@ pub enum Event {
         /// The site entity.
         site: EntityId,
     },
-    /// A worker deposited cargo (M5).
+    /// A worker deposited cargo (M5). B-018: the event carries the
+    /// credited player (`owner` — the ledger that received the ore), so
+    /// per-player delivery totals are exact AT CONSUMPTION TIME: ids die
+    /// (a worker that delivers at stage 4 and falls at stage 8 is gone by
+    /// stage 10), and the only authoritative attribution moment is the
+    /// deposit itself. The mission evaluator's cumulative gather objective
+    /// reads this field (FD-9 — the ADR's §2 expressible basis for the
+    /// kind); the event stays outward and unhashed exactly as before.
     ResourceDelivered {
         /// The delivering worker.
         worker: EntityId,
+        /// The player whose ledger was credited (the storage owner — the
+        /// gather loop selects the worker's own player's storage, so this
+        /// is the worker's player at deposit time).
+        owner: PlayerId,
         /// Which resource.
         resource: ResourceId,
         /// How much was deposited.
@@ -522,9 +533,9 @@ pub enum ObjectiveState {
 /// A mission objective's kind in the simulation's resolved vocabulary
 /// (ADR-0201 §2): what the stage-10 evaluator checks. Content authors kinds
 /// by id string; the content seam resolves them to `KindId`s. Phase 1
-/// carried the two vertical-slice kinds; Phase 2's B-017 adds survive and
-/// protect — the remaining kinds (reach, gather) extend this enum alongside
-/// the mission schema version.
+/// carried the two vertical-slice kinds; Phase 2's B-017 added survive and
+/// protect, B-018 adds reach and gather — ADR-0201 §9's Phase 2 objective
+/// set is complete.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MissionObjectiveKind {
     /// Destroy all enemy structures — or every enemy structure of a target
@@ -540,6 +551,14 @@ pub enum MissionObjectiveKind {
     /// stands, failed on the first tick none remains. It never completes
     /// by itself; victory comes from the other objectives.
     Protect,
+    /// Reach an area with any mission player entity (B-018): pending until
+    /// one stands inside [`AreaSpec`], then completed.
+    ReachArea,
+    /// Gather N ore (B-018): pending until the mission player's ore crosses
+    /// the authored amount under the mission's chosen semantics
+    /// (`MissionObjectiveParameters::Gather`) — cumulative delivered, or
+    /// held balance.
+    Gather,
 }
 
 /// A mission objective's parameters in the simulation's resolved vocabulary
@@ -579,6 +598,163 @@ pub enum MissionObjectiveParameters {
         /// The protected kind.
         kind: KindId,
     },
+    /// The area the mission player must reach with any entity
+    /// (`MissionObjectiveKind::ReachArea`, B-018): a rectangle in whole
+    /// tiles or a circle in milli-tiles — plain integer geometry (FD-5).
+    /// The content seam converts the authored [`AreaSpec`] mirror into
+    /// this form verbatim (area data is unit-tagged, never converted);
+    /// the loader rejects areas that leave the map, cover it, or already
+    /// contain a mission player starting entity at tick 0 (AUD-003).
+    ReachArea {
+        /// The area to reach.
+        area: AreaSpec,
+    },
+    /// The ore amount the mission player must gather
+    /// (`MissionObjectiveKind::Gather`, B-018). The resource is ore by
+    /// the objective's definition (the Alpha's single registered
+    /// resource); the seam resolves the resource id through the rules
+    /// registry — the exact id the world's ledger carries — and the
+    /// semantics chooses what the evaluator counts. The loader rejects an
+    /// amount at or below the ruleset's effective starting ore for both
+    /// semantics (AUD-003: the objective must demand play).
+    Gather {
+        /// The ore resource, resolved through the rules registry order.
+        resource: ResourceId,
+        /// How much ore the objective demands.
+        amount: i64,
+        /// Which ore total the objective counts.
+        semantics: GatherSemantics,
+    },
+}
+
+/// A gather objective's counting semantics (B-018, ADR-0201 §2's table:
+/// "cumulative-delivered vs hold-balance (mission data picks)") — the
+/// sim-side mirror of content's `GatherSemantics`, converted at the seam
+/// the way `FogPreset` is (FD-6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GatherSemantics {
+    /// The mission player's cumulative delivered ore: the running total of
+    /// their `ResourceDelivered` amounts, accumulated by the evaluator
+    /// from the delivery events (FD-9 — the ADR's expressible basis for
+    /// the kind). Spending never reduces it.
+    Cumulative,
+    /// The mission player's current ore balance — the hashed ledger the
+    /// economy credits. Spending sets it back below the target; the
+    /// objective completes only when the balance actually holds the
+    /// amount (the resolution itself fires once, like every objective).
+    Balance,
+}
+
+impl GatherSemantics {
+    /// The schema spelling of this semantics (what appears in the mission
+    /// file — the same spellings the content mirror parses).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GatherSemantics::Cumulative => "Cumulative",
+            GatherSemantics::Balance => "Balance",
+        }
+    }
+
+    /// Parses a schema spelling. Unknown spellings are `None` so callers
+    /// can reject them loudly — never silently mapped.
+    pub fn from_schema(semantics: &str) -> Option<Self> {
+        match semantics {
+            "Cumulative" => Some(GatherSemantics::Cumulative),
+            "Balance" => Some(GatherSemantics::Balance),
+            _ => None,
+        }
+    }
+}
+
+/// An area a reach objective names (B-018, ADR-0201 §2's table): a
+/// rectangle in whole tiles or a circle in milli-tiles. Plain integer
+/// data (FD-5 — no floats anywhere in authored geometry); the sim-side
+/// mirror of content's `defs::AreaSpec`, converted at the mission seam
+/// the way `FogPreset` is (FD-6: the content type never crosses down).
+///
+/// The containment law lives here — one predicate the stage-10 evaluator
+/// and the content loader's tick-0 gate both call, so the gate can never
+/// drift from the evaluation (FD-4: the geometry is code, the area is
+/// data that selects it):
+///
+/// - **`Rect`** uses the half-open tile convention: `[x, x+w) x [y, y+h)`
+///   — the left and top edges are **inclusive**, the right and bottom
+///   edges **exclusive**. This is exactly the tile-cell law everywhere
+///   else in the codebase (`FootprintDef::top_left` and vision derive a
+///   tile from a position by `floor_int`: an entity standing at
+///   `pos.x == x + w` stands *in tile `x + w`*, outside the rect, while
+///   `pos.x == x + w - 1/65536` is still inside).
+/// - **`Circle`** includes its boundary: a point is inside when its
+///   squared distance from the center is `<= radius^2` — the same
+///   comparison `advance_vision` uses to mark a tile inside a vision
+///   radius. Authored milli-tile values enter the fixed-point space
+///   through `Fx::from_milli`, the same truncating conversion every
+///   authored milli value takes (vision radii, movement speeds); a
+///   radius that is not an exact multiple of `1/65536` tile loses its
+///   sub-raw fraction, deterministically, before the comparison —
+///   sub-milli-tile precision, pinned by the boundary tests below.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AreaSpec {
+    /// An axis-aligned rectangle in whole tiles.
+    Rect {
+        /// The left edge's tile column (inclusive).
+        x: i32,
+        /// The top edge's tile row (inclusive).
+        y: i32,
+        /// The width in tiles (the right edge `x + w` is exclusive).
+        w: u32,
+        /// The height in tiles (the bottom edge `y + h` is exclusive).
+        h: u32,
+    },
+    /// A circle in milli-tiles.
+    Circle {
+        /// The center's x, in milli-tiles.
+        cx: i32,
+        /// The center's y, in milli-tiles.
+        cy: i32,
+        /// The radius, in milli-tiles (boundary inclusive).
+        radius: i32,
+    },
+}
+
+impl AreaSpec {
+    /// Whether a position stands inside the area — the objective's
+    /// containment law, documented on the type and pinned by unit tests.
+    /// Exact integer comparisons in raw Q16.16 units (FD-5: no floats, no
+    /// roots — squared-distance, the plan §5.8 discipline).
+    pub fn contains(&self, pos: Vec2Fx) -> bool {
+        use pandemonium_fx::Fx;
+        match *self {
+            // Half-open [x, x+w) x [y, y+h): the edges convert exactly
+            // (whole tiles are exact in Q16.16), the position compares in
+            // raw units, and the right/bottom edge raw value is excluded —
+            // an entity exactly on it stands in the next tile. The
+            // saturating add is defensive only: the loader's bounds gate
+            // rejects areas that leave the map long before an edge could
+            // approach the representable ceiling.
+            AreaSpec::Rect { x, y, w, h } => {
+                let x0 = Fx::from_int(x).raw() as i64;
+                let x1 = Fx::from_int(x.saturating_add(w as i32)).raw() as i64;
+                let y0 = Fx::from_int(y).raw() as i64;
+                let y1 = Fx::from_int(y.saturating_add(h as i32)).raw() as i64;
+                let (px, py) = (pos.x.raw() as i64, pos.y.raw() as i64);
+                px >= x0 && px < x1 && py >= y0 && py < y1
+            }
+            // Boundary-inclusive: dist^2 <= r^2 in raw Q16.16 units, the
+            // `advance_vision` comparison. The center and radius take
+            // `Fx::from_milli`'s truncating conversion — the documented
+            // law for authored milli-tiles; the deltas then subtract
+            // exactly, and the squared compare stays in i64 (tile-unit
+            // magnitudes squared are far inside the range).
+            AreaSpec::Circle { cx, cy, radius } => {
+                let center = Vec2Fx::new(Fx::from_milli(cx), Fx::from_milli(cy));
+                let r = Fx::from_milli(radius).raw() as i64;
+                let dx = pos.x.raw() as i64 - center.x.raw() as i64;
+                let dy = pos.y.raw() as i64 - center.y.raw() as i64;
+                dx * dx + dy * dy <= r * r
+            }
+        }
+    }
 }
 
 /// One mission objective as the simulation receives it (ADR-0201 §2): the
@@ -765,6 +941,99 @@ mod tests {
             }
         );
         assert_ne!(ObjectiveState::Completed, ObjectiveState::Failed);
+    }
+
+    #[test]
+    fn rect_areas_use_the_half_open_tile_convention() {
+        // B-018: the rect containment law, pinned at every edge. Left and
+        // top edges are inclusive; right and bottom edges are exclusive —
+        // an entity standing exactly on the right edge stands in the next
+        // tile (the `floor_int` tile-cell law footprints and vision use).
+        // Positions are exact Q16.16 values: whole tiles, and points one
+        // raw unit shy of an edge (1/65536 tile — the finest position the
+        // sim can express).
+        use pandemonium_fx::Fx;
+        const RAW_TILE: i32 = 65_536; // Fx::from_int(1).raw()
+        let area = AreaSpec::Rect {
+            x: 2,
+            y: 3,
+            w: 4,
+            h: 5,
+        }; // [2,6) x [3,8)
+        let at = |x: i32, y: i32| Vec2Fx::new(Fx::from_int(x), Fx::from_int(y));
+        let at_raw = |x: i32, y: i32| Vec2Fx::new(Fx::from_raw(x), Fx::from_raw(y));
+        assert!(
+            area.contains(at(2, 3)),
+            "the top-left corner is inside (edges inclusive)"
+        );
+        assert!(area.contains(at(5, 7)), "an interior point is inside");
+        assert!(
+            area.contains(at_raw(6 * RAW_TILE - 1, 3 * RAW_TILE)),
+            "one raw unit shy of the right edge is still inside"
+        );
+        assert!(
+            !area.contains(at(6, 3)),
+            "exactly on the right edge (x == x+w) is OUTSIDE — that is tile 6"
+        );
+        assert!(
+            area.contains(at_raw(5 * RAW_TILE, 8 * RAW_TILE - 1)),
+            "one raw unit shy of the bottom edge is still inside"
+        );
+        assert!(
+            !area.contains(at(5, 8)),
+            "exactly on the bottom edge (y == y+h) is OUTSIDE"
+        );
+        assert!(
+            !area.contains(at_raw(6 * RAW_TILE - 1, 8 * RAW_TILE)),
+            "x inside but y exactly on the bottom edge: OUTSIDE overall"
+        );
+        assert!(!area.contains(at(1, 3)), "left of the left edge is outside");
+        assert!(
+            !area.contains(at_raw(2 * RAW_TILE - 1, 3 * RAW_TILE)),
+            "one raw unit shy of the left edge is outside (x >= x is inclusive)"
+        );
+        assert!(!area.contains(at(2, 2)), "above the top edge is outside");
+    }
+
+    #[test]
+    fn circle_areas_include_their_boundary() {
+        // B-018: the circle containment law — dist^2 <= r^2 in raw Q16.16
+        // units, the `advance_vision` comparison. The boundary itself is
+        // INSIDE; one milli-tile beyond it is outside. All values are
+        // multiples of 500 milli (exact in Q16.16), so the pins test the
+        // law, not the conversion.
+        use pandemonium_fx::Fx;
+        let area = AreaSpec::Circle {
+            cx: 1000,
+            cy: 2000,
+            radius: 500,
+        };
+        let at_milli = |x: i32, y: i32| Vec2Fx::new(Fx::from_milli(x), Fx::from_milli(y));
+        assert!(area.contains(at_milli(1000, 2000)), "the center is inside");
+        assert!(
+            area.contains(at_milli(1500, 2000)),
+            "exactly on the boundary (dist == radius) is INSIDE"
+        );
+        assert!(
+            area.contains(at_milli(1000, 1500)),
+            "the boundary in -y is inside too"
+        );
+        assert!(
+            area.contains(at_milli(1350, 2350)),
+            "a diagonal boundary point (3-4-5 triangle) is inside"
+        );
+        assert!(
+            !area.contains(at_milli(1501, 2000)),
+            "one milli-tile past the boundary is outside"
+        );
+        assert!(
+            area.contains(at_milli(500, 2000)),
+            "the boundary in -x (dist 500 == r) is inside"
+        );
+        assert!(
+            !area.contains(at_milli(499, 2000)),
+            "one milli-tile past the -x boundary is outside"
+        );
     }
 
     #[test]

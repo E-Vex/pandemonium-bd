@@ -153,8 +153,16 @@ fn deposit(
         def.timer = 0;
     }
     clear_runtime(world, worker);
+    // B-018: the event carries the credited player — resolved HERE, at
+    // deposit time, because it may be unresolvable later in the same step
+    // (a worker that delivers at stage 4 can fall at stage 8; ids never
+    // come back). The mission evaluator's cumulative gather objective
+    // attributes deliveries by this field, so its totals are exact no
+    // matter what else the tick does. `unwrap_or(NEUTRAL)` mirrors the
+    // credit's own defensive skip (a vanished storage credits no one).
     events.push(Event::ResourceDelivered {
         worker,
+        owner: owner.unwrap_or(PlayerId::NEUTRAL),
         resource,
         amount: amount.clamp(0, i32::MAX as i64) as i32,
     });
@@ -578,6 +586,17 @@ mod tests {
         while tick < 250 {
             let out = sim.step(&[]);
             delivered += deliveries(&out.events);
+            // B-018: every delivery event carries the credited player —
+            // the same `owner` local that credits the ledger, resolved at
+            // deposit time (the mission evaluator attributes cumulative
+            // gather totals by this field; a worker that dies later in the
+            // same tick still counts, because the event already said
+            // whose ledger the ore landed in).
+            for event in &out.events {
+                if let Event::ResourceDelivered { owner, .. } = event {
+                    assert_eq!(*owner, PlayerId(0), "the credited player rides the event");
+                }
+            }
             if delivered > 0 {
                 break;
             }

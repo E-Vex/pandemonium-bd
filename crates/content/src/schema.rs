@@ -410,8 +410,8 @@ pub(crate) const MISSION_SCHEMA_VERSION: u32 = 1;
 /// — the map, the faction, the rules — plus the ordered objective list
 /// (ADR-0201 §2). Phase 1 carries the destroy and build/train kinds; the
 /// vocabulary grows forward-only with the schema version (survive and
-/// protect landed with Phase 2's B-017; reach and gather remain —
-/// ADR-0201 §9).
+/// protect landed with Phase 2's B-017, reach and gather with B-018 —
+/// ADR-0201 §9's Phase 2 objective set is complete).
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawMission {
@@ -445,8 +445,9 @@ pub(crate) struct RawMission {
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawObjective {
-    /// The objective kind spelling ("Destroy", "BuildTrain", "Survive", or
-    /// "Protect"; unknown spellings are loud errors, never silently mapped).
+    /// The objective kind spelling ("Destroy", "BuildTrain", "Survive",
+    /// "Protect", "ReachArea", or "Gather"; unknown spellings are loud
+    /// errors, never silently mapped).
     pub kind: String,
     /// The kind's parameters block.
     pub parameters: RawObjectiveParameters,
@@ -472,6 +473,14 @@ pub(crate) enum RawObjectiveParameters {
     /// alive (B-017). The loader resolves the entity reference and rejects a
     /// kind the mission player's starting forces do not carry.
     Protect(RawProtectParams),
+    /// Reach parameters (B-018): the area the mission player must reach
+    /// with any entity — a rectangle in whole tiles or a circle in
+    /// milli-tiles (ADR-0201 §2's table).
+    ReachArea(RawReachParams),
+    /// Gather parameters (B-018): how much ore, and which semantics the
+    /// objective counts — cumulative delivered or held balance (the
+    /// ADR's §2 "semantics choice: mission data picks").
+    Gather(RawGatherParams),
 }
 
 /// Destroy parameters.
@@ -506,4 +515,67 @@ pub(crate) struct RawSurviveParams {
 pub(crate) struct RawProtectParams {
     /// The entity kind the mission player must keep alive.
     pub kind: String,
+}
+
+/// Reach parameters (B-018): one area, authored in one of the two shapes.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawReachParams {
+    /// The area to reach.
+    pub area: RawAreaSpec,
+}
+
+/// An area as authored (B-018): a rectangle in whole tiles or a circle in
+/// milli-tiles — plain integer geometry (FD-5). The shapes are unit-tagged
+/// by variant, never converted; `defs::AreaSpec` is the canonical mirror
+/// and `pandemonium_sim_api::AreaSpec` (with the containment law) is the
+/// form the seam hands the simulation.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum RawAreaSpec {
+    /// An axis-aligned rectangle in whole tiles: the half-open tile span
+    /// `[x, x+w) x [y, y+h)` (left/top edges inclusive, right/bottom
+    /// exclusive — the tile-cell law; see the sim-side `contains`).
+    Rect(RawRectArea),
+    /// A circle in milli-tiles, boundary inclusive.
+    Circle(RawCircleArea),
+}
+
+/// Rectangle parameters (B-018), in tiles.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawRectArea {
+    /// The left edge's tile column (inclusive).
+    pub x: i32,
+    /// The top edge's tile row (inclusive).
+    pub y: i32,
+    /// The width in tiles (must be non-zero).
+    pub w: u32,
+    /// The height in tiles (must be non-zero).
+    pub h: u32,
+}
+
+/// Circle parameters (B-018), in milli-tiles.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawCircleArea {
+    /// The center's x, in milli-tiles.
+    pub cx: i32,
+    /// The center's y, in milli-tiles.
+    pub cy: i32,
+    /// The radius, in milli-tiles (must be positive; boundary inclusive).
+    pub radius: i32,
+}
+
+/// Gather parameters (B-018): the ore amount and the counting semantics.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawGatherParams {
+    /// How much ore the objective demands. The tree-level gate rejects an
+    /// amount at or below the ruleset's effective starting ore (200 in the
+    /// Alpha) — the objective must demand play (AUD-003).
+    pub amount: i64,
+    /// The semantics spelling ("Cumulative" or "Balance"); unknown
+    /// spellings are loud parse errors, never silently mapped.
+    pub semantics: String,
 }

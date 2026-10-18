@@ -13,8 +13,8 @@
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
 use pandemonium_sim_api::{
-    EntityId, EntityView, KindId, MissionData, MissionObjectiveKind, MissionObjectiveParameters,
-    ObjectiveState, QueueView, TilePos,
+    EntityId, EntityView, GatherSemantics, KindId, MissionData, MissionObjectiveKind,
+    MissionObjectiveParameters, ObjectiveState, QueueView, TilePos,
 };
 
 /// What pressing a button asks the client to do (FD-2: it becomes a
@@ -817,6 +817,26 @@ pub fn objective_lines(mission: &MissionData, bundle: &ContentBundle) -> Vec<Obj
                 (MissionObjectiveKind::Protect, MissionObjectiveParameters::Protect { kind }) => {
                     format!("Protect your {}", kind_display(bundle, *kind))
                 }
+                // B-018: the reach area — shape-neutral (the HUD mirrors the
+                // data, never renders the geometry; the mission's world
+                // presentation marks the ground). Both shapes read as one
+                // movement order.
+                (MissionObjectiveKind::ReachArea, MissionObjectiveParameters::ReachArea { .. }) => {
+                    "Reach the marked area".to_string()
+                }
+                // B-018: the gather amount in the authored integer (FD-5; the
+                // HUD mirrors the data) — the semantics chooses the verb:
+                // cumulative reads as a haul ("Gather 400 ore"), balance as
+                // a stockpile to hold ("Hold 400 ore").
+                (
+                    MissionObjectiveKind::Gather,
+                    MissionObjectiveParameters::Gather {
+                        amount, semantics, ..
+                    },
+                ) => match semantics {
+                    GatherSemantics::Cumulative => format!("Gather {amount} ore"),
+                    GatherSemantics::Balance => format!("Hold {amount} ore"),
+                },
                 // The content seam rejects kind/parameters mismatches loudly
                 // (the loader guarantees agreement); the defensive arm keeps
                 // an impossible shape readable rather than panicking the HUD.
@@ -1397,8 +1417,8 @@ fn panel_border_pub(atlas: &TextAtlas, rect: [f32; 4], color: [f32; 3], t: f32) 
 mod tests {
     use super::*;
     use pandemonium_content::ContentTree;
-    use pandemonium_sim_api::MissionObjective;
     use pandemonium_sim_api::Vec2Fx;
+    use pandemonium_sim_api::{AreaSpec, MissionObjective};
 
     fn bundle() -> ContentBundle {
         let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
@@ -2158,6 +2178,79 @@ mod tests {
         assert!(lines[1].optional);
         assert_eq!(lines[2].text, "Protect your Command Center");
         assert!(!lines[2].optional);
+        for line in &lines {
+            assert!(line.text.is_ascii(), "{} is ASCII", line.text);
+            assert!(line.display_text().is_ascii());
+        }
+    }
+
+    #[test]
+    fn the_reach_and_gather_objectives_render_their_hud_lines() {
+        // B-018: the two new objective kinds get short HUD lines in the
+        // established style — every string ASCII (the embedded font
+        // subset, ADR-0201 §5), the line indices the event indices by
+        // construction (the same resolved-objective contract). The reach
+        // line is shape-neutral (the HUD mirrors the data, never renders
+        // the geometry); the gather line carries the authored integer
+        // amount (FD-5) with the semantics choosing the verb.
+        let (_, bundle) = tree_and_mission_bundle();
+        let resolved = MissionData {
+            player: pandemonium_sim_api::PlayerId(0),
+            objectives: vec![
+                MissionObjective {
+                    kind: MissionObjectiveKind::ReachArea,
+                    parameters: MissionObjectiveParameters::ReachArea {
+                        area: AreaSpec::Rect {
+                            x: 40,
+                            y: 40,
+                            w: 8,
+                            h: 8,
+                        },
+                    },
+                    optional: false,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::ReachArea,
+                    parameters: MissionObjectiveParameters::ReachArea {
+                        area: AreaSpec::Circle {
+                            cx: 24000,
+                            cy: 24000,
+                            radius: 4000,
+                        },
+                    },
+                    optional: true,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::Gather,
+                    parameters: MissionObjectiveParameters::Gather {
+                        resource: pandemonium_sim_api::ResourceId(0),
+                        amount: 400,
+                        semantics: GatherSemantics::Cumulative,
+                    },
+                    optional: false,
+                },
+                MissionObjective {
+                    kind: MissionObjectiveKind::Gather,
+                    parameters: MissionObjectiveParameters::Gather {
+                        resource: pandemonium_sim_api::ResourceId(0),
+                        amount: 260,
+                        semantics: GatherSemantics::Balance,
+                    },
+                    optional: true,
+                },
+            ],
+            fog_preset: pandemonium_sim_api::FogPreset::Default,
+        };
+        let lines = objective_lines(&resolved, &bundle);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].text, "Reach the marked area");
+        assert!(!lines[0].optional);
+        assert_eq!(lines[1].text, "Reach the marked area");
+        assert!(lines[1].optional);
+        assert_eq!(lines[2].text, "Gather 400 ore");
+        assert!(!lines[2].optional);
+        assert_eq!(lines[3].text, "Hold 260 ore");
+        assert!(lines[3].optional);
         for line in &lines {
             assert!(line.text.is_ascii(), "{} is ASCII", line.text);
             assert!(line.display_text().is_ascii());

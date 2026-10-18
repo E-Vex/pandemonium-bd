@@ -12,7 +12,7 @@ use std::path::Path;
 use crate::defs;
 use crate::error::ContentError;
 use crate::schema::{
-    self, RawCapability, RawEntity, RawFaction, RawMapV2, RawMission, RawObjective,
+    self, RawAreaSpec, RawCapability, RawEntity, RawFaction, RawMapV2, RawMission, RawObjective,
     RawObjectiveParameters, RawRules,
 };
 use crate::validate;
@@ -574,7 +574,7 @@ fn convert_objective(
             file: file.to_string(),
             detail: format!(
                 "objective {} of mission '{}' has unknown kind '{}' (known kinds: '{}', \
-                 '{}', '{}', '{}')",
+                 '{}', '{}', '{}', '{}', '{}')",
                 index + 1,
                 mission,
                 raw.kind,
@@ -582,6 +582,8 @@ fn convert_objective(
                 defs::ObjectiveKind::BuildTrain.as_str(),
                 defs::ObjectiveKind::Survive.as_str(),
                 defs::ObjectiveKind::Protect.as_str(),
+                defs::ObjectiveKind::ReachArea.as_str(),
+                defs::ObjectiveKind::Gather.as_str(),
             ),
         });
     };
@@ -672,6 +674,89 @@ fn convert_objective(
             (
                 defs::ObjectiveKind::Protect,
                 defs::ObjectiveParameters::Protect { kind: params.kind },
+            )
+        }
+        RawObjectiveParameters::ReachArea(params) => {
+            // B-018's file-level shape gate: an area with no extent can
+            // never be entered-and-left meaningfully — a zero rect is the
+            // empty set (nothing can stand in it), and a zero-or-negative
+            // radius is the empty disk. The bounds, whole-map-coverage and
+            // tick-0 starting-entity gates are tree-level (they need the
+            // mission's map and faction; see ContentTree::load).
+            let area = match params.area {
+                RawAreaSpec::Rect(rect) => {
+                    if rect.w == 0 || rect.h == 0 {
+                        return Err(ContentError::Parse {
+                            file: file.to_string(),
+                            detail: format!(
+                                "objective {} of mission '{}' reaches a rect with \
+                                 w {} x h {} (rect areas need non-zero width and \
+                                 height)",
+                                index + 1,
+                                mission,
+                                rect.w,
+                                rect.h
+                            ),
+                        });
+                    }
+                    defs::AreaSpec::Rect {
+                        x: rect.x,
+                        y: rect.y,
+                        w: rect.w,
+                        h: rect.h,
+                    }
+                }
+                RawAreaSpec::Circle(circle) => {
+                    if circle.radius <= 0 {
+                        return Err(ContentError::Parse {
+                            file: file.to_string(),
+                            detail: format!(
+                                "objective {} of mission '{}' reaches a circle with \
+                                 radius {} (circle areas need a positive radius)",
+                                index + 1,
+                                mission,
+                                circle.radius
+                            ),
+                        });
+                    }
+                    defs::AreaSpec::Circle {
+                        cx: circle.cx,
+                        cy: circle.cy,
+                        radius: circle.radius,
+                    }
+                }
+            };
+            (
+                defs::ObjectiveKind::ReachArea,
+                defs::ObjectiveParameters::ReachArea { area },
+            )
+        }
+        RawObjectiveParameters::Gather(params) => {
+            // B-018's file-level vocabulary gate: the semantics spelling
+            // must parse through the canonical vocabulary — the ADR's
+            // "semantics choice: mission data picks", picked loudly, never
+            // silently defaulted. The amount gate is tree-level (it needs
+            // the ruleset's starting ore; see ContentTree::load).
+            let Some(semantics) = defs::GatherSemantics::from_schema(&params.semantics) else {
+                return Err(ContentError::Parse {
+                    file: file.to_string(),
+                    detail: format!(
+                        "objective {} of mission '{}' has unknown gather semantics '{}' \
+                         (known semantics: '{}', '{}')",
+                        index + 1,
+                        mission,
+                        params.semantics,
+                        defs::GatherSemantics::Cumulative.as_str(),
+                        defs::GatherSemantics::Balance.as_str(),
+                    ),
+                });
+            };
+            (
+                defs::ObjectiveKind::Gather,
+                defs::ObjectiveParameters::Gather {
+                    amount: params.amount,
+                    semantics,
+                },
             )
         }
     };
@@ -836,14 +921,16 @@ mod tests {
 
     #[test]
     fn unknown_objective_kinds_are_rejected_loudly() {
-        // B-017 made "Survive" and "Protect" known kinds, so the unknown-kind
-        // probe uses a spelling outside the vocabulary — the rejection must
-        // stay loud and name every known kind.
+        // B-017 made "Survive" and "Protect" known kinds, and B-018 added
+        // "ReachArea" and "Gather", so the unknown-kind probe uses a
+        // spelling outside the vocabulary — the rejection must stay loud
+        // and name every known kind.
         let bad = MISSION.replace("\"BuildTrain\",", "\"Timed\",");
         let err = parse(&bad).unwrap_err();
         assert!(
             err.to_string().contains(
-                "unknown kind 'Timed' (known kinds: 'Destroy', 'BuildTrain', 'Survive', 'Protect')"
+                "unknown kind 'Timed' (known kinds: 'Destroy', 'BuildTrain', 'Survive', \
+                 'Protect', 'ReachArea', 'Gather')"
             ),
             "got: {err}"
         );
@@ -917,6 +1004,181 @@ mod tests {
                 .contains("declares kind 'Protect' but carries 'BuildTrain' parameters"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn reach_kind_and_parameters_must_agree() {
+        // B-018: the cross-check every kind gets — declaring ReachArea with
+        // a BuildTrain parameters block is a loud parse error, never a
+        // silent reinterpret.
+        let mismatched = MISSION.replace("kind: \"BuildTrain\",", "kind: \"ReachArea\",");
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'ReachArea' but carries 'BuildTrain' parameters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_reach_objective_parses_both_area_shapes() {
+        // B-018: the reach kind — a rectangle in whole tiles and a circle in
+        // milli-tiles both parse into the canonical mirror verbatim (plain
+        // data, FD-5; no unit conversion — the shapes are unit-tagged).
+        // The bounds/coverage/tick-0 gates are tree-level (they need the
+        // mission's map and faction; see bundle.rs's tests).
+        for (shape, expected) in [
+            (
+                "Rect(( x: 20, y: 20, w: 8, h: 6 ))",
+                defs::AreaSpec::Rect {
+                    x: 20,
+                    y: 20,
+                    w: 8,
+                    h: 6,
+                },
+            ),
+            (
+                "Circle(( cx: 48000, cy: 48000, radius: 5000 ))",
+                defs::AreaSpec::Circle {
+                    cx: 48000,
+                    cy: 48000,
+                    radius: 5000,
+                },
+            ),
+        ] {
+            let reach = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"ReachArea\",\n            parameters: ReachArea(( area: {shape} )),\n            optional: true,"
+                ),
+            );
+            let def = parse(&reach).expect("a reach objective parses");
+            assert_eq!(
+                def.objectives[1],
+                defs::ObjectiveDef {
+                    kind: defs::ObjectiveKind::ReachArea,
+                    parameters: defs::ObjectiveParameters::ReachArea { area: expected },
+                    optional: true,
+                },
+                "shape {shape}"
+            );
+        }
+        // An unknown area shape is RON's own loud parse error (the enum
+        // spelling is the vocabulary; deny_unknown_fields on the block).
+        let bad_shape = MISSION.replace(
+            "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+            "kind: \"ReachArea\",\n            parameters: ReachArea(( area: Hexagon(( rings: 3 )) )),\n            optional: true,",
+        );
+        let err = parse(&bad_shape).unwrap_err();
+        assert!(
+            err.to_string().contains("Hexagon"),
+            "an unknown area shape is a loud parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn gather_kind_and_parameters_must_agree() {
+        // B-018: the cross-check every kind gets — declaring Gather with a
+        // BuildTrain parameters block is a loud parse error, never a
+        // silent reinterpret.
+        let mismatched = MISSION.replace("kind: \"BuildTrain\",", "kind: \"Gather\",");
+        let err = parse(&mismatched).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("declares kind 'Gather' but carries 'BuildTrain' parameters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_gather_objective_parses_both_semantics() {
+        // B-018: the gather kind — the amount (i64, the ledger's domain)
+        // and the semantics spelling both parse into the canonical form;
+        // the amount gate is tree-level (it needs the ruleset's starting
+        // ore; see bundle.rs's tests).
+        for (spelling, expected) in [
+            ("Cumulative", defs::GatherSemantics::Cumulative),
+            ("Balance", defs::GatherSemantics::Balance),
+        ] {
+            let gather = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"Gather\",\n            parameters: Gather(( amount: 400, semantics: \"{spelling}\" )),\n            optional: true,"
+                ),
+            );
+            let def = parse(&gather).expect("a gather objective parses");
+            assert_eq!(
+                def.objectives[1],
+                defs::ObjectiveDef {
+                    kind: defs::ObjectiveKind::Gather,
+                    parameters: defs::ObjectiveParameters::Gather {
+                        amount: 400,
+                        semantics: expected,
+                    },
+                    optional: true,
+                },
+                "semantics {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_gather_semantics_are_rejected_loudly() {
+        // The semantics choice is mission data's pick — a typo'd spelling
+        // is a precise parse error naming the vocabulary, never a silent
+        // default (the fog_preset law).
+        for spelling in ["Total", "cumulative", "Stockpile", ""] {
+            let bad = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"Gather\",\n            parameters: Gather(( amount: 400, semantics: \"{spelling}\" )),\n            optional: true,"
+                ),
+            );
+            let err = parse(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown gather semantics")
+                    && err.to_string().contains("'Cumulative', 'Balance'"),
+                "spelling {spelling} must be a loud error, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn degenerate_reach_areas_are_rejected_loudly() {
+        // B-018's file-level shape gate: a zero rect is the empty set, a
+        // zero-or-negative radius the empty disk — neither can ever contain
+        // a position, so the objective could never complete. Loud errors,
+        // each naming the objective, the mission, and the degenerate value.
+        for (area, needle) in [
+            (
+                "Rect(( x: 20, y: 20, w: 0, h: 6 ))",
+                "reaches a rect with w 0 x h 6",
+            ),
+            (
+                "Rect(( x: 20, y: 20, w: 8, h: 0 ))",
+                "reaches a rect with w 8 x h 0",
+            ),
+            (
+                "Circle(( cx: 48000, cy: 48000, radius: 0 ))",
+                "reaches a circle with radius 0",
+            ),
+            (
+                "Circle(( cx: 48000, cy: 48000, radius: -5000 ))",
+                "reaches a circle with radius -5000",
+            ),
+        ] {
+            let bad = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"ReachArea\",\n            parameters: ReachArea(( area: {area} )),\n            optional: true,"
+                ),
+            );
+            let err = parse(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains(needle),
+                "area {area} must be a loud error, got: {err}"
+            );
+        }
     }
 
     #[test]
