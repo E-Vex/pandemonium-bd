@@ -61,7 +61,7 @@
 //! under the A12 checker without crashing", not "the match resolved".
 
 use pandemonium_sim_api::{
-    Event, KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
+    AreaSpec, Event, KindId, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
     ObjectiveState, PlayerId,
 };
 
@@ -285,6 +285,14 @@ fn objective_status(
         (MissionObjectiveKind::Protect, MissionObjectiveParameters::Protect { kind }) => {
             protect_status(world, player, *kind)
         }
+        // B-018: reach completes when any entity of the mission player
+        // stands inside the authored area — any entity, unit or structure;
+        // the loader's tick-0 gate is what keeps a mission whose starting
+        // forces already stand inside from loading (the evaluator itself
+        // is total over the entity set, the AUD-003 division).
+        (MissionObjectiveKind::ReachArea, MissionObjectiveParameters::ReachArea { area }) => {
+            reach_status(world, player, area)
+        }
         _ => None,
     }
 }
@@ -355,6 +363,22 @@ fn protect_status(world: &World, player: PlayerId, kind: KindId) -> Option<Objec
     (!protected_stands).then_some(ObjectiveStatus::Failed)
 }
 
+/// Reach (B-018): pending until any entity of the mission player stands
+/// inside the area, completed the first tick one does — the status is the
+/// containment predicate over the entity set, the same `AreaSpec::contains`
+/// the loader's tick-0 gate runs (one law, two call sites). The entity set
+/// here is the post-stage-3 set (this tick's spawns are in), so an entity
+/// spawned inside the area completes the objective on its spawn tick, with
+/// `Spawned` preceding `ObjectiveState` in the same step's stream (the
+/// causal-order law the protect arm pins for `Died`).
+fn reach_status(world: &World, player: PlayerId, area: &AreaSpec) -> Option<ObjectiveStatus> {
+    let inside = world
+        .entities
+        .iter()
+        .any(|entity| entity.owner == player && area.contains(entity.pos));
+    inside.then_some(ObjectiveStatus::Completed)
+}
+
 /// Fires the match end exactly once: sets the outcome and emits `MatchEnded`.
 fn end_match(
     winner: PlayerId,
@@ -387,10 +411,15 @@ mod tests {
     use super::*;
     use crate::fixture::TrivialWorld;
     use crate::sim::Sim;
+    use pandemonium_fx::Fx;
     use pandemonium_sim_api::{
         Command, CommandKind, ControllerKind, FogPreset, MatchSetup, MissionData, MissionObjective,
         MissionObjectiveKind, MissionObjectiveParameters, PlayerId, PlayerSetup,
     };
+
+    // Re-exported at the sim root for the test bodies (fixture types).
+    use crate::fixture::SpawnDef;
+    use pandemonium_sim_api::{KindId, Vec2Fx};
 
     /// A mission objective set builder for the tests.
     fn mission_for(player: PlayerId, objectives: &[MissionObjective]) -> MissionData {
@@ -1153,6 +1182,360 @@ mod tests {
             );
         }
         assert!(sim.outcome().is_none());
+    }
+
+    /// A reach mission over one area, required or optional.
+    fn reach_mission(player: PlayerId, area: AreaSpec, optional: bool) -> MissionData {
+        mission_for(
+            player,
+            &[MissionObjective {
+                kind: MissionObjectiveKind::ReachArea,
+                parameters: MissionObjectiveParameters::ReachArea { area },
+                optional,
+            }],
+        )
+    }
+
+    /// The reach fixture: player 0 (the mission player) owns a surviving
+    /// structure and one worker standing OUTSIDE the area; a second worker
+    /// spawns INSIDE the area at tick 20 (the scheduled-spawn stagger — the
+    /// completion tick is exact without movement timing). Player 1 owns a
+    /// surviving structure (the elimination rule's "other side" stays
+    /// standing, so only the reach objective can resolve the match).
+    /// Kind 0 is a 2x2 structure; kind 1 is a worker.
+    fn reach_world(worker_spawn: SpawnDef) -> TrivialWorld {
+        use crate::fixture::{CapTemplate, KindEconomy, KindTemplate, ScheduledSpawnDef};
+        use pandemonium_sim_api::KindId;
+        let kinds = vec![
+            KindTemplate {
+                caps: vec![
+                    CapTemplate::Health {
+                        max_hp: 10,
+                        regen_per_tick: 0,
+                    },
+                    CapTemplate::Footprint { w: 2, h: 2 },
+                ],
+                economy: KindEconomy::default(),
+            },
+            KindTemplate {
+                caps: vec![CapTemplate::Health {
+                    max_hp: 40,
+                    regen_per_tick: 0,
+                }],
+                economy: KindEconomy::default(),
+            },
+        ];
+        TrivialWorld {
+            map_id: 0x0052_4541_4348_4230,
+            width_tiles: 32,
+            height_tiles: 32,
+            passability: TrivialWorld::open_passability(32, 32),
+            buildability: TrivialWorld::open_buildability(32, 32),
+            kinds,
+            resources: vec![],
+            production: vec![],
+            base_population_cap: 0,
+            initial_spawns: vec![
+                // The mission player's surviving structure — far outside.
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(0),
+                    pos: Vec2Fx::from_ints(4, 4),
+                },
+                // The mission player's worker — outside the pinned areas.
+                SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(1),
+                    pos: Vec2Fx::from_ints(2, 2),
+                },
+                // The opponent's surviving structure.
+                SpawnDef {
+                    owner: PlayerId(1),
+                    kind: KindId(0),
+                    pos: Vec2Fx::from_ints(24, 24),
+                },
+            ],
+            scheduled_spawns: vec![ScheduledSpawnDef {
+                tick: 20,
+                spawn: worker_spawn,
+            }],
+            spawn_jitter_milli: 0,
+            roster: Vec::new(),
+        }
+        .with_default_roster()
+    }
+
+    #[test]
+    fn a_reach_objective_is_pending_until_an_entity_stands_inside_and_completes_then() {
+        // B-018's evaluator law, both shapes: pending while every mission
+        // player entity stands outside, completed the first tick one stands
+        // inside — here the tick the scheduled worker spawns inside (stage 3
+        // precedes stage 10, so `Spawned` precedes `ObjectiveState` in the
+        // same step's stream, the causal-order law), then the required
+        // completion ends the match for the mission player with the
+        // opponent's structure still standing (NOT elimination).
+        for area in [
+            AreaSpec::Rect {
+                x: 10,
+                y: 10,
+                w: 4,
+                h: 4,
+            },
+            AreaSpec::Circle {
+                cx: 12000,
+                cy: 12000,
+                radius: 2000,
+            },
+        ] {
+            let inside_pos = match area {
+                AreaSpec::Rect { x, y, .. } => Vec2Fx::from_ints(x + 2, y + 2),
+                AreaSpec::Circle { cx, cy, .. } => {
+                    Vec2Fx::new(Fx::from_milli(cx), Fx::from_milli(cy))
+                }
+            };
+            let world = reach_world(SpawnDef {
+                owner: PlayerId(0),
+                kind: KindId(1),
+                pos: inside_pos,
+            });
+            let setup = two_player_setup();
+            let mut plain = Sim::new(&world, setup.clone());
+            let mut sim = Sim::with_mission(&world, setup, reach_mission(PlayerId(0), area, false));
+
+            // Ticks 0..19 — the second worker has not spawned; nobody
+            // stands inside: pending, no events, hashes byte-identical.
+            for _ in 0..20 {
+                let out = sim.step(&[]);
+                plain.step(&[]);
+                assert!(
+                    !out.events.iter().any(|event| matches!(
+                        event,
+                        Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+                    )),
+                    "pending while nobody stands inside: {:?}",
+                    out.events
+                );
+            }
+            assert_eq!(sim.state_hash(), plain.state_hash(), "tick 20 approach");
+
+            // Tick 20 — the scheduled worker spawns inside; the objective
+            // completes and the mission player wins, with Spawned before
+            // ObjectiveState before MatchEnded in one step's stream.
+            let out = sim.step(&[]);
+            plain.step(&[]);
+            let spawned_at = out
+                .events
+                .iter()
+                .position(|event| matches!(event, Event::Spawned { .. }))
+                .expect("the worker spawned this tick");
+            let resolved_at = out
+                .events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        Event::ObjectiveState {
+                            index: 0,
+                            state: ObjectiveState::Completed
+                        }
+                    )
+                })
+                .expect("the objective resolved this tick");
+            let ended_at = out
+                .events
+                .iter()
+                .position(|event| matches!(event, Event::MatchEnded { .. }))
+                .expect("the match ended this tick");
+            assert!(
+                spawned_at < resolved_at && resolved_at < ended_at,
+                "Spawned precedes ObjectiveState precedes MatchEnded: {:?}",
+                out.events
+            );
+            let outcome = sim.outcome().expect("the match resolved");
+            assert_eq!(outcome.winner, PlayerId(0));
+            assert_eq!(outcome.ended_tick, 20);
+            // The mission state is derived (A-066): the hashes agree even
+            // on the resolving tick.
+            assert_eq!(sim.state_hash(), plain.state_hash(), "tick 20");
+        }
+    }
+
+    #[test]
+    fn an_optional_reach_objective_completes_but_never_gates_the_match() {
+        // The optional law: the completion fires its event and nothing
+        // else — the match runs on (the elimination rule alone can end it,
+        // and nothing dies in this fixture).
+        let area = AreaSpec::Rect {
+            x: 10,
+            y: 10,
+            w: 4,
+            h: 4,
+        };
+        let world = reach_world(SpawnDef {
+            owner: PlayerId(0),
+            kind: KindId(1),
+            pos: Vec2Fx::from_ints(12, 12),
+        });
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            reach_mission(PlayerId(0), area, true),
+        );
+        for _ in 0..20 {
+            let out = sim.step(&[]);
+            assert!(
+                !out.events.iter().any(|event| matches!(
+                    event,
+                    Event::ObjectiveState { .. } | Event::MatchEnded { .. }
+                )),
+                "pending until the spawn: {:?}",
+                out.events
+            );
+        }
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "the optional objective completes: {:?}",
+            out.events
+        );
+        assert!(
+            !out.events
+                .iter()
+                .any(|event| matches!(event, Event::MatchEnded { .. })),
+            "an optional completion never ends the match"
+        );
+        assert!(sim.outcome().is_none());
+        for _ in 0..30 {
+            sim.step(&[]);
+        }
+        assert!(sim.outcome().is_none(), "the match runs on");
+    }
+
+    #[test]
+    fn a_reach_objective_pins_the_exact_boundaries() {
+        // The boundary laws, evaluated through the evaluator (the same
+        // predicate the loader's tick-0 gate runs — the sim_api unit tests
+        // pin the geometry directly; these pin the evaluator's view):
+        // exactly on the rect's right edge is OUTSIDE (pending forever),
+        // one raw unit shy of it is INSIDE (completes at tick 0 — the
+        // evaluator is total; the loader's gate keeps this shape out of
+        // real content, the AUD-003 division); exactly on the circle's
+        // boundary is INSIDE.
+        // A worker exactly ON the rect's right edge: pending.
+        let on_edge = Vec2Fx::new(Fx::from_int(10 + 4), Fx::from_int(12));
+        let mut world = reach_world(SpawnDef {
+            owner: PlayerId(0),
+            kind: KindId(1),
+            pos: Vec2Fx::from_ints(30, 30),
+        });
+        // Replace the standing worker's position with the probe point by
+        // adding it as a scheduled spawn at tick 5 (initial spawns are
+        // fixed; the probe worker arrives mid-match at an exact position).
+        use crate::fixture::ScheduledSpawnDef;
+        world.scheduled_spawns.push(ScheduledSpawnDef {
+            tick: 5,
+            spawn: SpawnDef {
+                owner: PlayerId(0),
+                kind: KindId(1),
+                pos: on_edge,
+            },
+        });
+        let area = AreaSpec::Rect {
+            x: 10,
+            y: 10,
+            w: 4,
+            h: 4,
+        };
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            reach_mission(PlayerId(0), area, true),
+        );
+        for _ in 0..30 {
+            let out = sim.step(&[]);
+            assert!(
+                !out.events
+                    .iter()
+                    .any(|event| matches!(event, Event::ObjectiveState { .. })),
+                "a worker exactly on the right edge is outside — pending: {:?}",
+                out.events
+            );
+        }
+        // One raw unit shy of the edge: inside — completes on its spawn
+        // tick.
+        let shy = Vec2Fx::new(Fx::from_raw(14 * 65_536 - 1), Fx::from_int(12));
+        let mut world = reach_world(SpawnDef {
+            owner: PlayerId(0),
+            kind: KindId(1),
+            pos: Vec2Fx::from_ints(30, 30),
+        });
+        world.scheduled_spawns[0].spawn.pos = shy;
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            reach_mission(PlayerId(0), area, true),
+        );
+        for _ in 0..20 {
+            sim.step(&[]);
+        }
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "one raw unit shy of the right edge is inside — completed: {:?}",
+            out.events
+        );
+        // Exactly on the circle's boundary (dist == radius): inside —
+        // completes on its spawn tick, the boundary-inclusive law.
+        let circle = AreaSpec::Circle {
+            cx: 10000,
+            cy: 10000,
+            radius: 2000,
+        };
+        let on_circle = Vec2Fx::new(Fx::from_milli(12000), Fx::from_milli(10000));
+        let world = reach_world(SpawnDef {
+            owner: PlayerId(0),
+            kind: KindId(1),
+            pos: on_circle,
+        });
+        let mut sim = Sim::with_mission(
+            &world,
+            two_player_setup(),
+            reach_mission(PlayerId(0), circle, true),
+        );
+        for _ in 0..20 {
+            let out = sim.step(&[]);
+            assert!(
+                !out.events
+                    .iter()
+                    .any(|event| matches!(event, Event::ObjectiveState { .. })),
+                "pending until the boundary worker spawns: {:?}",
+                out.events
+            );
+        }
+        let out = sim.step(&[]);
+        assert!(
+            out.events.iter().any(|event| matches!(
+                event,
+                Event::ObjectiveState {
+                    index: 0,
+                    state: ObjectiveState::Completed
+                }
+            )),
+            "a worker exactly on the circle's boundary is inside — completed: {:?}",
+            out.events
+        );
     }
 
     #[test]
