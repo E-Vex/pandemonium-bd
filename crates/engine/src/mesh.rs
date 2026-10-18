@@ -22,6 +22,26 @@ pub struct TerrainVertex {
     pub color: [f32; 3],
     /// Face normal (flat shading — one normal per tile quad).
     pub normal: [f32; 3],
+    /// Presentation material: grass, bare dirt, or stone. This never enters
+    /// the simulation; the renderer uses it for procedural surface detail.
+    pub material: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerrainMaterial {
+    Grass,
+    Dirt,
+    Stone,
+}
+
+impl TerrainMaterial {
+    fn code(self) -> f32 {
+        match self {
+            Self::Grass => 0.0,
+            Self::Dirt => 1.0,
+            Self::Stone => 2.0,
+        }
+    }
 }
 
 /// The generated terrain: a triangle list with per-tile quad vertices.
@@ -48,12 +68,30 @@ fn tile_variation(x: u32, y: u32) -> f32 {
     ((hash >> 9) & 0xFF) as f32 / 255.0
 }
 
-/// Terrain albedo by class with per-tile variation: passable ground reads
-/// as calm, low-saturation dry steppe — muted enough that the team-colored
-/// entities pop against it (PLAN-M10.2 §2.5); blocked terrain as dark
-/// gray-brown rock, clearly darker than the ground so walls and ridges read
-/// as obstacles. Placeholder-plus (plan §0): flat colors, but shaded ones.
-fn class_color(passable: bool, variation: f32, height: f32) -> [f32; 3] {
+/// Large-scale ground patchiness: bilinear value noise over the same tile
+/// hash lattice at an 8-tile wavelength, with smoothed cell fractions so the
+/// patches curve instead of kinking. Pure presentation math over
+/// coordinates — deterministic like [`tile_variation`], but *smooth*: the
+/// per-tile jitter alone reads as static, while these broad dry/lush patches
+/// give the steppe an organic floor the eye reads as terrain, not tiling.
+fn patch_noise(x: u32, y: u32) -> f32 {
+    let (fx, fy) = (x as f32 / 8.0, y as f32 / 8.0);
+    let (ix, iy) = (fx.floor() as u32, fy.floor() as u32);
+    let (tx, ty) = (fx.fract(), fy.fract());
+    let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+    let top = tile_variation(ix, iy) * (1.0 - sx) + tile_variation(ix + 1, iy) * sx;
+    let bottom = tile_variation(ix, iy + 1) * (1.0 - sx) + tile_variation(ix + 1, iy + 1) * sx;
+    top * (1.0 - sy) + bottom * sy
+}
+
+/// Terrain albedo by class: passable ground reads as calm, low-saturation
+/// dry steppe — muted enough that the team-colored entities pop against it
+/// (PLAN-M10.2 §2.5) — drifting between lush sage-green and dry straw
+/// patches; blocked terrain as dark gray-brown rock, clearly darker than
+/// the ground so walls and ridges read as obstacles. Height shading lives
+/// at the corner level in [`terrain_mesh`] — per-vertex, so hills get a
+/// smooth gradient instead of a per-tile step.
+fn class_color(material: TerrainMaterial, variation: f32, patch: f32) -> [f32; 3] {
     // ±0.045 of jitter around the class base, plus a subtle two-tile checker
     // so flat areas keep a readable grain.
     let jitter = (variation - 0.5) * 0.09;
@@ -62,29 +100,35 @@ fn class_color(passable: bool, variation: f32, height: f32) -> [f32; 3] {
     } else {
         -0.015
     };
-    let mut color = if passable {
-        // Dry steppe: the old grass carried a strong green dominance that
-        // fought the team colors; this stays green-leaning but muted, with
-        // a gentle dryness drift toward tan.
-        let dryness = variation;
-        [
-            0.36 + 0.06 * dryness + jitter,
-            0.41 + 0.02 * dryness + jitter,
-            0.33 - 0.02 * dryness + jitter,
-        ]
-    } else {
-        // Rock: distinctly darker than any passable tile — the obstacle
-        // read is the point (the walls of the Crossroads crossing).
-        [0.30 + jitter, 0.27 + jitter, 0.25 + jitter]
+    let mut color = match material {
+        TerrainMaterial::Grass => {
+            // Natural olive greens with a dry straw drift across broad patches.
+            let lush = [0.29, 0.40, 0.23];
+            let straw = [0.43, 0.39, 0.25];
+            [
+                lush[0] + (straw[0] - lush[0]) * patch + jitter,
+                lush[1] + (straw[1] - lush[1]) * patch + jitter,
+                lush[2] + (straw[2] - lush[2]) * patch + jitter,
+            ]
+        }
+        TerrainMaterial::Dirt => [0.48 + jitter, 0.31 + jitter, 0.17 + jitter],
+        TerrainMaterial::Stone => [0.25 + jitter, 0.23 + jitter, 0.21 + jitter],
     };
-    // Hills pick up a rocky tint with height (the heightmap is display-only,
-    // so this is pure presentation math).
-    let rocky = (height / 3.0).clamp(0.0, 0.4);
     for channel in &mut color {
-        *channel = *channel * (1.0 - rocky) + 0.38 * rocky;
         *channel = (*channel + checker).clamp(0.0, 1.0);
     }
     color
+}
+
+/// The per-corner brightness factor a terrain vertex carries: hilltops
+/// brighten (rock ridges more than soil, so ridgelines read), lowlands sink
+/// a touch cooler. The heightmap is display-only (ADR-0001), so this is
+/// pure presentation math — and per-*corner*, so a slope shades as a
+/// gradient across its quads rather than as flat per-tile steps.
+fn corner_shade(passable: bool, height: f32) -> f32 {
+    let up = (height / 3.0).clamp(0.0, 0.35);
+    let low = 1.0 - (height / 2.0).clamp(0.0, 1.0);
+    1.0 + if passable { up * 0.9 } else { up * 1.5 } - low * 0.05
 }
 
 /// Builds the terrain mesh for a map. `height_scale` converts heightmap units
@@ -107,37 +151,67 @@ pub fn terrain_mesh(map: &MapDef, height_scale: f32) -> TerrainMesh {
     for y in 0..map.height {
         for x in 0..map.width {
             let variation = tile_variation(x, y);
-            let tile_height =
-                (height(x, y) + height(x + 1, y) + height(x, y + 1) + height(x + 1, y + 1)) * 0.25;
-            let color = class_color(map.passable(x as i32, y as i32), variation, tile_height);
+            let patch = patch_noise(x, y);
+            let passable = map.passable(x as i32, y as i32);
+            let material = map
+                .terrain_at(x as i32, y as i32)
+                .map(|class| {
+                    if !class.passable {
+                        TerrainMaterial::Stone
+                    } else if ["dirt", "soil", "sand"]
+                        .iter()
+                        .any(|name| class.name.to_ascii_lowercase().contains(name))
+                    {
+                        TerrainMaterial::Dirt
+                    } else {
+                        TerrainMaterial::Grass
+                    }
+                })
+                .unwrap_or(TerrainMaterial::Stone);
+            let color = class_color(material, variation, patch);
             // Corners: a=(x,y) b=(x+1,y) c=(x,y+1) d=(x+1,y+1), Y up.
             let corner = |cx: u32, cy: u32| [cx as f32, height(cx, cy), cy as f32];
             let a = corner(x, y);
             let b = corner(x + 1, y);
             let c = corner(x, y + 1);
             let d = corner(x + 1, y + 1);
-            // The quad's face normal from its first triangle's edges, flipped
-            // to point up (the winding below may face either way in cross
-            // order; terrain shading wants the sky-facing side).
-            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-            let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let mut normal = [
-                e1[1] * e2[2] - e1[2] * e2[1],
-                e1[2] * e2[0] - e1[0] * e2[2],
-                e1[0] * e2[1] - e1[1] * e2[0],
+            // One vertex per corner, each shaded by its own height — the
+            // per-corner gradient that makes hills read as slopes.
+            let shade = |corner_position: [f32; 3]| {
+                let f = corner_shade(passable, corner_position[1]);
+                [color[0] * f, color[1] * f, color[2] * f]
+            };
+            let colors = [shade(a), shade(b), shade(c), shade(d)];
+            // Estimate one normal at each grid corner from its neighboring
+            // heights. Reusing this field across adjacent tiles removes the
+            // per-tile lighting seams and lets slopes read as a continuous
+            // surface. This affects lighting only; vertex positions remain
+            // the authored heightmap values above.
+            let corner_normal = |cx: u32, cy: u32| {
+                let left_x = cx.saturating_sub(1);
+                let right_x = (cx + 1).min(map.width);
+                let near_y = cy.saturating_sub(1);
+                let far_y = (cy + 1).min(map.height);
+                let dx =
+                    (height(right_x, cy) - height(left_x, cy)) / (right_x - left_x).max(1) as f32;
+                let dz = (height(cx, far_y) - height(cx, near_y)) / (far_y - near_y).max(1) as f32;
+                let length = (dx * dx + 1.0 + dz * dz).sqrt();
+                [-dx / length, 1.0 / length, -dz / length]
+            };
+            let normals = [
+                corner_normal(x, y),
+                corner_normal(x + 1, y),
+                corner_normal(x, y + 1),
+                corner_normal(x + 1, y + 1),
             ];
-            if normal[1] < 0.0 {
-                normal = [-normal[0], -normal[1], -normal[2]];
-            }
-            let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
-                .sqrt()
-                .max(1e-6);
-            let normal = [normal[0] / length, normal[1] / length, normal[2] / length];
             let base = mesh.vertices.len() as u32;
-            for position in [a, b, c, d] {
+            for ((position, vertex_color), normal) in
+                [a, b, c, d].into_iter().zip(colors).zip(normals)
+            {
                 mesh.vertices.push(TerrainVertex {
                     position,
-                    color,
+                    color: vertex_color,
+                    material: material.code(),
                     normal,
                 });
             }
@@ -281,20 +355,70 @@ mod tests {
     #[test]
     fn the_ground_stays_calm_and_rock_reads_as_an_obstacle() {
         // PLAN-M10.2 §2.5: the ground is calmer (lower saturation) than the
-        // entities, and rock is plainly darker than any ground shade.
-        for variation in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
-            let ground = class_color(true, variation, 0.0);
-            let rock = class_color(false, variation, 0.0);
+        // entities, and rock is plainly darker than any ground shade — swept
+        // across the whole patch drift, not just its midpoint.
+        for patch in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            for variation in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+                let ground = class_color(TerrainMaterial::Grass, variation, patch);
+                let dirt = class_color(TerrainMaterial::Dirt, variation, patch);
+                let rock = class_color(TerrainMaterial::Stone, variation, patch);
+                let lum = |c: [f32; 3]| (c[0] + c[1] + c[2]) / 3.0;
+                assert!(
+                    lum(rock) < lum(ground) - 0.05,
+                    "rock reads darker than ground at patch {patch}, variation {variation}"
+                );
+                assert!(dirt[0] > dirt[1] && dirt[1] > dirt[2], "dirt reads warm");
+                // Grass stays green-leaning while retaining a natural range.
+                let spread = ground[0].max(ground[1]).max(ground[2])
+                    - ground[0].min(ground[1]).min(ground[2]);
+                assert!(
+                    spread < 0.20,
+                    "the ground stays calm at patch {patch}, variation {variation}"
+                );
+                assert!(ground[1] > ground[2], "still green-dominant");
+            }
+        }
+    }
+
+    #[test]
+    fn patch_noise_is_deterministic_smooth_and_bounded() {
+        assert_eq!(
+            patch_noise(7, 9),
+            patch_noise(7, 9),
+            "same tile, same patch"
+        );
+        for x in 0..24u32 {
+            for y in 0..24u32 {
+                let value = patch_noise(x, y);
+                assert!((0.0..=1.0).contains(&value), "patch stays in range");
+                // Smoothness: adjacent tiles drift at most a fraction of a
+                // lattice cell — the broad patches never flicker.
+                let neighbor = patch_noise(x + 1, y);
+                assert!((value - neighbor).abs() < 0.5, "patch drifts smoothly");
+            }
+        }
+    }
+
+    #[test]
+    fn hilltops_brighten_and_lowlands_sink_for_both_classes() {
+        // Soil tops lift gently; rock ridges lift more (ridgelines read);
+        // the valley floor sits slightly under 1.0 either way.
+        assert!(corner_shade(true, 3.0) > 1.0);
+        assert!(corner_shade(false, 3.0) > corner_shade(true, 3.0));
+        assert!(corner_shade(true, 0.0) < 1.0);
+        assert!(corner_shade(false, 0.0) < 1.0);
+        // The factor never inverts a class's darkness order: rock stays
+        // darker than ground even with its stronger height lift, because
+        // both live on the same map heights.
+        for height in [0.0_f32, 0.5, 1.0, 2.0, 3.5] {
+            let ground = class_color(TerrainMaterial::Grass, 0.5, 0.5);
+            let rock = class_color(TerrainMaterial::Stone, 0.5, 0.5);
+            let lift = |passable: bool| corner_shade(passable, height);
             let lum = |c: [f32; 3]| (c[0] + c[1] + c[2]) / 3.0;
             assert!(
-                lum(rock) < lum(ground) - 0.05,
-                "rock reads darker than ground at variation {variation}"
+                lum(rock) * lift(false) < lum(ground) * lift(true),
+                "rock stays darker than ground at height {height}"
             );
-            // Green-leaning but muted: the channel spread stays small.
-            let spread =
-                ground[0].max(ground[1]).max(ground[2]) - ground[0].min(ground[1]).min(ground[2]);
-            assert!(spread < 0.13, "the ground stays calm at {variation}");
-            assert!(ground[1] > ground[2], "still green-dominant");
         }
     }
 }

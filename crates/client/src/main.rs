@@ -90,7 +90,7 @@ pub(crate) const MAX_PAN_FRAME_SECONDS: f32 = 0.05;
 /// The opening camera distance from the player's start anchor (M9.1: the
 /// old map-center default at 58 tiles out rendered the starting force as
 /// specks — "nothing appears on the screen").
-pub(crate) const START_CAMERA_DISTANCE: f32 = 26.0;
+pub(crate) const START_CAMERA_DISTANCE: f32 = 18.0;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();

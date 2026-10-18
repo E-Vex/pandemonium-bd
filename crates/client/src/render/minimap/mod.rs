@@ -40,7 +40,7 @@ pub(super) struct MinimapVertex {
     pub(super) pos_uv: [f32; 4],
 }
 
-/// One cube vertex: corner position and its face normal (24 bytes).
+/// One cube vertex: corner position and its soft edge normal (24 bytes).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub(super) struct CubeVertex {
@@ -48,8 +48,9 @@ pub(super) struct CubeVertex {
     pub(super) normal: [f32; 3],
 }
 
-/// The unit cube's 36 vertices (12 triangles, per-face normals), centered at
-/// the origin, half-extent 0.5 on each axis.
+/// The unit cube's 36 vertices (12 triangles), centered at the origin, half-
+/// extent 0.5 on each axis. Corner normals ease the hard lighting breaks on
+/// the box-built silhouettes without changing their footprint or shape.
 pub(super) fn cube_vertices() -> Vec<CubeVertex> {
     const FACES: [[usize; 4]; 6] = [
         [0, 1, 2, 3], // -Z
@@ -58,14 +59,6 @@ pub(super) fn cube_vertices() -> Vec<CubeVertex> {
         [1, 5, 6, 2], // +X
         [4, 5, 1, 0], // -Y
         [3, 2, 6, 7], // +Y
-    ];
-    const NORMALS: [[f32; 3]; 6] = [
-        [0.0, 0.0, -1.0],
-        [0.0, 0.0, 1.0],
-        [-1.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [0.0, -1.0, 0.0],
-        [0.0, 1.0, 0.0],
     ];
     let corners = [
         [-0.5, -0.5, -0.5],
@@ -78,7 +71,7 @@ pub(super) fn cube_vertices() -> Vec<CubeVertex> {
         [-0.5, 0.5, 0.5],
     ];
     let mut vertices = Vec::with_capacity(36);
-    for (face, quad) in FACES.iter().enumerate() {
+    for quad in &FACES {
         let corners = [
             corners[quad[0]],
             corners[quad[1]],
@@ -90,7 +83,7 @@ pub(super) fn cube_vertices() -> Vec<CubeVertex> {
         ] {
             vertices.push(CubeVertex {
                 corner,
-                normal: NORMALS[face],
+                normal: glam::Vec3::from_array(corner).normalize().to_array(),
             });
         }
     }

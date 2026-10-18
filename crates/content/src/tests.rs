@@ -725,6 +725,38 @@ fn directory_loading_is_sorted_and_deterministic() {
 }
 
 #[test]
+fn directory_loading_defaults_to_first_map_but_strict_bundle_rejects_multiple() {
+    let root = temp_root("multiple-maps-default");
+    let second_map = map_text(&dot_grid(), false, None)
+        .replace("id: \"testing\"", "id: \"z-testing\"")
+        .replace(
+            "display_name: \"Testing Grounds\"",
+            "display_name: \"Z Testing Grounds\"",
+        );
+    write_tree(
+        &root,
+        &[
+            ("rules/alpha.ron", RULES),
+            ("entities/base.ron", BASE),
+            ("entities/worker.ron", WORKER),
+            ("entities/ore_node.ron", ORE_NODE),
+            ("factions/testers.ron", FACTION),
+            ("maps/testing.ron", &map_text(&dot_grid(), false, None)),
+            ("maps/z-testing.ron", &second_map),
+        ],
+    );
+
+    let bundle = ContentBundle::load_dir(&root).unwrap();
+    assert_eq!(bundle.map.id, "testing");
+
+    let tree = ContentTree::load_dir(&root).unwrap();
+    let err = tree.single_map_bundle().unwrap_err();
+    assert!(matches!(err, ContentError::Bundle { .. }));
+    assert!(err.to_string().contains("expected exactly one map"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn missing_category_directories_are_precise_errors() {
     let root = temp_root("missing-maps");
     write_tree(

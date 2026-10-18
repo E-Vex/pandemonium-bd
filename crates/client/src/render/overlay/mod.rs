@@ -12,39 +12,57 @@ use super::{KindShape, DECAL_LIFT};
 /// ground plane — blob shadows under everything, selection rings under the
 /// selected. Depth-tested with writes off and a hair of lift so the decals
 /// ride over the terrain and fog without z-fighting.
+///
+/// Each instance carries a `mode`: flat decals (rings, the ghost) draw
+/// their color as-is, while the soft-radial mode fades alpha from the quad
+/// center to its rim — blob shadows with soft edges instead of hard
+/// stencil-circle stamps.
 pub(super) const DECAL_SHADER_SRC: &str = r#"
 struct CameraUniform { view_projection: mat4x4<f32> };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
-struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec4<f32> };
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec4<f32>, @location(1) uv: vec2<f32>, @location(2) mode: f32 };
 
 @vertex fn vs_main(
     @location(0) corner: vec2<f32>,
     @location(1) instance_position: vec3<f32>,
     @location(2) instance_scale: vec2<f32>,
     @location(3) instance_color: vec4<f32>,
+    @location(4) instance_mode: f32,
 ) -> VsOut {
     var out: VsOut;
     let world = vec3<f32>(corner.x * instance_scale.x, 0.0, corner.y * instance_scale.y) + instance_position;
     out.clip = camera.view_projection * vec4<f32>(world, 1.0);
     out.color = instance_color;
+    out.uv = corner;
+    out.mode = instance_mode;
     return out;
 }
 
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return in.color;
+    // Soft-radial mode: alpha fades from full at the center to nothing at
+    // the quad rim. Flat mode (rings, ghost) passes straight through.
+    let falloff = mix(1.0, 1.0 - smoothstep(0.10, 0.5, length(in.uv)), in.mode);
+    return vec4<f32>(in.color.rgb, in.color.a * falloff);
 }
 "#;
 
 /// One ground decal instance: center (y = the lift above the terrain),
-/// extent on the two ground axes, and a premultiplied-alpha-friendly RGBA.
+/// extent on the two ground axes, premultiplied-alpha-friendly RGBA, and a
+/// decal mode (flat vs soft-radial — see the shader).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub(super) struct DecalInstance {
     pub(super) position: [f32; 3],
     pub(super) scale: [f32; 2],
     pub(super) color: [f32; 4],
+    pub(super) mode: f32,
 }
+
+/// Decal mode: the color draws as-is (rings, the placement ghost).
+pub(super) const DECAL_FLAT: f32 = 0.0;
+/// Decal mode: alpha fades to nothing at the quad rim (blob shadows).
+pub(super) const DECAL_SOFT_RADIAL: f32 = 1.0;
 
 /// The unit quad's corners in the XZ plane (two triangles), extent ±0.5.
 pub(super) fn quad_vertices() -> Vec<[f32; 2]> {
@@ -106,6 +124,7 @@ pub(super) fn build_team_rings(
             position: [entity.pos.x, DECAL_LIFT * 1.5, entity.pos.z],
             scale: [radius * 2.0, radius * 2.0],
             color: [team[0], team[1], team[2], TEAM_RING_ALPHA],
+            mode: DECAL_FLAT,
         });
     }
     decals
@@ -139,6 +158,7 @@ pub(super) fn build_rings(
             position: [entity.pos.x, DECAL_LIFT * 2.0, entity.pos.z],
             scale: [radius * 2.0, radius * 2.0],
             color: RING_COLOR,
+            mode: DECAL_FLAT,
         });
     }
     decals

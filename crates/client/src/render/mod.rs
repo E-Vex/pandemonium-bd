@@ -26,7 +26,7 @@ use entities::{build_instances, build_shadows, death_instance, fallback_shape, E
 pub use entities::{DyingCue, PlacementGhost, TEAM_P0, TEAM_P1};
 
 use minimap::{paint_minimap_markers, MinimapVertex};
-use overlay::{build_rings, build_team_rings, DecalInstance};
+use overlay::{build_rings, build_team_rings, DecalInstance, DECAL_FLAT};
 use terrain::{FogUniform, GpuTerrainVertex, FOG_SHADER_SRC, TERRAIN_SHADER};
 pub use terrain::{FOG_ALPHA_EXPLORED, FOG_ALPHA_HIDDEN, FOG_ALPHA_VISIBLE};
 
@@ -134,6 +134,10 @@ pub struct WgpuRenderer {
     terrain_vertex_buf: wgpu::Buffer,
     terrain_index_buf: wgpu::Buffer,
     terrain_index_count: u32,
+    /// CPU copy of the display-only terrain corner heights. Entities and
+    /// ground decals use it to sit on raised terrain instead of below it.
+    terrain_heights: Vec<f32>,
+    terrain_height_size: (u32, u32),
     entity_pipeline: wgpu::RenderPipeline,
     entity_vertex_buf: wgpu::Buffer,
     entity_instance_buf: wgpu::Buffer,
@@ -148,6 +152,8 @@ pub struct WgpuRenderer {
     pending_ui: Vec<UiQuad>,
     fog_pipeline: wgpu::RenderPipeline,
     fog_uniform_buf: wgpu::Buffer,
+    fog_layout: wgpu::BindGroupLayout,
+    fog_sampler: wgpu::Sampler,
     fog_bind_group: wgpu::BindGroup,
     fog_texture: wgpu::Texture,
     fog_texture_size: (u32, u32),
@@ -170,6 +176,8 @@ pub struct WgpuRenderer {
     /// replaced — the client sets it every frame it draws.
     ghost: Option<PlacementGhost>,
     minimap_tex: wgpu::Texture,
+    minimap_layout: wgpu::BindGroupLayout,
+    minimap_sampler: wgpu::Sampler,
     minimap_bind_group: wgpu::BindGroup,
     minimap_pipeline: wgpu::RenderPipeline,
     minimap_vertex_buf: wgpu::Buffer,
@@ -184,6 +192,161 @@ impl WgpuRenderer {
     /// The glyph atlas (layout math for the caller; the texture stays here).
     pub fn atlas(&self) -> &TextAtlas {
         &self.atlas
+    }
+
+    /// Replaces the map-shaped GPU data when a match starts on a different
+    /// map. Terrain, fog, and minimap remain presentation-only and use the
+    /// selected map's dimensions and tile colors.
+    pub fn set_terrain(&mut self, terrain: &TerrainMesh) {
+        let vertices: Vec<GpuTerrainVertex> = terrain
+            .vertices
+            .iter()
+            .copied()
+            .map(GpuTerrainVertex::from)
+            .collect();
+        let terrain_vertex_buf =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain vertices"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+        let terrain_index_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("terrain indices"),
+                contents: bytemuck::cast_slice(&terrain.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+        let map_size = terrain.vertices.iter().fold([0.0f32; 2], |size, vertex| {
+            [
+                size[0].max(vertex.position[0]),
+                size[1].max(vertex.position[2]),
+            ]
+        });
+        let texture_size = (map_size[0] as u32, map_size[1] as u32);
+        let terrain_heights = terrain_height_grid(terrain, texture_size.0, texture_size.1);
+        let extent = wgpu::Extent3d {
+            width: texture_size.0.max(1),
+            height: texture_size.1.max(1),
+            depth_or_array_layers: 1,
+        };
+
+        let fog_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fog texture"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let fog_view = fog_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let fog_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fog bind group"),
+            layout: &self.fog_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.fog_uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.fog_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&fog_view),
+                },
+            ],
+        });
+
+        let minimap_size = (texture_size.0.max(1), texture_size.1.max(1));
+        let minimap_base: Vec<[u8; 4]> = terrain
+            .vertices
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|tile| {
+                let c = tile[0].color;
+                [
+                    (c[0].clamp(0.0, 1.0) * 255.0) as u8,
+                    (c[1].clamp(0.0, 1.0) * 255.0) as u8,
+                    (c[2].clamp(0.0, 1.0) * 255.0) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let minimap_scratch = vec![0; (minimap_size.0 * minimap_size.1 * 4) as usize];
+        let minimap_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("minimap texture"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let minimap_view = minimap_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let minimap_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("minimap bind group"),
+            layout: &self.minimap_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.screen_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.minimap_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&minimap_view),
+                },
+            ],
+        });
+
+        self.terrain_vertex_buf = terrain_vertex_buf;
+        self.terrain_index_buf = terrain_index_buf;
+        self.terrain_index_count = terrain.indices.len() as u32;
+        self.terrain_heights = terrain_heights;
+        self.terrain_height_size = texture_size;
+        self.fog_texture = fog_texture;
+        self.fog_texture_size = texture_size;
+        self.fog_map_size = (map_size[0], map_size[1]);
+        self.fog_bind_group = fog_bind_group;
+        self.minimap_tex = minimap_tex;
+        self.minimap_bind_group = minimap_bind_group;
+        self.minimap_base = minimap_base;
+        self.minimap_scratch = minimap_scratch;
+        self.minimap_size = minimap_size;
+    }
+
+    /// Samples the same piecewise-linear surface as the terrain triangles.
+    fn ground_height_at(&self, x: f32, z: f32) -> f32 {
+        let (width, height) = self.terrain_height_size;
+        if width == 0 || height == 0 || self.terrain_heights.is_empty() {
+            return 0.0;
+        }
+        let x = x.clamp(0.0, width as f32 - 0.001);
+        let z = z.clamp(0.0, height as f32 - 0.001);
+        let tile_x = x.floor() as u32;
+        let tile_z = z.floor() as u32;
+        let tx = x - tile_x as f32;
+        let tz = z - tile_z as f32;
+        let stride = width as usize + 1;
+        let corner = |dx: usize, dz: usize| {
+            self.terrain_heights[(tile_z as usize + dz) * stride + tile_x as usize + dx]
+        };
+        let (a, b, c, d) = (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1));
+        if tx + tz <= 1.0 {
+            a * (1.0 - tx - tz) + b * tx + c * tz
+        } else {
+            b * (1.0 - tz) + d * (tx + tz - 1.0) + c * (1.0 - tx)
+        }
     }
 
     /// Refreshes the fog texture from one alpha byte per tile (row-major in
@@ -392,6 +555,14 @@ impl Renderer for WgpuRenderer {
                 .unwrap_or_else(fallback_shape);
             instances.push(death_instance(&cue, &shape));
         }
+        // The heightmap only moves rendered terrain; the simulation keeps
+        // positions on the flat logical grid. Lift every rendered part onto
+        // the matching display surface so low units do not disappear inside
+        // hills.
+        for instance in &mut instances {
+            instance.position[1] +=
+                self.ground_height_at(instance.position[0], instance.position[2]);
+        }
         let needed = instances.len() as u64;
         if needed > 0 {
             let bytes = bytemuck::cast_slice(&instances);
@@ -481,6 +652,7 @@ impl Renderer for WgpuRenderer {
                         } else {
                             [1.0, 0.30, 0.25, 0.38]
                         },
+                        mode: DECAL_FLAT,
                     });
                     1u32
                 } else {
@@ -506,6 +678,9 @@ impl Renderer for WgpuRenderer {
             );
             let ring_count = rings.len() as u32;
             decals.extend(rings);
+            for decal in &mut decals {
+                decal.position[1] += self.ground_height_at(decal.position[0], decal.position[2]);
+            }
             if !decals.is_empty() {
                 let bytes = bytemuck::cast_slice(&decals);
                 let capacity_bytes =
@@ -570,6 +745,26 @@ impl Renderer for WgpuRenderer {
         self.queue.submit(Some(encoder.finish()));
         frame_texture.present();
     }
+}
+
+/// Extracts the shared grid of corner heights from the four row-major
+/// vertices generated for each terrain tile.
+fn terrain_height_grid(terrain: &TerrainMesh, width: u32, height: u32) -> Vec<f32> {
+    let stride = width as usize + 1;
+    let mut heights = vec![0.0; stride * (height as usize + 1)];
+    for z in 0..height as usize {
+        for x in 0..width as usize {
+            let base = (z * width as usize + x) * 4;
+            let Some(tile) = terrain.vertices.get(base..base + 4) else {
+                continue;
+            };
+            heights[z * stride + x] = tile[0].position[1];
+            heights[z * stride + x + 1] = tile[1].position[1];
+            heights[(z + 1) * stride + x] = tile[2].position[1];
+            heights[(z + 1) * stride + x + 1] = tile[3].position[1];
+        }
+    }
+    heights
 }
 
 #[cfg(test)]
@@ -756,14 +951,14 @@ mod silhouette_tests {
         e.facing = Vec3::new(1.0, 0.0, 0.0); // east
         let mut out = Vec::new();
         build_entity_instances(&e, &shape, false, false, &mut out);
-        assert_eq!(out.len(), 3, "body + head + rifle");
+        assert_eq!(out.len(), 5, "body + head + backpack + yoke + rifle");
         let yaw = out[0].yaw;
         assert!(
             (yaw - 0.0).abs() < 1e-4,
             "an east-facing unit yaws to 0, got {yaw}"
         );
         // The rifle rides ahead of the body center along the facing.
-        assert!(out[2].position[0] > out[0].position[0], "rifle forward");
+        assert!(out[4].position[0] > out[0].position[0], "rifle forward");
         // A moving unit squats: its whole silhouette is shorter.
         let mut moving = entity(1, 0, PlayerId(0), MoveState::Moving);
         moving.facing = Vec3::new(1.0, 0.0, 0.0);
@@ -771,7 +966,7 @@ mod silhouette_tests {
         build_entity_instances(&moving, &shape, false, false, &mut out2);
         assert!(out2[0].scale[1] < out[0].scale[1], "moving squats the body");
         assert!(
-            out2[2].position[1] < out[2].position[1],
+            out2[4].position[1] < out[4].position[1],
             "offsets squat with the body"
         );
         // The head rides on top of the (squatting) body.
@@ -793,11 +988,11 @@ mod silhouette_tests {
             "a north-facing unit yaws to +90 degrees"
         );
         assert!(
-            out[2].position[2] > out[0].position[2],
+            out[4].position[2] > out[0].position[2],
             "rifle forward (+z)"
         );
         assert!(
-            out[2].position[0] < out[0].position[0],
+            out[4].position[0] < out[0].position[0],
             "rifle carried right"
         );
     }
@@ -934,7 +1129,12 @@ mod decal_tests {
         for (index, shadow) in shadows.iter().enumerate() {
             assert_eq!(shadow.position[1], DECAL_LIFT, "shadows hug the ground");
             assert!(shadow.scale[0] > 0.0 && shadow.scale[1] > 0.0);
-            assert_eq!(shadow.color[3], 0.32, "uniform shadow opacity");
+            assert_eq!(shadow.color[3], 0.34, "uniform shadow opacity");
+            assert_eq!(
+                shadow.mode,
+                overlay::DECAL_SOFT_RADIAL,
+                "shadows fade at the rim"
+            );
             assert_eq!(shadow.position[0], (index + 1) as f32, "under its entity");
         }
     }
