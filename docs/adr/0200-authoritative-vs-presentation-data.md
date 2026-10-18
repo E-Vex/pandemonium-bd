@@ -336,15 +336,13 @@ The map format rules, all of which hold today and become the fixed contract:
   already holds at the tree level: a new `.ron` in `content/maps/` appears in
   the picker with no code change.
 
-**Reconciling with `load_dir`'s one-map shape:** `ContentBundle::load_dir` is the
-Alpha convenience that bundles *the directory's only map* and errors otherwise
-(`bundle.rs:154-171`, `bundle.rs:280-283`) — it is **not** an engine limitation.
-The client never uses it to start a match: it loads the full tree
-(`ContentTree::load_dir`, any map count) and picks a map explicitly
-(`crates/client/src/main.rs:132-142` picks the first map only for the default
-backdrop bundle; `begin_match` bundles whatever the player chose). The one-map
-error is `single_map_bundle`'s guard for the `--version` and default-bundle
-paths, removable the day a second map ships.
+**Reconciling with the default bundle:** `ContentBundle::load_dir` is a legacy
+convenience that bundles the first map in canonical id order, preserving the
+same default map as the tree grows. `ContentTree::single_map_bundle` remains a
+strict guard for callers that require exactly one map. The client loads the
+full tree (`ContentTree::load_dir`, any map count), uses the first map only for
+the default backdrop, and bundles the player's selected map explicitly when a
+match starts.
 
 **What a map declares** — today: `id`, `display_name`, dimensions, terrain,
 grid, starts, ore nodes, `symmetric`, optional heightmap (`schema.rs:365-389`).

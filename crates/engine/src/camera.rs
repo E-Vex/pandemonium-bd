@@ -73,6 +73,12 @@ impl RtsCamera {
         self.target
     }
 
+    /// Updates the presentation bounds when the selected map changes.
+    pub fn set_bounds(&mut self, map_width: u32, map_height: u32) {
+        self.bounds = Vec2::new(map_width as f32, map_height as f32);
+        self.clamp_target();
+    }
+
     /// The current yaw (radians). Q/E rotation adjusts this directly.
     pub fn yaw(&self) -> f32 {
         self.yaw

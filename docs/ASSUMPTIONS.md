@@ -1022,9 +1022,8 @@ confirms or rejects it.
   startup. Under Xvfb (no window manager) the call may be a no-op or
   misbehave — the machine pass records what it can and the honest verdict
   on a real display is the owner's re-test (the DEBT-008 recipe's standing
-  limitation). The multi-map note rides with it: the renderer's terrain
-  mesh is built from the tree's first map at window creation; a second
-  authored map would need a mesh-update path (DEBT-017).
+  limitation). The renderer now rebuilds terrain and camera bounds when the
+  selected map changes (DEBT-017, repaid with the second authored map).
 
 - **A-119 (PLAN-M10.2 §4, M10.2 Phase 4).** The owner's Phase 4 go
   (2026-10-08): the Phase 3 menus/settings re-test was accepted and the
@@ -1271,8 +1270,7 @@ confirms or rejects it.
   (AUD-005): `content-validate --expect-content-hash/--expect-map-id`
   requires that at least one loaded map bundle matches every given
   expectation ("the registered identity is present in the tree"), rather
-  than pinning a named map or the single-map bundle. On the Alpha tree
-  (exactly one map) the two are identical; on a future multi-map tree the
+  than pinning a named map or the default-map bundle. On a multi-map tree the
   presence semantics keeps protecting the registered flagship map while
   allowing the tree to grow. The demo state golden remains deliberately
   without a test pin — the owner authorized executable validation for the

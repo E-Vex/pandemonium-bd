@@ -557,6 +557,17 @@ impl ContentTree {
         }
         self.bundle(&self.maps[0].id)
     }
+
+    /// Builds a bundle for the first map in canonical id order. Use this for
+    /// legacy/default flows; match selection should use [`Self::bundle`].
+    pub fn default_map_bundle(&self) -> Result<ContentBundle, ContentError> {
+        let Some(map) = self.maps.first() else {
+            return Err(ContentError::Bundle {
+                detail: "expected at least one map to bundle a match".to_string(),
+            });
+        };
+        self.bundle(&map.id)
+    }
 }
 
 /// Sorts a canonical collection by id and rejects duplicates with both file
@@ -665,9 +676,9 @@ impl ContentBundle {
         }
     }
 
-    /// Loads a content directory and bundles its only map (the Alpha shape).
+    /// Loads a content directory and bundles its default map (first by id).
     pub fn load_dir(root: &Path) -> Result<Self, ContentError> {
-        ContentTree::load_dir(root)?.single_map_bundle()
+        ContentTree::load_dir(root)?.default_map_bundle()
     }
 
     /// The canonical content identity of this bundle (plan §6.5 `content_hash`):
