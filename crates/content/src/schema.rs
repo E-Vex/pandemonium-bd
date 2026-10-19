@@ -78,6 +78,26 @@ pub(crate) struct RawVictory {
     pub allow_resignation: bool,
 }
 
+/// Per-mission rules overrides (B-020): only plain integer fields may be
+/// overridden. The Alpha ruleset has two such fields — the ore starting
+/// balance and the base population cap. Other fields (victory kind,
+/// allow_resignation, resource ids/names) are not overridable; missions that
+/// need different values for those must use a different ruleset file.
+/// This type is used inline in the mission file; it never exists as a
+/// standalone content file.
+#[derive(serde::Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawRulesOverrides {
+    /// Optional override for the ore starting balance (the Alpha's single
+    /// registered resource). If absent, the ruleset's value is used.
+    #[serde(default)]
+    pub ore_starting: Option<i64>,
+    /// Optional override for the base population cap. If absent, the
+    /// ruleset's value is used.
+    #[serde(default)]
+    pub base_population_cap: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
@@ -435,6 +455,14 @@ pub(crate) struct RawMission {
     /// canonical vocabulary; unknown spellings are loud errors.
     #[serde(default)]
     pub fog_preset: Option<String>,
+    /// Per-mission rules overrides (B-020): inline overrides for plain
+    /// integer rules fields (ore starting balance and base population cap).
+    /// Optional — when absent, the ruleset's values are used verbatim.
+    /// The mission id encodes the overrides only when present (the mission
+    /// identity rule: a mission without overrides keeps exactly the same
+    /// id as before).
+    #[serde(default)]
+    pub rules_overrides: Option<RawRulesOverrides>,
     /// The ordered objective list, AND-composed (ADR-0201 §2).
     pub objectives: Vec<RawObjective>,
 }
