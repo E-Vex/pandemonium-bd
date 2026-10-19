@@ -540,6 +540,16 @@ pub(crate) fn parse_mission(
             })?
         }
     };
+    // The rules overrides (B-020): optional inline overrides for plain
+    // integer rules fields. Absent is the default (no overrides). The
+    // overrides are carried verbatim; the loader does not validate them
+    // against the ruleset here — the tree-level AUD-003 gates validate
+    // effective values against objectives.
+    let rules_overrides = raw.rules_overrides.unwrap_or_default();
+    let rules_overrides = defs::RulesOverrides {
+        ore_starting: rules_overrides.ore_starting,
+        base_population_cap: rules_overrides.base_population_cap,
+    };
     Ok(defs::MissionDef {
         id: raw.id,
         display_name: raw.display_name,
@@ -548,6 +558,7 @@ pub(crate) fn parse_mission(
         faction: raw.faction,
         rules: raw.rules,
         fog_preset,
+        rules_overrides,
         objectives,
     })
 }
