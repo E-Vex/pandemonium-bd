@@ -1466,6 +1466,32 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             defs::FogPreset::Default => 0,
         });
     }
+    // The rules overrides (B-020) enter the encoding ONLY when non-empty
+    // (at least one override is Some) and only behind their own domain tag:
+    // a mission that does not use overrides keeps exactly the id it had
+    // before (the mission identity rule), and the tag delimits the bytes so
+    // a future tail field can never misread them. Empty writes nothing —
+    // the historical byte stream, verbatim.
+    if !mission.rules_overrides.is_empty() {
+        encode_bool(h, true);
+        h.write_u8(RULES_OVERRIDES_ENCODING_TAG);
+        // ore_starting: presence flag + value
+        match mission.rules_overrides.ore_starting {
+            Some(v) => {
+                encode_bool(h, true);
+                h.write_i64(v);
+            }
+            None => encode_bool(h, false),
+        }
+        // base_population_cap: presence flag + value
+        match mission.rules_overrides.base_population_cap {
+            Some(v) => {
+                encode_bool(h, true);
+                h.write_u32(v);
+            }
+            None => encode_bool(h, false),
+        }
+    }
 }
 
 /// The domain tag of the optional fog-preset tail (B-015): a fixed byte
@@ -1473,6 +1499,12 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
 /// is self-describing and future mission fields appended after it can never
 /// collide with or misparse these bytes.
 const FOG_PRESET_ENCODING_TAG: u8 = 0xF0;
+
+/// The domain tag of the optional rules-overrides tail (B-020): a fixed byte
+/// between the presence flag and the override values, so the non-default tail
+/// is self-describing and future mission fields appended after it can never
+/// collide with or misparse these bytes.
+const RULES_OVERRIDES_ENCODING_TAG: u8 = 0xF1;
 
 #[cfg(test)]
 mod tests {
@@ -2366,5 +2398,222 @@ mod tests {
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn debug_rules_overrides_parsing() {
+        const RULES: &str = r#"
+(
+    schema_version: 1,
+    id: "alpha",
+    display_name: "Alpha Test Rules",
+    resources: [ ( id: "ore", display_name: "Ore", starting: 200 ) ],
+    base_population_cap: 0,
+    victory: ( kind: "elimination", allow_resignation: true ),
+)
+"#;
+
+        const BASE: &str = r#"
+(
+    schema_version: 1,
+    id: "base",
+    display_name: "Base",
+    capabilities: [
+        Health(( max: 500 )),
+        Vision(( radius_milli_tiles: 6000 )),
+        Footprint(( w: 2, h: 2 )),
+        Produce(()),
+    ],
+    cost: ( ore: 100 ),
+    build_time_ms: 10000,
+    population: 0,
+    requires: [],
+)
+"#;
+
+        const WORKER: &str = r#"
+(
+    schema_version: 1,
+    id: "worker",
+    display_name: "Worker",
+    capabilities: [
+        Health(( max: 40 )),
+        Move(( speed_milli_tiles_per_s: 2600, radius_milli_tiles: 300 )),
+        Vision(( radius_milli_tiles: 7000 )),
+    ],
+    cost: ( ore: 50 ),
+    build_time_ms: 12000,
+    population: 1,
+    requires: [],
+)
+"#;
+
+        const ORE_NODE: &str = r#"
+(
+    schema_version: 1,
+    id: "ore_node",
+    display_name: "Ore Node",
+    capabilities: [
+        Resource(( resource: "ore", amount: 1500 )),
+        Footprint(( w: 2, h: 2 )),
+    ],
+    cost: ( ore: 0 ),
+    build_time_ms: 0,
+    population: 0,
+    requires: [],
+)
+"#;
+
+        const FACTION: &str = r#"
+(
+    schema_version: 1,
+    id: "testers",
+    display_name: "Testers",
+    roster: [ "base", "worker" ],
+    production: { "base": [ "worker" ] },
+    starting_forces: [
+        ( entity: "base", offset: ( x: 0, y: 0 ) ),
+        ( entity: "worker", offset: ( x: -1, y: 3 ) ),
+        ( entity: "worker", offset: ( x: 1, y: 3 ) ),
+    ],
+)
+"#;
+
+        fn map_text() -> String {
+            let row = ".".repeat(16);
+            let grid = vec![row; 16].join("\",\n        \"");
+            format!(
+                r#"
+(
+    schema_version: 2,
+    id: "testing",
+    display_name: "Testing Grounds",
+    width: 16,
+    height: 16,
+    terrain: [
+        ( code: ".", name: "ground", passable: true, buildable: true ),
+    ],
+    grid: [
+        "{grid}",
+    ],
+    starts: [
+        ( player: 0, anchor: ( x: 3, y: 3 ) ),
+        ( player: 1, anchor: ( x: 10, y: 10 ) ),
+    ],
+    ore_nodes: [
+        ( kind: "ore_node", tile: ( x: 1, y: 1 ) ),
+        ( kind: "ore_node", tile: ( x: 13, y: 13 ) ),
+    ],
+    symmetric: false,
+)
+"#
+            )
+        }
+
+        let ore_override = r#"
+(
+    schema_version: 1,
+    id: "testing_01",
+    display_name: "Testing Grounds Assault",
+    map: "testing",
+    faction: "testers",
+    rules: "alpha",
+    rules_overrides: Some(( ore_starting: Some(500) )),
+    objectives: [
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: None )),
+            optional: false,
+        ),
+    ],
+)
+"#;
+        let sources = SourceMap::new()
+            .rules("alpha.ron", RULES)
+            .entity("base.ron", BASE)
+            .entity("worker.ron", WORKER)
+            .entity("ore_node.ron", ORE_NODE)
+            .faction("testers.ron", FACTION)
+            .map("testing.ron", &map_text())
+            .mission("testing_01.ron", ore_override);
+
+        let tree = ContentTree::load(&sources).expect("load tree");
+        let mission = tree.mission("testing_01").expect("mission found");
+        assert!(!mission.rules_overrides.is_empty());
+        let mission_id = tree.mission_id("testing_01");
+        println!("Mission id: 0x{:016x}", mission_id);
+    }
+
+    #[test]
+    fn rules_overrides_are_identity_bearing_and_domain_separated() {
+        // B-020: the rules overrides enter the mission id — a mission with
+        // overrides is a different mission from the same mission without
+        // them, and different override values produce different missions.
+        // The rules-overrides tail enters the encoding only when non-empty,
+        // and the domain tag keeps the byte streams apart.
+        let base = ContentTree::load(&factory().mission("testing_01.ron", MISSION))
+            .expect("the base mission loads");
+        let base_id = base.mission_id("testing_01");
+
+        let ore_override = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    rules_overrides: Some(( ore_starting: Some(500) )),",
+        );
+        let ore_tree = ContentTree::load(&factory().mission("testing_01.ron", &ore_override))
+            .expect("ore override mission loads");
+        let ore_id = ore_tree.mission_id("testing_01");
+        assert_ne!(
+            base_id, ore_id,
+            "ore_starting override changes the mission id"
+        );
+
+        let pop_override = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    rules_overrides: Some(( base_population_cap: Some(10) )),",
+        );
+        let pop_tree = ContentTree::load(&factory().mission("testing_01.ron", &pop_override))
+            .expect("pop override mission loads");
+        let pop_id = pop_tree.mission_id("testing_01");
+        assert_ne!(
+            base_id, pop_id,
+            "base_population_cap override changes the mission id"
+        );
+
+        let both_override = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    rules_overrides: Some(( ore_starting: Some(500), base_population_cap: Some(10) )),",
+        );
+        let both_tree = ContentTree::load(&factory().mission("testing_01.ron", &both_override))
+            .expect("both override mission loads");
+        let both_id = both_tree.mission_id("testing_01");
+        assert_ne!(base_id, both_id, "both overrides change the mission id");
+        assert_ne!(
+            ore_id, both_id,
+            "different override sets produce different mission ids"
+        );
+        assert_ne!(
+            pop_id, both_id,
+            "different override sets produce different mission ids"
+        );
+
+        // Empty overrides (explicit but all None) keep the same id as absent.
+        let empty_override = MISSION.replace(
+            "rules: \"alpha\",",
+            "rules: \"alpha\",\n    rules_overrides: Some(( ore_starting: None, base_population_cap: None )),",
+        );
+        let empty_tree = ContentTree::load(&factory().mission("testing_01.ron", &empty_override))
+            .expect("empty override mission loads");
+        let empty_id = empty_tree.mission_id("testing_01");
+        assert_eq!(
+            base_id, empty_id,
+            "empty overrides keep the same mission id"
+        );
+
+        // And the identity move is mission-scoped: the bundle identities the
+        // goldens pin never move, whatever the missions carry.
+        let base_bundle = base.bundle("testing").expect("bundle");
+        let ore_bundle = ore_tree.bundle("testing").expect("bundle");
+        assert_eq!(base_bundle.content_hash(), ore_bundle.content_hash());
+        assert_eq!(base_bundle.map_id(), ore_bundle.map_id());
     }
 }
