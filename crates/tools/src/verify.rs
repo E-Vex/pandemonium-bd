@@ -197,9 +197,15 @@ pub fn resolve_replay_verification(
         });
     }
     // The world through the named mission's own map bundle — the client's
-    // begin_mission law. An unnamed id (content whose mission set excludes
-    // it) falls back to the mission-less resolution so the third
-    // comparison refuses the record before any tick is spent.
+    // begin_mission law. B-019: the bundle resolves through the mission-aware
+    // path (`bundle_for_mission`), so a mission carrying faction_overrides
+    // re-simulates on the EFFECTIVE world the recording ran (the override
+    // roster, filtered production, and replacement forces baked into the
+    // world) — the fixture hash the record stamps is the effective world's.
+    // A mission without overrides resolves the base faction and the plain
+    // bundle world, exactly as before. An unnamed id (content whose mission
+    // set excludes it) falls back to the mission-less resolution so the
+    // third comparison refuses the record before any tick is spent.
     let named = tree.missions.iter().find(|def| {
         replay
             .mission_id
@@ -207,7 +213,7 @@ pub fn resolve_replay_verification(
     });
     let world = match named {
         Some(def) => tree
-            .bundle(&def.map)
+            .bundle_for_mission(&def.id)
             .with_context(|| format!("bundling mission '{}' map '{}'", def.id, def.map))?
             .world(),
         None => crate::ai_match::resolve_replay_world(content_path, replay)?,

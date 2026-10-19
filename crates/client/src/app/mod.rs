@@ -457,7 +457,13 @@ impl App {
             );
             return;
         };
-        let bundle = match self.tree.bundle(&def.map) {
+        // B-019: the mission-aware bundle path — the mission's own map
+        // bundle with its faction_overrides resolved, so the world (roster,
+        // production, starting forces) and the scripted opponent's plan
+        // (derived from the faction's production lists) both see the
+        // EFFECTIVE faction the mission fields. A mission without overrides
+        // resolves the base faction — the plain bundle, exactly as before.
+        let bundle = match self.tree.bundle_for_mission(&def.id) {
             Ok(bundle) => bundle,
             Err(error) => {
                 println!(
