@@ -65,6 +65,31 @@ pub struct RulesDef {
     pub file: String,
 }
 
+/// Per-mission rules overrides (B-020): only plain integer fields may be
+/// overridden. The Alpha ruleset has two such fields — the ore starting
+/// balance and the base population cap. Other fields (victory kind,
+/// allow_resignation, resource ids/names) are not overridable; missions that
+/// need different values for those must use a different ruleset file.
+/// This type is used inline in the mission file; it never exists as a
+/// standalone content file.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct RulesOverrides {
+    /// Optional override for the ore starting balance (the Alpha's single
+    /// registered resource). If `None`, the ruleset's value is used.
+    pub ore_starting: Option<i64>,
+    /// Optional override for the base population cap. If `None`, the
+    /// ruleset's value is used.
+    pub base_population_cap: Option<u32>,
+}
+
+impl RulesOverrides {
+    /// Returns `true` if this override set carries any non-`None` values —
+    /// i.e. if it actually changes anything from the base ruleset.
+    pub fn is_empty(&self) -> bool {
+        self.ore_starting.is_none() && self.base_population_cap.is_none()
+    }
+}
+
 /// One capability block, validated, in authoring units plus the tick-converted
 /// durations (plan §10.2: conversion happens once, at load).
 ///
@@ -614,6 +639,12 @@ pub struct MissionDef {
     /// initialization, so a mission that does not use the new field keeps
     /// exactly the same mission id and behavior as before.
     pub fog_preset: FogPreset,
+    /// Per-mission rules overrides (B-020): inline overrides for plain
+    /// integer rules fields (ore starting balance and base population cap).
+    /// `Default` (all `None`) when the file omits the field — the mission
+    /// identity rule: a mission without overrides keeps exactly the same id
+    /// as before.
+    pub rules_overrides: RulesOverrides,
     /// The ordered objective list — the indices are the objective-state event
     /// indices (ADR-0201 §2).
     pub objectives: Vec<ObjectiveDef>,
