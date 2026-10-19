@@ -186,9 +186,58 @@ impl ContentTree {
                 .iter()
                 .find(|faction| faction.id == mission.faction)
             {
+                // B-019's subset gate (AUD-003): a roster override restricts
+                // the base roster, it never adds — every name the override
+                // carries must already be a kind the base faction fields.
+                // An override that adds a kind outside the base roster is a
+                // stop-condition shape: it would smuggle new content into a
+                // mission through the mission-id side door, moving what the
+                // content hash guards without moving the hash. Loud refusal,
+                // naming the offending kinds.
+                if let Some(overrides) = &mission.faction_overrides {
+                    if let Some(roster) = &overrides.roster {
+                        let outsiders: Vec<&str> = roster
+                            .iter()
+                            .map(|kind| kind.as_str())
+                            .filter(|kind| !faction.roster.iter().any(|member| member == kind))
+                            .collect();
+                        if !outsiders.is_empty() {
+                            return Err(ContentError::Bundle {
+                                detail: format!(
+                                    "mission '{}' overrides the roster of faction '{}' with \
+                                     kind(s) {} the base roster does not carry (base roster: \
+                                     {}): a roster override restricts, it never adds",
+                                    mission.id,
+                                    faction.id,
+                                    outsiders
+                                        .iter()
+                                        .map(|kind| format!("'{kind}'"))
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    faction
+                                        .roster
+                                        .iter()
+                                        .map(|member| member.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            });
+                        }
+                    }
+                }
+                // B-019: every mission plays its EFFECTIVE faction — base +
+                // overrides (a mission without overrides resolves to the
+                // base faction unchanged). Everything below gates against
+                // the effective shape: the forces that stand at tick 0 are
+                // the effective ones, the roster the Build gate enforces is
+                // the effective one, and the production lists the Train gate
+                // enforces are the filtered ones. The gate's view and the
+                // mission-aware world's view run through the same helper, so
+                // they cannot drift.
+                let effective = effective_faction(mission, faction);
                 for objective in &mission.objectives {
                     if let defs::ObjectiveParameters::Protect { kind } = &objective.parameters {
-                        if !faction
+                        if !effective
                             .starting_forces
                             .iter()
                             .any(|force| &force.entity == kind)
@@ -201,11 +250,105 @@ impl ContentTree {
                                      protect fails on the first tick",
                                     mission.id,
                                     kind,
-                                    faction.id,
-                                    faction
+                                    effective.id,
+                                    effective
                                         .starting_forces
                                         .iter()
                                         .map(|force| force.entity.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            });
+                        }
+                    }
+                    // B-019's satisfiability gate (AUD-003): a BuildTrain
+                    // objective must be reachable under the EFFECTIVE
+                    // faction — the target must be a kind the mission player
+                    // can field (in the effective roster — the Build gate's
+                    // authority) and producible by something they can field
+                    // (a structure needs a builder the effective roster or
+                    // standing forces can supply; a unit needs a producer
+                    // the effective roster or standing forces can supply,
+                    // whose effective production list trains the kind). The
+                    // base-faction gates already proved references exist;
+                    // this is the satisfiability half, and it fires for
+                    // missions without overrides too — the effective faction
+                    // of a mission without overrides IS the base faction.
+                    if let defs::ObjectiveParameters::BuildTrain { kind, .. } =
+                        &objective.parameters
+                    {
+                        if !effective.roster.iter().any(|member| member == kind) {
+                            return Err(ContentError::Bundle {
+                                detail: format!(
+                                    "mission '{}' builds/trains kind '{}' that the effective \
+                                     roster of faction '{}' does not carry (effective roster: \
+                                     {}): the objective must be satisfiable under the faction \
+                                     the mission fields",
+                                    mission.id,
+                                    kind,
+                                    effective.id,
+                                    effective
+                                        .roster
+                                        .iter()
+                                        .map(|member| member.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            });
+                        }
+                        // The fieldable set: the kinds the effective roster
+                        // can grow (the Build gate's authority) plus the
+                        // kinds already standing (the effective starting
+                        // forces). Producers and builders come from here.
+                        let fieldable: std::collections::BTreeSet<&str> = effective
+                            .roster
+                            .iter()
+                            .map(|member| member.as_str())
+                            .chain(
+                                effective
+                                    .starting_forces
+                                    .iter()
+                                    .map(|force| force.entity.as_str()),
+                            )
+                            .collect();
+                        let entity_of = |id: &str| entities.iter().find(|entity| entity.id == id);
+                        let producible = if entity_of(kind)
+                            .is_some_and(|entity| entity.capability("Build").is_some())
+                        {
+                            // A structure: buildable by a builder the
+                            // mission player can field.
+                            fieldable.iter().any(|member| {
+                                entity_of(member)
+                                    .is_some_and(|entity| entity.capability("Build").is_some())
+                            })
+                        } else {
+                            // A unit: trainable by a producer the mission
+                            // player can field, through the effective
+                            // production lists.
+                            effective.production.iter().any(|(producer, list)| {
+                                fieldable.contains(producer.as_str())
+                                    && list.iter().any(|producible| producible == kind)
+                            })
+                        };
+                        if !producible {
+                            return Err(ContentError::Bundle {
+                                detail: format!(
+                                    "mission '{}' builds/trains kind '{}' that nothing in the \
+                                     effective faction '{}' can produce (roster + starting \
+                                     forces: {}; effective production: {}): the objective must \
+                                     be satisfiable under the faction the mission fields",
+                                    mission.id,
+                                    kind,
+                                    effective.id,
+                                    fieldable.iter().copied().collect::<Vec<_>>().join(", "),
+                                    effective
+                                        .production
+                                        .iter()
+                                        .map(|(producer, list)| format!(
+                                            "{} -> {{{}}}",
+                                            producer,
+                                            list.join(", ")
+                                        ))
                                         .collect::<Vec<_>>()
                                         .join(", ")
                                 ),
@@ -230,7 +373,11 @@ impl ContentTree {
                     for objective in &mission.objectives {
                         if let defs::ObjectiveParameters::ReachArea { area } = &objective.parameters
                         {
-                            validate_reach_area(mission, area, map, faction, &entities)?;
+                            // B-019: the tick-0 guard runs against the
+                            // EFFECTIVE starting forces — the forces the
+                            // mission actually fields stand at tick 0, so
+                            // an area containing one of those is vacuous.
+                            validate_reach_area(mission, area, map, &effective, &entities)?;
                         }
                     }
                 }
@@ -567,6 +714,64 @@ impl ContentTree {
             });
         };
         self.bundle(&map.id)
+    }
+
+    /// Builds the mission-aware bundle (B-019): the named mission's own map
+    /// bundle with the mission's `faction_overrides` resolved into the
+    /// faction the match plays — the base faction where the mission carries
+    /// no overrides, the effective faction (override roster, filtered
+    /// production, replacement starting forces) where it does. Every
+    /// mission-aware caller bundles through this path, so the world the
+    /// match runs (`world()` reads the faction for its roster, production
+    /// lists, and starting forces) and the plan the scripted AI derives
+    /// (`alpha_plan` reads the faction's production lists) both see the
+    /// effective faction — the restriction restricts card, gate, and AI
+    /// derivation in one move (ADR-0201 §3), with no AI code change.
+    ///
+    /// The shared [`ContentTree`] is never mutated (FD-1's identity law:
+    /// the tree is content; the overrides are mission data). The mission-aware
+    /// bundle's canonical identity stays the tree's — `content_hash` and
+    /// `map_id` are computed at construction from the tree's faction bytes
+    /// and are NOT recomputed over the effective faction: the content hash
+    /// golden names the tree's content, and an override's identity rides the
+    /// mission id on recordings that carry one (AUD-002), exactly like a
+    /// restricted roster does (B-016). The world's fixture hash still sees
+    /// the effective production and starting forces (it always hashed those
+    /// fields), so a recording of an overridden mission is a distinct match
+    /// identity — explained by the mission id it rides beside.
+    pub fn bundle_for_mission(&self, mission_id_str: &str) -> Result<ContentBundle, ContentError> {
+        let Some(mission) = self.mission(mission_id_str) else {
+            return Err(ContentError::Bundle {
+                detail: format!(
+                    "unknown mission '{mission_id_str}' (loaded missions: {})",
+                    self.missions
+                        .iter()
+                        .map(|mission| mission.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        let mut bundle = self.bundle(&mission.map)?;
+        // The effective faction replaces the mission faction in place (same
+        // position, so a future per-slot faction seam reads the same order).
+        // The tree-level gates guaranteed the mission's faction exists and
+        // the overrides are legal (subset, satisfiable objectives); the
+        // missing-lookup arms are unreachable defense that errors loudly.
+        let index = bundle
+            .factions
+            .iter()
+            .position(|faction| faction.id == mission.faction)
+            .ok_or_else(|| ContentError::Bundle {
+                detail: format!(
+                    "mission '{}' references faction '{}' that the tree does not carry — \
+                     the tree-level gates rejected this shape, so this is a content-seam \
+                     bug, please report it",
+                    mission.id, mission.faction
+                ),
+            })?;
+        bundle.factions[index] = effective_faction(mission, &bundle.factions[index]);
+        Ok(bundle)
     }
 }
 
@@ -906,6 +1111,62 @@ fn tile_center(x: i32, y: i32, w: u32, h: u32) -> Vec2Fx {
         pandemonium_fx::Fx::from_milli(cx),
         pandemonium_fx::Fx::from_milli(cy),
     )
+}
+
+/// The mission's effective faction (B-019): the base faction with the
+/// mission's `faction_overrides` applied — the override roster replaces the
+/// base roster (the tree-level gate has already proved it is a subset: an
+/// override restricts, it never adds), the override starting forces replace
+/// the base list, and the effective production is the base production
+/// filtered to the effective roster, so no producer or trainable kind
+/// outside the effective roster survives (no new kinds can enter through
+/// an override — FD-4's data law). A mission without overrides (or with a
+/// no-op block) resolves to the base faction unchanged, so every mission
+/// has an effective faction and every gate below reads the same one shape.
+///
+/// Pure and deterministic: a pure function of `(mission, base)` — the
+/// tree-level gates and the mission-aware bundle path both call this, so
+/// the gate's view and the world's view can never drift.
+fn effective_faction(mission: &defs::MissionDef, base: &defs::FactionDef) -> defs::FactionDef {
+    let Some(overrides) = &mission.faction_overrides else {
+        return base.clone();
+    };
+    let roster = match &overrides.roster {
+        Some(roster) => roster.clone(),
+        None => base.roster.clone(),
+    };
+    let roster_set: std::collections::BTreeSet<&str> =
+        roster.iter().map(|kind| kind.as_str()).collect();
+    // The base production filtered to the effective roster: a producer
+    // outside it is dropped (its list can never be rebuilt — the Build gate
+    // refuses the kind), a trainable kind outside it is dropped from its
+    // producer's list, and a list filtered empty is dropped whole. The
+    // authored (sorted) order survives the filter.
+    let production = base
+        .production
+        .iter()
+        .filter(|(producer, _)| roster_set.contains(producer.as_str()))
+        .filter_map(|(producer, producibles)| {
+            let filtered: Vec<String> = producibles
+                .iter()
+                .filter(|kind| roster_set.contains(kind.as_str()))
+                .cloned()
+                .collect();
+            (!filtered.is_empty()).then_some((producer.clone(), filtered))
+        })
+        .collect();
+    let starting_forces = match &overrides.starting_forces {
+        Some(forces) => forces.clone(),
+        None => base.starting_forces.clone(),
+    };
+    defs::FactionDef {
+        id: base.id.clone(),
+        display_name: base.display_name.clone(),
+        roster,
+        production,
+        starting_forces,
+        file: base.file.clone(),
+    }
 }
 
 /// Converts a validated content area into the sim's vocabulary (B-018, the
@@ -1477,6 +1738,44 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             defs::FogPreset::Default => 0,
         });
     }
+    // The faction overrides (B-019) enter the encoding ONLY when the block
+    // actually overrides something — a roster list or a starting-forces list
+    // is present — behind the same domain-tag discipline: a mission that
+    // does not use the field (or carries a no-op block) keeps exactly the id
+    // it had before (the mission identity rule). Each sub-field encodes a
+    // presence flag ahead of its content, so a roster-only override and a
+    // forces-only override are distinct byte streams, and both are distinct
+    // from the two-together stream. The authored order is the encoded order
+    // (the roster and forces are identity data, and identity follows the
+    // mission bytes — `mission_identity_follows_the_mission_bytes`).
+    if let Some(overrides) = &mission.faction_overrides {
+        if overrides.roster.is_some() || overrides.starting_forces.is_some() {
+            encode_bool(h, true);
+            h.write_u8(FACTION_OVERRIDES_ENCODING_TAG);
+            match &overrides.roster {
+                Some(roster) => {
+                    encode_bool(h, true);
+                    h.write_u32(roster.len() as u32);
+                    for kind in roster {
+                        encode_str(h, kind);
+                    }
+                }
+                None => encode_bool(h, false),
+            }
+            match &overrides.starting_forces {
+                Some(forces) => {
+                    encode_bool(h, true);
+                    h.write_u32(forces.len() as u32);
+                    for force in forces {
+                        encode_str(h, &force.entity);
+                        h.write_i32(force.offset.0);
+                        h.write_i32(force.offset.1);
+                    }
+                }
+                None => encode_bool(h, false),
+            }
+        }
+    }
 }
 
 /// The domain tag of the optional fog-preset tail (B-015): a fixed byte
@@ -1484,6 +1783,12 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
 /// is self-describing and future mission fields appended after it can never
 /// collide with or misparse these bytes.
 const FOG_PRESET_ENCODING_TAG: u8 = 0xF0;
+
+/// The domain tag of the optional faction-overrides tail (B-019): the
+/// fog-preset tag's pattern continued — the next byte of the tag series —
+/// so a mission whose faction is overridden carries a self-describing tail
+/// that no other field's bytes can misparse.
+const FACTION_OVERRIDES_ENCODING_TAG: u8 = 0xF1;
 
 #[cfg(test)]
 mod tests {
@@ -2373,6 +2678,404 @@ mod tests {
         );
         // Unknown missions are refused loudly.
         let err = tree.mission_data("missing", PlayerId(0)).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown mission 'missing'"),
+            "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // B-019 — faction variants, inline: the identity rule (the overrides
+    // enter the mission id only when present, domain-separated), the
+    // tree-level gates (subset, satisfiability under the effective faction),
+    // and the mission-aware bundle path (the effective faction baked into
+    // the world, the tree and the canonical identities unmoved). The factory
+    // faction "testers" fields roster [base, worker], production
+    // { base: [worker] }, forces base + two workers per start; the entities
+    // sort to base = 0, ore_node = 1, worker = 2.
+    // -----------------------------------------------------------------------
+
+    /// A probe mission over the factory's closed reference set with the
+    /// given faction_overrides block text and objective list. The default
+    /// objectives are Destroy-only, so a restricted roster loads without
+    /// tripping the satisfiability gate — the identity tests' neutral
+    /// carrier.
+    fn mission_with_overrides(overrides: &str, objectives: Option<&str>) -> String {
+        let objectives = objectives.unwrap_or(
+            "        (\n            kind: \"Destroy\",\n            parameters: Destroy(( target_kind: None )),\n            optional: false,\n        ),",
+        );
+        format!(
+            r#"
+(
+    schema_version: 1,
+    id: "testing_01",
+    display_name: "Testing Grounds Assault",
+    map: "testing",
+    faction: "testers",
+    rules: "alpha",
+{overrides}
+    objectives: [
+{objectives}
+    ],
+)
+"#
+        )
+    }
+
+    /// The factory MISSION's objective text: a required Destroy plus the
+    /// optional BuildTrain(worker, 4) — the satisfiability gate's carrier.
+    const FACTORY_OBJECTIVES: &str = "        (\n            kind: \"Destroy\",\n            parameters: Destroy(( target_kind: None )),\n            optional: false,\n        ),\n        (\n            kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,\n        ),";
+
+    #[test]
+    fn faction_overrides_are_identity_bearing_only_when_present() {
+        // The mission identity rule: a mission that does not use the field —
+        // absent, empty block, or the all-None block — keeps exactly the id
+        // it had before; each sub-field that actually overrides something
+        // enters behind the domain tag, so every distinct override shape is
+        // a distinct mission.
+        let base_tree = ContentTree::load(
+            &factory().mission("testing_01.ron", &mission_with_overrides("", None)),
+        )
+        .expect("the plain mission loads");
+        let base_id = base_tree.mission_id("testing_01");
+        for block in [
+            "    faction_overrides: ( ),",
+            "    faction_overrides: ( roster: None, starting_forces: None ),",
+        ] {
+            let tree = ContentTree::load(
+                &factory().mission("testing_01.ron", &mission_with_overrides(block, None)),
+            )
+            .expect("a no-op block loads");
+            assert_eq!(
+                tree.mission_id("testing_01"),
+                base_id,
+                "a no-op block keeps exactly the mission id ({block})"
+            );
+        }
+        // Roster-only, forces-only, and both are three distinct ids, all
+        // distinct from the base.
+        let roster_only = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( roster: Some([\"worker\"]) ),",
+                None,
+            ),
+        ))
+        .expect("a roster-only override loads");
+        let forces_only = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( starting_forces: Some([( entity: \"worker\", offset: ( x: 0, y: 4 ) )]) ),",
+                None,
+            ),
+        ))
+        .expect("a forces-only override loads");
+        let both = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( roster: Some([\"worker\"]), starting_forces: Some([( entity: \"worker\", offset: ( x: 0, y: 4 ) )]) ),",
+                None,
+            ),
+        ))
+        .expect("a both override loads");
+        let ids = [
+            base_tree.mission_id("testing_01"),
+            roster_only.mission_id("testing_01"),
+            forces_only.mission_id("testing_01"),
+            both.mission_id("testing_01"),
+        ];
+        for (first, rest) in ids.iter().enumerate() {
+            for second in &ids[first + 1..] {
+                assert_ne!(
+                    rest, second,
+                    "every distinct override shape is its own mission"
+                );
+            }
+        }
+        // And the encoded content is the authored content: an explicit
+        // roster is identity-bearing even when it names every kind the base
+        // roster carries — the presence flag itself is a byte.
+        let other_roster = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( roster: Some([\"base\", \"worker\"]) ),",
+                None,
+            ),
+        ))
+        .expect("a full-roster override loads");
+        assert_ne!(
+            other_roster.mission_id("testing_01"),
+            base_id,
+            "an explicit roster is identity-bearing even when it names everything"
+        );
+    }
+
+    #[test]
+    fn a_roster_override_must_be_a_subset_of_the_base_roster() {
+        // The stop-condition gate: an override that adds a kind outside the
+        // base roster is refused loudly — the ore node is a real entity the
+        // tree carries, but the testers faction does not field it, so the
+        // override would smuggle a new kind in through the mission-id side
+        // door. The subset check fires before the effective faction exists,
+        // so the probe mission needs no BuildTrain to be legal otherwise.
+        let sources = SourceMap::new()
+            .rules("alpha.ron", RULES)
+            .entity("base.ron", BASE)
+            .entity("worker.ron", WORKER)
+            .entity("ore_node.ron", ORE_NODE)
+            .faction("testers.ron", FACTION)
+            .map("testing.ron", &map_text())
+            .mission(
+                "testing_01.ron",
+                &mission_with_overrides(
+                    "    faction_overrides: ( roster: Some([\"worker\", \"ore_node\"]) ),",
+                    None,
+                ),
+            );
+        let err = ContentTree::load(&sources).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "mission 'testing_01' overrides the roster of faction 'testers' with \
+                 kind(s) 'ore_node' the base roster does not carry"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_build_train_objective_must_be_satisfiable_under_the_effective_faction() {
+        // The satisfiability gate (AUD-003), unit level: the factory
+        // MISSION's BuildTrain(worker, 4) is satisfiable under the base
+        // faction (worker in the roster; the base producer fields it) —
+        // but not under a roster that drops the base producer (the
+        // effective production is empty: the standing base's list dies
+        // with its roster membership, the faction-file invariant the
+        // effective faction mirrors), and not under a roster that drops
+        // the worker itself.
+        // Dropping the worker: the target is outside the effective roster.
+        let no_worker = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( roster: Some([\"base\"]) ),",
+                Some(FACTORY_OBJECTIVES),
+            ),
+        ));
+        let err = no_worker.unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "mission 'testing_01' builds/trains kind 'worker' that the effective \
+                 roster of faction 'testers' does not carry"
+            ),
+            "got: {err}"
+        );
+        // Keeping the worker but dropping its producer: the target is in
+        // the effective roster yet nothing fieldable produces it.
+        let no_producer = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( roster: Some([\"worker\"]) ),",
+                Some(FACTORY_OBJECTIVES),
+            ),
+        ));
+        let err = no_producer.unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "mission 'testing_01' builds/trains kind 'worker' that nothing in the \
+                 effective faction 'testers' can produce"
+            ),
+            "got: {err}"
+        );
+        // Keeping both: the objective loads (the control).
+        let tree = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( roster: Some([\"base\", \"worker\"]) ),",
+                Some(FACTORY_OBJECTIVES),
+            ),
+        ))
+        .expect("a satisfiable override loads");
+        assert_eq!(tree.missions.len(), 1);
+    }
+
+    #[test]
+    fn a_protect_objective_is_checked_against_the_effective_starting_forces() {
+        // The vacuous-failure guard (AUD-003) now reads the EFFECTIVE
+        // forces: the factory faction starts with workers, but a mission
+        // whose forces override removes them has nothing to protect — the
+        // gate refuses the shape the mission actually fields. A completable
+        // required objective rides along (the all-Protect law stays out of
+        // the way).
+        let objectives = "        (\n            kind: \"Destroy\",\n            parameters: Destroy(( target_kind: None )),\n            optional: false,\n        ),\n        (\n            kind: \"Protect\",\n            parameters: Protect(( kind: \"worker\" )),\n            optional: true,\n        ),";
+        let sources = SourceMap::new()
+            .rules("alpha.ron", RULES)
+            .entity("base.ron", BASE)
+            .entity("worker.ron", WORKER)
+            .entity("ore_node.ron", ORE_NODE)
+            .faction("testers.ron", FACTION)
+            .map("testing.ron", &map_text())
+            .mission(
+                "testing_01.ron",
+                &mission_with_overrides(
+                    "    faction_overrides: ( starting_forces: Some([( entity: \"base\", offset: ( x: 0, y: 0 ) )]) ),",
+                    Some(objectives),
+                ),
+            );
+        let err = ContentTree::load(&sources).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "mission 'testing_01' protects kind 'worker' that the starting forces \
+                 of faction 'testers' do not carry"
+            ),
+            "got: {err}"
+        );
+        // Protecting a kind the EFFECTIVE forces do carry loads.
+        let sources = SourceMap::new()
+            .rules("alpha.ron", RULES)
+            .entity("base.ron", BASE)
+            .entity("worker.ron", WORKER)
+            .entity("ore_node.ron", ORE_NODE)
+            .faction("testers.ron", FACTION)
+            .map("testing.ron", &map_text())
+            .mission(
+                "testing_01.ron",
+                &mission_with_overrides(
+                    "    faction_overrides: ( starting_forces: Some([( entity: \"base\", offset: ( x: 0, y: 0 ) )]) ),",
+                    Some("        (\n            kind: \"Destroy\",\n            parameters: Destroy(( target_kind: None )),\n            optional: false,\n        ),\n        (\n            kind: \"Protect\",\n            parameters: Protect(( kind: \"base\" )),\n            optional: true,\n        ),"),
+                ),
+            );
+        ContentTree::load(&sources).expect("protecting an effective force is legal");
+    }
+
+    #[test]
+    fn bundle_for_mission_bakes_the_effective_faction_into_the_world() {
+        // The mission-aware bundle: the world the mission plays carries the
+        // override roster, the filtered production, and the replacement
+        // starting forces; the canonical identities (content hash, map id)
+        // stay the tree's — the overrides are mission data whose identity
+        // rides the mission id — and the shared tree is never mutated.
+        let tree = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( roster: Some([\"worker\"]) ),",
+                None,
+            ),
+        ))
+        .expect("the override mission loads");
+        let plain_bundle = tree.bundle("testing").expect("the plain bundle builds");
+        let plain_world = plain_bundle.world();
+        let mission_bundle = tree
+            .bundle_for_mission("testing_01")
+            .expect("the mission-aware bundle builds");
+        let mission_world = mission_bundle.world();
+        // Roster: the override's, resolved through the entity order
+        // (worker = 2); production: the base producer died with its roster
+        // membership; forces: the base's (the override named none).
+        assert_eq!(mission_world.roster, vec![KindId(2)]);
+        assert!(mission_world.production.is_empty());
+        assert_eq!(mission_world.initial_spawns, plain_world.initial_spawns);
+        // The canonical identities never move.
+        assert_eq!(
+            mission_bundle.content_hash(),
+            plain_bundle.content_hash(),
+            "the overrides are mission data — the content identity stays the tree's"
+        );
+        assert_eq!(mission_bundle.map_id(), plain_bundle.map_id());
+        // And the shared tree is untouched: the plain bundle still resolves
+        // the base faction, byte for byte.
+        assert_eq!(plain_world.roster, vec![KindId(0), KindId(2)]);
+        assert_eq!(plain_world.production, vec![(KindId(0), vec![KindId(2)])]);
+        let after = tree.bundle("testing").expect("the tree still bundles");
+        assert_eq!(after.faction().roster, vec!["base", "worker"]);
+        assert_eq!(after.world(), plain_world, "the tree is never mutated");
+        // The mission faction itself is the effective one — the AI's plan
+        // derivation reads exactly this list (no AI code change).
+        assert_eq!(mission_bundle.faction().roster, vec!["worker"]);
+        assert!(mission_bundle.faction().production.is_empty());
+    }
+
+    #[test]
+    fn bundle_for_mission_bakes_the_replacement_starting_forces() {
+        // The forces-only override: the world's spawns are the replacement
+        // list (one worker per start, at the authored offsets), the
+        // production and roster stay the base faction's, and the canonical
+        // identities stay the tree's.
+        let tree = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    faction_overrides: ( starting_forces: Some([( entity: \"worker\", offset: ( x: 0, y: 4 ) )]) ),",
+                None,
+            ),
+        ))
+        .expect("the forces override loads");
+        let plain_world = tree.bundle("testing").expect("plain").world();
+        let world = tree
+            .bundle_for_mission("testing_01")
+            .expect("mission-aware")
+            .world();
+        // Per start: one worker instead of a base and two workers; the ore
+        // nodes spawn after the factions' forces, as always.
+        let worker_spawns: Vec<_> = world
+            .initial_spawns
+            .iter()
+            .filter(|spawn| spawn.kind == KindId(2) && spawn.owner != PlayerId::NEUTRAL)
+            .collect();
+        assert_eq!(
+            worker_spawns,
+            vec![
+                &SpawnDef {
+                    owner: PlayerId(0),
+                    kind: KindId(2),
+                    pos: Vec2Fx::new(
+                        pandemonium_fx::Fx::from_milli(3500),
+                        pandemonium_fx::Fx::from_milli(7500)
+                    ),
+                },
+                &SpawnDef {
+                    owner: PlayerId(1),
+                    kind: KindId(2),
+                    pos: Vec2Fx::new(
+                        pandemonium_fx::Fx::from_milli(10500),
+                        pandemonium_fx::Fx::from_milli(14500)
+                    ),
+                },
+            ],
+            "each start fields exactly the replacement force at its anchor"
+        );
+        assert_eq!(
+            world.initial_spawns.len(),
+            plain_world.initial_spawns.len() - 4,
+            "two starts shedding a base and a worker each"
+        );
+        assert_eq!(world.roster, plain_world.roster);
+        assert_eq!(world.production, plain_world.production);
+    }
+
+    #[test]
+    fn bundle_for_mission_without_overrides_is_the_plain_bundle() {
+        // The mission-less law's mission twin: a mission without overrides
+        // (and a mission with a no-op block) resolves the base faction —
+        // the mission-aware bundle world IS the plain bundle world.
+        for overrides in ["", "    faction_overrides: ( ),"] {
+            let tree = ContentTree::load(
+                &factory().mission("testing_01.ron", &mission_with_overrides(overrides, None)),
+            )
+            .expect("the mission loads");
+            let plain = tree.bundle("testing").expect("plain").world();
+            let mission_aware = tree
+                .bundle_for_mission("testing_01")
+                .expect("mission-aware")
+                .world();
+            assert_eq!(
+                mission_aware, plain,
+                "no overrides — the plain world, byte for byte ({overrides})"
+            );
+        }
+        // An unknown mission id is refused loudly.
+        let tree = ContentTree::load(
+            &factory().mission("testing_01.ron", &mission_with_overrides("", None)),
+        )
+        .expect("the mission loads");
+        let err = tree.bundle_for_mission("missing").unwrap_err();
         assert!(
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"

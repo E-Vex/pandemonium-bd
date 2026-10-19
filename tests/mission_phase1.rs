@@ -36,7 +36,8 @@ use pandemonium_sim::{
 use pandemonium_sim_api::{
     AreaSpec, Command, CommandKind, ControllerKind, EntityId, Event, FogPreset, GatherSemantics,
     KindId, MatchSetup, MissionObjective, MissionObjectiveKind, MissionObjectiveParameters,
-    ObjectiveState, PlayerId, PlayerSetup, ResourceId, TileFog, Vec2Fx,
+    ObjectiveState, PlayerId, PlayerSetup, Reject, RejectReason, ResourceId, TileFog, TilePos,
+    Vec2Fx,
 };
 
 /// The repository's content directory.
@@ -1969,5 +1970,669 @@ fn a_reach_and_gather_mission_replay_roundtrips() {
     assert_eq!(
         resim.final_hash, run.final_hash,
         "the final hash reproduces"
+    );
+}
+
+// -------------------------------------------------------------------------
+// B-019 — Faction variants, inline (ADR-0201 §3, the owner's binding
+// decision: overrides live in the mission file, never a new content file).
+// The acceptance runs against the REAL tree, the REAL seam, and the REAL
+// simulation: the restricted roster gates Build and Train through the exact
+// world fields the mission-aware bundle bakes; the scripted AI derives its
+// whole plan from the effective faction's production lists (no AI code
+// change); the overrides' identity rides the mission id; and the mission
+// without overrides keeps its world, its id, and its goldens. Loader-level
+// gates run over in-memory SourceMaps built on the real content — the
+// frozen tree gains no file (B-017's discipline).
+// -------------------------------------------------------------------------
+
+/// The B-019 probe faction restriction: the Legion field minus raider,
+/// guardian, and turret. Every producer and the AI's build order stay
+/// fieldable (worker, rifleman, command_center, barracks, supply_depot),
+/// so the restricted mission plays like a real mission — the point under
+/// proof is what the AI and the gates do with the kinds that LEFT.
+const RESTRICTED_ROSTER: &str = r#"    faction_overrides: (
+        roster: Some([
+            "worker", "rifleman", "command_center", "barracks", "supply_depot",
+        ]),
+    ),"#;
+
+/// A probe mission carrying a faction_overrides block: the given overrides
+/// text and objective list over the real content's closed reference set.
+fn probe_mission_with_overrides(id: &str, overrides: &str, objectives: &str) -> String {
+    format!(
+        r#"
+(
+    schema_version: 1,
+    id: "{id}",
+    display_name: "Probe",
+    map: "crossroads_64",
+    faction: "legion",
+    rules: "alpha",
+{overrides}
+    objectives: [
+{objectives}
+    ],
+)
+"#
+    )
+}
+
+/// The real content sources with one restricted-roster probe mission added
+/// in memory (Destroy-only objectives — the AI acceptance's carrier).
+fn sources_with_restricted_roster(id: &str) -> SourceMap {
+    SourceMap::from_dir(&repo_content())
+        .expect("the real content reads")
+        .mission(
+            &format!("{id}.ron"),
+            &probe_mission_with_overrides(
+                id,
+                RESTRICTED_ROSTER,
+                "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, )",
+            ),
+        )
+}
+
+/// An entity kind's id, by name, through the tree's entity order.
+fn kind_of(tree: &ContentTree, name: &str) -> KindId {
+    KindId(
+        tree.entities
+            .iter()
+            .position(|entity| entity.id == name)
+            .unwrap_or_else(|| panic!("{name} exists in the tree")) as u32,
+    )
+}
+
+/// The kinds a restricted mission's command log must never Build or Train.
+const EXCLUDED_KINDS: [&str; 3] = ["raider", "guardian", "turret"];
+
+#[test]
+fn a_restricted_missions_world_carries_the_effective_faction() {
+    // The mission-aware bundle: the probe's roster override replaces the
+    // Legion's, the effective production filters raider and guardian out of
+    // the barracks' list, the starting forces stay the base faction's (the
+    // override named none), and the canonical identities — the content hash
+    // golden and the map id — stay the tree's. The plain bundle and the
+    // shared tree are untouched.
+    let tree = ContentTree::load(&sources_with_restricted_roster("restricted_world"))
+        .expect("the restricted probe loads");
+    let plain_world = tree.bundle("crossroads_64").expect("plain bundle").world();
+    let bundle = tree
+        .bundle_for_mission("restricted_world")
+        .expect("the mission-aware bundle builds");
+    let world = bundle.world();
+
+    let in_roster = [
+        "worker",
+        "rifleman",
+        "command_center",
+        "barracks",
+        "supply_depot",
+    ]
+    .map(|name| kind_of(&tree, name));
+    for kind in in_roster {
+        assert!(
+            world.roster.contains(&kind),
+            "the effective roster keeps every kind the override names"
+        );
+    }
+    for name in EXCLUDED_KINDS {
+        assert!(
+            !world.roster.contains(&kind_of(&tree, name)),
+            "{name} left the effective roster"
+        );
+    }
+    // The barracks' effective production list: rifleman only — raider and
+    // guardian died with their roster membership; the command center still
+    // trains workers.
+    let barracks = kind_of(&tree, "barracks");
+    let command_center = kind_of(&tree, "command_center");
+    assert_eq!(
+        world.production,
+        vec![
+            (barracks, vec![kind_of(&tree, "rifleman")]),
+            (command_center, vec![kind_of(&tree, "worker")]),
+        ],
+        "the effective production is the base lists filtered to the effective roster"
+    );
+    assert_eq!(
+        world.initial_spawns, plain_world.initial_spawns,
+        "a roster-only override leaves the starting forces standing"
+    );
+    // The canonical identities stay the tree's (the overrides are mission
+    // data — their identity rides the mission id), and the tree itself is
+    // never mutated: the plain world is the Legion's, byte for byte.
+    assert_eq!(bundle.content_hash(), 0x9bc1_8c52_1107_b262);
+    assert_eq!(bundle.map_id(), 0xd381_3640_1ab0_2ff1);
+    assert_eq!(
+        plain_world.roster,
+        [
+            "worker",
+            "rifleman",
+            "raider",
+            "guardian",
+            "command_center",
+            "barracks",
+            "supply_depot",
+            "turret",
+        ]
+        .map(|name| kind_of(&tree, name))
+        .to_vec()
+    );
+    assert_eq!(plain_world.production.len(), 2);
+}
+
+#[test]
+fn a_restricted_roster_rejects_build_and_train_of_excluded_kinds() {
+    // The brief's gate acceptance, end to end on the REAL mission world:
+    // Build of an excluded structure is refused by the B-016 roster gate
+    // (InvalidTarget, before economy and placement — no site, no ore); Train
+    // of an excluded unit is refused by the effective production list (the
+    // Train gate's only authority) — proven with a barracks scheduled into
+    // the world (the construction itself is not the point under proof; the
+    // gate is), and the in-roster controls are accepted.
+    let tree = ContentTree::load(&sources_with_restricted_roster("restricted_gates"))
+        .expect("the restricted probe loads");
+    let bundle = tree
+        .bundle_for_mission("restricted_gates")
+        .expect("the mission-aware bundle builds");
+    let mut world = bundle.world();
+    let mission = tree
+        .mission_data("restricted_gates", PlayerId(0))
+        .expect("the probe resolves");
+
+    // A barracks stands from tick 1 — the producer whose effective list the
+    // Train gate reads.
+    world.scheduled_spawns.push(ScheduledSpawnDef {
+        tick: 1,
+        spawn: SpawnDef {
+            owner: PlayerId(0),
+            kind: kind_of(&tree, "barracks"),
+            pos: Vec2Fx::from_ints(20, 14),
+        },
+    });
+
+    let setup = two_player_setup();
+    let mut sim = Sim::with_mission(&world, setup, mission);
+    let worker = sim
+        .player_view(PlayerId(0))
+        .entities
+        .iter()
+        .find(|entity| entity.kind == kind_of(&tree, "worker"))
+        .map(|entity| entity.id)
+        .expect("the mission player fields a worker");
+    let command_center = sim
+        .player_view(PlayerId(0))
+        .entities
+        .iter()
+        .find(|entity| entity.kind == kind_of(&tree, "command_center"))
+        .map(|entity| entity.id)
+        .expect("the mission player fields a command center");
+
+    // Tick 0: the restricted Build is refused; the in-roster control is
+    // accepted (the same worker, the same purse).
+    let build_turret = Command::new(
+        PlayerId(0),
+        sim.tick(),
+        1,
+        CommandKind::Build {
+            worker,
+            structure: kind_of(&tree, "turret"),
+            at: TilePos { x: 18, y: 14 },
+        },
+    );
+    let out = sim.step(std::slice::from_ref(&build_turret));
+    assert!(
+        out.events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected {
+                issuer: PlayerId(0),
+                seq: 1,
+                reject: Reject {
+                    reason: RejectReason::InvalidTarget,
+                    ..
+                },
+                ..
+            }
+        )),
+        "an excluded structure is refused by the roster gate: {:?}",
+        out.events
+    );
+    let build_depot = Command::new(
+        PlayerId(0),
+        sim.tick(),
+        2,
+        CommandKind::Build {
+            worker,
+            structure: kind_of(&tree, "supply_depot"),
+            at: TilePos { x: 18, y: 14 },
+        },
+    );
+    let out = sim.step(std::slice::from_ref(&build_depot));
+    assert!(
+        !out.events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { seq: 2, .. })),
+        "an in-roster structure builds: {:?}",
+        out.events
+    );
+
+    // Tick 2+: the barracks stands; the excluded unit is refused by the
+    // effective production list, the in-roster unit trains.
+    let mut barracks = None;
+    for _ in 2..10 {
+        let view = sim.player_view(PlayerId(0));
+        if let Some(entity) = view
+            .entities
+            .iter()
+            .find(|entity| entity.kind == kind_of(&tree, "barracks"))
+        {
+            barracks = Some(entity.id);
+            break;
+        }
+        sim.step(&[]);
+    }
+    let barracks = barracks.expect("the scheduled barracks stands");
+    let train_raider = Command::new(
+        PlayerId(0),
+        sim.tick(),
+        3,
+        CommandKind::Train {
+            producer: barracks,
+            unit: kind_of(&tree, "raider"),
+        },
+    );
+    let out = sim.step(std::slice::from_ref(&train_raider));
+    assert!(
+        out.events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected {
+                issuer: PlayerId(0),
+                seq: 3,
+                reject: Reject {
+                    reason: RejectReason::MissingCapability,
+                    ..
+                },
+                ..
+            }
+        )),
+        "an excluded unit is refused by the effective production list: {:?}",
+        out.events
+    );
+    let train_rifleman = Command::new(
+        PlayerId(0),
+        sim.tick(),
+        4,
+        CommandKind::Train {
+            producer: barracks,
+            unit: kind_of(&tree, "rifleman"),
+        },
+    );
+    let out = sim.step(std::slice::from_ref(&train_rifleman));
+    assert!(
+        !out.events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { seq: 4, .. })),
+        "an in-roster unit trains through the same gate: {:?}",
+        out.events
+    );
+    let _ = command_center; // the mission player's opening economy stands
+}
+
+#[test]
+fn the_ai_on_a_restricted_mission_never_commands_an_excluded_kind() {
+    // Work item 5's proof, at acceptance scale: the scripted opponent runs
+    // BOTH slots on the restricted mission (the headless shape — perceive,
+    // decide, act, through the same controller contract the tools run), and
+    // the command log never contains a Build or Train of an excluded kind.
+    // No AI code changed: the plan derives from the effective faction's
+    // production lists — pinned directly below — so the army list is the
+    // filtered one and the AI never even CONSIDERS the excluded kinds.
+    let tree = ContentTree::load(&sources_with_restricted_roster("restricted_ai"))
+        .expect("the restricted probe loads");
+    let bundle = tree
+        .bundle_for_mission("restricted_ai")
+        .expect("the mission-aware bundle builds");
+    let world = bundle.world();
+
+    // The plan-level pin: alpha_plan reads the faction's production lists,
+    // so on the mission-aware bundle the army is the filtered list and the
+    // structures are the in-roster ones. (The AI crate is untouched; this
+    // is the derivation the brief claims, held against the restricted
+    // content.)
+    let plan = pandemonium_engine::alpha_plan(&bundle, &world, PlayerId(0), 7);
+    assert_eq!(
+        plan.army,
+        vec![kind_of(&tree, "rifleman")],
+        "the AI's army is the effective production list, not the Legion's"
+    );
+    assert_eq!(plan.barracks, Some(kind_of(&tree, "barracks")));
+    assert_eq!(plan.command_center, kind_of(&tree, "command_center"));
+    assert_eq!(plan.worker, kind_of(&tree, "worker"));
+    assert_eq!(plan.depot, Some(kind_of(&tree, "supply_depot")));
+
+    // The match: both slots scripted, the mission riding the sim.
+    let mission = tree
+        .mission_data("restricted_ai", PlayerId(0))
+        .expect("the probe resolves");
+    let setup = MatchSetup {
+        seed: 7,
+        players: vec![
+            PlayerSetup {
+                player: PlayerId(0),
+                controller: ControllerKind::Ai,
+            },
+            PlayerSetup {
+                player: PlayerId(1),
+                controller: ControllerKind::Ai,
+            },
+        ],
+    };
+    let mut sim = Sim::with_mission(&world, setup, mission);
+    let mut controllers: Vec<(PlayerId, Box<dyn pandemonium_ai::Controller>)> = vec![
+        (
+            PlayerId(0),
+            Box::new(pandemonium_engine::alpha_controller(
+                &bundle,
+                &world,
+                PlayerId(0),
+                7,
+            )),
+        ),
+        (
+            PlayerId(1),
+            Box::new(pandemonium_engine::alpha_controller(
+                &bundle,
+                &world,
+                PlayerId(1),
+                7,
+            )),
+        ),
+    ];
+
+    // The headless drive: perceive (fog-filtered view), decide, act — the
+    // AiMatchHost contract, stepped here against Sim::with_mission.
+    let mut log: Vec<Command> = Vec::new();
+    for tick in 0..4500u32 {
+        let mut feed = Vec::new();
+        for (player, controller) in controllers.iter_mut() {
+            let view = sim.player_view(*player);
+            controller.think(&view, tick, &mut feed);
+        }
+        log.extend(feed.iter().cloned());
+        if sim.is_finished() {
+            break;
+        }
+        sim.step(&feed);
+    }
+
+    // The acceptance: no Build or Train of an excluded kind, from either
+    // slot, in 4500 ticks of scripted play.
+    let excluded: Vec<KindId> = EXCLUDED_KINDS.map(|name| kind_of(&tree, name)).to_vec();
+    let offenders: Vec<&Command> = log
+        .iter()
+        .filter(|command| match &command.kind {
+            CommandKind::Build { structure, .. } => excluded.contains(structure),
+            CommandKind::Train { unit, .. } => excluded.contains(unit),
+            _ => false,
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the AI never commands an excluded kind; offenders: {offenders:?}"
+    );
+    // And the run is a real one: the AI built structures and trained units
+    // of the kinds the restriction keeps — the restriction restricted play,
+    // it did not silence it.
+    let built: Vec<KindId> = log
+        .iter()
+        .filter_map(|command| match &command.kind {
+            CommandKind::Build { structure, .. } => Some(*structure),
+            _ => None,
+        })
+        .collect();
+    let trained: Vec<KindId> = log
+        .iter()
+        .filter_map(|command| match &command.kind {
+            CommandKind::Train { unit, .. } => Some(*unit),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        built.contains(&kind_of(&tree, "barracks")),
+        "the AI builds the barracks its plan derives"
+    );
+    assert!(
+        trained.contains(&kind_of(&tree, "rifleman")),
+        "the AI trains the one army kind the effective list keeps"
+    );
+}
+
+#[test]
+fn a_restricted_mission_replay_roundtrips() {
+    // The replay acceptance: a mission-carrying record of the restricted
+    // mission round-trips — the codec carries the override mission's id
+    // (AUD-002), the record's content hash is the EFFECTIVE world's fixture
+    // hash (the filtered production is world identity, as it always was),
+    // and the mission-carrying re-simulation through the mission-aware
+    // world reproduces every checkpoint and the final hash.
+    let tree = ContentTree::load(&sources_with_restricted_roster("restricted_replay"))
+        .expect("the restricted probe loads");
+    let mission_id = tree.mission_id("restricted_replay");
+    assert_ne!(
+        mission_id, CROSSROADS_01_MISSION_ID,
+        "the restricted probe is its own mission"
+    );
+    assert_eq!(
+        tree.mission_id("restricted_replay"),
+        mission_id,
+        "the mission id is a pure function of the mission bytes"
+    );
+    let mission = tree
+        .mission_data("restricted_replay", PlayerId(0))
+        .expect("the probe resolves");
+    let bundle = tree
+        .bundle_for_mission("restricted_replay")
+        .expect("the mission-aware bundle builds");
+    let world = bundle.world();
+    // The fixture hash moved with the effective production (it always
+    // hashed that field) — and the mission id beside it explains why.
+    let plain_world = tree.bundle("crossroads_64").expect("plain bundle").world();
+    assert_ne!(
+        world.content_hash(),
+        plain_world.content_hash(),
+        "the effective world is a different match identity"
+    );
+
+    // The recording: seed 7, two human slots, one Move order (the reach
+    // probe's marcher shape — the farthest starting worker), 400 ticks.
+    let setup = two_player_setup();
+    let worker = kind_of(&tree, "worker");
+    let marcher = EntityId(
+        1 + world
+            .initial_spawns
+            .iter()
+            .position(|spawn| {
+                spawn.owner == PlayerId(0)
+                    && spawn.kind == worker
+                    && spawn.pos == Vec2Fx::new(Fx::from_milli(16500), Fx::from_milli(16500))
+            })
+            .expect("the farthest starting worker stands at (16.5, 16.5)") as u64,
+    );
+    let command = Command::new(
+        PlayerId(0),
+        0,
+        1,
+        CommandKind::Move {
+            units: vec![marcher],
+            target: Vec2Fx::from_ints(26, 26),
+        },
+    );
+    let run = run_command_log_with_mission(
+        &world,
+        &setup,
+        std::slice::from_ref(&command),
+        400,
+        Some(mission.clone()),
+    );
+    let replay = ReplayFile {
+        format_version: FORMAT_VERSION,
+        content_hash: world.content_hash(),
+        map_id: world.map_id,
+        mission_id: Some(mission_id),
+        seed: setup.seed,
+        player_setup: setup.players.clone(),
+        commands: vec![command.clone()],
+        checkpoints: run
+            .checkpoints
+            .iter()
+            .map(|&(tick, hash)| Checkpoint { tick, hash })
+            .collect(),
+        final_hash: run.final_hash,
+    };
+    replay.validate().expect("the record is structurally sound");
+    let bytes = replay.encode();
+    let decoded = ReplayFile::decode(&bytes).expect("the record decodes");
+    assert_eq!(decoded, replay);
+    assert_eq!(decoded.mission_id, Some(mission_id));
+    // The re-simulation: through the same mission-aware world and the same
+    // mission seam — every checkpoint and the final hash reproduce.
+    let resim = run_command_log_with_mission(&world, &setup, &[command], 400, Some(mission));
+    assert_eq!(resim.checkpoints, run.checkpoints);
+    assert_eq!(resim.final_hash, run.final_hash);
+}
+
+#[test]
+fn every_faction_override_rejection_is_refused_against_the_real_tree() {
+    // The loader gates (AUD-003) against the REAL tree, in memory: a roster
+    // override naming a kind the Legion does not field (the ore node is a
+    // real entity); a BuildTrain objective whose target left the effective
+    // roster; a BuildTrain objective nothing fieldable produces anymore;
+    // a Protect objective whose kind left the effective starting forces;
+    // and an empty replacement forces list. Each refusal names the law.
+    // (crossroads_01 itself is the no-override control — its id pin is the
+    // suite's standing test.)
+
+    // 1. The subset gate: ore_node exists in the tree but the Legion does
+    //    not field it — an override restricts, it never adds.
+    let sources = SourceMap::from_dir(&repo_content())
+        .expect("the real content reads")
+        .mission(
+            "subset_bad.ron",
+            &probe_mission_with_overrides(
+                "subset_bad",
+                r#"    faction_overrides: ( roster: Some(["worker", "ore_node"]) ),"#,
+                "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, )",
+            ),
+        );
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "mission 'subset_bad' overrides the roster of faction 'legion' with kind(s) \
+             'ore_node' the base roster does not carry"
+        ),
+        "got: {err}"
+    );
+
+    // 2. BuildTrain outside the effective roster: the turret left with the
+    //    restriction, so "build turrets" is unsatisfiable — refused at load.
+    let sources = SourceMap::from_dir(&repo_content())
+        .expect("the real content reads")
+        .mission(
+            "buildtrain_bad.ron",
+            &probe_mission_with_overrides(
+                "buildtrain_bad",
+                RESTRICTED_ROSTER,
+                "( kind: \"BuildTrain\", parameters: BuildTrain(( kind: \"turret\", count: 2 )), optional: true, )",
+            ),
+        );
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "mission 'buildtrain_bad' builds/trains kind 'turret' that the effective \
+             roster of faction 'legion' does not carry"
+        ),
+        "got: {err}"
+    );
+
+    // 3. BuildTrain stranded by the production filter: the raider needs the
+    //    barracks, but this restriction keeps the barracks WITHOUT the
+    //    worker — no builder exists, the barracks can never stand, and the
+    //    raider is unreachable. (The worker-left case is refusal 2's shape;
+    //    this is the producer-side half: the target is fieldable but its
+    //    producer cannot be obtained.)
+    let sources = SourceMap::from_dir(&repo_content())
+        .expect("the real content reads")
+        .mission(
+            "producer_bad.ron",
+            &probe_mission_with_overrides(
+                "producer_bad",
+                r#"    faction_overrides: (
+        roster: Some(["raider", "guardian", "rifleman", "command_center", "supply_depot", "turret"]),
+    ),"#,
+                "( kind: \"BuildTrain\", parameters: BuildTrain(( kind: \"raider\", count: 1 )), optional: true, )",
+            ),
+        );
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "mission 'producer_bad' builds/trains kind 'raider' that nothing in the \
+             effective faction 'legion' can produce"
+        ),
+        "got: {err}"
+    );
+
+    // 4. Protect against the EFFECTIVE forces: the Legion starts with
+    //    workers, but this mission's forces do not — protecting one is the
+    //    vacuous-failure shape, refused.
+    let sources = SourceMap::from_dir(&repo_content())
+        .expect("the real content reads")
+        .mission(
+            "protect_bad.ron",
+            &probe_mission_with_overrides(
+                "protect_bad",
+                r#"    faction_overrides: (
+        starting_forces: Some([( entity: "command_center", offset: ( x: 0, y: 0 ) )]),
+    ),"#,
+                "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, ),\n        ( kind: \"Protect\", parameters: Protect(( kind: \"worker\" )), optional: true, )",
+            ),
+        );
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "mission 'protect_bad' protects kind 'worker' that the starting forces of \
+             faction 'legion' do not carry"
+        ),
+        "got: {err}"
+    );
+
+    // 5. The empty replacement forces list — every faction fields at least
+    //    one starting entity (plan §9.7).
+    let sources = SourceMap::from_dir(&repo_content())
+        .expect("the real content reads")
+        .mission(
+            "forces_bad.ron",
+            &probe_mission_with_overrides(
+                "forces_bad",
+                "    faction_overrides: ( starting_forces: Some([]) ),",
+                "( kind: \"Destroy\", parameters: Destroy(( target_kind: None )), optional: false, )",
+            ),
+        );
+    let err = ContentTree::load(&sources).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("faction_overrides starting_forces is empty"),
+        "got: {err}"
+    );
+
+    // 6. The control: the same restriction with satisfiable objectives
+    //    loads, and its mission id is its own.
+    let sources = sources_with_restricted_roster("restricted_ok");
+    let tree = ContentTree::load(&sources).expect("a satisfiable restriction loads");
+    assert_ne!(tree.mission_id("restricted_ok"), 0);
+    assert_ne!(
+        tree.mission_id("restricted_ok"),
+        CROSSROADS_01_MISSION_ID,
+        "an override mission is its own identity"
     );
 }

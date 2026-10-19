@@ -589,6 +589,26 @@ impl FogPreset {
     }
 }
 
+/// The faction variant overrides, canonically validated (B-019, ADR-0201
+/// §3's restrictions-as-mission-data): the inline reshaping of the mission
+/// faction. Every sub-field is optional — an override block names only
+/// what it changes, and a block that changes nothing (both sub-fields
+/// `None`) behaves exactly like no block at all, mission id included.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FactionOverridesDef {
+    /// The replacement roster: the entity ids the mission faction can
+    /// field. The tree-level gate guarantees it is a subset of the base
+    /// faction's roster (an override restricts, it never adds — no new
+    /// kinds, FD-4's data law) and that every name resolves in the tree.
+    /// `None` keeps the base roster.
+    pub roster: Option<Vec<String>>,
+    /// The replacement starting forces, placed relative to the map start
+    /// anchors exactly like the base faction's (plan §9.7). The loader
+    /// guarantees every kind exists in the tree and is not a resource
+    /// node. `None` keeps the base starting forces.
+    pub starting_forces: Option<Vec<StartingForce>>,
+}
+
 /// A validated mission (ADR-0201 §3): a closed reference set into the content
 /// tree — map, faction, rules — plus the ordered, AND-composed objective
 /// list. Reference existence is validated at load (the loader resolves
@@ -614,6 +634,12 @@ pub struct MissionDef {
     /// initialization, so a mission that does not use the new field keeps
     /// exactly the same mission id and behavior as before.
     pub fog_preset: FogPreset,
+    /// The faction variant overrides (B-019): the inline reshaping of the
+    /// mission faction — a restricted roster and/or replacement starting
+    /// forces, never a new content file. `None` when the file omits the
+    /// block (or carries a no-op block): the mission plays the base faction
+    /// and keeps exactly the mission id it had before (the identity rule).
+    pub faction_overrides: Option<FactionOverridesDef>,
     /// The ordered objective list — the indices are the objective-state event
     /// indices (ADR-0201 §2).
     pub objectives: Vec<ObjectiveDef>,
