@@ -540,6 +540,86 @@ pub(crate) fn parse_mission(
             })?
         }
     };
+    // The faction variant overrides (B-019): optional, forward-only (FD-10)
+    // — the field defaults to the all-None block, the base faction. The
+    // loader normalizes a no-op block (nothing overridden) to `None` on the
+    // canonical mission, so absent, empty, and all-None are one shape (the
+    // identity rule: they are the same mission, id included). File-level
+    // checks are the faction validator's own laws mirrored at the point the
+    // block parses: every name the block carries must resolve against the
+    // tree's entities (the roster's and the starting forces' entity
+    // references), a replacement starting-forces list must be non-empty
+    // (the base validator's "every faction needs at least one starting
+    // entity"), and a starting force may never be a resource node (nodes
+    // are placed by maps, plan §10.5). The subset law — a roster override
+    // must be a subset of the BASE faction's roster — is tree-level: it
+    // needs the mission's faction, which the file parse does not see.
+    let overrides = raw.faction_overrides;
+    let roster = match overrides.roster {
+        None => None,
+        Some(names) => {
+            for name in &names {
+                if !entities.iter().any(|entity| &entity.id == name) {
+                    return Err(ContentError::UnknownEntityRef {
+                        file: file.clone(),
+                        what: format!("mission '{}' faction_overrides roster", raw.id),
+                        reference: name.clone(),
+                    });
+                }
+            }
+            Some(names)
+        }
+    };
+    let starting_forces = match overrides.starting_forces {
+        None => None,
+        Some(forces) => {
+            if forces.is_empty() {
+                return Err(ContentError::Parse {
+                    file: file.clone(),
+                    detail: format!(
+                        "mission '{}' faction_overrides starting_forces is empty \
+                         (every faction needs at least one starting entity — plan §9.7)",
+                        raw.id
+                    ),
+                });
+            }
+            for force in &forces {
+                let Some(entity) = entities.iter().find(|entity| entity.id == force.entity) else {
+                    return Err(ContentError::UnknownEntityRef {
+                        file: file.clone(),
+                        what: format!("mission '{}' faction_overrides starting forces", raw.id),
+                        reference: force.entity.clone(),
+                    });
+                };
+                if entity.capability("Resource").is_some() {
+                    return Err(ContentError::Parse {
+                        file: file.clone(),
+                        detail: format!(
+                            "mission '{}' faction_overrides starting force '{}' is a \
+                             resource node — nodes are placed by maps, not by starting \
+                             forces (plan §10.5)",
+                            raw.id, force.entity
+                        ),
+                    });
+                }
+            }
+            Some(
+                forces
+                    .into_iter()
+                    .map(|force| defs::StartingForce {
+                        entity: force.entity,
+                        offset: (force.offset.x, force.offset.y),
+                    })
+                    .collect(),
+            )
+        }
+    };
+    // The no-op normalization: nothing overridden — no block at all.
+    let faction_overrides =
+        (roster.is_some() || starting_forces.is_some()).then_some(defs::FactionOverridesDef {
+            roster,
+            starting_forces,
+        });
     Ok(defs::MissionDef {
         id: raw.id,
         display_name: raw.display_name,
@@ -548,6 +628,7 @@ pub(crate) fn parse_mission(
         faction: raw.faction,
         rules: raw.rules,
         fog_preset,
+        faction_overrides,
         objectives,
     })
 }
@@ -1414,5 +1495,142 @@ mod tests {
             "got: {err}"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // B-019 — the faction_overrides block, file level: the optional field
+    // parses forward-only (FD-10), the entity references resolve like every
+    // mission reference, and the faction validator's own starting-force laws
+    // hold where the block parses. The subset law (override roster ⊆ base
+    // roster) is tree-level — it needs the mission's faction — and is
+    // pinned in bundle.rs's tests.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn faction_overrides_parse_only_what_they_name() {
+        // Absent: None — the base faction unchanged, the pre-B-019 parse.
+        let def = parse(MISSION).expect("a mission without the block parses");
+        assert!(def.faction_overrides.is_none());
+        // A no-op block (both sub-fields None, or an empty block):
+        // normalizes to None — behaviorally the base faction, and the
+        // identity rule pins the mission-id equality at the bundle level.
+        for block in [
+            "    faction_overrides: ( roster: None, starting_forces: None ),\n",
+            "    faction_overrides: ( ),\n",
+        ] {
+            let noop = MISSION.replace("    objectives: [", &format!("{block}    objectives: ["));
+            let def = parse(&noop).expect("a no-op block parses");
+            assert!(def.faction_overrides.is_none(), "a no-op block is no block");
+        }
+        // Roster only; forces only — each sub-field lands verbatim.
+        let roster_only = MISSION.replace(
+            "    objectives: [",
+            "    faction_overrides: ( roster: Some([\"worker\"]) ),\n    objectives: [",
+        );
+        let def = parse(&roster_only).expect("a roster-only override parses");
+        let overrides = def.faction_overrides.expect("present");
+        assert_eq!(overrides.roster, Some(vec!["worker".to_string()]));
+        assert!(overrides.starting_forces.is_none());
+        let forces_only = MISSION.replace(
+            "    objectives: [",
+            "    faction_overrides: ( starting_forces: Some([(\n            entity: \"worker\",\n            offset: ( x: 0, y: 4 ),\n        )]) ),\n    objectives: [",
+        );
+        let def = parse(&forces_only).expect("a forces-only override parses");
+        let overrides = def.faction_overrides.expect("present");
+        assert!(overrides.roster.is_none());
+        assert_eq!(
+            overrides.starting_forces,
+            Some(vec![defs::StartingForce {
+                entity: "worker".to_string(),
+                offset: (0, 4),
+            }])
+        );
+    }
+
+    #[test]
+    fn an_override_roster_names_must_resolve_against_the_tree() {
+        // The entity-reference law at the block: an unknown roster name is
+        // the UnknownEntityRef shape every other mission reference gets.
+        let unknown = MISSION.replace(
+            "    objectives: [",
+            "    faction_overrides: ( roster: Some([\"battlecruiser\"]), starting_forces: None ),\n    objectives: [",
+        );
+        let err = parse(&unknown).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "mission 'crossroads_01' faction_overrides roster references unknown \
+                 entity 'battlecruiser'"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn an_override_starting_forces_list_cannot_be_empty() {
+        // The base validator's law mirrored: every faction needs at least
+        // one starting entity (plan §9.7) — a replacement list is a faction's
+        // forces, and empty forces fail on the first tick of anything.
+        let empty = MISSION.replace(
+            "    objectives: [",
+            "    faction_overrides: ( roster: None, starting_forces: Some([]) ),\n    objectives: [",
+        );
+        let err = parse(&empty).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "faction_overrides starting_forces is empty (every faction needs at \
+                 least one starting entity"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn an_override_starting_force_kind_must_resolve_and_never_a_node() {
+        // Unknown force kinds are the reference law's error...
+        let unknown = MISSION.replace(
+            "    objectives: [",
+            "    faction_overrides: ( roster: None, starting_forces: Some([(\n            entity: \"battlecruiser\",\n            offset: ( x: 0, y: 4 ),\n        )]) ),\n    objectives: [",
+        );
+        let err = parse(&unknown).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("faction_overrides starting forces references unknown entity"),
+            "got: {err}"
+        );
+        // ...and a resource node is a maps-only placement (plan §10.5), the
+        // same refusal a faction file's forces get. The probe entities carry
+        // no capabilities, so the node shape is built here: a kind WITH the
+        // Resource capability.
+        let mut node_entities = entities();
+        node_entities.push(defs::EntityDef {
+            id: "ore_node".to_string(),
+            display_name: "Ore Node".to_string(),
+            capabilities: vec![defs::CapabilityDef::Resource {
+                resource: "ore".to_string(),
+                amount: 500,
+            }],
+            cost_ore: 0,
+            build_time_ms: 0,
+            build_time_ticks: 0,
+            population: 0,
+            requires: vec![],
+            file: "entities/ore_node.ron".to_string(),
+        });
+        let node_force = MISSION.replace(
+            "    objectives: [",
+            "    faction_overrides: ( roster: None, starting_forces: Some([(\n            entity: \"ore_node\",\n            offset: ( x: 0, y: 4 ),\n        )]) ),\n    objectives: [",
+        );
+        let err = parse_mission(
+            &Source::new("crossroads_01.ron", &node_force),
+            &node_entities,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "faction_overrides starting force 'ore_node' is a resource node — nodes \
+                 are placed by maps"
+            ),
+            "got: {err}"
+        );
     }
 }

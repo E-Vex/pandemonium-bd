@@ -435,8 +435,42 @@ pub(crate) struct RawMission {
     /// canonical vocabulary; unknown spellings are loud errors.
     #[serde(default)]
     pub fog_preset: Option<String>,
+    /// The faction variant overrides (B-019, ADR-0201 §3's "restrictions are
+    /// mission data"): an optional inline block that restricts or reshapes
+    /// the mission faction — no variant faction file is added to the tree
+    /// (the owner's binding decision: overrides are inline in the mission
+    /// file). `roster` replaces the base roster (a subset of it);
+    /// `starting_forces` replaces the base starting forces. Default is the
+    /// all-`None` block — behaviorally the base faction, and the loader
+    /// normalizes it to `None` on the canonical mission (the identity rule:
+    /// a no-op block keeps exactly the mission id a mission without the
+    /// block has).
+    #[serde(default)]
+    pub faction_overrides: RawFactionOverrides,
     /// The ordered objective list, AND-composed (ADR-0201 §2).
     pub objectives: Vec<RawObjective>,
+}
+
+/// The faction variant overrides as authored (B-019): the inline,
+/// mission-carried reshaping of the mission faction. Every sub-field is
+/// optional — an override block names only what it changes, and the
+/// all-`None` default block is the base faction (the loader normalizes it
+/// to `None` on the canonical mission, so a no-op block and an absent
+/// block are the same mission, id included).
+#[derive(serde::Deserialize, Default, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawFactionOverrides {
+    /// The replacement roster: the entity ids the mission faction can field.
+    /// Must be a subset of the base faction's roster (the tree-level gate;
+    /// the loader refuses a kind the base faction does not field — an
+    /// override restricts, it never adds). `None` keeps the base roster.
+    #[serde(default)]
+    pub roster: Option<Vec<String>>,
+    /// The replacement starting forces, placed relative to the map start
+    /// anchors exactly like the base faction's. Every kind must exist in
+    /// the tree's content; `None` keeps the base starting forces.
+    #[serde(default)]
+    pub starting_forces: Option<Vec<RawStartingForce>>,
 }
 
 /// One objective as authored: the kind spelling, the parameters block, and
