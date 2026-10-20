@@ -94,7 +94,7 @@ fn flagship_run() -> Run {
             (
                 *player,
                 ScriptedController::new(pandemonium_engine::alpha_plan(
-                    &bundle, &world, *player, SEED,
+                    &bundle, &world, *player, SEED, None,
                 )),
             )
         })

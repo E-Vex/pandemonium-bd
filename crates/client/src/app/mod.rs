@@ -385,7 +385,7 @@ impl App {
             .map(|slot| {
                 (
                     slot,
-                    Box::new(alpha_controller(bundle, &world, slot, setup.seed))
+                    Box::new(alpha_controller(bundle, &world, slot, setup.seed, None))
                         as Box<dyn Controller>,
                 )
             })
@@ -407,12 +407,16 @@ impl App {
         mission: MissionData,
     ) -> MatchHost {
         let world = bundle.world();
+        // B-021: the mission tunes the scripted opponent — its ai_settings
+        // ride the controller's plan (None fields keep the script's consts;
+        // a mission without the block tunes nothing, byte for byte). The
+        // objectives stay the simulation's (FD-7: the AI never sees them).
         let controllers: Vec<(PlayerId, Box<dyn Controller>)> = [AI]
             .into_iter()
             .map(|slot| {
                 (
                     slot,
-                    Box::new(alpha_controller(bundle, &world, slot, setup.seed))
+                    Box::new(alpha_controller(bundle, &world, slot, setup.seed, Some(&mission)))
                         as Box<dyn Controller>,
                 )
             })
@@ -495,8 +499,11 @@ impl App {
         let setup = MatchMode::PlayerVsAi.match_setup(seed);
         // M9.1: the right-click context resolver needs the content's worker
         // and node kind ids — a mission match plays the same order paths.
+        // (Kind resolution only: no tuning is read here — the opponent's
+        // controller, built in build_mission_host above, carries the
+        // mission's ai_settings.)
         let world = bundle.world();
-        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
+        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed, None);
         let host = Self::build_mission_host(&bundle, setup.clone(), mission);
         self.matches_started += 1;
         self.bundle = bundle;
@@ -630,7 +637,7 @@ impl App {
         // and node kind ids — the engine's alpha-plan resolution (capability
         // shaped, never name-matched) already derives exactly those.
         let world = bundle.world();
-        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed);
+        let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed, None);
         let host = Self::build_host(&bundle, setup.clone(), mode);
         self.matches_started += 1;
         self.bundle = bundle;

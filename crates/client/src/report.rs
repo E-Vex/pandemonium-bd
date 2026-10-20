@@ -239,8 +239,13 @@ mod tests {
         };
         let controllers = vec![(
             PlayerId(1),
-            Box::new(alpha_controller(&bundle, &world, PlayerId(1), setup.seed))
-                as Box<dyn pandemonium_ai::Controller>,
+            Box::new(alpha_controller(
+                &bundle,
+                &world,
+                PlayerId(1),
+                setup.seed,
+                None,
+            )) as Box<dyn pandemonium_ai::Controller>,
         )];
         let mut host = MatchHost::with_controllers(&world, setup.clone(), controllers);
         let mut trail = vec![(0, host.state_hash())];

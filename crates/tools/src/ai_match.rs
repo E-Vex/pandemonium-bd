@@ -107,12 +107,14 @@ pub fn run_ai_match(
     };
 
     // Controllers for the driven slots; idle slots simply issue nothing.
+    // (The CLI has no mission surface — the headless match is mission-less,
+    // so the plan carries the script's own consts, byte for byte.)
     let controllers: Vec<(PlayerId, Box<dyn pandemonium_ai::Controller>)> = players
         .iter()
         .filter_map(|(player, slot)| match slot {
             Slot::Ai => Some((
                 *player,
-                Box::new(alpha_controller(bundle, &world, *player, seed))
+                Box::new(alpha_controller(bundle, &world, *player, seed, None))
                     as Box<dyn pandemonium_ai::Controller>,
             )),
             Slot::Demo | Slot::Idle => None,
