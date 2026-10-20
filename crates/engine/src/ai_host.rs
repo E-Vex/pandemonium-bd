@@ -335,6 +335,14 @@ pub fn alpha_plan(
         enemy_start,
         depot_spots,
         barracks_spots,
+        // B-021: the mission's tuning overrides — all `None` until the
+        // mission-aware seam fills them (the byte-exact default plan).
+        wave_timer_ticks: None,
+        wave_size: None,
+        min_wave: None,
+        army_cap: None,
+        worker_target: None,
+        first_attack_delay: None,
     }
 }
 
