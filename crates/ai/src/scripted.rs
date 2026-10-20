@@ -271,6 +271,18 @@ impl ScriptedController {
         &self.plan
     }
 
+    /// The controller RNG's full state as `(state, inc)` — `fx::Rng`'s
+    /// canonical `state_parts` (plan §6.4), exposed for hosts and
+    /// verification tooling. The controller lives engine-side
+    /// (`AiMatchHost` owns it), so its RNG never enters the simulation's
+    /// canonical state hash — a digest of this pair is the only way to
+    /// pin the controller's random stream from outside (B-021's baseline
+    /// and None-identity measurements). Read-only: reading consumes
+    /// nothing and changes no behavior.
+    pub fn rng_state(&self) -> (u64, u64) {
+        self.rng.state_parts()
+    }
+
     /// Appends one command with the next sequence number.
     fn emit(&mut self, out: &mut Vec<Command>, tick: Tick, kind: CommandKind) {
         self.seq += 1;
