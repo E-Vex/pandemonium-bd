@@ -524,8 +524,8 @@ mod tests {
     use crate::sim::Sim;
     use pandemonium_fx::Fx;
     use pandemonium_sim_api::{
-        Command, CommandKind, ControllerKind, FogPreset, MatchSetup, MissionData, MissionObjective,
-        MissionObjectiveKind, MissionObjectiveParameters, PlayerId, PlayerSetup,
+        AiSettings, Command, CommandKind, ControllerKind, FogPreset, MatchSetup, MissionData,
+        MissionObjective, MissionObjectiveKind, MissionObjectiveParameters, PlayerId, PlayerSetup,
     };
 
     // Re-exported at the sim root for the test bodies (fixture types).
@@ -540,6 +540,9 @@ mod tests {
             // The fog preset only matters to the fog cache's construction;
             // the objective-evaluation tests run the Default initialization.
             fog_preset: FogPreset::Default,
+            // The AI tuning (B-021) is carried, never read by the sim — the
+            // objective-evaluation tests carry the all-None default.
+            ai_settings: AiSettings::default(),
         }
     }
 

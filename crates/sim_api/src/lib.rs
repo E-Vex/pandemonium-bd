@@ -793,6 +793,14 @@ pub struct MissionData {
     /// byte-identical to the mission-less initialization, so a mission that
     /// does not use the field changes nothing observable in the fog.
     pub fog_preset: FogPreset,
+    /// The AI tuning overrides (B-021): carried beside the objectives and
+    /// the fog preset, never read by the simulation — the engine's plan
+    /// builder reads them when it derives the scripted opponent's plan
+    /// (the controller is engine-side state). All-`None` is the byte-exact
+    /// default: the mission-less path and a mission without the block
+    /// construct the same all-`None` settings, so nothing observable in
+    /// the simulation differs.
+    pub ai_settings: AiSettings,
 }
 
 /// A mission's fog preset (ADR-0201 Phase 2, B-015): how the fog cache
@@ -838,6 +846,49 @@ impl FogPreset {
             _ => None,
         }
     }
+}
+
+/// Mission-controlled AI tuning (B-021, ADR-0201 Phase 2): the overrides a
+/// mission may apply to the scripted Alpha opponent's pacing. Every field is
+/// an `Option<u32>`; `None` means the script's own const — the byte-exact
+/// default law — so a mission that carries no overrides (or an all-`None`
+/// block) tunes nothing, exactly like the mission-less path.
+///
+/// The settings ride [`MissionData`] across the sim boundary at
+/// construction (FD-6: mission data reaches the engine only through the
+/// content seam), but the simulation never reads them — they parameterize
+/// the *controller*, which is engine-side state: `ai_host::alpha_plan`
+/// copies them into the `AiPlan` the scripted controller reads as
+/// `override.unwrap_or(CONST)`. A match's identity stays seed + content +
+/// the command log (FD-1); a tuned controller's commands are the log's
+/// bytes, and the mission id (AUD-002) explains the tuning on recordings
+/// that carry one.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct AiSettings {
+    /// The pressure cadence: how many ticks a marching wave waits before
+    /// its march is re-issued (a live wave never parks). `None` = the
+    /// script's `WAVE_TIMER_TICKS` (2400 — 80 s at 30 Hz).
+    pub wave_timer_ticks: Option<u32>,
+    /// The army size a full wave marches at. `None` = the script's
+    /// `WAVE_SIZE` (10).
+    pub wave_size: Option<u32>,
+    /// The minimum army size that may march — below it only a full
+    /// `wave_size` wave (or nothing) marches. `None` = the script's
+    /// `MIN_WAVE` (4).
+    pub min_wave: Option<u32>,
+    /// The hard cap on the army size — training pauses at the cap until
+    /// attrition opens a slot. `None` = the script's `ARMY_CAP` (16).
+    pub army_cap: Option<u32>,
+    /// The worker count the script grows the economy to before pausing
+    /// worker training. `None` = the script's `WORKER_TARGET` (10).
+    pub worker_target: Option<u32>,
+    /// The initial pressure timer — how long the script waits before its
+    /// first timer-driven march (an army at `wave_size` marches whenever
+    /// it is ready, whatever this says). `None` = the script's
+    /// `WAVE_TIMER_TICKS` (2400): today the first delay and the pressure
+    /// cadence share one const, and the split exists so a mission can
+    /// stagger them.
+    pub first_attack_delay: Option<u32>,
 }
 
 /// One of the eleven fixed pipeline stages of the simulation tick (plan
@@ -1087,6 +1138,7 @@ mod tests {
                 },
             ],
             fog_preset: FogPreset::Explored,
+            ai_settings: AiSettings::default(),
         };
         assert_eq!(objectives.player, PlayerId(0));
         assert_eq!(objectives.objectives.len(), 4);
@@ -1110,5 +1162,17 @@ mod tests {
             }
         );
         assert_eq!(objectives.fog_preset, FogPreset::Explored);
+        // B-021: the AI tuning rides the same set — all-`None` is the
+        // byte-exact default, and every field is independently overridable
+        // plain integer data (FD-5).
+        assert_eq!(objectives.ai_settings, AiSettings::default());
+        let tuned = AiSettings {
+            wave_timer_ticks: Some(1200),
+            worker_target: Some(14),
+            ..Default::default()
+        };
+        assert_eq!(tuned.wave_timer_ticks, Some(1200));
+        assert_eq!(tuned.worker_target, Some(14));
+        assert_eq!(tuned.wave_size, None);
     }
 }

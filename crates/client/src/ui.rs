@@ -2169,6 +2169,7 @@ mod tests {
                 },
             ],
             fog_preset: pandemonium_sim_api::FogPreset::Default,
+            ai_settings: pandemonium_sim_api::AiSettings::default(),
         };
         let lines = objective_lines(&resolved, &bundle);
         assert_eq!(lines.len(), 3);
@@ -2240,6 +2241,7 @@ mod tests {
                 },
             ],
             fog_preset: pandemonium_sim_api::FogPreset::Default,
+            ai_settings: pandemonium_sim_api::AiSettings::default(),
         };
         let lines = objective_lines(&resolved, &bundle);
         assert_eq!(lines.len(), 4);

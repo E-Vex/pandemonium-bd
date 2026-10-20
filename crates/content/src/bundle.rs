@@ -21,7 +21,7 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    AreaSpec, FogPreset, GatherSemantics, KindId, MissionData, MissionObjective,
+    AiSettings, AreaSpec, FogPreset, GatherSemantics, KindId, MissionData, MissionObjective,
     MissionObjectiveKind, MissionObjectiveParameters, PlayerId, ResourceId, Vec2Fx,
 };
 
@@ -753,6 +753,11 @@ impl ContentTree {
                 defs::FogPreset::Explored => FogPreset::Explored,
                 defs::FogPreset::Visible => FogPreset::Visible,
             },
+            // B-021: the AI tuning crosses the seam with the objectives —
+            // the mirror-to-sim conversion, field for field. The sim never
+            // reads it; the engine's plan builder does (the controller is
+            // engine-side state).
+            ai_settings: AiSettings::default(),
         })
     }
 

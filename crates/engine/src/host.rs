@@ -711,6 +711,7 @@ mod tests {
                 optional: false,
             }],
             fog_preset: pandemonium_sim_api::FogPreset::Default,
+            ai_settings: pandemonium_sim_api::AiSettings::default(),
         }
     }
 
