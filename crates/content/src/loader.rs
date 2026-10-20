@@ -620,6 +620,22 @@ pub(crate) fn parse_mission(
             roster,
             starting_forces,
         });
+    // The rules variant overrides (B-020): optional, forward-only (FD-10)
+    // — the field defaults to the all-None block, the base ruleset. The
+    // loader normalizes a no-op block (nothing overridden) to `None` on
+    // the canonical mission, so absent, empty, and all-None are one shape
+    // (the identity rule: they are the same mission, id included). Only
+    // plain integer fields are overridable: the starting ore balance and
+    // the base population cap. No entity references to resolve here.
+    let rules_overrides_raw = raw.rules_overrides;
+    let starting_ore = rules_overrides_raw.starting_ore;
+    let base_population_cap = rules_overrides_raw.base_population_cap;
+    let rules_overrides = (starting_ore.is_some() || base_population_cap.is_some()).then_some(
+        defs::RulesOverridesDef {
+            starting_ore,
+            base_population_cap,
+        },
+    );
     Ok(defs::MissionDef {
         id: raw.id,
         display_name: raw.display_name,
@@ -629,6 +645,7 @@ pub(crate) fn parse_mission(
         rules: raw.rules,
         fog_preset,
         faction_overrides,
+        rules_overrides,
         objectives,
     })
 }

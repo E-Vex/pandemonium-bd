@@ -609,6 +609,23 @@ pub struct FactionOverridesDef {
     pub starting_forces: Option<Vec<StartingForce>>,
 }
 
+/// The rules variant overrides, canonically validated (B-020, ADR-0201
+/// §3's restrictions-as-mission-data): the inline reshaping of the
+/// mission's ruleset. Only plain integer fields may be overridden: the
+/// starting ore balance and the base population cap. Every sub-field is
+/// optional — an override block names only what it changes, and a block
+/// that changes nothing (both sub-fields `None`) behaves exactly like no
+/// block at all, mission id included.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RulesOverridesDef {
+    /// Override for the starting ore balance (resources[ore].starting).
+    /// `None` keeps the base ruleset's starting ore.
+    pub starting_ore: Option<i64>,
+    /// Override for the base population cap (base_population_cap).
+    /// `None` keeps the base ruleset's base population cap.
+    pub base_population_cap: Option<u32>,
+}
+
 /// A validated mission (ADR-0201 §3): a closed reference set into the content
 /// tree — map, faction, rules — plus the ordered, AND-composed objective
 /// list. Reference existence is validated at load (the loader resolves
@@ -640,6 +657,12 @@ pub struct MissionDef {
     /// block (or carries a no-op block): the mission plays the base faction
     /// and keeps exactly the mission id it had before (the identity rule).
     pub faction_overrides: Option<FactionOverridesDef>,
+    /// The rules variant overrides (B-020): the inline reshaping of the
+    /// mission's ruleset — plain integer fields only (starting ore, base
+    /// population cap). `None` when the file omits the block (or carries a
+    /// no-op block): the mission plays the base ruleset and keeps exactly
+    /// the mission id it had before (the identity rule).
+    pub rules_overrides: Option<RulesOverridesDef>,
     /// The ordered objective list — the indices are the objective-state event
     /// indices (ADR-0201 §2).
     pub objectives: Vec<ObjectiveDef>,

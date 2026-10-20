@@ -274,7 +274,7 @@ impl ContentTree {
                     // this is the satisfiability half, and it fires for
                     // missions without overrides too — the effective faction
                     // of a mission without overrides IS the base faction.
-                    if let defs::ObjectiveParameters::BuildTrain { kind, .. } =
+                    if let defs::ObjectiveParameters::BuildTrain { kind, count } =
                         &objective.parameters
                     {
                         if !effective.roster.iter().any(|member| member == kind) {
@@ -295,6 +295,91 @@ impl ContentTree {
                                         .join(", ")
                                 ),
                             });
+                        }
+                        // B-020's count guard (AUD-003): the count must
+                        // demand play — a count at or below the number of
+                        // that kind already in the effective starting forces
+                        // would complete vacuously at tick 0 (the BuildTrain
+                        // status is current ownership, starting units
+                        // included). The target must exceed the standing
+                        // count.
+                        let starting_count = effective
+                            .starting_forces
+                            .iter()
+                            .filter(|force| force.entity == *kind)
+                            .count() as u32;
+                        if *count <= starting_count {
+                            return Err(ContentError::Bundle {
+                                detail: format!(
+                                    "mission '{}' builds/trains {} of kind '{}' but the \
+                                     effective starting forces of faction '{}' already \
+                                     field {} (starting forces: {}): the count must exceed \
+                                     the standing count or the objective completes \
+                                     vacuously at tick 0",
+                                    mission.id,
+                                    count,
+                                    kind,
+                                    effective.id,
+                                    starting_count,
+                                    effective
+                                        .starting_forces
+                                        .iter()
+                                        .map(|force| force.entity.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            });
+                        }
+                        // B-020's population-cap fit (AUD-003): a unit kind's
+                        // count must be fieldable under the effective
+                        // population cap (base cap plus the population
+                        // provided by the effective starting structures).
+                        // Structures cost no population and are unconstrained
+                        // here. The check is one-level: count * population
+                        // cost must fit the effective cap, which is the
+                        // strongest static statement available (a mission
+                        // that needs more population than the cap can ever
+                        // provide cannot complete).
+                        let kind_def = entities.iter().find(|entity| entity.id == *kind);
+                        let is_structure = kind_def
+                            .map(|entity| entity.capability("Build").is_some())
+                            .unwrap_or(false);
+                        if !is_structure {
+                            let pop_cost = kind_def
+                                .map(|entity| entity.population.max(0) as u32)
+                                .unwrap_or(0);
+                            if pop_cost > 0 {
+                                let effective_cap = effective_rules(mission, &rules).base_population_cap
+                                    + effective
+                                        .starting_forces
+                                        .iter()
+                                        .map(|force| {
+                                            entities
+                                                .iter()
+                                                .find(|entity| entity.id == force.entity)
+                                                .and_then(|entity| match entity.capability("ProvidesPopulation") {
+                                                    Some(defs::CapabilityDef::ProvidesPopulation { amount }) => {
+                                                        Some(*amount as u32)
+                                                    }
+                                                    _ => None,
+                                                })
+                                                .unwrap_or(0)
+                                        })
+                                        .sum::<u32>();
+                                if effective_cap > 0
+                                    && *count as u64 * pop_cost as u64 > effective_cap as u64
+                                {
+                                    return Err(ContentError::Bundle {
+                                        detail: format!(
+                                            "mission '{}' builds/trains {} of kind '{}' but \
+                                             the effective population cap {} cannot field that \
+                                             many (population cost {} each): the count does \
+                                             not fit the effective forces and population cap",
+                                            mission.id, count, kind, effective_cap, pop_cost
+                                        ),
+                                    });
+                                }
+                            }
                         }
                         // The fieldable set: the kinds the effective roster
                         // can grow (the Build gate's authority) plus the
@@ -392,9 +477,17 @@ impl ContentTree {
             // first trip. Also, the resource is ore by the
             // objective's definition, so a ruleset that registers no
             // "ore" cannot carry a gather objective at all.
+            // B-020: validate against the EFFECTIVE starting ore (base ore
+            // plus the mission's rules_overrides), so an override that
+            // raises the starting ore also raises the gather floor.
+            let effective_rules_for_gather = effective_rules(mission, &rules);
             for objective in &mission.objectives {
                 if let defs::ObjectiveParameters::Gather { amount, .. } = &objective.parameters {
-                    let Some(ore) = rules.resources.iter().find(|r| r.id == "ore") else {
+                    let Some(ore) = effective_rules_for_gather
+                        .resources
+                        .iter()
+                        .find(|r| r.id == "ore")
+                    else {
                         return Err(ContentError::Bundle {
                             detail: format!(
                                 "mission '{}' gathers ore but ruleset '{}' registers no \
@@ -771,6 +864,11 @@ impl ContentTree {
                 ),
             })?;
         bundle.factions[index] = effective_faction(mission, &bundle.factions[index]);
+        // B-020: resolve the effective ruleset the same way — the base
+        // ruleset with the mission's rules_overrides applied in place, tree
+        // never mutated. The canonical identity (content_hash, map_id) stays
+        // the tree's, exactly like the faction override (B-019 doctrine).
+        bundle.rules = effective_rules(mission, &bundle.rules);
         Ok(bundle)
     }
 }
@@ -1127,6 +1225,34 @@ fn tile_center(x: i32, y: i32, w: u32, h: u32) -> Vec2Fx {
 /// Pure and deterministic: a pure function of `(mission, base)` — the
 /// tree-level gates and the mission-aware bundle path both call this, so
 /// the gate's view and the world's view can never drift.
+/// The mission's effective ruleset (B-020): the base ruleset with the
+/// mission's `rules_overrides` applied — the override starting ore replaces
+/// the base ore resource's starting balance, the override base population
+/// cap replaces the base cap. A mission without overrides (or with a no-op
+/// block) resolves to the base ruleset unchanged, so every mission has an
+/// effective ruleset and every gate below reads the same one shape.
+///
+/// Pure and deterministic: a pure function of `(mission, base)` — the
+/// tree-level gates and the mission-aware bundle path both call this, so
+/// the gate's view and the world's view can never drift.
+fn effective_rules(mission: &defs::MissionDef, base: &defs::RulesDef) -> defs::RulesDef {
+    let Some(overrides) = &mission.rules_overrides else {
+        return base.clone();
+    };
+    let mut rules = base.clone();
+    if let Some(starting_ore) = overrides.starting_ore {
+        for resource in &mut rules.resources {
+            if resource.id == "ore" {
+                resource.starting = starting_ore;
+            }
+        }
+    }
+    if let Some(cap) = overrides.base_population_cap {
+        rules.base_population_cap = cap;
+    }
+    rules
+}
+
 fn effective_faction(mission: &defs::MissionDef, base: &defs::FactionDef) -> defs::FactionDef {
     let Some(overrides) = &mission.faction_overrides else {
         return base.clone();
@@ -1776,6 +1902,33 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             }
         }
     }
+    // The rules overrides (B-020) enter the encoding ONLY when the block
+    // actually overrides something — a starting-ore value or a base
+    // population cap — behind the same domain-tag discipline: a mission that
+    // does not use the field (or carries a no-op block) keeps exactly the id
+    // it had before (the mission identity rule). Each sub-field encodes a
+    // presence flag ahead of its content, so the two are distinct byte
+    // streams and distinct from the both-together stream.
+    if let Some(overrides) = &mission.rules_overrides {
+        if overrides.starting_ore.is_some() || overrides.base_population_cap.is_some() {
+            encode_bool(h, true);
+            h.write_u8(RULES_OVERRIDES_ENCODING_TAG);
+            match overrides.starting_ore {
+                Some(value) => {
+                    encode_bool(h, true);
+                    h.write_i64(value);
+                }
+                None => encode_bool(h, false),
+            }
+            match overrides.base_population_cap {
+                Some(value) => {
+                    encode_bool(h, true);
+                    h.write_u32(value);
+                }
+                None => encode_bool(h, false),
+            }
+        }
+    }
 }
 
 /// The domain tag of the optional fog-preset tail (B-015): a fixed byte
@@ -1789,6 +1942,11 @@ const FOG_PRESET_ENCODING_TAG: u8 = 0xF0;
 /// so a mission whose faction is overridden carries a self-describing tail
 /// that no other field's bytes can misparse.
 const FACTION_OVERRIDES_ENCODING_TAG: u8 = 0xF1;
+
+/// The domain tag of the optional rules-overrides tail (B-020): the next
+/// byte of the tag series, so a mission whose rules are overridden carries
+/// a self-describing tail that no other field's bytes can misparse.
+const RULES_OVERRIDES_ENCODING_TAG: u8 = 0xF2;
 
 #[cfg(test)]
 mod tests {

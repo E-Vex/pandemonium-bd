@@ -447,6 +447,17 @@ pub(crate) struct RawMission {
     /// block has).
     #[serde(default)]
     pub faction_overrides: RawFactionOverrides,
+    /// The rules variant overrides (B-020, ADR-0201 §3's "restrictions are
+    /// mission data"): an optional inline block that overrides plain integer
+    /// fields of the mission's ruleset — the starting ore balance and the
+    /// base population cap. No variant rules file is added to the tree (the
+    /// owner's binding decision: overrides are inline in the mission file).
+    /// Default is the all-`None` block — behaviorally the base ruleset, and
+    /// the loader normalizes it to `None` on the canonical mission (the
+    /// identity rule: a no-op block keeps exactly the mission id a mission
+    /// without the block has).
+    #[serde(default)]
+    pub rules_overrides: RawRulesOverrides,
     /// The ordered objective list, AND-composed (ADR-0201 §2).
     pub objectives: Vec<RawObjective>,
 }
@@ -471,6 +482,26 @@ pub(crate) struct RawFactionOverrides {
     /// the tree's content; `None` keeps the base starting forces.
     #[serde(default)]
     pub starting_forces: Option<Vec<RawStartingForce>>,
+}
+
+/// The rules variant overrides as authored (B-020): the inline,
+/// mission-carried reshaping of the mission's ruleset. Only plain integer
+/// fields may be overridden: the starting ore balance and the base
+/// population cap. Every sub-field is optional — an override block names
+/// only what it changes, and the all-`None` default block is the base
+/// ruleset (the loader normalizes it to `None` on the canonical mission,
+/// so a no-op block and an absent block are the same mission, id included).
+#[derive(serde::Deserialize, Default, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawRulesOverrides {
+    /// Override for the starting ore balance (resources[ore].starting).
+    /// `None` keeps the base ruleset's starting ore.
+    #[serde(default)]
+    pub starting_ore: Option<i64>,
+    /// Override for the base population cap (base_population_cap).
+    /// `None` keeps the base ruleset's base population cap.
+    #[serde(default)]
+    pub base_population_cap: Option<u32>,
 }
 
 /// One objective as authored: the kind spelling, the parameters block, and
