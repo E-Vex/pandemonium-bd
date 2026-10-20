@@ -129,7 +129,13 @@ pub fn run_bench(cli: &BenchCli) -> Result<BenchReport> {
     } else {
         let controllers: Vec<(PlayerId, Box<dyn pandemonium_ai::Controller>)> = vec![(
             PlayerId(1),
-            Box::new(alpha_controller(&bundle, &world, PlayerId(1), setup.seed)),
+            Box::new(alpha_controller(
+                &bundle,
+                &world,
+                PlayerId(1),
+                setup.seed,
+                None,
+            )),
         )];
         MatchHost::with_controllers(&world, setup, controllers)
     };

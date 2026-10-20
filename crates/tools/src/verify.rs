@@ -268,6 +268,7 @@ mod tests {
                 player: PlayerId(0),
                 objectives: Vec::new(),
                 fog_preset: pandemonium_sim_api::FogPreset::Default,
+                ai_settings: pandemonium_sim_api::AiSettings::default(),
             },
         }
     }

@@ -21,7 +21,7 @@ use pandemonium_sim::{
     CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
-    AreaSpec, FogPreset, GatherSemantics, KindId, MissionData, MissionObjective,
+    AiSettings, AreaSpec, FogPreset, GatherSemantics, KindId, MissionData, MissionObjective,
     MissionObjectiveKind, MissionObjectiveParameters, PlayerId, ResourceId, Vec2Fx,
 };
 
@@ -752,6 +752,21 @@ impl ContentTree {
                 defs::FogPreset::Default => FogPreset::Default,
                 defs::FogPreset::Explored => FogPreset::Explored,
                 defs::FogPreset::Visible => FogPreset::Visible,
+            },
+            // B-021: the AI tuning crosses the seam with the objectives —
+            // the mirror-to-sim conversion, field for field. The sim never
+            // reads it; the engine's plan builder does (the controller is
+            // engine-side state).
+            ai_settings: match &mission.ai_settings {
+                Some(settings) => AiSettings {
+                    wave_timer_ticks: settings.wave_timer_ticks,
+                    wave_size: settings.wave_size,
+                    min_wave: settings.min_wave,
+                    army_cap: settings.army_cap,
+                    worker_target: settings.worker_target,
+                    first_attack_delay: settings.first_attack_delay,
+                },
+                None => AiSettings::default(),
             },
         })
     }
@@ -1929,6 +1944,37 @@ fn encode_mission(h: &mut XxHash64, mission: &defs::MissionDef) {
             }
         }
     }
+    // The AI settings (B-021) enter the encoding ONLY when at least one
+    // sub-field is Some — behind the next domain tag of the series, the
+    // same discipline as every optional tail before it: a mission that
+    // does not tune (or carries a no-op block, which the loader
+    // normalizes to `None`) keeps exactly the id it had before (the
+    // mission identity rule). Each sub-field encodes a presence flag ahead
+    // of its value in the fixed field order, so single-field, full-block,
+    // and every mixed shape are distinct byte streams that no other
+    // field's bytes can misparse.
+    if let Some(settings) = &mission.ai_settings {
+        if settings.carries_override() {
+            encode_bool(h, true);
+            h.write_u8(AI_SETTINGS_ENCODING_TAG);
+            for value in [
+                settings.wave_timer_ticks,
+                settings.wave_size,
+                settings.min_wave,
+                settings.army_cap,
+                settings.worker_target,
+                settings.first_attack_delay,
+            ] {
+                match value {
+                    Some(value) => {
+                        encode_bool(h, true);
+                        h.write_u32(value);
+                    }
+                    None => encode_bool(h, false),
+                }
+            }
+        }
+    }
 }
 
 /// The domain tag of the optional fog-preset tail (B-015): a fixed byte
@@ -1947,6 +1993,12 @@ const FACTION_OVERRIDES_ENCODING_TAG: u8 = 0xF1;
 /// byte of the tag series, so a mission whose rules are overridden carries
 /// a self-describing tail that no other field's bytes can misparse.
 const RULES_OVERRIDES_ENCODING_TAG: u8 = 0xF2;
+
+/// The domain tag of the optional ai-settings tail (B-021): the next byte
+/// of the tag series after the rules overrides, so a mission that tunes the
+/// scripted opponent carries a self-describing tail that no other field's
+/// bytes can misparse — and a mission that does not tune writes nothing.
+const AI_SETTINGS_ENCODING_TAG: u8 = 0xF3;
 
 #[cfg(test)]
 mod tests {
@@ -3237,6 +3289,123 @@ mod tests {
         assert!(
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // B-021 — AI tuning, inline: the identity rule (the settings enter the
+    // mission id only when at least one sub-field is Some, domain-separated
+    // behind the 0xF3 tail tag), and the seam conversion (the canonical
+    // block crosses into sim_api's AiSettings field for field).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ai_settings_are_identity_bearing_only_when_carried() {
+        // The mission identity rule: a mission that does not tune — absent,
+        // empty block, or the all-None block the loader normalizes away —
+        // keeps exactly the id it had before; every block that carries at
+        // least one value is its own mission, and every distinct tuning
+        // shape is a distinct id.
+        let base_tree = ContentTree::load(
+            &factory().mission("testing_01.ron", &mission_with_overrides("", None)),
+        )
+        .expect("the plain mission loads");
+        let base_id = base_tree.mission_id("testing_01");
+        for block in [
+            "    ai_settings: ( ),",
+            "    ai_settings: ( wave_timer_ticks: None, wave_size: None, min_wave: None, army_cap: None, worker_target: None, first_attack_delay: None ),",
+        ] {
+            let tree = ContentTree::load(
+                &factory().mission("testing_01.ron", &mission_with_overrides(block, None)),
+            )
+            .expect("a no-op block loads");
+            assert_eq!(
+                tree.mission_id("testing_01"),
+                base_id,
+                "a no-op block keeps exactly the mission id ({block})"
+            );
+        }
+        // Single-field, full-block, and a same-fields-different-values
+        // block are distinct ids, all distinct from the base.
+        let tuned: [(&str, &str); 3] = [
+            (
+                "worker-only",
+                "    ai_settings: ( worker_target: Some(14) ),",
+            ),
+            (
+                "full",
+                "    ai_settings: ( wave_timer_ticks: Some(1200), wave_size: Some(8), min_wave: Some(2), army_cap: Some(12), worker_target: Some(6), first_attack_delay: Some(1800) ),",
+            ),
+            (
+                "full-different-values",
+                "    ai_settings: ( wave_timer_ticks: Some(900), wave_size: Some(8), min_wave: Some(2), army_cap: Some(12), worker_target: Some(6), first_attack_delay: Some(1800) ),",
+            ),
+        ];
+        let mut ids = vec![base_id];
+        for (name, block) in tuned {
+            let tree = ContentTree::load(
+                &factory().mission("testing_01.ron", &mission_with_overrides(block, None)),
+            )
+            .expect("a tuned block loads");
+            ids.push(tree.mission_id("testing_01"));
+            assert_ne!(
+                ids.last().copied(),
+                Some(base_id),
+                "a carried tuning is a different mission ({name})"
+            );
+        }
+        for (first, rest) in ids.iter().enumerate() {
+            for second in &ids[first + 1..] {
+                assert_ne!(
+                    rest, second,
+                    "every distinct tuning shape is its own mission"
+                );
+            }
+        }
+        // The mission id stays a pure function of the mission bytes:
+        // re-loading the same tuned mission reproduces the id.
+        let tree = ContentTree::load(
+            &factory().mission("testing_01.ron", &mission_with_overrides(tuned[0].1, None)),
+        )
+        .expect("the tuned mission loads again");
+        assert_eq!(tree.mission_id("testing_01"), ids[1]);
+    }
+
+    #[test]
+    fn mission_data_resolves_ai_settings_field_for_field() {
+        // The seam conversion: the canonical block crosses into sim_api's
+        // AiSettings verbatim — every field it carries, `None` for every
+        // field it does not — and a mission without the block resolves the
+        // all-None default (the byte-exact script consts).
+        let tree = ContentTree::load(
+            &factory().mission("testing_01.ron", &mission_with_overrides("", None)),
+        )
+        .expect("the plain mission loads");
+        let plain = tree
+            .mission_data("testing_01", PlayerId(0))
+            .expect("the plain mission resolves");
+        assert_eq!(plain.ai_settings, AiSettings::default());
+        let tuned = ContentTree::load(&factory().mission(
+            "testing_01.ron",
+            &mission_with_overrides(
+                "    ai_settings: ( wave_timer_ticks: Some(1200), wave_size: Some(8), min_wave: Some(2), army_cap: Some(12), worker_target: Some(6), first_attack_delay: Some(1800) ),",
+                None,
+            ),
+        ))
+        .expect("the tuned mission loads");
+        let resolved = tuned
+            .mission_data("testing_01", PlayerId(0))
+            .expect("the tuned mission resolves");
+        assert_eq!(
+            resolved.ai_settings,
+            AiSettings {
+                wave_timer_ticks: Some(1200),
+                wave_size: Some(8),
+                min_wave: Some(2),
+                army_cap: Some(12),
+                worker_target: Some(6),
+                first_attack_delay: Some(1800),
+            }
         );
     }
 }

@@ -2300,7 +2300,7 @@ fn the_ai_on_a_restricted_mission_never_commands_an_excluded_kind() {
     // structures are the in-roster ones. (The AI crate is untouched; this
     // is the derivation the brief claims, held against the restricted
     // content.)
-    let plan = pandemonium_engine::alpha_plan(&bundle, &world, PlayerId(0), 7);
+    let plan = pandemonium_engine::alpha_plan(&bundle, &world, PlayerId(0), 7, None);
     assert_eq!(
         plan.army,
         vec![kind_of(&tree, "rifleman")],
@@ -2337,6 +2337,7 @@ fn the_ai_on_a_restricted_mission_never_commands_an_excluded_kind() {
                 &world,
                 PlayerId(0),
                 7,
+                None,
             )),
         ),
         (
@@ -2346,6 +2347,7 @@ fn the_ai_on_a_restricted_mission_never_commands_an_excluded_kind() {
                 &world,
                 PlayerId(1),
                 7,
+                None,
             )),
         ),
     ];

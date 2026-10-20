@@ -69,3 +69,7 @@ path = "alpha_loop.rs"
 [[test]]
 name = "mission_phase1"
 path = "mission_phase1.rs"
+
+[[test]]
+name = "mission_ai"
+path = "mission_ai.rs"

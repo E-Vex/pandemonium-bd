@@ -28,7 +28,8 @@ use pandemonium_content::{CapabilityDef, EntityDef, StartDef};
 use pandemonium_sim::CapTemplate;
 use pandemonium_sim::{Sim, StepOutput, TrivialWorld};
 use pandemonium_sim_api::{
-    Command, KindId, MatchSetup, PlayerId, PlayerView, ResourceId, Snapshot, Tick, TilePos, Vec2Fx,
+    Command, KindId, MatchSetup, MissionData, PlayerId, PlayerView, ResourceId, Snapshot, Tick,
+    TilePos, Vec2Fx,
 };
 
 /// How many candidate placements each structure kind collects.
@@ -149,14 +150,17 @@ impl AiMatchHost {
 /// Builds the scripted Alpha opponent for one player from the loaded content
 /// (plan §9.6's "scripted controller"): the plan derives from the bundle, the
 /// controller's RNG seed from the match seed (plan §9.6: seeded, never its own
-/// entropy).
+/// entropy). A mission-carrying match passes the mission so its `ai_settings`
+/// tune the controller (B-021); a mission-less match passes `None` and gets
+/// the script's own consts, byte for byte.
 pub fn alpha_controller(
     bundle: &ContentBundle,
     world: &TrivialWorld,
     player: PlayerId,
     seed: u64,
+    mission: Option<&MissionData>,
 ) -> ScriptedController {
-    ScriptedController::new(alpha_plan(bundle, world, player, seed))
+    ScriptedController::new(alpha_plan(bundle, world, player, seed, mission))
 }
 
 /// The scripted opponent's per-player plan, derived from the content by
@@ -167,11 +171,31 @@ pub fn alpha_controller(
 /// kind carries a resource body. Map knowledge (starts, build ground) comes
 /// from the world definition — public knowledge a player reads off the screen,
 /// not fog-protected state.
+///
+/// A mission-carrying match passes its mission so the plan carries the
+/// mission's `ai_settings` (B-021) — the tuning knobs the controller reads
+/// as `override.unwrap_or(CONST)`. Only the tuning is read: the mission's
+/// objectives belong to the simulation's stage 10 and never reach the AI
+/// (FD-7 — the AI sees commands and the fog-filtered view, nothing else);
+/// a mission-less call passes `None` and the plan carries all-`None`
+/// overrides, the script's own consts.
+///
+/// The effective-value invariants hold here — the one place the mission's
+/// overrides and the script's consts meet (content cannot see the consts:
+/// the dependency law pins `ai` above it, so hardcoding the defaults in the
+/// loader would duplicate the tuning truth and drift). The loader already
+/// refused every shape it could see — zero values, pairwise inversions among
+/// provided fields; this asserts every effective value positive and the
+/// wave thresholds ordered (`min_wave <= wave_size <= army_cap`), which
+/// catches the cross-default shapes (a solo `min_wave` above the default
+/// `wave_size`, a solo `wave_size` above the default `army_cap`) loudly,
+/// before any controller runs.
 pub fn alpha_plan(
     bundle: &ContentBundle,
     world: &TrivialWorld,
     player: PlayerId,
     seed: u64,
+    mission: Option<&MissionData>,
 ) -> AiPlan {
     let entities = &bundle.entities;
     let kind_of = |id: &str| {
@@ -314,7 +338,11 @@ pub fn alpha_plan(
     let depot_spots = spots_for(depot);
     let barracks_spots = spots_for(barracks);
 
-    AiPlan {
+    // B-021: the mission's tuning, where a mission-carrying match provided
+    // one — `None` throughout for a mission-less match (the byte-exact
+    // default plan).
+    let ai = mission.map(|mission| &mission.ai_settings);
+    let plan = AiPlan {
         player,
         rng_seed: controller_seed(seed, player),
         worker: worker.unwrap_or(KindId(0)),
@@ -335,7 +363,47 @@ pub fn alpha_plan(
         enemy_start,
         depot_spots,
         barracks_spots,
-    }
+        wave_timer_ticks: ai.and_then(|ai| ai.wave_timer_ticks),
+        wave_size: ai.and_then(|ai| ai.wave_size),
+        min_wave: ai.and_then(|ai| ai.min_wave),
+        army_cap: ai.and_then(|ai| ai.army_cap),
+        worker_target: ai.and_then(|ai| ai.worker_target),
+        first_attack_delay: ai.and_then(|ai| ai.first_attack_delay),
+    };
+    // The effective-value invariants (the doc above): positive values,
+    // ordered thresholds. The defaults satisfy them (4 <= 10 <= 16), the
+    // loader refuses what it can see, and this catches the cross-default
+    // shapes before any controller runs.
+    let (wave_timer, wave_size, min_wave, army_cap) = (
+        plan.effective_wave_timer_ticks(),
+        plan.effective_wave_size(),
+        plan.effective_min_wave(),
+        plan.effective_army_cap(),
+    );
+    assert!(
+        wave_timer > 0
+            && wave_size > 0
+            && min_wave > 0
+            && army_cap > 0
+            && plan.effective_worker_target() > 0
+            && plan.effective_first_attack_delay() > 0,
+        "mission ai_settings must resolve to positive effective values — got \
+         wave_timer_ticks {wave_timer}, wave_size {wave_size}, min_wave {min_wave}, \
+         army_cap {army_cap}, worker_target {}, first_attack_delay {}",
+        plan.effective_worker_target(),
+        plan.effective_first_attack_delay()
+    );
+    assert!(
+        min_wave <= wave_size,
+        "mission ai_settings resolves min_wave ({min_wave}) above wave_size ({wave_size}) — \
+         a harassment wave larger than a full wave can never fire"
+    );
+    assert!(
+        wave_size <= army_cap,
+        "mission ai_settings resolves wave_size ({wave_size}) above army_cap ({army_cap}) \
+         — the army can never mass a full wave"
+    );
+    plan
 }
 
 /// The controller's RNG seed: the match seed mixed with the slot, so two

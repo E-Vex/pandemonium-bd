@@ -126,7 +126,8 @@ fn run_ai_match(bundle: &ContentBundle, seed: u64, ticks: u32) -> MatchRun {
         .map(|player| {
             (
                 player,
-                Box::new(alpha_controller(bundle, &world, player, seed)) as Box<dyn Controller>,
+                Box::new(alpha_controller(bundle, &world, player, seed, None))
+                    as Box<dyn Controller>,
             )
         })
         .collect();

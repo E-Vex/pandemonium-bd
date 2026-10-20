@@ -636,6 +636,84 @@ pub(crate) fn parse_mission(
             base_population_cap,
         },
     );
+    // The AI tuning overrides (B-021): optional, forward-only (FD-10) —
+    // the field defaults to the all-`None` block, the script's own consts.
+    // The loader normalizes a no-op block (nothing tuned) to `None` on the
+    // canonical mission, so absent, empty, and all-`None` are one shape
+    // (the identity rule: they are the same mission, id included).
+    //
+    // The checks here are the ones the content layer can see: every
+    // provided value must be positive, and the pairwise invariants
+    // (`min_wave <= wave_size`, `wave_size <= army_cap`) must hold
+    // wherever both members of a pair are provided. The script's consts
+    // are invisible to content (the dependency law puts `ai` above it,
+    // pinned by tests/architecture_law.rs — hardcoding the defaults here
+    // would duplicate the tuning truth and drift), so the full
+    // effective-value invariants — overrides checked against the consts
+    // they replace — are enforced where the two finally meet: the
+    // engine's plan builder (`ai_host::alpha_plan`), which asserts every
+    // effective value positive and the effective `min_wave <=
+    // wave_size <= army_cap` before handing the plan to a controller.
+    let ai_raw = raw.ai_settings;
+    let carries_any = ai_raw.wave_timer_ticks.is_some()
+        || ai_raw.wave_size.is_some()
+        || ai_raw.min_wave.is_some()
+        || ai_raw.army_cap.is_some()
+        || ai_raw.worker_target.is_some()
+        || ai_raw.first_attack_delay.is_some();
+    for (field, value) in [
+        ("wave_timer_ticks", ai_raw.wave_timer_ticks),
+        ("wave_size", ai_raw.wave_size),
+        ("min_wave", ai_raw.min_wave),
+        ("army_cap", ai_raw.army_cap),
+        ("worker_target", ai_raw.worker_target),
+        ("first_attack_delay", ai_raw.first_attack_delay),
+    ] {
+        if value.is_some_and(|value| value == 0) {
+            return Err(ContentError::Parse {
+                file: file.clone(),
+                detail: format!(
+                    "mission '{}' ai_settings {} is 0 — every tuning value \
+                     must be positive (a non-positive pacing value would \
+                     busy-loop or never fire)",
+                    raw.id, field
+                ),
+            });
+        }
+    }
+    if let (Some(min_wave), Some(wave_size)) = (ai_raw.min_wave, ai_raw.wave_size) {
+        if min_wave > wave_size {
+            return Err(ContentError::Parse {
+                file: file.clone(),
+                detail: format!(
+                    "mission '{}' ai_settings min_wave ({min_wave}) exceeds \
+                     wave_size ({wave_size}) — a harassment wave larger than a \
+                     full wave can never fire",
+                    raw.id
+                ),
+            });
+        }
+    }
+    if let (Some(wave_size), Some(army_cap)) = (ai_raw.wave_size, ai_raw.army_cap) {
+        if wave_size > army_cap {
+            return Err(ContentError::Parse {
+                file: file.clone(),
+                detail: format!(
+                    "mission '{}' ai_settings wave_size ({wave_size}) exceeds \
+                     army_cap ({army_cap}) — the army can never mass a full wave",
+                    raw.id
+                ),
+            });
+        }
+    }
+    let ai_settings = carries_any.then_some(defs::AiSettingsDef {
+        wave_timer_ticks: ai_raw.wave_timer_ticks,
+        wave_size: ai_raw.wave_size,
+        min_wave: ai_raw.min_wave,
+        army_cap: ai_raw.army_cap,
+        worker_target: ai_raw.worker_target,
+        first_attack_delay: ai_raw.first_attack_delay,
+    });
     Ok(defs::MissionDef {
         id: raw.id,
         display_name: raw.display_name,
@@ -646,6 +724,7 @@ pub(crate) fn parse_mission(
         fog_preset,
         faction_overrides,
         rules_overrides,
+        ai_settings,
         objectives,
     })
 }
@@ -1438,9 +1517,11 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_errors_in_strict_mode() {
+        // The probe field name is deliberately not a real field (B-021 made
+        // `ai_settings` a real one, so the pre-B-021 probe no longer probed).
         let extra = MISSION.replace(
             "    rules: \"alpha\",",
-            "    rules: \"alpha\",\n    ai_settings: (),",
+            "    rules: \"alpha\",\n    not_a_real_field: (),",
         );
         let err = parse(&extra).unwrap_err();
         assert!(matches!(err, ContentError::Parse { .. }), "got: {err}");
@@ -1648,6 +1729,143 @@ mod tests {
                  are placed by maps"
             ),
             "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // B-021 — the ai_settings block, file level: the optional field parses
+    // forward-only (FD-10), every provided value is positive, and the
+    // pairwise pacing invariants hold wherever both members are provided.
+    // The effective-value checks (overrides against the script consts they
+    // replace) are the engine's — content sits below the ai crate in the
+    // dependency law, so the consts are invisible here by design.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ai_settings_parse_only_what_they_name() {
+        // Absent: None — the script's own consts, the pre-B-021 parse.
+        let def = parse(MISSION).expect("a mission without the block parses");
+        assert!(def.ai_settings.is_none());
+        // A no-op block (every sub-field None, or an empty block):
+        // normalizes to None — behaviorally the consts, and the identity
+        // rule pins the mission-id equality at the bundle level.
+        for block in [
+            "    ai_settings: ( wave_timer_ticks: None, wave_size: None, min_wave: None, \
+             army_cap: None, worker_target: None, first_attack_delay: None ),\n",
+            "    ai_settings: ( ),\n",
+        ] {
+            let noop = MISSION.replace("    objectives: [", &format!("{block}    objectives: ["));
+            let def = parse(&noop).expect("a no-op block parses");
+            assert!(def.ai_settings.is_none(), "a no-op block is no block");
+        }
+        // One field only — it lands verbatim, and the canonical block
+        // reports that it carries an override.
+        let tuned = MISSION.replace(
+            "    objectives: [",
+            "    ai_settings: ( worker_target: Some(14) ),\n    objectives: [",
+        );
+        let def = parse(&tuned).expect("a single-field block parses");
+        let settings = def.ai_settings.expect("present");
+        assert_eq!(settings.worker_target, Some(14));
+        assert_eq!(settings.wave_timer_ticks, None);
+        assert!(settings.carries_override());
+        // Every field parses — the full block, verbatim.
+        let full = MISSION.replace(
+            "    objectives: [",
+            "    ai_settings: ( wave_timer_ticks: Some(1200), wave_size: Some(8), \
+             min_wave: Some(2), army_cap: Some(12), worker_target: Some(6), \
+             first_attack_delay: Some(1800) ),\n    objectives: [",
+        );
+        let def = parse(&full).expect("a full block parses");
+        let settings = def.ai_settings.expect("present");
+        assert_eq!(settings.wave_timer_ticks, Some(1200));
+        assert_eq!(settings.wave_size, Some(8));
+        assert_eq!(settings.min_wave, Some(2));
+        assert_eq!(settings.army_cap, Some(12));
+        assert_eq!(settings.worker_target, Some(6));
+        assert_eq!(settings.first_attack_delay, Some(1800));
+        assert!(settings.carries_override());
+        // And an unknown sub-field spelling is a loud parse error, never a
+        // silently ignored value (the strict-mode law).
+        let typo = MISSION.replace(
+            "    objectives: [",
+            "    ai_settings: ( wave_timer_tick: Some(1200) ),\n    objectives: [",
+        );
+        assert!(parse(&typo).is_err(), "an unknown sub-field is refused");
+    }
+
+    #[test]
+    fn ai_settings_values_must_be_positive() {
+        // A zero pacing value would busy-loop (a timer of zero re-issues
+        // every tick) or never fire — every provided value must be > 0,
+        // whichever field carries it.
+        for (field, block) in [
+            ("wave_timer_ticks", "wave_timer_ticks: Some(0)"),
+            ("wave_size", "wave_size: Some(0)"),
+            ("min_wave", "min_wave: Some(0)"),
+            ("army_cap", "army_cap: Some(0)"),
+            ("worker_target", "worker_target: Some(0)"),
+            ("first_attack_delay", "first_attack_delay: Some(0)"),
+        ] {
+            let zero = MISSION.replace(
+                "    objectives: [",
+                &format!("    ai_settings: ( {block} ),\n    objectives: ["),
+            );
+            let err = parse(&zero).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("ai_settings {field} is 0")),
+                "field {field}: got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn ai_settings_pairwise_invariants_hold_when_both_members_are_provided() {
+        // min_wave > wave_size: a harassment wave larger than a full wave
+        // can never fire.
+        let inverted = MISSION.replace(
+            "    objectives: [",
+            "    ai_settings: ( min_wave: Some(8), wave_size: Some(4) ),\n    objectives: [",
+        );
+        let err = parse(&inverted).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ai_settings min_wave (8) exceeds wave_size (4)"),
+            "got: {err}"
+        );
+        // wave_size > army_cap: the army can never mass a full wave.
+        let oversized = MISSION.replace(
+            "    objectives: [",
+            "    ai_settings: ( wave_size: Some(20), army_cap: Some(16) ),\n    objectives: [",
+        );
+        let err = parse(&oversized).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ai_settings wave_size (20) exceeds army_cap (16)"),
+            "got: {err}"
+        );
+        // The same values in the legal order parse fine — the checks are
+        // about the invariant, not the magnitudes.
+        let legal = MISSION.replace(
+            "    objectives: [",
+            "    ai_settings: ( min_wave: Some(4), wave_size: Some(8), army_cap: Some(16) ),\n    objectives: [",
+        );
+        let def = parse(&legal).expect("the legal ordering parses");
+        let settings = def.ai_settings.expect("present");
+        assert_eq!(settings.min_wave, Some(4));
+        assert_eq!(settings.wave_size, Some(8));
+        assert_eq!(settings.army_cap, Some(16));
+        // And a block that provides only one member of a pair stays legal
+        // here: the cross-check against the default it replaces is the
+        // engine's (the consts are invisible to content).
+        let solo = MISSION.replace(
+            "    objectives: [",
+            "    ai_settings: ( min_wave: Some(20) ),\n    objectives: [",
+        );
+        assert!(
+            parse(&solo).is_ok(),
+            "a solo min_wave is the engine's check"
         );
     }
 }

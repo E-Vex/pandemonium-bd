@@ -146,7 +146,7 @@ fn the_human_resigning_ends_the_match_with_the_ai_winning() {
     // resigns via submit().
     let controllers: Vec<(PlayerId, Box<dyn Controller>)> = vec![(
         PlayerId(1),
-        Box::new(alpha_controller(bundle(), &world, PlayerId(1), SEED)),
+        Box::new(alpha_controller(bundle(), &world, PlayerId(1), SEED, None)),
     )];
     let mut host = MatchHost::with_controllers(&world, setup, controllers);
     // The human resigns at tick 0.
@@ -191,7 +191,7 @@ fn a15_two_fresh_hosts_with_ai_produce_identical_logs_and_hashes() {
     let make_host = || {
         let controllers: Vec<(PlayerId, Box<dyn Controller>)> = vec![(
             PlayerId(1),
-            Box::new(alpha_controller(bundle(), &world, PlayerId(1), SEED)),
+            Box::new(alpha_controller(bundle(), &world, PlayerId(1), SEED, None)),
         )];
         MatchHost::with_controllers(&world, setup.clone(), controllers)
     };
@@ -255,7 +255,8 @@ fn stage_10_does_not_change_the_m7_golden_checkpoint_trail() {
         .map(|player| {
             (
                 player,
-                Box::new(alpha_controller(bundle(), &world, player, SEED)) as Box<dyn Controller>,
+                Box::new(alpha_controller(bundle(), &world, player, SEED, None))
+                    as Box<dyn Controller>,
             )
         })
         .collect();

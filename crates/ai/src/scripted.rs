@@ -66,24 +66,31 @@ pub type Cost = Vec<(ResourceId, i64)>;
 /// training. Pairs with `BARRACKS_MIN_WORKERS` (the army-commit threshold)
 /// so the economy reaches a self-sustaining throughput before the army
 /// queue opens. See the block comment above for the pacing rationale.
-const WORKER_TARGET: u32 = 10;
+/// Mission-overridable (B-021): the plan's `worker_target` field replaces
+/// this const when a mission sets it.
+pub const WORKER_TARGET: u32 = 10;
 /// The hard cap on the army size — when reached, the script pauses training
 /// until attrition opens a slot. Sized (M9) so a wave of `WAVE_SIZE` plus a
 /// reserve can both fit, leaving headroom for a decisive second wave.
-const ARMY_CAP: u32 = 16;
+/// Mission-overridable (B-021): the plan's `army_cap` field.
+pub const ARMY_CAP: u32 = 16;
 /// The number of army units a wave marches with when the full army is ready.
 /// M9's tuning: ten (with the round-robin Guardian/rifleman mix) carries
 /// enough sustained damage to level a defended base in one successful press.
-const WAVE_SIZE: u32 = 10;
+/// Mission-overridable (B-021): the plan's `wave_size` field.
+pub const WAVE_SIZE: u32 = 10;
 /// The minimum army size that may march — below this, only the
 /// `WAVE_TIMER_TICKS` pressure cadence sends a wave, and even then it is a
 /// harassment poke rather than a committed attack.
-const MIN_WAVE: u32 = 4;
+/// Mission-overridable (B-021): the plan's `min_wave` field.
+pub const MIN_WAVE: u32 = 4;
 /// The pressure cadence: if a wave has not marched by this many ticks (80 s
 /// at 30 Hz), the script sends whatever army it has at or above `MIN_WAVE`.
 /// While a live wave is out, the same cadence re-issues the march — a wave
-/// never parks.
-const WAVE_TIMER_TICKS: u32 = 2400;
+/// never parks. Mission-overridable (B-021): the plan's `wave_timer_ticks`
+/// field (the re-press cadence) and `first_attack_delay` (the initial
+/// timer) each replace this const where a mission sets them.
+pub const WAVE_TIMER_TICKS: u32 = 2400;
 /// The number of supply-providing depots the script grows to before pausing
 /// depot construction. Pairs with `DEPOT_HEADROOM_TRIGGER` to keep supply
 /// blocks from stalling the worker and army queues.
@@ -176,6 +183,65 @@ pub struct AiPlan {
     pub depot_spots: Vec<TilePos>,
     /// Candidate barracks placements, nearest first (map knowledge).
     pub barracks_spots: Vec<TilePos>,
+    /// The mission's tuning overrides (B-021), each replacing the script's
+    /// own const where set; `None` everywhere is the byte-exact default —
+    /// the plan of a mission-less match. The host copies these from the
+    /// mission's [`AiSettings`](pandemonium_sim_api::AiSettings) when it
+    /// derives the plan; the controller reads them through the
+    /// `effective_*` accessors, never the consts directly.
+    pub wave_timer_ticks: Option<u32>,
+    /// Override for [`WAVE_TIMER_TICKS`] as the re-press cadence (the
+    /// re-issue interval while a wave is out).
+    pub wave_size: Option<u32>,
+    /// Override for [`WAVE_SIZE`].
+    pub min_wave: Option<u32>,
+    /// Override for [`MIN_WAVE`].
+    pub army_cap: Option<u32>,
+    /// Override for [`ARMY_CAP`].
+    pub worker_target: Option<u32>,
+    /// Override for [`WAVE_TIMER_TICKS`] as the initial pressure timer —
+    /// the first march delay. Today one const serves both roles; the
+    /// split exists so a mission can stagger them.
+    pub first_attack_delay: Option<u32>,
+}
+
+impl AiPlan {
+    /// The effective pressure cadence (ticks): the mission's override or
+    /// today's [`WAVE_TIMER_TICKS`].
+    pub fn effective_wave_timer_ticks(&self) -> u32 {
+        self.wave_timer_ticks.unwrap_or(WAVE_TIMER_TICKS)
+    }
+
+    /// The effective full-wave size: the mission's override or today's
+    /// [`WAVE_SIZE`].
+    pub fn effective_wave_size(&self) -> u32 {
+        self.wave_size.unwrap_or(WAVE_SIZE)
+    }
+
+    /// The effective minimum marching army: the mission's override or
+    /// today's [`MIN_WAVE`].
+    pub fn effective_min_wave(&self) -> u32 {
+        self.min_wave.unwrap_or(MIN_WAVE)
+    }
+
+    /// The effective army cap: the mission's override or today's
+    /// [`ARMY_CAP`].
+    pub fn effective_army_cap(&self) -> u32 {
+        self.army_cap.unwrap_or(ARMY_CAP)
+    }
+
+    /// The effective worker target: the mission's override or today's
+    /// [`WORKER_TARGET`].
+    pub fn effective_worker_target(&self) -> u32 {
+        self.worker_target.unwrap_or(WORKER_TARGET)
+    }
+
+    /// The effective first-march deadline (ticks): the mission's override
+    /// or today's [`WAVE_TIMER_TICKS`] — the const the initial pressure
+    /// timer starts from.
+    pub fn effective_first_attack_delay(&self) -> u32 {
+        self.first_attack_delay.unwrap_or(WAVE_TIMER_TICKS)
+    }
 }
 
 /// A training order in flight: issued, not yet sighted as a spawned unit.
@@ -247,6 +313,10 @@ impl ScriptedController {
     /// the match seed (the host's job) so the controller stays deterministic.
     pub fn new(plan: AiPlan) -> Self {
         let rng = Rng::seeded(plan.rng_seed);
+        // B-021: the initial pressure timer starts from the mission's
+        // first-attack delay where one is set — today's const otherwise.
+        // Bound before the move below.
+        let first_march_deadline = plan.effective_first_attack_delay();
         Self {
             plan,
             rng,
@@ -261,7 +331,7 @@ impl ScriptedController {
             worker_train_cooldown_until: 0,
             army_train_cooldown_until: 0,
             wave: WaveState::Massing,
-            next_wave_timer: WAVE_TIMER_TICKS,
+            next_wave_timer: first_march_deadline,
             last_defense: None,
         }
     }
@@ -269,6 +339,18 @@ impl ScriptedController {
     /// The plan this controller runs (for hosts and tests).
     pub fn plan(&self) -> &AiPlan {
         &self.plan
+    }
+
+    /// The controller RNG's full state as `(state, inc)` — `fx::Rng`'s
+    /// canonical `state_parts` (plan §6.4), exposed for hosts and
+    /// verification tooling. The controller lives engine-side
+    /// (`AiMatchHost` owns it), so its RNG never enters the simulation's
+    /// canonical state hash — a digest of this pair is the only way to
+    /// pin the controller's random stream from outside (B-021's baseline
+    /// and None-identity measurements). Read-only: reading consumes
+    /// nothing and changes no behavior.
+    pub fn rng_state(&self) -> (u64, u64) {
+        self.rng.state_parts()
     }
 
     /// Appends one command with the next sequence number.
@@ -439,7 +521,7 @@ impl Controller for ScriptedController {
                 .filter(|p| p.kind == self.plan.worker)
                 .count() as u32;
             if let Some(cc) = cc {
-                if workers.len() as u32 + pending_workers < WORKER_TARGET
+                if workers.len() as u32 + pending_workers < self.plan.effective_worker_target()
                     && can_afford(view, &self.plan.worker_cost)
                     && view.population_cap.saturating_sub(view.population) >= self.plan.worker_pop
                 {
@@ -472,7 +554,9 @@ impl Controller for ScriptedController {
                     .iter()
                     .filter(|p| self.plan.army.contains(&p.kind))
                     .count() as u32;
-                if army.len() as u32 + pending_army < ARMY_CAP && !self.plan.army.is_empty() {
+                if army.len() as u32 + pending_army < self.plan.effective_army_cap()
+                    && !self.plan.army.is_empty()
+                {
                     let index = self.army_cursor % self.plan.army.len();
                     let kind = self.plan.army[index];
                     let headroom = view.population_cap.saturating_sub(view.population);
@@ -534,7 +618,9 @@ impl Controller for ScriptedController {
             WaveState::Massing => {
                 let size = army.len() as u32;
                 if let Some(enemy_start) = self.plan.enemy_start {
-                    if size >= MIN_WAVE && (size >= WAVE_SIZE || tick >= self.next_wave_timer) {
+                    if size >= self.plan.effective_min_wave()
+                        && (size >= self.plan.effective_wave_size() || tick >= self.next_wave_timer)
+                    {
                         let target = self.wave_target(self.hunt_focus(&enemies, enemy_start));
                         self.emit(
                             out,
@@ -560,11 +646,11 @@ impl Controller for ScriptedController {
             }
             WaveState::Attacking { .. } => {
                 if let Some(enemy_start) = self.plan.enemy_start {
-                    if army.len() < MIN_WAVE as usize {
+                    if army.len() < self.plan.effective_min_wave() as usize {
                         // Spent: fewer than three survivors anywhere. Regroup
                         // at home and rebuild.
                         self.wave = WaveState::Massing;
-                        self.next_wave_timer = tick + WAVE_TIMER_TICKS;
+                        self.next_wave_timer = tick + self.plan.effective_wave_timer_ticks();
                         if let Some(barracks) = barracks {
                             self.emit(
                                 out,
@@ -606,7 +692,7 @@ impl Controller for ScriptedController {
                                 },
                             );
                         }
-                        self.next_wave_timer = tick + WAVE_TIMER_TICKS;
+                        self.next_wave_timer = tick + self.plan.effective_wave_timer_ticks();
                     }
                 }
             }
@@ -758,6 +844,12 @@ mod tests {
             enemy_start: Some(Vec2Fx::from_ints(50, 50)),
             depot_spots: vec![TilePos { x: 17, y: 11 }, TilePos { x: 16, y: 16 }],
             barracks_spots: vec![TilePos { x: 20, y: 10 }, TilePos { x: 10, y: 20 }],
+            wave_timer_ticks: None,
+            wave_size: None,
+            min_wave: None,
+            army_cap: None,
+            worker_target: None,
+            first_attack_delay: None,
         }
     }
 
