@@ -46,8 +46,8 @@ use pandemonium_fx::XxHash64;
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
 use pandemonium_sim::{run_command_log_with_mission, Sim};
 use pandemonium_sim_api::{
-    AiSettings, Command, CommandKind, ControllerKind, FogPreset, KindId, MatchSetup, MissionData,
-    PlayerId, PlayerSetup,
+    AiSettings, Command, CommandKind, ControllerKind, FogPreset, MatchSetup, MissionData, PlayerId,
+    PlayerSetup,
 };
 
 /// The repository's content directory.
@@ -132,7 +132,7 @@ fn hosted_run(bundle: &ContentBundle, mission: Option<&MissionData>, ticks: u32)
 
     // The kind ids the observables count (capability-shaped derivation,
     // the exact ids the plans carry).
-    let probe_plan = pandemonium_engine::alpha_plan(&bundle, &world, PlayerId(0), SEED, None);
+    let probe_plan = pandemonium_engine::alpha_plan(bundle, &world, PlayerId(0), SEED, None);
     let worker_kind = probe_plan.worker;
     let army_kinds = probe_plan.army;
 
@@ -254,10 +254,10 @@ fn plain_bundle() -> ContentBundle {
 ///   sanity check that these are the real generators; the `state` halves
 ///   are the consumed streams at the probe boundaries.
 const BASELINE_COMMAND_DIGEST: u64 = 0x32eb_b1e1_53a4_46e7;
-const BASELINE_RNG_300_SLOT0: (u64, u64) = (5309_4413_4470_4258_470, 4354_6855_6493_6845_355);
-const BASELINE_RNG_300_SLOT1: (u64, u64) = (7103_4074_1474_4833_111, 4354_6855_6493_6845_355);
-const BASELINE_RNG_7200_SLOT0: (u64, u64) = (2037_3309_2041_1874_478, 4354_6855_6493_6845_355);
-const BASELINE_RNG_7200_SLOT1: (u64, u64) = (2060_0323_2901_5198_335, 4354_6855_6493_6845_355);
+const BASELINE_RNG_300_SLOT0: (u64, u64) = (5_309_441_344_704_258_470, 4_354_685_564_936_845_355);
+const BASELINE_RNG_300_SLOT1: (u64, u64) = (7_103_407_414_744_833_111, 4_354_685_564_936_845_355);
+const BASELINE_RNG_7200_SLOT0: (u64, u64) = (2_037_330_920_411_874_478, 4_354_685_564_936_845_355);
+const BASELINE_RNG_7200_SLOT1: (u64, u64) = (2_060_032_329_015_198_335, 4_354_685_564_936_845_355);
 
 #[test]
 fn the_missionless_flagship_baseline_is_pinned() {
@@ -365,8 +365,8 @@ fn first_march(run: &Run, slot: usize) -> Option<u32> {
 /// through its objectives, exactly like the elimination-only default),
 /// so the mission rides the sim without touching stage 10's outcome —
 /// the identity tests isolate exactly the tuning.
-fn tuning_tree(id: &str, ai_settings: &str) -> ContentTree {
-    let mission = format!(
+fn tuning_mission_text(id: &str, ai_settings: &str) -> String {
+    format!(
         r#"
 (
     schema_version: 1,
@@ -379,11 +379,14 @@ fn tuning_tree(id: &str, ai_settings: &str) -> ContentTree {
     objectives: [],
 )
 "#
-    );
+    )
+}
+
+fn tuning_tree(id: &str, ai_settings: &str) -> ContentTree {
     ContentTree::load(
         &SourceMap::from_dir(&repo_content())
             .expect("the repo content reads")
-            .mission(&format!("{id}.ron"), &mission),
+            .mission(&format!("{id}.ron"), &tuning_mission_text(id, ai_settings)),
     )
     .expect("the tuning probe loads")
 }
@@ -770,4 +773,39 @@ fn a_tuned_mission_replay_roundtrips() {
     assert_eq!(decoded.mission_id, Some(mission_id));
     assert_eq!(decoded.commands, run.log);
     assert_eq!(decoded.final_hash, run.final_hash);
+
+    // The CLI leg's artifacts: a content directory whose mission set
+    // carries the tuned probe (the real content plus the probe's file)
+    // and the record beside it, both under the test's scratch directory.
+    // `tools replay-verify <file> --content <dir>` then verifies the
+    // mission-bearing record end to end — the third comparison firing,
+    // the mission-aware world resolution (B-019's path), the checkpoint
+    // trail. (Written unconditionally: cheap, and the report's CLI leg
+    // depends on them existing after the suite runs.)
+    let scratch = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("b021_verify");
+    let content_dir = scratch.join("content");
+    for dir in ["rules", "entities", "factions", "maps", "missions"] {
+        std::fs::create_dir_all(content_dir.join(dir)).expect("the scratch content dirs build");
+        for entry in std::fs::read_dir(repo_content().join(dir))
+            .expect("the repo category reads")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "ron") {
+                let name = path.file_name().expect("a file name");
+                std::fs::copy(&path, content_dir.join(dir).join(name))
+                    .expect("the content file copies");
+            }
+        }
+    }
+    std::fs::write(
+        content_dir.join("missions").join("tuning_replay.ron"),
+        tuning_mission_text(
+            "tuning_replay",
+            "wave_timer_ticks: Some(600), worker_target: Some(12)",
+        ),
+    )
+    .expect("the probe mission file writes");
+    std::fs::write(scratch.join("tuning_replay.pdrp"), replay.encode())
+        .expect("the replay file writes");
 }
