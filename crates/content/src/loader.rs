@@ -1830,7 +1830,8 @@ mod tests {
         );
         let err = parse(&inverted).unwrap_err();
         assert!(
-            err.to_string().contains("ai_settings min_wave (8) exceeds wave_size (4)"),
+            err.to_string()
+                .contains("ai_settings min_wave (8) exceeds wave_size (4)"),
             "got: {err}"
         );
         // wave_size > army_cap: the army can never mass a full wave.
@@ -1862,6 +1863,9 @@ mod tests {
             "    objectives: [",
             "    ai_settings: ( min_wave: Some(20) ),\n    objectives: [",
         );
-        assert!(parse(&solo).is_ok(), "a solo min_wave is the engine's check");
+        assert!(
+            parse(&solo).is_ok(),
+            "a solo min_wave is the engine's check"
+        );
     }
 }

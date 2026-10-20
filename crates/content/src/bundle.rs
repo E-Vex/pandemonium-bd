@@ -3364,10 +3364,9 @@ mod tests {
         }
         // The mission id stays a pure function of the mission bytes:
         // re-loading the same tuned mission reproduces the id.
-        let tree = ContentTree::load(&factory().mission(
-            "testing_01.ron",
-            &mission_with_overrides(tuned[0].1, None),
-        ))
+        let tree = ContentTree::load(
+            &factory().mission("testing_01.ron", &mission_with_overrides(tuned[0].1, None)),
+        )
         .expect("the tuned mission loads again");
         assert_eq!(tree.mission_id("testing_01"), ids[1]);
     }

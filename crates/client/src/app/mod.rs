@@ -416,8 +416,13 @@ impl App {
             .map(|slot| {
                 (
                     slot,
-                    Box::new(alpha_controller(bundle, &world, slot, setup.seed, Some(&mission)))
-                        as Box<dyn Controller>,
+                    Box::new(alpha_controller(
+                        bundle,
+                        &world,
+                        slot,
+                        setup.seed,
+                        Some(&mission),
+                    )) as Box<dyn Controller>,
                 )
             })
             .collect();

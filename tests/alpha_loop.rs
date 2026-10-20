@@ -78,8 +78,13 @@ fn ai_controllers(
         .map(|player| {
             (
                 player,
-                Box::new(alpha_controller(bundle, &bundle.world(), player, seed, None))
-                    as Box<dyn Controller>,
+                Box::new(alpha_controller(
+                    bundle,
+                    &bundle.world(),
+                    player,
+                    seed,
+                    None,
+                )) as Box<dyn Controller>,
             )
         })
         .collect()

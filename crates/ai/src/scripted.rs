@@ -619,8 +619,7 @@ impl Controller for ScriptedController {
                 let size = army.len() as u32;
                 if let Some(enemy_start) = self.plan.enemy_start {
                     if size >= self.plan.effective_min_wave()
-                        && (size >= self.plan.effective_wave_size()
-                            || tick >= self.next_wave_timer)
+                        && (size >= self.plan.effective_wave_size() || tick >= self.next_wave_timer)
                     {
                         let target = self.wave_target(self.hunt_focus(&enemies, enemy_start));
                         self.emit(
