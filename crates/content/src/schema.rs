@@ -458,6 +458,16 @@ pub(crate) struct RawMission {
     /// without the block has).
     #[serde(default)]
     pub rules_overrides: RawRulesOverrides,
+    /// The AI tuning overrides (B-021, ADR-0201 Phase 2's closing package):
+    /// an optional inline block of the scripted opponent's pacing values.
+    /// Every field is an optional plain integer — the block names only what
+    /// it tunes — and the all-`None` default block is the script's own
+    /// consts (the loader normalizes it to `None` on the canonical
+    /// mission, the identity rule). The simulation never reads these; the
+    /// engine's plan builder copies them into the `AiPlan` the controller
+    /// reads.
+    #[serde(default)]
+    pub ai_settings: RawAiSettings,
     /// The ordered objective list, AND-composed (ADR-0201 §2).
     pub objectives: Vec<RawObjective>,
 }
@@ -502,6 +512,38 @@ pub(crate) struct RawRulesOverrides {
     /// `None` keeps the base ruleset's base population cap.
     #[serde(default)]
     pub base_population_cap: Option<u32>,
+}
+
+/// The AI tuning overrides as authored (B-021): the inline, mission-carried
+/// pacing block for the scripted Alpha opponent. Every sub-field is an
+/// optional plain integer (FD-5); `None` keeps the script's own const —
+/// the byte-exact default law — and the all-`None` default block is no
+/// block at all (the loader normalizes it to `None` on the canonical
+/// mission, so a no-op block and an absent block are the same mission, id
+/// included).
+#[derive(serde::Deserialize, Default, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawAiSettings {
+    /// Override for the pressure cadence — the re-press interval while a
+    /// wave is out (the script's `WAVE_TIMER_TICKS`).
+    #[serde(default)]
+    pub wave_timer_ticks: Option<u32>,
+    /// Override for the full-wave size (the script's `WAVE_SIZE`).
+    #[serde(default)]
+    pub wave_size: Option<u32>,
+    /// Override for the minimum marching army (the script's `MIN_WAVE`).
+    #[serde(default)]
+    pub min_wave: Option<u32>,
+    /// Override for the army-size cap (the script's `ARMY_CAP`).
+    #[serde(default)]
+    pub army_cap: Option<u32>,
+    /// Override for the worker-count target (the script's `WORKER_TARGET`).
+    #[serde(default)]
+    pub worker_target: Option<u32>,
+    /// Override for the initial pressure timer — the first march delay
+    /// (the script's `WAVE_TIMER_TICKS` in its initial role).
+    #[serde(default)]
+    pub first_attack_delay: Option<u32>,
 }
 
 /// One objective as authored: the kind spelling, the parameters block, and

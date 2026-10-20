@@ -626,6 +626,47 @@ pub struct RulesOverridesDef {
     pub base_population_cap: Option<u32>,
 }
 
+/// The AI tuning overrides, canonically validated (B-021, ADR-0201
+/// Phase 2's closing package): the inline, mission-carried pacing block
+/// for the scripted Alpha opponent. Every sub-field is an optional plain
+/// integer; `None` keeps the script's own const — the byte-exact default
+/// law — and a block that changes nothing behaves exactly like no block
+/// at all, mission id included (the loader normalizes it away).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AiSettingsDef {
+    /// Override for the pressure cadence — the re-press interval while a
+    /// wave is out (the script's `WAVE_TIMER_TICKS`).
+    pub wave_timer_ticks: Option<u32>,
+    /// Override for the full-wave size (the script's `WAVE_SIZE`).
+    pub wave_size: Option<u32>,
+    /// Override for the minimum marching army (the script's `MIN_WAVE`).
+    pub min_wave: Option<u32>,
+    /// Override for the army-size cap (the script's `ARMY_CAP`).
+    pub army_cap: Option<u32>,
+    /// Override for the worker-count target (the script's
+    /// `WORKER_TARGET`).
+    pub worker_target: Option<u32>,
+    /// Override for the initial pressure timer — the first march delay
+    /// (the script's `WAVE_TIMER_TICKS` in its initial role).
+    pub first_attack_delay: Option<u32>,
+}
+
+impl AiSettingsDef {
+    /// Whether the block actually overrides something — at least one
+    /// sub-field is `Some`. The no-op all-`None` block is normalized away
+    /// by the loader, so a canonical block that exists always carries at
+    /// least one value; the encoder writes bytes only when this holds
+    /// (the mission identity rule).
+    pub fn carries_override(&self) -> bool {
+        self.wave_timer_ticks.is_some()
+            || self.wave_size.is_some()
+            || self.min_wave.is_some()
+            || self.army_cap.is_some()
+            || self.worker_target.is_some()
+            || self.first_attack_delay.is_some()
+    }
+}
+
 /// A validated mission (ADR-0201 §3): a closed reference set into the content
 /// tree — map, faction, rules — plus the ordered, AND-composed objective
 /// list. Reference existence is validated at load (the loader resolves
@@ -663,6 +704,13 @@ pub struct MissionDef {
     /// no-op block): the mission plays the base ruleset and keeps exactly
     /// the mission id it had before (the identity rule).
     pub rules_overrides: Option<RulesOverridesDef>,
+    /// The AI tuning overrides (B-021): the inline pacing block for the
+    /// scripted Alpha opponent. `None` when the file omits the block (or
+    /// carries a no-op block): the script plays its own consts and the
+    /// mission keeps exactly the id it had before (the identity rule).
+    /// The simulation never reads these; the engine's plan builder copies
+    /// them into the `AiPlan` the controller reads.
+    pub ai_settings: Option<AiSettingsDef>,
     /// The ordered objective list — the indices are the objective-state event
     /// indices (ADR-0201 §2).
     pub objectives: Vec<ObjectiveDef>,
