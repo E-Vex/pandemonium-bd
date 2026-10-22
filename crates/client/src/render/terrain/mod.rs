@@ -5,12 +5,24 @@ use bytemuck::{Pod, Zeroable};
 use pandemonium_engine::mesh::TerrainVertex;
 
 pub(super) const TERRAIN_SHADER: &str = r#"
-struct CameraUniform { view_projection: mat4x4<f32> };
+struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32 };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
 const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
+// Distance haze: far ground dissolves toward the void color the frame is
+// cleared with, so the map edge melts into the surround instead of ending
+// in a hard clip. Tuned past the gameplay zoom band (the camera lives at
+// 8..40 tiles in play; the overview zoom reaches 160) so battles stay crisp
+// and only the strategic overview gains depth.
+const HAZE_COLOR: vec3<f32> = vec3<f32>(0.04, 0.06, 0.09);
+const HAZE_START: f32 = 50.0;
+const HAZE_END: f32 = 130.0;
 
-struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec2<f32>, @location(2) material: f32 };
+fn haze(world: vec3<f32>) -> f32 {
+    return smoothstep(HAZE_START, HAZE_END, distance(world, camera.eye)) * 0.85;
+}
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec2<f32>, @location(2) material: f32, @location(3) normal: vec3<f32> };
 
 @vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) color: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) material: f32) -> VsOut {
     var out: VsOut;
@@ -28,6 +40,7 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>
     out.color = color * (ambient + sun);
     out.world = position.xz;
     out.material = material;
+    out.normal = n;
     return out;
 }
 
@@ -88,7 +101,16 @@ fn value_noise(p: vec2<f32>) -> f32 {
         color = mix(color, color * vec3<f32>(0.46, 0.48, 0.50), seam * 0.62);
         color *= 0.84 + fine * 0.25;
     }
-    return vec4<f32>(color, 1.0);
+    // Steep ground sheds its topsoil: wherever the interpolated normal tilts
+    // past ~35 degrees from the sky, grass and soil darken and desaturate
+    // toward the rocky tones the cliff faces wear, so hillsides read as
+    // eroded slopes instead of painted flats draped over the heightmap.
+    if in.material < 1.5 {
+        let slope = 1.0 - in.normal.y;
+        let exposed = smoothstep(0.20, 0.42, slope);
+        color = mix(color, color * vec3<f32>(0.52, 0.53, 0.55), exposed * 0.5);
+    }
+    return vec4<f32>(mix(color, HAZE_COLOR, haze(vec3<f32>(in.world.x, 0.0, in.world.y))), 1.0);
 }
 "#;
 
@@ -100,7 +122,7 @@ fn value_noise(p: vec2<f32>) -> f32 {
 /// values — the pass depth-tests `LessEqual` with writes off, so the fog hugs
 /// the hills without z-fighting.
 pub(super) const FOG_SHADER_SRC: &str = r#"
-struct FogUniform { view_projection: mat4x4<f32>, map_size: vec2<f32> };
+struct FogUniform { view_projection: mat4x4<f32>, map_size: vec2<f32>, time: f32, _pad: f32 };
 @group(0) @binding(0) var<uniform> fog_camera: FogUniform;
 @group(0) @binding(1) var fog_sampler: sampler;
 @group(0) @binding(2) var fog_tex: texture_2d<f32>;
@@ -114,9 +136,35 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
     return out;
 }
 
+fn hash2(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+fn value_noise(p: vec2<f32>) -> f32 {
+    let cell = floor(p);
+    let local = fract(p);
+    let blend = local * local * (3.0 - 2.0 * local);
+    let a = hash2(cell);
+    let b = hash2(cell + vec2<f32>(1.0, 0.0));
+    let c = hash2(cell + vec2<f32>(0.0, 1.0));
+    let d = hash2(cell + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y);
+}
+
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let coverage = textureSample(fog_tex, fog_sampler, in.uv).r;
-    return vec4<f32>(0.012, 0.02, 0.04, coverage);
+    // The living fog: slow, broad noise drifts across the map and wobbles
+    // the alpha by a few percent, so unseen ground breathes like standing
+    // haze instead of sitting as a flat black stamp. The wobble scales with
+    // coverage * (1 - coverage) — zero over fully visible ground, tiny over
+    // fully hidden ground, strongest along the explored boundary — so the
+    // per-tile *semantics* the HUD and minimap rely on never move, only the
+    // shading between them shimmers.
+    let drift = vec2<f32>(fog_camera.time * 0.010, -fog_camera.time * 0.007);
+    let wobble = value_noise(in.uv * 110.0 + drift) - 0.5;
+    let edge = coverage * (1.0 - coverage) * 4.0;
+    let alpha = clamp(coverage + wobble * 0.09 * edge, 0.0, 1.0);
+    return vec4<f32>(0.012, 0.02, 0.04, alpha);
 }
 "#;
 
@@ -143,14 +191,17 @@ impl From<TerrainVertex> for GpuTerrainVertex {
     }
 }
 
-/// The fog pass's uniform: the camera's view-projection plus the map extent
-/// the world-space UV mapping divides by.
+/// The fog pass's uniform: the camera's view-projection, the map extent
+/// the world-space UV mapping divides by, and the presentation animation
+/// clock the fog drift reads (80 bytes — the trailing pad keeps the WGSL
+/// struct a multiple of 16).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub(super) struct FogUniform {
     pub(super) view_projection: [[f32; 4]; 4],
     pub(super) map_size: [f32; 2],
-    pub(super) _pad: [f32; 2],
+    pub(super) time: f32,
+    pub(super) _pad: f32,
 }
 
 /// Fog alpha per tile, encoded into the R8 texture (0.0 = clear over

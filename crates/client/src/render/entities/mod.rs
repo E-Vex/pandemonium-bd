@@ -31,10 +31,20 @@ pub(super) struct EntityInstance {
 }
 
 pub(super) const ENTITY_SHADER_SRC: &str = r#"
-struct CameraUniform { view_projection: mat4x4<f32> };
+struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32 };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
 const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
+// Distance haze, mirroring the terrain shader's constants: entities far
+// from the eye dissolve into the same void color the ground does, so the
+// whole scene fades as one at the overview zoom instead of the map alone.
+const HAZE_COLOR: vec3<f32> = vec3<f32>(0.04, 0.06, 0.09);
+const HAZE_START: f32 = 50.0;
+const HAZE_END: f32 = 130.0;
+
+fn haze(world: vec3<f32>) -> f32 {
+    return smoothstep(HAZE_START, HAZE_END, distance(world, camera.eye)) * 0.85;
+}
 
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) material: f32 };
 
@@ -106,7 +116,22 @@ fn value_noise(p: vec2<f32>) -> f32 {
         color *= 0.86 + stone * 0.20;
         color = mix(color, color * vec3<f32>(0.48, 0.50, 0.53), mortar * 0.75);
     }
-    return vec4<f32>(color, 1.0);
+    // View-dependent shading, from the camera's own eye position:
+    //
+    // A Blinn-Phong sun glint separates materials the diffuse light cannot —
+    // painted hulls and tools (material 0) carry a tight, bright highlight,
+    // while masonry (material 1) only sheens faintly and broadly — and a
+    // cool rim light lifts the silhouettes' grazing edges off the ground so
+    // dark-colored parts stop melting into shadowed terrain.
+    let view = normalize(camera.eye - in.world);
+    let metal = 1.0 - step(0.5, in.material);
+    let half_vector = normalize(normalize(SUN) + view);
+    let spec = pow(max(dot(in.normal, half_vector), 0.0), mix(10.0, 42.0, metal))
+        * mix(0.08, 0.38, metal);
+    color += vec3<f32>(1.0, 0.96, 0.88) * spec;
+    let fresnel = pow(1.0 - clamp(dot(in.normal, view), 0.0, 1.0), 3.0);
+    color += vec3<f32>(0.30, 0.38, 0.52) * fresnel * 0.16;
+    return vec4<f32>(mix(color, HAZE_COLOR, haze(in.world)), 1.0);
 }
 "#;
 

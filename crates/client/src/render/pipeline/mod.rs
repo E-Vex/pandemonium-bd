@@ -59,14 +59,19 @@ impl WgpuRenderer {
             label: Some("camera"),
             contents: bytemuck::bytes_of(&CameraUniform {
                 view_projection: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                eye: [0.0; 3],
+                time: 0.0,
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        // The camera layout is visible to the fragment stage too: the entity
+        // and terrain fragments read the eye position (specular, rim,
+        // distance haze) and the decal-family shaders may read the time.
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("camera layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -499,7 +504,8 @@ impl WgpuRenderer {
             contents: bytemuck::bytes_of(&FogUniform {
                 view_projection: glam::Mat4::IDENTITY.to_cols_array_2d(),
                 map_size: fog_map_size,
-                _pad: [0.0; 2],
+                time: 0.0,
+                _pad: 0.0,
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -508,7 +514,9 @@ impl WgpuRenderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // Fragment-visible too: the fog fragment reads the
+                    // animation clock that drifts the fog's edge noise.
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -919,6 +927,7 @@ impl WgpuRenderer {
             minimap_base,
             minimap_scratch,
             minimap_size,
+            start: std::time::Instant::now(),
         })
     }
 

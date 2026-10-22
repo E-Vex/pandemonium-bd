@@ -18,7 +18,11 @@ use super::{KindShape, DECAL_LIFT};
 /// center to its rim — blob shadows with soft edges instead of hard
 /// stencil-circle stamps.
 pub(super) const DECAL_SHADER_SRC: &str = r#"
-struct CameraUniform { view_projection: mat4x4<f32> };
+// The camera struct mirrors the 80-byte uniform the terrain and entity
+// shaders share (the eye and time tail is unread here, but keeping every
+// struct on the shared layout identical keeps the inferred binding size
+// unambiguous).
+struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32 };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec4<f32>, @location(1) uv: vec2<f32>, @location(2) mode: f32 };
@@ -96,6 +100,21 @@ pub(super) const RING_COLOR: [f32; 4] = [0.35, 1.0, 0.45, 0.85];
 /// The team ring's alpha — strong enough to read the owner at a glance,
 /// quieter than the bright green selection ring that draws over it.
 pub(super) const TEAM_RING_ALPHA: f32 = 0.5;
+
+/// The interactive decals' breathing period, in seconds. Slow enough to
+/// read as calm, quick enough that the ring is never mistaken for static
+/// terrain paint.
+const PULSE_PERIOD: f32 = 1.8;
+
+/// The breathing factor the *interactive* decals pulse by at `phase`
+/// seconds since the renderer was born: one sine period every
+/// [`PULSE_PERIOD`], swinging alpha gently between 0.80 and 1.0. Pure so
+/// the pulse is unit-testable and every caller (selection rings, the
+/// placement ghost) breathes in step. Shadows and team rings stay static —
+/// owner identity must not shimmer.
+pub(super) fn ring_pulse(phase: f32) -> f32 {
+    0.90 + 0.10 * (std::f32::consts::TAU * phase / PULSE_PERIOD).sin()
+}
 
 /// Builds the team-color ground ring stream (PLAN-M10.2 §2.2): one ring
 /// under every *unit* silhouette, in the owner's team color — the
