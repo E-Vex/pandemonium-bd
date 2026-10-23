@@ -469,6 +469,7 @@ impl ApplicationHandler for App {
             window.clone(),
             &terrain_mesh(&self.tree.maps[0], HEIGHT_SCALE),
             crate::app::kind_shapes(&self.bundle),
+            crate::app::kind_names(&self.bundle),
             self.pack.clone(),
         ) {
             Ok(renderer) => {

@@ -15,6 +15,10 @@ pandemonium-replay = { path = "../replay" }
 pandemonium-engine = { path = "../engine" }
 anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
+# PNG decoding for the client-side asset pack's entity textures
+# (ADR-0001's presentation tree): default features are off so only the
+# png decoder rides along — no image-format zoo, no rayon.
+image = { version = "0.25", default-features = false, features = ["png"] }
 fontdue = "0.9"
 pollster = "0.4"
 ron = "0.9"

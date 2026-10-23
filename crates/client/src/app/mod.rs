@@ -2110,6 +2110,14 @@ pub(crate) fn git_sha() -> &'static str {
     env!("PANDEMONIUM_GIT_SHA")
 }
 
+/// The kind ids (content's `id` strings), aligned with [`kind_shapes`] by
+/// index — the renderer's pack lookup keys by these strings while the
+/// silhouette specs key by KindId index. Pure presentation plumbing: the
+/// names come from the loaded bundle and never feed back into content.
+pub(crate) fn kind_names(bundle: &ContentBundle) -> Vec<String> {
+    bundle.entities.iter().map(|def| def.id.clone()).collect()
+}
+
 /// Derives one multi-part silhouette per kind from the loaded bundle
 /// (PLAN-M10.2 §2.1): the kind-name table resolves the nine authored kinds
 /// to their hand-tuned box compositions; anything the table does not know

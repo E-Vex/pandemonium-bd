@@ -24,8 +24,13 @@ pub(super) struct EntityInstance {
     pub(super) scale: [f32; 3],
     /// Placeholder color (team color, brighter when selected).
     pub(super) color: [f32; 3],
-    /// Padding keeps the instance fields 4-byte aligned.
-    pub(super) _pad: f32,
+    /// The entity skin slot this instance draws with (0 = the built-in
+    /// white placeholder skin; a custom pack's PNG occupies 1..). CPU-side
+    /// only — the shader reads it to pick the placeholder vs. textured
+    /// fragment path, but the slot never selects GPU resources by itself:
+    /// the frame pass partitions the stream by slot so one draw binds one
+    /// skin. Sits where the old `_pad` lived, keeping the 48-byte layout.
+    pub(super) skin: u32,
     /// 1.0 selects the procedural stone surface; 0.0 keeps painted metal.
     pub(super) material: f32,
 }
@@ -33,6 +38,15 @@ pub(super) struct EntityInstance {
 pub(super) const ENTITY_SHADER_SRC: &str = r#"
 struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32 };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
+
+// The entity skin: one shared sampler + one texture per draw, bound at
+// group(1) by the frame pass. Placeholder draws bind the built-in white
+// 1x1 skin — sampling it multiplies by exactly 1.0, so the placeholder
+// path is byte-identical to the pre-texture renderer. A custom pack's
+// kinds bind their uploaded PNG instead and the texel modulates the lit
+// team color (fully transparent texels are cut away).
+@group(1) @binding(0) var skin_sampler: sampler;
+@group(1) @binding(1) var skin_tex: texture_2d<f32>;
 
 const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
 // Distance haze, mirroring the terrain shader's constants: entities far
@@ -46,7 +60,7 @@ fn haze(world: vec3<f32>) -> f32 {
     return smoothstep(HAZE_START, HAZE_END, distance(world, camera.eye)) * 0.85;
 }
 
-struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) material: f32 };
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) material: f32, @location(4) uv: vec2<f32>, @location(5) skin: u32 };
 
 @vertex fn vs_main(
     @location(0) corner: vec3<f32>,
@@ -56,6 +70,8 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>
     @location(4) instance_color: vec3<f32>,
     @location(5) normal: vec3<f32>,
     @location(6) instance_material: f32,
+    @location(7) corner_uv: vec2<f32>,
+    @location(8) instance_skin: u32,
 ) -> VsOut {
     var out: VsOut;
     let c = cos(instance_yaw);
@@ -81,6 +97,8 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>
     out.world = world;
     out.normal = n;
     out.material = instance_material;
+    out.uv = corner_uv;
+    out.skin = instance_skin;
     return out;
 }
 
@@ -101,20 +119,37 @@ fn value_noise(p: vec2<f32>) -> f32 {
 
 @fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var color = in.color;
-    if in.material > 0.5 {
-        // Triplanar stone grain keeps mortar lines aligned on roofs and walls.
-        let weights = pow(abs(normalize(in.normal)), vec3<f32>(4.0));
-        let total = max(weights.x + weights.y + weights.z, 0.001);
-        let uv = (in.world.zy * weights.x + in.world.xz * weights.y + in.world.xy * weights.z) / total;
-        let stone = value_noise(uv * 5.0);
-        let tile = uv * vec2<f32>(2.0, 3.0);
-        let row = floor(tile.y);
-        let staggered = tile + vec2<f32>(fract(row * 0.5) * 0.5, 0.0);
-        let edge = min(min(fract(staggered.x), 1.0 - fract(staggered.x)),
-                       min(fract(staggered.y), 1.0 - fract(staggered.y)));
-        let mortar = 1.0 - smoothstep(0.025, 0.075, edge);
-        color *= 0.86 + stone * 0.20;
-        color = mix(color, color * vec3<f32>(0.48, 0.50, 0.53), mortar * 0.75);
+    // The skin sample happens unconditionally (WGSL requires textureSample
+    // in uniform control flow); the per-instance slot then picks which
+    // fragment path consumes it.
+    let texel = textureSample(skin_tex, skin_sampler, in.uv);
+    if (in.skin == 0u) {
+        // The placeholder path: exactly the pre-texture math. The white
+        // texel is ignored, so a pack-less client renders identically to
+        // the pure-silhouette renderer.
+        if in.material > 0.5 {
+            // Triplanar stone grain keeps mortar lines aligned on roofs and walls.
+            let weights = pow(abs(normalize(in.normal)), vec3<f32>(4.0));
+            let total = max(weights.x + weights.y + weights.z, 0.001);
+            let uv = (in.world.zy * weights.x + in.world.xz * weights.y + in.world.xy * weights.z) / total;
+            let stone = value_noise(uv * 5.0);
+            let tile = uv * vec2<f32>(2.0, 3.0);
+            let row = floor(tile.y);
+            let staggered = tile + vec2<f32>(fract(row * 0.5) * 0.5, 0.0);
+            let edge = min(min(fract(staggered.x), 1.0 - fract(staggered.x)),
+                           min(fract(staggered.y), 1.0 - fract(staggered.y)));
+            let mortar = 1.0 - smoothstep(0.025, 0.075, edge);
+            color *= 0.86 + stone * 0.20;
+            color = mix(color, color * vec3<f32>(0.48, 0.50, 0.53), mortar * 0.75);
+        }
+    } else {
+        // A custom skin: fully transparent texels are cut away (alpha
+        // cutout — the entity pipeline writes opaque pixels), and the
+        // texel modulates the lit team color so ownership still reads.
+        if (texel.a < 0.5) {
+            discard;
+        }
+        color = color * texel.rgb;
     }
     // View-dependent shading, from the camera's own eye position:
     //
@@ -174,6 +209,7 @@ pub(super) fn build_entity_instances(
     shape: &KindShape,
     selected: bool,
     flashing: bool,
+    skin: u32,
     out: &mut Vec<EntityInstance>,
 ) {
     let base = team_color(entity.owner, selected, flashing);
@@ -208,7 +244,7 @@ pub(super) fn build_entity_instances(
             yaw: yaw + part.yaw,
             scale: [part.scale[0], part.scale[1] * squat, part.scale[2]],
             color: crate::silhouette::part_color(part.tone, base),
-            _pad: 0.0,
+            skin,
             material: if part.tone == crate::silhouette::Tone::Stone {
                 1.0
             } else {
@@ -225,12 +261,15 @@ pub(super) fn fallback_shape() -> KindShape {
 }
 
 /// Builds the whole frame's instance stream (ascending entity order — the
-/// snapshot's contract) under the instance buffer's capacity.
+/// snapshot's contract) under the instance buffer's capacity. `skin_slots`
+/// is the per-kind skin lookup (aligned with `kind_specs` by index); kinds
+/// without one render with the placeholder skin, slot 0.
 pub(super) fn build_instances(
     snapshot: &pandemonium_engine::RenderSnapshot,
     selection: &[pandemonium_sim_api::EntityId],
     flashes: &[pandemonium_sim_api::EntityId],
     kind_specs: &[KindShape],
+    skin_slots: &[u32],
     capacity: usize,
 ) -> Vec<EntityInstance> {
     let mut instances = Vec::with_capacity(snapshot.entities.len() * 2);
@@ -242,10 +281,11 @@ pub(super) fn build_instances(
             .get(entity.kind.0 as usize)
             .cloned()
             .unwrap_or_else(fallback_shape);
+        let skin = skin_slots.get(entity.kind.0 as usize).copied().unwrap_or(0);
         let selected = selection.contains(&entity.id);
         let flashing = flashes.contains(&entity.id);
         let before = instances.len();
-        build_entity_instances(entity, &shape, selected, flashing, &mut instances);
+        build_entity_instances(entity, &shape, selected, flashing, skin, &mut instances);
         // A single entity's silhouette always fits whole: trim back to the
         // capacity boundary if its last block overflowed.
         if instances.len() > capacity {
@@ -253,6 +293,35 @@ pub(super) fn build_instances(
         }
     }
     instances
+}
+
+/// Groups one frame's instance stream by skin slot: each slot's instances
+/// land in one contiguous run of the returned stream, with the returned
+/// `(slot, start, count)` draw list covering them. Stable within a slot —
+/// snapshot order is preserved — because the buckets scatter in arrival
+/// order; cross-slot order carries no visual meaning (opaque,
+/// depth-tested geometry). Slots beyond `skin_count` clamp into the last
+/// slot so a corrupt stream can never index past the bind groups. Pure
+/// CPU-side geometry, so the grouping law is testable without a GPU.
+pub(super) fn group_by_skin(
+    instances: Vec<EntityInstance>,
+    skin_count: usize,
+) -> (Vec<EntityInstance>, Vec<(usize, u64, u64)>) {
+    let skin_count = skin_count.max(1); // always at least the placeholder skin
+    let mut buckets: Vec<Vec<EntityInstance>> = (0..skin_count).map(|_| Vec::new()).collect();
+    for instance in instances {
+        let slot = (instance.skin as usize).min(skin_count - 1);
+        buckets[slot].push(instance);
+    }
+    let mut skin_draws: Vec<(usize, u64, u64)> = Vec::new(); // (slot, start, count)
+    let mut ordered: Vec<EntityInstance> = Vec::with_capacity(buckets.iter().map(Vec::len).sum());
+    for (slot, bucket) in buckets.iter().enumerate() {
+        if !bucket.is_empty() {
+            skin_draws.push((slot, ordered.len() as u64, bucket.len() as u64));
+        }
+        ordered.extend_from_slice(bucket);
+    }
+    (ordered, skin_draws)
 }
 
 /// Builds the shadow blob stream: one dark ellipse under every entity,
@@ -330,7 +399,7 @@ pub(super) fn death_instance(cue: &DyingCue, shape: &KindShape) -> EntityInstanc
         yaw: 0.0,
         scale,
         color: charred,
-        _pad: 0.0,
+        skin: 0, // death fades always render as the placeholder mass
         material: 0.0,
     }
 }
