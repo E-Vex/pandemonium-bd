@@ -1,11 +1,15 @@
 //! The wgpu renderer (plan §11.2 as amended by ADR-0001): a depth-tested 3D
 //! pass drawing the terrain mesh (from the map grid + display-only heightmap)
-//! and instanced placeholder boxes for entities, through the engine's
+//! and instanced multi-part entity silhouettes, through the engine's
 //! [`Renderer`] trait so the sim-facing code stays GPU-independent.
 //!
-//! Placeholder art only (plan §0): flat per-tile colors, unit boxes, team
-//! colors. The renderer receives interpolated [`RenderSnapshot`]s and camera
-//! matrices — never the simulation itself (FD-6, FD-9).
+//! All-procedural presentation (plan §0's no-asset law): box silhouettes over
+//! a noise-detailed terrain, lit by a shared hemisphere+sun model with
+//! view-dependent specular and rim shading, dissolving into the void color
+//! at overview distance. Fog of war drifts gently; selection rings and the
+//! placement ghost breathe. The renderer receives interpolated
+//! [`RenderSnapshot`]s and camera matrices — never the simulation itself
+//! (FD-6, FD-9).
 
 use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
@@ -26,15 +30,23 @@ use entities::{build_instances, build_shadows, death_instance, fallback_shape, E
 pub use entities::{DyingCue, PlacementGhost, TEAM_P0, TEAM_P1};
 
 use minimap::{paint_minimap_markers, MinimapVertex};
-use overlay::{build_rings, build_team_rings, DecalInstance, DECAL_FLAT};
+use overlay::{build_rings, build_team_rings, ring_pulse, DecalInstance, DECAL_FLAT};
 use terrain::{FogUniform, GpuTerrainVertex, FOG_SHADER_SRC, TERRAIN_SHADER};
 pub use terrain::{FOG_ALPHA_EXPLORED, FOG_ALPHA_HIDDEN, FOG_ALPHA_VISIBLE};
 
-/// The camera uniform: the combined view-projection matrix.
+/// The camera uniform: the combined view-projection matrix, the camera's
+/// world position (the view-dependent shading the entity and terrain
+/// fragments need — specular glints and distance haze), and the seconds
+/// since the renderer was created (the animation phase the fog's drift and
+/// the decal pulses read). The two shaders that read beyond the matrix
+/// mirror this struct exactly (80 bytes; WGSL's `vec3` alignment lands
+/// `eye` at the same offset 64 this layout gives).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 struct CameraUniform {
     view_projection: [[f32; 4]; 4],
+    eye: [f32; 3],
+    time: f32,
 }
 
 /// What each kind renders as: the multi-part silhouette from the pure
@@ -186,6 +198,10 @@ pub struct WgpuRenderer {
     minimap_base: Vec<[u8; 4]>,
     minimap_scratch: Vec<u8>,
     minimap_size: (u32, u32),
+    /// When this renderer was created — the origin of the presentation
+    /// animation clock (`CameraUniform::time`). Presentation-only wall
+    /// clock: it never touches the simulation, which runs on its own ticks.
+    start: std::time::Instant,
 }
 
 impl WgpuRenderer {
@@ -513,23 +529,29 @@ const DECAL_LIFT: f32 = 0.02;
 
 impl Renderer for WgpuRenderer {
     fn render(&mut self, frame: Frame<'_>) {
-        // Camera uniform.
+        // Camera uniform: the matrix plus the eye the view-dependent
+        // fragment shading reads, and the animation phase (seconds since
+        // the renderer was born) the fog drift and decal pulses run on.
+        let time = self.start.elapsed().as_secs_f32();
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
             bytemuck::bytes_of(&CameraUniform {
                 view_projection: frame.view_projection.to_cols_array_2d(),
+                eye: frame.eye.to_array(),
+                time,
             }),
         );
         // The fog pass shares the camera; it also carries the map size for
-        // the world-space UV mapping.
+        // the world-space UV mapping and the same animation clock.
         self.queue.write_buffer(
             &self.fog_uniform_buf,
             0,
             bytemuck::bytes_of(&FogUniform {
                 view_projection: frame.view_projection.to_cols_array_2d(),
                 map_size: [self.fog_map_size.0, self.fog_map_size.1],
-                _pad: [0.0; 2],
+                time,
+                _pad: 0.0,
             }),
         );
 
@@ -638,20 +660,28 @@ impl Renderer for WgpuRenderer {
             // Ground decals: blob shadows under everything, then the
             // placement ghost, then selection rings (all flat on the plane).
             let decal_capacity = self.decal_instance_capacity as usize;
+            // The decal pass's one animation: the interactive decals breathe
+            // (a slow, gentle alpha pulse) so "this is live UI, pointing at
+            // your selection / your build spot" reads even on a still frame.
+            // Shadows and team rings stay static — owner identity should not
+            // shimmer.
+            let pulse = ring_pulse(time);
             let shadows = build_shadows(frame.snapshot, &self.kind_specs, decal_capacity);
             let shadow_count = shadows.len() as u32;
             let mut decals = shadows;
             // The ghost rides above shadows: one quad at the footprint.
             let ghost_count = if let Some(ghost) = self.ghost {
                 if decals.len() < decal_capacity {
+                    let mut color = if ghost.legal {
+                        [0.30, 1.0, 0.40, 0.30]
+                    } else {
+                        [1.0, 0.30, 0.25, 0.38]
+                    };
+                    color[3] *= pulse;
                     decals.push(DecalInstance {
                         position: [ghost.center[0], DECAL_LIFT * 1.5, ghost.center[2]],
                         scale: ghost.extent,
-                        color: if ghost.legal {
-                            [0.30, 1.0, 0.40, 0.30]
-                        } else {
-                            [1.0, 0.30, 0.25, 0.38]
-                        },
+                        color,
                         mode: DECAL_FLAT,
                     });
                     1u32
@@ -677,7 +707,10 @@ impl Renderer for WgpuRenderer {
                 decal_capacity - decals.len(),
             );
             let ring_count = rings.len() as u32;
-            decals.extend(rings);
+            decals.extend(rings.into_iter().map(|mut ring| {
+                ring.color[3] *= pulse;
+                ring
+            }));
             for decal in &mut decals {
                 decal.position[1] += self.ground_height_at(decal.position[0], decal.position[2]);
             }
@@ -770,13 +803,18 @@ fn terrain_height_grid(terrain: &TerrainMesh, width: u32, height: u32) -> Vec<f3
 #[cfg(test)]
 mod tests {
     use super::entities::ENTITY_SHADER_SRC;
+    use super::overlay::DECAL_SHADER_SRC;
     use super::*;
 
-    /// Every embedded WGSL module parses (and keeps its expected entry
-    /// points). The GPU path cannot run on a headless CI machine, so the
-    /// shaders are machine-checked to the extent the environment allows —
-    /// a parse error would otherwise only surface as a runtime panic in
-    /// `WgpuRenderer::new` on a machine with a display.
+    /// Every embedded WGSL module parses, type-checks, and validates (and
+    /// keeps its expected entry points). The GPU path cannot run on a
+    /// headless CI machine, so the shaders are machine-checked to the extent
+    /// the environment allows — a parse error would otherwise only surface
+    /// as a runtime panic in `WgpuRenderer::new` on a machine with a
+    /// display, and a *type* error would surface even later, as a pipeline
+    /// creation failure. naga's validator is the same one wgpu runs at
+    /// module creation, so a pass here covers everything short of the
+    /// bind-group/pipeline wiring the layouts own.
     #[test]
     fn every_embedded_shader_parses_with_expected_entry_points() {
         for (name, source) in [
@@ -784,9 +822,16 @@ mod tests {
             ("entity", ENTITY_SHADER_SRC),
             ("ui", UI_SHADER_SRC),
             ("fog", FOG_SHADER_SRC),
+            ("decal", DECAL_SHADER_SRC),
         ] {
             let module = wgpu::naga::front::wgsl::parse_str(source)
                 .unwrap_or_else(|error| panic!("{name} shader does not parse: {error}"));
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{name} shader does not validate: {error}"));
             for entry in ["vs_main", "fs_main"] {
                 assert!(
                     module.entry_points.iter().any(|point| point.name == entry),
@@ -1220,6 +1265,30 @@ mod decal_tests {
         );
         // And the ring is slightly larger than its shadow.
         assert!(unit.radius + 0.12 > unit.radius);
+    }
+
+    #[test]
+    fn the_decal_pulse_breathes_gently_and_repeats() {
+        // The pulse swings in a calm 0.80..1.0 band — visible motion, never
+        // a flicker — and every part of the swing stays a legal alpha
+        // multiplier. (The bounds carry an epsilon: the sine's minimum is
+        // 0.90 - 0.10, which f32 rounds to 0.79999995.)
+        for step in 0..180 {
+            let phase = step as f32 * 0.01;
+            let pulse = ring_pulse(phase);
+            assert!(
+                (0.7999..=1.0001).contains(&pulse),
+                "pulse at {phase}s is {pulse}, outside the breathing band"
+            );
+        }
+        // It breathes: the extremes and the midpoint all appear.
+        let samples: Vec<f32> = (0..180).map(|s| ring_pulse(s as f32 * 0.01)).collect();
+        assert!(samples.iter().any(|p| *p > 0.995), "the pulse peaks");
+        assert!(samples.iter().any(|p| *p < 0.805), "the pulse dips");
+        // And it is periodic on the documented period, so a long session
+        // never drifts (1.8 s = the 180 samples above, all cycles equal).
+        assert!((ring_pulse(0.0) - ring_pulse(1.8)).abs() < 1e-4);
+        assert!((ring_pulse(0.3) - ring_pulse(2.1)).abs() < 1e-4);
     }
 }
 

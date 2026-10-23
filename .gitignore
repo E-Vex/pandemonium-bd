@@ -1,1 +1,49 @@
 /target
+
+# ---------------------------------------------------------------------------
+# Presentation assets — the "body" (docs/adr/0200-authoritative-vs-presentation-data.md).
+# Never in Git: models, textures, audio, shaders, packed assets.
+#
+# The client loads these from its own local pack at startup and degrades to
+# the procedural placeholders already in client code (colored boxes,
+# synthesized audio, embedded font) when they are absent, so a fresh clone
+# is fully playable and CI stays light. Artists own these out of band
+# (separate asset repo or shared folder); release engineering assembles packs.
+# ---------------------------------------------------------------------------
+
+# Heavy geometry / textures / audio wherever they live under the client:
+/crates/client/assets/models/
+/crates/client/assets/textures/
+/crates/client/assets/audio/
+/crates/client/assets/shaders/
+/crates/client/assets/packs/
+
+# Same heavy extensions anywhere else in the tree (catches stray downloads):
+*.blend
+*.fbx
+*.obj
+*.dae
+*.gltf
+*.glb
+*.psd
+*.xcf
+*.kra
+*.wav
+*.mp3
+*.ogg
+*.flac
+
+# Keep the small embedded placeholder font the build actually includes:
+!crates/client/assets/fonts/PandemoniumSans-Regular.ttf
+!crates/client/assets/fonts/LICENSE.txt
+
+# Local user content discovered beside the executable at runtime — community
+# maps, mods, and packs are not part of the canonical tracked content tree:
+/user-maps/
+/user-packs/
+/mods/
+
+# Editor / OS noise
+.*.sw[a-z]
+.DS_Store
+Thumbs.db
