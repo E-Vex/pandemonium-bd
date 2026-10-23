@@ -18,6 +18,7 @@ use pandemonium_engine::renderer::Frame;
 use pandemonium_engine::Renderer;
 use wgpu::util::DeviceExt;
 
+use crate::pack::{AssetEntry, AssetPack};
 use crate::text::{TextAtlas, UiQuad};
 
 mod entities;
@@ -174,6 +175,13 @@ pub struct WgpuRenderer {
     /// bundle by the client (the kind-name table + capability fallback in
     /// [`crate::silhouette`]) and handed to the renderer once at startup.
     kind_specs: Vec<KindShape>,
+    /// The loaded client-side asset pack, if any. Presentation-only — the
+    /// renderer resolves an entity's kind id through this pack for asset
+    /// references, but cannot yet consume external model/texture assets, so
+    /// it falls back to the silhouette placeholders when no loadable asset
+    /// exists. Never enters the simulation.
+    #[allow(dead_code)] // stored for the renderer follow-up that consumes assets
+    pack: Option<AssetPack>,
     decal_pipeline: wgpu::RenderPipeline,
     quad_vertex_buf: wgpu::Buffer,
     quad_vertex_count: u32,
@@ -208,6 +216,14 @@ impl WgpuRenderer {
     /// The glyph atlas (layout math for the caller; the texture stays here).
     pub fn atlas(&self) -> &TextAtlas {
         &self.atlas
+    }
+
+    /// Looks up a loaded asset reference for an entity kind id. Returns
+    /// `None` when the pack is absent, the kind is unmapped, or the asset
+    /// could not be loaded — the caller keeps using placeholder rendering.
+    #[allow(dead_code)] // called by the renderer follow-up that consumes assets
+    pub fn asset_for(&self, kind_id: &str) -> Option<&AssetEntry> {
+        self.pack.as_ref().and_then(|pack| pack.asset_for(kind_id))
     }
 
     /// Replaces the map-shaped GPU data when a match starts on a different

@@ -14,6 +14,8 @@ mod app;
 mod config;
 mod cutscene;
 mod feedback;
+mod pack;
+use pack::AssetPack;
 #[cfg(test)]
 mod hw;
 mod input;
@@ -145,6 +147,38 @@ fn main() -> anyhow::Result<()> {
         )
         .with_context(|| "bundling the default map")?;
 
+    // Client-side presentation assets are optional and local (ADR-0200 §3):
+    // a missing or invalid pack degrades to placeholders, never a crash.
+    // Resolution mirrors the content tree: the `--pack <dir>` flag, then
+    // `<exe_dir>/assets/packs/default`, then the compile-time dev path.
+    let pack_dir = pack_dir_from(&args);
+    let pack = match AssetPack::load(&pack_dir) {
+        Ok(Some(pack)) => {
+            println!(
+                "pandemonium client — asset pack '{}' (schema {}) loaded from {}",
+                pack.pack_id,
+                pack.schema_version,
+                pack_dir.display()
+            );
+            Some(pack)
+        }
+        Ok(None) => {
+            eprintln!(
+                "pandemonium client — no asset pack manifest at {}; using placeholder rendering",
+                pack_dir.display()
+            );
+            None
+        }
+        Err(error) => {
+            eprintln!(
+                "pandemonium client — asset pack at {} could not be loaded ({error}); \
+                 using placeholder rendering",
+                pack_dir.display()
+            );
+            None
+        }
+    };
+
     // A-002 Part 2.3: `--headless` forces the smoke pass without consulting
     // the display — CI runners and display-less machines say what they want
     // instead of discovering the M3 fallback by accident (a Windows runner
@@ -205,6 +239,7 @@ fn main() -> anyhow::Result<()> {
         record_path,
         settings,
         audio,
+        pack,
     )?;
     app.frames_budget = frames_budget_arg(&args);
     event_loop
@@ -314,6 +349,57 @@ fn content_search_error(candidates: &[PathBuf]) -> String {
     message
 }
 
+/// Resolves the pack directory for THIS process. Unlike the content tree,
+/// a missing pack directory is not an error: this returns the last-searched
+/// candidate so the caller can attempt to load a manifest from it and degrade
+/// gracefully when it is absent. Order: the `--pack <dir>` flag, then
+/// `<exe_dir>/assets/packs/default` (the release archive layout), then the
+/// compile-time workspace path (the cargo-run dev layout).
+fn pack_dir_from(args: &[String]) -> PathBuf {
+    let explicit = pack_flag_from_args(args);
+    let exe = std::env::current_exe().unwrap_or_else(|error| {
+        eprintln!(
+            "pandemonium client — could not locate the own executable ({error}); trying the \
+             compiled-in dev path"
+        );
+        PathBuf::from(".")
+    });
+    let exe_dir = exe.parent().unwrap_or_else(|| Path::new("."));
+    let candidates: Vec<PathBuf> = match explicit {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => vec![
+            exe_dir.join("assets").join("packs").join("default"),
+            PathBuf::from(pack_dev_path()),
+        ],
+    };
+    // Return the first candidate that exists, else the last candidate so
+    // the load attempt reports a precise "not found" path.
+    candidates
+        .iter()
+        .find(|c| c.is_dir())
+        .cloned()
+        .unwrap_or_else(|| candidates.into_iter().last().unwrap_or_default())
+}
+
+/// Parses the pack override `--pack <dir>` (mirrors `--content`).
+fn pack_flag_from_args(args: &[String]) -> Option<PathBuf> {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--pack" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+/// The compile-time dev path for the default asset pack.
+fn pack_dev_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/client/assets/packs/default"
+    )
+}
+
 /// Resolves the content directory for THIS process (flag, then executable,
 /// then dev path). A failed search is an `Err` of every path tried — main
 /// turns it into the precise error and exit 1, and `--version` degrades
@@ -383,6 +469,7 @@ impl ApplicationHandler for App {
             window.clone(),
             &terrain_mesh(&self.tree.maps[0], HEIGHT_SCALE),
             crate::app::kind_shapes(&self.bundle),
+            self.pack.clone(),
         ) {
             Ok(renderer) => {
                 self.renderer = Some(renderer);
@@ -1289,6 +1376,7 @@ mod audio_wiring {
             // The forced null arm: what the no-device constructor yields, so
             // the oracle counter exists whatever this machine can hear.
             sound::Sound::without_device(1.0, false),
+            None, // no asset pack in unit tests — placeholder rendering
         )
         .expect("the app constructs")
     }
@@ -1489,6 +1577,7 @@ mod mission_wiring {
             None,
             config::Settings::default(),
             sound::Sound::without_device(1.0, false),
+            None, // no asset pack in unit tests — placeholder rendering
         )
         .expect("the app constructs")
     }
@@ -1717,6 +1806,7 @@ mod mission_wiring {
             Some(mission_path.clone()),
             config::Settings::default(),
             sound::Sound::without_device(1.0, false),
+            None, // no asset pack in unit tests — placeholder rendering
         )
         .expect("the app constructs");
         app.begin_mission(0, 42);

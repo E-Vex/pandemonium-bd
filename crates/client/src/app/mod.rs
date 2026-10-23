@@ -42,6 +42,7 @@ use crate::feedback::FeedbackState;
 use crate::input;
 use crate::input::orders;
 use crate::input::RightButton;
+use crate::pack::AssetPack;
 use crate::random_seed;
 use crate::render;
 use crate::render::WgpuRenderer;
@@ -69,6 +70,10 @@ pub(crate) struct App {
     /// defaults when the config file is missing or malformed — the settings
     /// screen edits this live copy and saves it on Done.
     pub(crate) settings: config::Settings,
+    /// The loaded client-side asset pack (presentation-only, local to this
+    /// client). `None` when no pack exists or it cannot be used — the
+    /// renderer falls back to placeholders. Never enters the simulation.
+    pub(crate) pack: Option<AssetPack>,
     /// The current match's bundle (rebuilt per match: the selected map's).
     /// At the menu this holds the default bundle (the backdrop's map).
     pub(crate) bundle: ContentBundle,
@@ -258,6 +263,7 @@ impl App {
         record_path: Option<PathBuf>,
         settings: config::Settings,
         audio: sound::Sound,
+        pack: Option<AssetPack>,
     ) -> anyhow::Result<Self> {
         let resource_names: Vec<String> = tree
             .rules
@@ -295,6 +301,7 @@ impl App {
             screen: AppState::at_main_menu(),
             seed_prefill,
             settings,
+            pack,
             bundle: default_bundle,
             host: None,
             match_mode: MatchMode::PlayerVsAi,

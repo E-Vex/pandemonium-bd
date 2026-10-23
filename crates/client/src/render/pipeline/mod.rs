@@ -14,10 +14,14 @@ impl WgpuRenderer {
     /// Creates the renderer for a window: device, queues, pipelines, and the
     /// static terrain buffers. `kind_specs` maps each content kind id to its
     /// multi-part silhouette (the client derives them from the loaded bundle).
+    /// `pack` is the optional client-side asset pack; the renderer stores it
+    /// for asset lookup but cannot yet consume external model/texture assets,
+    /// so placeholder silhouettes are used when no loadable asset exists.
     pub fn new(
         window: std::sync::Arc<winit::window::Window>,
         terrain: &TerrainMesh,
         kind_specs: Vec<KindShape>,
+        pack: Option<AssetPack>,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance
@@ -908,6 +912,7 @@ impl WgpuRenderer {
             fog_texture_size,
             fog_map_size: (fog_map_size[0], fog_map_size[1]),
             kind_specs,
+            pack,
             decal_pipeline,
             quad_vertex_buf,
             quad_vertex_count: quad.len() as u32,

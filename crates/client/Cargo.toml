@@ -17,6 +17,9 @@ anyhow = "1"
 bytemuck = { version = "1", features = ["derive"] }
 fontdue = "0.9"
 pollster = "0.4"
+ron = "0.9"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
 wgpu = "26"
 winit = "0.30"
 glam = "0.30"
