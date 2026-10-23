@@ -7,20 +7,25 @@
 use super::entities::ENTITY_SHADER_SRC;
 use super::minimap::{cube_vertices, CubeVertex, MinimapVertex, MINIMAP_SHADER_SRC};
 use super::overlay::{quad_vertices, ring_vertices, DecalInstance, DECAL_SHADER_SRC};
+use super::texture::{decode_png, resolve_kind_textures, upload_skin, DecodedTexture};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
 impl WgpuRenderer {
     /// Creates the renderer for a window: device, queues, pipelines, and the
     /// static terrain buffers. `kind_specs` maps each content kind id to its
-    /// multi-part silhouette (the client derives them from the loaded bundle).
-    /// `pack` is the optional client-side asset pack; the renderer stores it
-    /// for asset lookup but cannot yet consume external model/texture assets,
-    /// so placeholder silhouettes are used when no loadable asset exists.
+    /// multi-part silhouette (the client derives them from the loaded bundle);
+    /// `kind_names` carries the same kinds' string ids, aligned by index, so
+    /// the pack lookup can key by content's kind id. `pack` is the optional
+    /// client-side asset pack: its loadable PNG entries become one uploaded
+    /// entity skin each (built once here, never per frame), and everything a
+    /// kind cannot load — no pack, no entry, a `.glb`, a bad PNG — keeps the
+    /// placeholder silhouette path.
     pub fn new(
         window: std::sync::Arc<winit::window::Window>,
         terrain: &TerrainMesh,
         kind_specs: Vec<KindShape>,
+        kind_names: Vec<String>,
         pack: Option<AssetPack>,
     ) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -97,6 +102,50 @@ impl WgpuRenderer {
             bind_group_layouts: &[&camera_layout],
             push_constant_ranges: &[],
         });
+
+        // The entity skin bindings — group(1) of the entity pipeline: one
+        // shared sampler, plus whichever texture the bound bind group
+        // carries (the built-in white 1x1 placeholder, or a pack PNG).
+        // Fragment-visible only, the same shape the glyph atlas and fog
+        // layouts already use.
+        let entity_skin_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("entity skin layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let entity_skin_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("entity skin sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let entity_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("entity layout"),
+                bind_group_layouts: &[&camera_layout, &entity_skin_layout],
+                push_constant_ranges: &[],
+            });
 
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain shader"),
@@ -187,7 +236,7 @@ impl WgpuRenderer {
         });
         let entity_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("entity pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&entity_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &entity_shader,
                 entry_point: Some("vs_main"),
@@ -206,6 +255,13 @@ impl WgpuRenderer {
                                 format: wgpu::VertexFormat::Float32x3,
                                 offset: 12,
                                 shader_location: 5,
+                            },
+                            // The skin UV (offset 24): every face's box-mapped
+                            // 0..1 unwrap of the bound texture.
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 24,
+                                shader_location: 7,
                             },
                         ],
                     },
@@ -232,6 +288,14 @@ impl WgpuRenderer {
                                 format: wgpu::VertexFormat::Float32x3,
                                 offset: 28,
                                 shader_location: 4,
+                            },
+                            // The skin slot (offset 40, where the old `_pad`
+                            // sat): 0 keeps the placeholder fragment path,
+                            // anything else is a custom skin's draw.
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 40,
+                                shader_location: 8,
                             },
                             wgpu::VertexAttribute {
                                 format: wgpu::VertexFormat::Float32,
@@ -282,6 +346,59 @@ impl WgpuRenderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        // The skin library (the asset pack MVP's PNG half): slot 0 is the
+        // built-in white 1x1 skin every placeholder draw samples; each kind
+        // whose pack entry resolves to a loadable PNG gets one more slot.
+        // Decode, upload, and bind-group creation all happen exactly once
+        // here — the frame pass only ever *binds* these. A kind that fails
+        // anywhere along the way keeps slot 0, with a diagnostic saying why.
+        let placeholder_skin = upload_skin(
+            &device,
+            &queue,
+            &entity_skin_layout,
+            &entity_skin_sampler,
+            &DecodedTexture::white_1x1(),
+            "placeholder skin",
+        );
+        let mut entity_skins = vec![placeholder_skin];
+        let mut kind_skin_slots = vec![0u32; kind_names.len()];
+        for (index, plan) in resolve_kind_textures(pack.as_ref(), &kind_names)
+            .iter()
+            .enumerate()
+        {
+            let Some(plan) = plan else {
+                continue; // no pack entry, an unmapped kind, or a model
+            };
+            match decode_png(&plan.path) {
+                Ok(decoded) => {
+                    println!(
+                        "pandemonium client — entity skin '{}' loaded ({}x{} PNG from {})",
+                        plan.kind,
+                        decoded.width,
+                        decoded.height,
+                        plan.path.display()
+                    );
+                    kind_skin_slots[index] = entity_skins.len() as u32;
+                    entity_skins.push(upload_skin(
+                        &device,
+                        &queue,
+                        &entity_skin_layout,
+                        &entity_skin_sampler,
+                        &decoded,
+                        &plan.kind,
+                    ));
+                }
+                Err(error) => {
+                    eprintln!(
+                        "pandemonium pack: entity skin for '{}' could not be loaded from {} \
+                         ({error}); using placeholder rendering",
+                        plan.kind,
+                        plan.path.display()
+                    );
+                }
+            }
+        }
 
         // The UI overlay pass (plan §11.4 HUD + §11.6 debug overlays): the
         // glyph atlas as an R8Unorm texture, a screen-size uniform, an
@@ -895,6 +1012,8 @@ impl WgpuRenderer {
             entity_vertex_buf,
             entity_instance_buf,
             entity_instance_capacity,
+            entity_skins,
+            kind_skin_slots,
             atlas,
             screen_buffer,
             screen_bind_group,

@@ -56,7 +56,7 @@ placeholder rendering (colored boxes, synthesized audio).
     pack_id: "default",
     schema_version: 1,
     entities: {
-        "rifleman": "models/units/rifleman.glb",
+        "rifleman": "textures/units/rifleman.png",
         "command_center": "models/buildings/command_center.glb",
     },
     terrain: {
@@ -69,7 +69,12 @@ placeholder rendering (colored boxes, synthesized audio).
 - `pack_id` (string) and `schema_version` (must be `1`) are required.
 - `entities` maps an entity kind id (e.g. `"rifleman"`) to a relative asset
   path. The kind id must match the `id` field in `content/entities/<id>.ron`.
-- ` terrain` maps a terrain class id to a relative asset path.
+  A `.png` entry is loaded and rendered as the entity's skin (see "PNG
+  texture rendering" below); a `.glb`/`.gltf` entry is accepted by the
+  manifest but still renders as the placeholder silhouette.
+- `terrain` maps a terrain class id to a relative asset path. Terrain
+  textures are not yet consumed by the renderer — the entries are
+  validated and kept for the terrain-texture follow-up.
 - All paths are relative to the pack root directory.
 - Unknown manifest fields are rejected (strict mode).
 
@@ -88,19 +93,47 @@ Non-fatal issues (a referenced asset file missing, or an unsupported file
 format) do not abort the pack: that entry is skipped with a diagnostic, and
 the existing placeholder rendering is used for that kind.
 
-### Supported asset formats (declared, not yet rendered)
+### Supported asset formats
 
 The pack system recognizes these extensions:
 
 | Extension | Kind | Renderer support |
 |---|---|---|
+| `.png` | Texture | **Loaded and rendered** — entity kinds get their PNG as the box silhouette's skin (see "PNG texture rendering"). Terrain-class PNGs are not yet sampled. |
 | `.glb`, `.gltf` | Model | Not yet — placeholder used |
-| `.png` | Texture | Not yet — placeholder used |
 
 Other extensions are not recognized by `AssetPack::kind_of()` and fall back to
-placeholders. The renderer currently draws instanced box silhouettes; it
-cannot yet consume external model or texture files. See "Current limitations"
-below.
+placeholders. The renderer draws instanced box silhouettes; model files
+cannot be consumed yet. See "Current limitations" below.
+
+### PNG texture rendering (implemented)
+
+An `entities` entry pointing at a `.png` is genuinely loaded and rendered:
+
+1. At startup — once, never per frame — the renderer resolves the kind's
+   pack entry, decodes the PNG to RGBA8, and uploads it as one sRGB GPU
+   texture with its own bind group (a "skin"). Each load prints
+   `entity skin '<kind>' loaded (...)`.
+2. The entity shader samples the skin with box-mapped UVs: every face of
+   the kind's silhouette boxes shows the whole image, upright on the four
+   side faces. The texel multiplies the lit team color (so ownership still
+   reads), and texels with alpha < 0.5 are cut away (alpha cutout — the
+   entity pass writes opaque pixels).
+3. Per frame the renderer groups the instance stream by skin and issues
+   one instanced draw per texture — no PNG is decoded, uploaded, or given a
+   bind group during rendering, and untextured kinds are unaffected.
+4. Placeholder draws sample a built-in 1×1 white skin: the multiply is
+   exactly 1.0, so a pack-less client renders byte-identically to the
+   pure-silhouette renderer.
+
+Limits on PNG files (checked before anything large is read or decoded):
+
+- PNG only, in any color type (normalized to RGBA8 on load).
+- At most `2048 × 2048` pixels (the header is checked before decoding — a
+  tiny file claiming a huge bitmap is refused, not allocated).
+- At most 64 MiB on disk.
+- A kind may map to one PNG; sharing one file between kinds is fine (each
+  kind gets its own GPU copy).
 
 ### Fallback behavior
 
@@ -113,18 +146,46 @@ The game continues to launch and run when:
 - An entity kind has no asset mapping (placeholder used).
 - A referenced asset format is not supported (that entry skipped,
   placeholder used + diagnostic).
+- A `.glb`/`.gltf` is declared where a texture is needed (placeholder used).
+- A PNG fails to decode, is larger than the limits above, or is rejected by
+  the GPU (placeholder used for that kind + diagnostic; every other kind's
+  textures still render).
 
 A missing or invalid custom pack never makes the simulation unusable.
 
 ## Adding visuals (no logic changes)
 
 1. Place the asset in a gitignored directory under
-   `crates/client/assets/` (or in the separate asset repository).
+   `crates/client/assets/` (or in the separate asset repository) — the
+   default dev pack is `crates/client/assets/packs/default/`, which is
+   gitignored, so nothing is committed. Alternatively pass `--pack <dir>`
+   to point at any local folder.
 2. Declare it in the pack manifest, keyed by the entity's kind id from
    `content/`. Never write asset paths into `content/*.ron` — those files stay
    hashable and shareable between peers.
-3. The client resolves kind → asset at draw time through `WgpuRenderer::asset_for()`.
-   The sim draws nothing, so improving or replacing art never changes match results.
+3. The client resolves kind → asset at startup through the pack manifest
+   (`AssetPack::asset_for()`, exposed on the renderer as
+   `WgpuRenderer::asset_for()`) and loads loadable PNGs into the renderer's
+   skin library. The sim draws nothing, so improving or replacing art never
+   changes match results.
+
+A minimal example — put `rifleman.png` (any PNG up to 2048×2048) into
+`crates/client/assets/packs/default/textures/units/`, then:
+
+```ron
+(
+    pack_id: "default",
+    schema_version: 1,
+    entities: {
+        "rifleman": "textures/units/rifleman.png",
+    },
+)
+```
+
+`cargo run -p pandemonium-client` picks the pack up from the dev path and
+prints the load line; riflemen now wear the image on every silhouette box.
+Deleting the file (or the manifest) restores placeholder rendering with a
+diagnostic — no code change, no content change, no match-identity change.
 
 ## Adding a new army or soldier (data-only, zero engine/sim changes)
 
@@ -137,20 +198,34 @@ That matches plan FD-4 and acceptance A3/A10: new content is data, not code.
 
 ## Current limitations
 
-The renderer (wgpu) currently renders entities as instanced box silhouettes
+The renderer (wgpu) renders entities as instanced box silhouettes
 (keyed by kind id through `silhouette::named()` with a capability-shape
-fallback). It does **not** yet load external models, textures, or audio files
-from disk. The asset pack system provides:
+fallback). Entity **PNG textures are loaded and rendered** (see "PNG texture
+rendering" above). Still not implemented:
+
+- **Models**: `.glb`/`.gltf` entries are validated by the pack system but no
+  mesh loading, skeletal animation, or PBR material system exists — those
+  kinds keep the placeholder silhouette. No GLB loading is coming in the
+  current milestone sequence.
+- **Terrain textures**: terrain-class PNG entries are validated but the
+  terrain pass does not sample them yet.
+- **Mipmapping**: skins upload a single mip level, so very small on-screen
+  entities sample without mip filtering.
+
+The asset pack system provides:
 
 - The manifest schema and loader (`crates/client/src/pack/`).
 - Path validation and security (absolute paths, traversal, pack-root escape).
 - Asset resolution by kind id (`AssetPack::asset_for()`, exposed on the
   renderer as `WgpuRenderer::asset_for()`).
+- PNG decode + GPU upload for entity skins (`crates/client/src/render/texture.rs`),
+  with per-kind fallback to placeholders.
 - Graceful fallback to placeholders when a pack is absent or unusable.
 
-The smallest logical follow-up task is to teach the renderer to load and
-sample a supported texture (e.g. `.png`) for a kind, using the resolved path
-from `asset_for()`, while keeping the silhouette path as the fallback.
+The smallest logical follow-up task is the terrain pass sampling its
+already-validated terrain-class PNGs through the same skin plumbing
+(`terrain_asset_for()` exists; the terrain shader needs its own bind group),
+keeping the procedural terrain as the fallback.
 
 ## CI
 

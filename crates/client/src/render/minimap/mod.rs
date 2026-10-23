@@ -40,12 +40,16 @@ pub(super) struct MinimapVertex {
     pub(super) pos_uv: [f32; 4],
 }
 
-/// One cube vertex: corner position and its soft edge normal (24 bytes).
+/// One cube vertex: corner position, its soft edge normal, and the skin
+/// UV (32 bytes). The UVs unwrap every face across the full 0..1 texture
+/// space — box mapping: each face samples the whole image, upright on the
+/// four side faces (v runs image-down from the face's top edge).
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub(super) struct CubeVertex {
     pub(super) corner: [f32; 3],
     pub(super) normal: [f32; 3],
+    pub(super) uv: [f32; 2],
 }
 
 /// The unit cube's 36 vertices (12 triangles), centered at the origin, half-
@@ -70,8 +74,22 @@ pub(super) fn cube_vertices() -> Vec<CubeVertex> {
         [0.5, 0.5, 0.5],
         [-0.5, 0.5, 0.5],
     ];
+    // The per-face UV: side faces stand the image upright (v = 0 at the
+    // face's top edge, u left-to-right as seen from outside the box), the
+    // top and bottom faces map the ground plane. Faces are listed in the
+    // same order as `FACES`: -Z, +Z, -X, +X, -Y, +Y.
+    let face_uv = |face: usize, corner: [f32; 3]| -> [f32; 2] {
+        let (x, y, z) = (corner[0], corner[1], corner[2]);
+        match face {
+            0 => [x + 0.5, 0.5 - y], // -Z: u along +x, upright
+            1 => [0.5 - x, 0.5 - y], // +Z: mirrored so text reads from outside
+            2 => [0.5 - z, 0.5 - y], // -X: u along -z
+            3 => [z + 0.5, 0.5 - y], // +X: u along +z
+            _ => [x + 0.5, z + 0.5], // top/bottom: the ground plane
+        }
+    };
     let mut vertices = Vec::with_capacity(36);
-    for quad in &FACES {
+    for (face, quad) in FACES.iter().enumerate() {
         let corners = [
             corners[quad[0]],
             corners[quad[1]],
@@ -84,6 +102,7 @@ pub(super) fn cube_vertices() -> Vec<CubeVertex> {
             vertices.push(CubeVertex {
                 corner,
                 normal: glam::Vec3::from_array(corner).normalize().to_array(),
+                uv: face_uv(face, corner),
             });
         }
     }

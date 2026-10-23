@@ -26,8 +26,11 @@ mod minimap;
 mod overlay;
 mod pipeline;
 mod terrain;
+mod texture;
 
-use entities::{build_instances, build_shadows, death_instance, fallback_shape, EntityInstance};
+use entities::{
+    build_instances, build_shadows, death_instance, fallback_shape, group_by_skin, EntityInstance,
+};
 pub use entities::{DyingCue, PlacementGhost, TEAM_P0, TEAM_P1};
 
 use minimap::{paint_minimap_markers, MinimapVertex};
@@ -155,6 +158,15 @@ pub struct WgpuRenderer {
     entity_vertex_buf: wgpu::Buffer,
     entity_instance_buf: wgpu::Buffer,
     entity_instance_capacity: u64,
+    /// The uploaded entity skins, slot-indexed: slot 0 is the built-in
+    /// white 1x1 placeholder; a custom pack's loadable PNGs occupy 1.. in
+    /// kind order. All of these are born once in the constructor — the
+    /// frame pass only rebinds them, so no PNG is decoded, uploaded, or
+    /// given a bind group during rendering.
+    entity_skins: Vec<texture::EntitySkin>,
+    /// Per-kind skin slot (KindId → slot, aligned with `kind_specs`).
+    /// Kinds without a loadable texture stay at slot 0 (the placeholder).
+    kind_skin_slots: Vec<u32>,
     atlas: TextAtlas,
     screen_buffer: wgpu::Buffer,
     screen_bind_group: wgpu::BindGroup,
@@ -177,10 +189,10 @@ pub struct WgpuRenderer {
     kind_specs: Vec<KindShape>,
     /// The loaded client-side asset pack, if any. Presentation-only — the
     /// renderer resolves an entity's kind id through this pack for asset
-    /// references, but cannot yet consume external model/texture assets, so
-    /// it falls back to the silhouette placeholders when no loadable asset
-    /// exists. Never enters the simulation.
-    #[allow(dead_code)] // stored for the renderer follow-up that consumes assets
+    /// references: loadable `.png` entries become uploaded entity skins at
+    /// startup, everything else keeps the silhouette placeholders. Never
+    /// enters the simulation.
+    #[allow(dead_code)] // consumed by the constructor's skin loader; kept for lookup
     pack: Option<AssetPack>,
     decal_pipeline: wgpu::RenderPipeline,
     quad_vertex_buf: wgpu::Buffer,
@@ -221,7 +233,10 @@ impl WgpuRenderer {
     /// Looks up a loaded asset reference for an entity kind id. Returns
     /// `None` when the pack is absent, the kind is unmapped, or the asset
     /// could not be loaded — the caller keeps using placeholder rendering.
-    #[allow(dead_code)] // called by the renderer follow-up that consumes assets
+    /// The skin loader resolves through `texture::resolve_kind_textures` at
+    /// startup; this lookup stays as the renderer's public seam for
+    /// diagnostics and follow-ups (terrain textures next).
+    #[allow(dead_code)] // the terrain-texture follow-up consumes it; kept tested
     pub fn asset_for(&self, kind_id: &str) -> Option<&AssetEntry> {
         self.pack.as_ref().and_then(|pack| pack.asset_for(kind_id))
     }
@@ -573,11 +588,14 @@ impl Renderer for WgpuRenderer {
 
         // Entity instances from the interpolated snapshot (ascending id),
         // composed into per-kind silhouettes by the pure instance builder.
+        // Each instance carries its kind's skin slot so the pass below can
+        // group the stream by texture without touching the builder.
         let mut instances = build_instances(
             frame.snapshot,
             frame.selection,
             frame.flashes,
             &self.kind_specs,
+            &self.kind_skin_slots,
             self.entity_instance_capacity as usize,
         );
         // Death fades append their shrinking masses (the entity is gone
@@ -601,9 +619,13 @@ impl Renderer for WgpuRenderer {
             instance.position[1] +=
                 self.ground_height_at(instance.position[0], instance.position[2]);
         }
-        let needed = instances.len() as u64;
+        // Group the stream by skin slot (the pure helper owns the law):
+        // one contiguous run per slot means one draw per slot binds one
+        // texture bind group — and no GPU resource is created here.
+        let (ordered, skin_draws) = group_by_skin(instances, self.entity_skins.len());
+        let needed = ordered.len() as u64;
         if needed > 0 {
-            let bytes = bytemuck::cast_slice(&instances);
+            let bytes = bytemuck::cast_slice(&ordered);
             let capacity_bytes =
                 self.entity_instance_capacity as usize * std::mem::size_of::<EntityInstance>();
             let capped = &bytes[..bytes.len().min(capacity_bytes)];
@@ -769,7 +791,20 @@ impl Renderer for WgpuRenderer {
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_vertex_buffer(0, self.entity_vertex_buf.slice(..));
             pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));
-            pass.draw(0..36, 0..needed.min(self.entity_instance_capacity) as u32);
+            // One draw per skin slot: group(1) carries that slot's bind
+            // group over the slot's contiguous instance range. An empty
+            // frame still issues one zero-instance draw against the
+            // placeholder skin — wgpu validates the bound groups even when
+            // nothing rasterizes.
+            if skin_draws.is_empty() {
+                pass.set_bind_group(1, &self.entity_skins[0].bind_group, &[]);
+                pass.draw(0..36, 0..0);
+            } else {
+                for (slot, start, count) in skin_draws {
+                    pass.set_bind_group(1, &self.entity_skins[slot].bind_group, &[]);
+                    pass.draw(0..36, start as u32..(start + count) as u32);
+                }
+            }
             // The minimap rides over the world but under the HUD quads (the
             // viewport indicator and panel border draw in the UI pass on
             // top of it): it rebinds group(0) to its own layout, like the
@@ -982,6 +1017,7 @@ mod silhouette_tests {
             &shape,
             false,
             false,
+            0,
             &mut out,
         );
         assert_eq!(out.len(), 3, "slab + roof + team band");
@@ -1011,7 +1047,7 @@ mod silhouette_tests {
         let mut e = entity(1, 0, PlayerId(0), MoveState::Idle);
         e.facing = Vec3::new(1.0, 0.0, 0.0); // east
         let mut out = Vec::new();
-        build_entity_instances(&e, &shape, false, false, &mut out);
+        build_entity_instances(&e, &shape, false, false, 0, &mut out);
         assert_eq!(out.len(), 5, "body + head + backpack + yoke + rifle");
         let yaw = out[0].yaw;
         assert!(
@@ -1024,7 +1060,7 @@ mod silhouette_tests {
         let mut moving = entity(1, 0, PlayerId(0), MoveState::Moving);
         moving.facing = Vec3::new(1.0, 0.0, 0.0);
         let mut out2 = Vec::new();
-        build_entity_instances(&moving, &shape, false, false, &mut out2);
+        build_entity_instances(&moving, &shape, false, false, 0, &mut out2);
         assert!(out2[0].scale[1] < out[0].scale[1], "moving squats the body");
         assert!(
             out2[4].position[1] < out[4].position[1],
@@ -1043,7 +1079,7 @@ mod silhouette_tests {
         let mut e = entity(1, 0, PlayerId(0), MoveState::Idle);
         e.facing = Vec3::new(0.0, 0.0, 1.0);
         let mut out = Vec::new();
-        build_entity_instances(&e, &shape, false, false, &mut out);
+        build_entity_instances(&e, &shape, false, false, 0, &mut out);
         assert!(
             (out[0].yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-4,
             "a north-facing unit yaws to +90 degrees"
@@ -1067,6 +1103,7 @@ mod silhouette_tests {
             &shape,
             false,
             false,
+            0,
             &mut out,
         );
         assert_eq!(out.len(), 4, "crystal cluster");
@@ -1084,6 +1121,7 @@ mod silhouette_tests {
             &shape,
             false,
             false,
+            0,
             &mut out_p0,
         );
         for (red, blue) in out.iter().zip(out_p0.iter()) {
@@ -1099,6 +1137,7 @@ mod silhouette_tests {
             &unit_shape(),
             false,
             false,
+            0,
             &mut plain,
         );
         let mut selected = Vec::new();
@@ -1107,6 +1146,7 @@ mod silhouette_tests {
             &unit_shape(),
             true,
             false,
+            0,
             &mut selected,
         );
         let mut flashing = Vec::new();
@@ -1115,6 +1155,7 @@ mod silhouette_tests {
             &unit_shape(),
             false,
             true,
+            0,
             &mut flashing,
         );
         let brightness = |instances: &[EntityInstance]| instances[0].color.iter().sum::<f32>();
@@ -1137,7 +1178,7 @@ mod silhouette_tests {
         // Room for exactly three entities' silhouettes (2 instances each) —
         // the fourth is dropped whole, never half-drawn.
         let specs = [unit_shape(), unit_shape(), unit_shape(), unit_shape()];
-        let instances = build_instances(&snapshot, &[], &[], &specs, 6);
+        let instances = build_instances(&snapshot, &[], &[], &specs, &[], 6);
         assert_eq!(instances.len(), 6);
         assert!(instances
             .iter()
@@ -1150,7 +1191,7 @@ mod silhouette_tests {
             tick: 0,
             entities: vec![entity(1, 99, PlayerId(0), MoveState::Idle)],
         };
-        let instances = build_instances(&snapshot, &[], &[], &[], 64);
+        let instances = build_instances(&snapshot, &[], &[], &[], &[], 64);
         assert_eq!(instances.len(), 1, "the fallback silhouette still renders");
     }
 }
@@ -1481,5 +1522,183 @@ mod minimap_marker_tests {
         // The corner building clamps inside the map without panicking.
         assert_eq!(tile(&scratch, 0, 0)[3], 255);
         assert_eq!(tile(&scratch, 7, 7)[3], 0, "the far corner stays terrain");
+    }
+}
+
+#[cfg(test)]
+mod skin_tests {
+    use super::entities::group_by_skin;
+    use super::minimap::cube_vertices;
+    use super::*;
+    use glam::Vec3;
+    use pandemonium_engine::RenderEntity;
+    use pandemonium_sim_api::{EntityId, KindId, MoveState, PlayerId};
+
+    fn entity(id: u64, kind: u32) -> RenderEntity {
+        RenderEntity {
+            id: EntityId(id),
+            owner: PlayerId(0),
+            kind: KindId(kind),
+            pos: Vec3::new(id as f32, 0.0, 0.0),
+            facing: Vec3::ZERO,
+            hp_fraction_milli: 1000,
+            move_state: MoveState::Idle,
+        }
+    }
+
+    fn snapshot(kinds: &[u32]) -> pandemonium_engine::RenderSnapshot {
+        pandemonium_engine::RenderSnapshot {
+            tick: 0,
+            entities: kinds
+                .iter()
+                .enumerate()
+                .map(|(index, &kind)| entity(index as u64 + 1, kind))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn every_kind_draws_with_its_own_skin_slot() {
+        // Three kinds — kind 0 skinned (slot 2), kind 1 skinned (slot 1),
+        // kind 2 unskinned — every instance a kind emits carries that
+        // kind's slot, never the placeholder's.
+        let specs = [unit_shape(), unit_shape(), unit_shape()];
+        let slots = [2u32, 1u32, 0u32];
+        let instances = build_instances(&snapshot(&[0, 1, 2]), &[], &[], &specs, &slots, 64);
+        assert!(instances
+            .iter()
+            .filter(|i| i.position[0] == 1.0)
+            .all(|i| i.skin == 2));
+        assert!(instances
+            .iter()
+            .filter(|i| i.position[0] == 2.0)
+            .all(|i| i.skin == 1));
+        assert!(instances
+            .iter()
+            .filter(|i| i.position[0] == 3.0)
+            .all(|i| i.skin == 0));
+    }
+
+    #[test]
+    fn kinds_without_a_slot_table_entry_draw_placeholder() {
+        // A slot table shorter than the kind list (or empty — the no-pack
+        // client) must fall back to slot 0, never panic.
+        let specs = [unit_shape(), unit_shape(), unit_shape()];
+        let instances = build_instances(&snapshot(&[0, 2]), &[], &[], &specs, &[], 64);
+        assert!(!instances.is_empty());
+        assert!(
+            instances.iter().all(|i| i.skin == 0),
+            "no slot table => the placeholder skin"
+        );
+    }
+
+    #[test]
+    fn grouping_makes_one_contiguous_run_per_skin() {
+        // An interleaved stream (0, 2, 1, 0) groups into contiguous runs:
+        // slot 0 first, then 1, then 2, each run preserving arrival order,
+        // and the draw list covering every instance exactly once.
+        let stream = |skins: &[u32]| {
+            skins
+                .iter()
+                .map(|&skin| EntityInstance {
+                    position: [skin as f32, 0.0, 0.0],
+                    yaw: 0.0,
+                    scale: [1.0, 1.0, 1.0],
+                    color: [1.0, 1.0, 1.0],
+                    skin,
+                    material: 0.0,
+                })
+                .collect::<Vec<_>>()
+        };
+        let (ordered, draws) = group_by_skin(stream(&[0, 2, 1, 0]), 3);
+        assert_eq!(draws, vec![(0, 0, 2), (1, 2, 1), (2, 3, 1)]);
+        // Within slot 0, arrival order survives (both position[0] == 0).
+        assert_eq!(ordered[0].position[0], 0.0);
+        assert_eq!(ordered[1].position[0], 0.0);
+        // The runs are contiguous: start + count chains to the next start.
+        let mut covered = 0u64;
+        for (_, start, count) in &draws {
+            assert_eq!(*start, covered, "runs leave no gaps");
+            covered += *count;
+        }
+        assert_eq!(covered, ordered.len() as u64);
+    }
+
+    #[test]
+    fn grouping_skips_empty_skins_and_clamps_bogus_slots() {
+        // Slot 1 has no instances: it gets no draw. A corrupt slot beyond
+        // the table clamps into the last slot instead of indexing past the
+        // bind groups.
+        let stream = |skin: u32| {
+            vec![EntityInstance {
+                position: [0.0; 3],
+                yaw: 0.0,
+                scale: [1.0, 1.0, 1.0],
+                color: [1.0, 1.0, 1.0],
+                skin,
+                material: 0.0,
+            }]
+        };
+        let (ordered, draws) = group_by_skin(stream(0), 3);
+        assert_eq!(draws, vec![(0, 0, 1)], "only the used slot draws");
+        assert_eq!(ordered.len(), 1);
+        let (ordered, draws) = group_by_skin(stream(9), 3);
+        assert_eq!(draws, vec![(2, 0, 1)], "a bogus slot clamps into the last");
+        assert_eq!(ordered[0].skin, 9, "clamping never rewrites the stream");
+        // An empty stream answers with an empty draw list.
+        let (_, draws) = group_by_skin(Vec::new(), 3);
+        assert!(draws.is_empty());
+    }
+
+    #[test]
+    fn every_cube_face_unwraps_the_whole_texture_space() {
+        // Box mapping: all six faces must sample the full 0..1 square —
+        // each face's four corners are the four UV corners, so a textured
+        // box shows the whole image on every side (and a distinctive test
+        // texture is unmistakably *textured*, not tinted).
+        let vertices = cube_vertices();
+        assert_eq!(vertices.len(), 36);
+        for (face, quad) in vertices.chunks(6).enumerate() {
+            let mut corners = std::collections::BTreeSet::new();
+            for vertex in quad {
+                assert!(
+                    (0.0..=1.0).contains(&vertex.uv[0]) && (0.0..=1.0).contains(&vertex.uv[1]),
+                    "face {face} uv {} {} outside the unit square",
+                    vertex.uv[0],
+                    vertex.uv[1]
+                );
+                let (u, v) = (vertex.uv[0] * 2.0, vertex.uv[1] * 2.0);
+                corners.insert((u.round() as i32, v.round() as i32));
+            }
+            assert_eq!(corners.len(), 4, "face {face} must use all four UV corners");
+        }
+        // The four side faces (faces 0..4 in emission order) stand the
+        // image upright: their top edge (y = +0.5) maps to v = 0, the
+        // image's first row. The top/bottom faces map the ground plane
+        // instead, so only the side quads carry the upright law.
+        for (face, quad) in vertices.chunks(6).enumerate() {
+            if face >= 4 {
+                continue;
+            }
+            for vertex in quad {
+                if vertex.corner[1] > 0.4 {
+                    assert!(
+                        vertex.uv[1].abs() < 1e-4,
+                        "side face {face}'s top edge must be the image's top"
+                    );
+                }
+            }
+        }
+    }
+
+    fn unit_shape() -> KindShape {
+        crate::silhouette::Silhouette::from_parts(
+            true,
+            vec![crate::silhouette::Part::at(
+                [0.0, 0.3, 0.0],
+                [0.4, 0.6, 0.4],
+                crate::silhouette::Tone::Body,
+            )],
+        )
     }
 }
