@@ -1598,6 +1598,9 @@ dependencies = [
  "pandemonium-sim-api",
  "pollster",
  "rodio",
+ "ron",
+ "serde",
+ "thiserror 2.0.21",
  "wgpu",
  "winit",
 ]
