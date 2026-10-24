@@ -660,6 +660,17 @@ impl ApplicationHandler for App {
                             // never starts a selection drag.
                             self.attack_move_armed = false;
                             self.issue_attack_move(ndc);
+                        } else if self.guard_armed {
+                            // PLAN-M11 §2 phase 3: the armed guard click — the
+                            // same consume-and-disarm shape as A.
+                            self.guard_armed = false;
+                            self.issue_guard_move(ndc);
+                        } else if self.modifiers.alt_key() {
+                            // PLAN-M11 §2 phase 3: Alt owns the left-clicks —
+                            // the waypoint gesture (the queue flag discipline
+                            // lives in issue_waypoint). The press never starts
+                            // a selection drag.
+                            self.issue_waypoint(ndc);
                         } else {
                             self.drag_start = Some(cursor);
                         }
@@ -761,6 +772,7 @@ impl ApplicationHandler for App {
                             // machine stays Idle, so the release is a
                             // no-op too).
                             self.attack_move_armed = false;
+                            self.guard_armed = false;
                             return;
                         }
                         // Capture whether attack-move was armed at the
@@ -770,6 +782,9 @@ impl ApplicationHandler for App {
                         // check), a world release disarms.
                         self.right_press_armed = self.attack_move_armed;
                         self.attack_move_armed = false;
+                        // PLAN-M11 §2 phase 3: the right press cancels an
+                        // armed guard too (the arm/cancel family's rule).
+                        self.guard_armed = false;
                         self.right_button.press(cursor);
                         // Grab the ground under the press for the
                         // potential drag (None above the horizon; the
@@ -1018,12 +1033,15 @@ impl ApplicationHandler for App {
                             // placement, then the selection, and only then
                             // the pause menu.
                             match input::escape_action(
-                                self.attack_move_armed,
+                                self.attack_move_armed || self.guard_armed,
                                 self.placement.is_some(),
                                 !self.selection.is_empty(),
                             ) {
                                 input::EscapeAction::CancelArmed => {
+                                    // PLAN-M11 §2 phase 3: the rung cancels
+                                    // whichever mode is armed.
                                     self.attack_move_armed = false;
+                                    self.guard_armed = false;
                                 }
                                 input::EscapeAction::CancelPlacement => {
                                     self.placement = None;
@@ -1093,12 +1111,32 @@ impl ApplicationHandler for App {
                         WorldKeyAction::JumpToBase => {
                             self.jump_to_base();
                         }
+                        // PLAN-M11 §2 phase 3: G arms guard (the same
+                        // arm/cancel family as A — only one armed mode at a
+                        // time), X scatters the selection.
+                        WorldKeyAction::ArmGuard => {
+                            if !self.host.as_ref().is_some_and(|h| h.is_finished()) {
+                                self.attack_move_armed = false;
+                                self.guard_armed = true;
+                            }
+                        }
+                        WorldKeyAction::Scatter => {
+                            if !self.host.as_ref().is_some_and(|h| h.is_finished()) {
+                                self.issue_scatter();
+                            }
+                        }
                         WorldKeyAction::Unbound => {}
                     }
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
+                // PLAN-M11 §2 phase 3: releasing Alt ends the waypoint
+                // gesture — the next Alt-held click replaces again (its own
+                // first click). Nothing is sent on the release itself.
+                if !self.modifiers.alt_key() {
+                    self.waypoint_first_click_spent = false;
+                }
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
@@ -1905,6 +1943,295 @@ mod zh_selection {
             app.last_event_ground,
             Some((own_pos.x, own_pos.z)),
             "the last radar event is the attack on the own force"
+        );
+    }
+}
+
+#[cfg(test)]
+mod zh_modes {
+    //! PLAN-M11 §2 phase 3: the unit-mode wiring pins — G's armed click
+    //! submits a plain replacing Move (guard under this sim's laws: on
+    //! arrival the unit goes idle, and idle units engage in-range targets
+    //! without pursuing — the turret-acquires-without-moving suite and the
+    //! chase-pop law in crates/sim/src/combat.rs pin that; see the
+    //! assumption entry), X's scatter is deterministic, and the Alt+click
+    //! waypoint gesture replaces once then queues — proven end-to-end by
+    //! walking a real two-point queued path in order.
+
+    use super::*;
+    use pandemonium_sim_api::{EntityView, MoveState, Snapshot};
+
+    /// An app with a live match, a pushed view, and a selected first worker.
+    fn app_with_worker() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        let mut app = App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            sound::Sound::without_device(1.0, false),
+            None,
+        )
+        .expect("the app constructs");
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        let view = app.host().player_view(HUMAN);
+        app.view_interp.push(Snapshot {
+            tick: view.tick,
+            entities: view.entities.clone(),
+        });
+        let worker_kind = app.worker_kind.expect("the content has a worker");
+        let worker = app
+            .view_snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.owner == HUMAN && entity.kind == worker_kind)
+            .expect("a starting worker")
+            .id;
+        app.selection = vec![worker];
+        app
+    }
+
+    /// Advances one frame so the pending commands feed a step and land in
+    /// the host's log, then returns the human's last submitted command
+    /// (the log fills at the tick boundary — AI commands ride along).
+    fn last_human_command(app: &mut App) -> Command {
+        if let Some(host) = &mut app.host {
+            let _ = host.advance(std::time::Duration::from_secs_f64(1.0 / 30.0));
+        }
+        app.host
+            .as_ref()
+            .expect("the match is live")
+            .log()
+            .iter()
+            .filter(|command| command.issuer == HUMAN)
+            .cloned()
+            .next_back()
+            .expect("the click submitted an order")
+    }
+
+    #[test]
+    fn the_guard_arm_click_submits_a_plain_replacing_move() {
+        let mut app = app_with_worker();
+        app.guard_armed = true;
+        // The armed click at the screen center — ground near the anchor.
+        app.issue_guard_move((0.0, 0.0));
+        let last = last_human_command(&mut app);
+        assert!(
+            matches!(last.kind, CommandKind::Move { .. }),
+            "guard is a plain Move (no new CommandKind): {:?}",
+            last.kind
+        );
+        assert!(!last.queue, "the guard move replaces (queue: false)");
+        // The arm state itself is the dispatch's glue (the Xvfb pass walks
+        // G -> click); the command shape is the pin that matters here.
+    }
+
+    #[test]
+    fn the_attack_move_line_names_the_mode_in_zh_terms() {
+        // PLAN-M11 §2 phase 3: "attack move", not "left-click a target";
+        // the guard line exists and differs.
+        assert!(report::ATTACK_MOVE_LINE.starts_with("ATTACK MOVE"));
+        assert!(!report::ATTACK_MOVE_LINE.contains("left-click"));
+        assert!(report::GUARD_LINE.starts_with("GUARD"));
+        assert_ne!(report::ATTACK_MOVE_LINE, report::GUARD_LINE);
+    }
+
+    #[test]
+    fn scatter_is_deterministic_one_move_per_unit_and_skips_structures() {
+        // Two fresh same-seed apps with the same selection produce the
+        // same command list (PLAN-M11's determinism acceptance).
+        let commands_of = |structure_selected: bool| -> Vec<String> {
+            let mut app = app_with_worker();
+            if structure_selected {
+                // Add the starting Command Center to the selection: a
+                // structure cannot move, so scatter must skip it (the sim
+                // would only refuse it).
+                let cc = app.command_center_kind.unwrap();
+                let cc_id = app
+                    .view_snapshot()
+                    .entities
+                    .iter()
+                    .find(|entity| entity.owner == HUMAN && entity.kind == cc)
+                    .expect("the starting CC")
+                    .id;
+                app.selection.push(cc_id);
+            }
+            app.issue_scatter();
+            if let Some(host) = &mut app.host {
+                let _ = host.advance(std::time::Duration::from_secs_f64(1.0 / 30.0));
+            }
+            app.host
+                .as_ref()
+                .expect("the match is live")
+                .log()
+                .iter()
+                .filter(|command| command.issuer == HUMAN)
+                .map(|command| format!("{:?} q{} {:?}", command.seq, command.queue, command.kind))
+                .collect()
+        };
+        let first = commands_of(false);
+        let second = commands_of(false);
+        assert_eq!(first, second, "the same selection scatters identically");
+        assert_eq!(first.len(), 1, "one Move per selected unit");
+        // With the CC mixed in: still one command (the structure skipped).
+        let with_structure = commands_of(true);
+        assert_eq!(with_structure.len(), 1, "structures are skipped");
+    }
+
+    #[test]
+    fn the_waypoint_gesture_replaces_once_then_queues() {
+        let mut app = app_with_worker();
+        app.waypoint_first_click_spent = false;
+        // First click of the gesture: replace (queue: false).
+        app.issue_waypoint((0.0, 0.0));
+        let first = last_human_command(&mut app);
+        assert!(!first.queue, "the first click replaces");
+        assert!(app.waypoint_first_click_spent, "the gesture state advanced");
+        // Later clicks: queue (the sim's `if cmd.queue` arms push).
+        app.issue_waypoint((0.2, 0.0));
+        let later = last_human_command(&mut app);
+        assert!(later.queue, "later clicks queue");
+    }
+
+    #[test]
+    fn a_waypoint_click_on_an_entity_queues_the_context_order() {
+        let mut app = app_with_worker();
+        // A synthetic enemy in the pushed view, projected to its NDC — the
+        // waypoint click on it must resolve the same Attack a right-click
+        // would, queued with the gesture's discipline.
+        let snapshot = app.view_snapshot();
+        let worker_pos = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.id == app.selection[0])
+            .expect("the worker")
+            .pos;
+        let worker_logical = Vec2Fx::new(
+            pandemonium_fx::Fx::from_milli((worker_pos.x * 1000.0) as i32),
+            pandemonium_fx::Fx::from_milli((worker_pos.z * 1000.0) as i32),
+        );
+        let enemy = EntityView {
+            id: EntityId(7001),
+            owner: AI,
+            kind: app.combat_kinds.iter().next().copied().unwrap(),
+            pos: worker_logical,
+            facing: Vec2Fx::new(
+                pandemonium_fx::Fx::from_milli(0),
+                pandemonium_fx::Fx::from_milli(0),
+            ),
+            hp_fraction_milli: 1000,
+            move_state: MoveState::Idle,
+        };
+        drop(snapshot);
+        let mut entities = app.host().player_view(HUMAN).entities.clone();
+        entities.push(enemy);
+        app.view_interp.push(Snapshot { tick: 1, entities });
+        let view = app.view_snapshot();
+        let projected = app.camera.project(
+            view.entities
+                .iter()
+                .find(|entity| entity.id == EntityId(7001))
+                .expect("the enemy")
+                .pos,
+        );
+        app.waypoint_first_click_spent = false;
+        app.issue_waypoint((projected.x, projected.y));
+        let last = last_human_command(&mut app);
+        assert!(
+            matches!(last.kind, CommandKind::Attack { .. }),
+            "an entity target orders Attack: {:?}",
+            last.kind
+        );
+        assert!(!last.queue, "the gesture's first click replaces");
+    }
+
+    #[test]
+    fn a_queued_two_point_path_is_walked_in_order() {
+        // The sim-side integration smoke (the cheapest honest one: a
+        // client test driving a real MatchHost). A worker receives
+        // S->A (replace) then A->B (queue); the unit must pass near A
+        // BEFORE ending near B — a replaced second order would walk the
+        // direct S->B line, which stays ~4 tiles clear of A.
+        let mut app = app_with_worker();
+        let worker = app.selection[0];
+        let start = app
+            .host
+            .as_ref()
+            .expect("the match is live")
+            .render_snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.id == worker)
+            .expect("the worker is live")
+            .pos;
+        // World-space waypoints off the direct line, in open ground near
+        // the player's start quadrant.
+        let a = (start.x + 6.0, start.z);
+        let b = (start.x + 6.0, start.z + 6.0);
+        let target_of = |(x, z): (f32, f32)| MatchHost::world_to_logical(x, z);
+        app.submit_order_flagged(
+            CommandKind::Move {
+                units: vec![worker],
+                target: target_of(a),
+            },
+            None,
+            false,
+        );
+        app.submit_order_flagged(
+            CommandKind::Move {
+                units: vec![worker],
+                target: target_of(b),
+            },
+            None,
+            true,
+        );
+        // Walk the match, tracking the first tick the unit comes near A.
+        let near = 1.5f32;
+        let mut near_a_tick: Option<u32> = None;
+        let frame = std::time::Duration::from_secs_f64(1.0 / 30.0);
+        for tick in 0..1200u32 {
+            if let Some(host) = &mut app.host {
+                let _ = host.advance(frame);
+            }
+            let pos = app
+                .host
+                .as_ref()
+                .expect("the match is live")
+                .render_snapshot()
+                .entities
+                .iter()
+                .find(|entity| entity.id == worker)
+                .expect("the worker stays live")
+                .pos;
+            if near_a_tick.is_none()
+                && ((pos.x - a.0).powi(2) + (pos.z - a.1).powi(2)).sqrt() < near
+            {
+                near_a_tick = Some(tick);
+            }
+            let near_b = ((pos.x - b.0).powi(2) + (pos.z - b.1).powi(2)).sqrt() < near;
+            if near_b {
+                assert!(
+                    near_a_tick.is_some(),
+                    "the unit reached B — but only after walking through A (the queued order held)"
+                );
+                assert!(near_a_tick.unwrap() < tick, "A came before B");
+                return;
+            }
+        }
+        panic!(
+            "the two-point path did not resolve within the tick budget \
+             (near A at {near_a_tick:?})"
         );
     }
 }

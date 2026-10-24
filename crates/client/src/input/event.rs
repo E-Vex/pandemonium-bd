@@ -105,6 +105,19 @@ impl App {
     /// sim's own verdict is a later, separate fact: a rejection surfaces
     /// through the refusal feedback and does not retract the ack cue.
     pub(crate) fn submit_order(&mut self, kind: CommandKind, ping_at: Option<Vec2Fx>) {
+        self.submit_order_flagged(kind, ping_at, false);
+    }
+
+    /// PLAN-M11 §2 phase 3: `queue` rides the command (the sim honors it
+    /// for movement-class orders — crates/sim/src/command.rs's `if cmd.queue`
+    /// arms push instead of replace). The cue/ping/bookkeeping are
+    /// unchanged; only the command's queue flag differs.
+    pub(crate) fn submit_order_flagged(
+        &mut self,
+        kind: CommandKind,
+        ping_at: Option<Vec2Fx>,
+        queue: bool,
+    ) {
         // PLAN-M10.2 §3.3 (A-113): spectate silences the human's order path
         // at the orders layer — a hidden-but-live path would inject P1
         // commands into a match the "player" does not own. Silently: a
@@ -123,7 +136,9 @@ impl App {
             self.feedback.ping(at, self.frames_presented);
             self.last_order = Some((self.command_seq, at));
         }
-        host.submit(Command::new(HUMAN, 0, self.command_seq, kind));
+        let mut command = Command::new(HUMAN, 0, self.command_seq, kind);
+        command.queue = queue;
+        host.submit(command);
         // The submission's own sound (PLAN §4.2's command acknowledgment).
         self.audio.on_cue(AudioCue::CommandAck);
     }
@@ -221,6 +236,131 @@ impl App {
             },
             Some(target),
         );
+    }
+
+    /// PLAN-M11 §2 phase 3: G's armed click — a plain Move to the clicked
+    /// point (`queue: false`). On arrival the order completes and the unit
+    /// goes idle; idle units auto-acquire in-range targets and never pursue
+    /// them (the sim's own law: combat's acquire only commands pursuit via
+    /// an AttackUnit order, and movement only follows Orders — the
+    /// turret-acquires-without-moving and chase-pop suites pin it). That is
+    /// ZH guard under this sim's laws — no new CommandKind.
+    pub(crate) fn issue_guard_move(&mut self, ndc: (f32, f32)) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
+            return;
+        };
+        let target = MatchHost::world_to_logical(point.x, point.z);
+        self.submit_order(
+            CommandKind::Move {
+                units: self.selection.clone(),
+                target,
+            },
+            Some(target),
+        );
+    }
+
+    /// PLAN-M11 §2 phase 3: X — scatter. One Move per selected own *unit*
+    /// (structures cannot move; the sim would only refuse them), each to
+    /// its ring-ray offset from [`super::scatter_targets`] — deterministic,
+    /// no RNG, replace-not-queue (`queue: false`).
+    pub(crate) fn issue_scatter(&mut self) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let entities = self.view_snapshot().entities;
+        let units = &self.unit_kinds;
+        let unit_selection: Vec<EntityId> = self
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| {
+                entities
+                    .iter()
+                    .any(|entity| entity.id == *id && units.contains(&entity.kind))
+            })
+            .collect();
+        for (id, x, z) in super::scatter_targets(&entities, &unit_selection) {
+            let target = MatchHost::world_to_logical(x, z);
+            self.submit_order(
+                CommandKind::Move {
+                    units: vec![id],
+                    target,
+                },
+                Some(target),
+            );
+        }
+    }
+
+    /// PLAN-M11 §2 phase 3: Alt+left-click — the waypoint path. The click
+    /// resolves exactly as a plain right-click context order would (an
+    /// entity under the cursor orders Attack/Gather; open ground orders
+    /// Move; a lone selected producer sets its rally), but with the
+    /// gesture's queue discipline: the first click of the Alt gesture
+    /// replaces any in-flight order exactly once (`queue: false`), every
+    /// later click appends (`queue: true` — the sim's `if cmd.queue` arms
+    /// in crates/sim/src/command.rs push instead of replacing). Each
+    /// submission's ping marks the waypoint on the ground (frame-counted
+    /// on the presented-frame clock) — the chained markers of the path.
+    pub(crate) fn issue_waypoint(&mut self, ndc: (f32, f32)) {
+        let queue = self.waypoint_first_click_spent;
+        self.waypoint_first_click_spent = true;
+        if self.selection.is_empty() {
+            return;
+        }
+        // A single selected producer keeps its rally meaning (the
+        // right-click's special case, queued with the same discipline).
+        if self.selection_is_single_producer() {
+            let selected = self.selection[0];
+            let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
+                return;
+            };
+            let target = MatchHost::world_to_logical(point.x, point.z);
+            self.submit_order_flagged(
+                CommandKind::SetRally {
+                    producer: selected,
+                    target,
+                },
+                Some(target),
+                queue,
+            );
+            return;
+        }
+        let snapshot = self.view_snapshot();
+        let Some(order) = orders::resolve_context_order(
+            &self.camera,
+            &snapshot,
+            glam::Vec2::new(ndc.0, ndc.1),
+            HUMAN,
+            self.node_kind,
+            self.worker_kind,
+            &self.selection,
+        ) else {
+            return; // cursor above the horizon — nothing to order
+        };
+        match order {
+            orders::ContextOrder::Attack { target, at } => self.submit_order_flagged(
+                CommandKind::Attack {
+                    units: self.selection.clone(),
+                    target,
+                },
+                Some(at),
+                queue,
+            ),
+            orders::ContextOrder::Gather { node, at, units } => {
+                self.submit_order_flagged(CommandKind::Gather { units, node }, Some(at), queue);
+            }
+            orders::ContextOrder::Move { target } => self.submit_order_flagged(
+                CommandKind::Move {
+                    units: self.selection.clone(),
+                    target,
+                },
+                Some(target),
+                queue,
+            ),
+        }
     }
 
     /// M8 (plan §11.3): assign the current selection to control group `index`

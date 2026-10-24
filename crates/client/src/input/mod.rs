@@ -426,6 +426,45 @@ pub fn command_center_position(
         .map(|entity| (entity.pos.x, entity.pos.z))
 }
 
+/// X's scatter offsets (PLAN-M11 §2 phase 3): one world-space target per
+/// selected unit, each its current position pushed along ray
+/// `index mod 8` of an 8-ray ring — the index is the unit's position in
+/// the ASCENDING-id order of the selection, so the same selection always
+/// produces the same command list (deterministic, no RNG; the client
+/// computes, the sim receives Moves). Units already moving receive it too
+/// (the Move replaces, `queue: false` — the caller's flag).
+pub fn scatter_targets(
+    entities: &[RenderEntity],
+    selection: &[EntityId],
+) -> Vec<(EntityId, f32, f32)> {
+    // Ascending-id order (the snapshot is already ascending; sort is the
+    // function's own contract).
+    let mut ids: Vec<EntityId> = selection.to_vec();
+    ids.sort();
+    let mut targets = Vec::with_capacity(ids.len());
+    for (index, id) in ids.iter().enumerate() {
+        let Some(entity) = entities.iter().find(|entity| entity.id == *id) else {
+            continue; // a dead id weighs nothing
+        };
+        // Ray `index mod 8` around the ring: ray 0 is world +x, each next
+        // ray 45 degrees on (the world x/z plane).
+        let angle = (index % 8) as f32 * (std::f32::consts::TAU / 8.0);
+        let (dx, dz) = (angle.cos(), angle.sin());
+        targets.push((
+            *id,
+            entity.pos.x + dx * SCATTER_DISTANCE,
+            entity.pos.z + dz * SCATTER_DISTANCE,
+        ));
+    }
+    targets
+}
+
+/// How far X's scatter pushes each unit, in world tiles — one
+/// acquisition-range-ish hop (the Alpha's acquire ranges run 5-9 tiles;
+/// 3 is a visible, formation-preserving burst that never throws a unit
+/// out of its own sight). Named and tuned once (PLAN-M11 §4 phase 3).
+pub const SCATTER_DISTANCE: f32 = 3.0;
+
 /// What Escape does first (PLAN §1.3: "Escape cancels an armed command or
 /// clears the selection"): the cancellation ladder, one rung at a time per
 /// press — armed command, placement, selection, then the pause menu

@@ -91,6 +91,12 @@ pub enum WorldKeyAction {
     /// Q — select all own combat units on screen (double-tap: the whole
     /// visible map).
     SelectCombat,
+    /// G — arm guard mode (the next left-click moves there; on arrival
+    /// the unit stands and engages in-range targets — ZH guard under this
+    /// sim's laws).
+    ArmGuard,
+    /// X — scatter: one Move per selected unit along an 8-ray ring.
+    Scatter,
     /// Ctrl + Left/Right — cycle the selection through own units in
     /// ascending-id order, wrapping.
     CycleUnit { forward: bool },
@@ -155,6 +161,10 @@ pub fn world_key_action(code: KeyCode, mods: KeyMods, pressed: bool) -> WorldKey
         // Ctrl+H stays reserved for a hero (inert).
         KeyCode::KeyE if pressed && !mods.ctrl && !mods.alt => WorldKeyAction::SelectSameKind,
         KeyCode::KeyQ if pressed && !mods.ctrl && !mods.alt => WorldKeyAction::SelectCombat,
+        // PLAN-M11 §2 phase 3: G arms guard, X scatters (both plain keys —
+        // ZH binds them without modifiers).
+        KeyCode::KeyG if pressed && !mods.ctrl && !mods.alt => WorldKeyAction::ArmGuard,
+        KeyCode::KeyX if pressed && !mods.ctrl && !mods.alt => WorldKeyAction::Scatter,
         KeyCode::KeyH if pressed && !mods.ctrl => WorldKeyAction::JumpToBase,
         KeyCode::Digit1 if pressed => group(0),
         KeyCode::Digit2 if pressed => group(1),
@@ -396,6 +406,29 @@ mod tests {
             world_key_action(KeyCode::KeyH, CTRL, true),
             WorldKeyAction::Unbound,
             "Ctrl+H stays reserved for a hero (no hero content)"
+        );
+    }
+
+    // ---- the phase 3 rows (PLAN-M11 §4 phase 3's acceptance) ------------
+
+    #[test]
+    fn g_arms_guard_and_x_scatters() {
+        assert_eq!(
+            world_key_action(KeyCode::KeyG, PLAIN, true),
+            WorldKeyAction::ArmGuard
+        );
+        assert_eq!(
+            world_key_action(KeyCode::KeyX, PLAIN, true),
+            WorldKeyAction::Scatter
+        );
+        // With modifiers both are inert (nothing else claims them).
+        assert_eq!(
+            world_key_action(KeyCode::KeyG, CTRL, true),
+            WorldKeyAction::Unbound
+        );
+        assert_eq!(
+            world_key_action(KeyCode::KeyX, ALT, true),
+            WorldKeyAction::Unbound
         );
     }
 }

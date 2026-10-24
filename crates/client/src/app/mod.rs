@@ -182,6 +182,17 @@ pub(crate) struct App {
     /// orders through key repeats (the DEBT-008 human pass: "the control
     /// is bad").
     pub(crate) attack_move_armed: bool,
+    /// PLAN-M11 §2 phase 3: 'G' arms guard — the same arm/cancel family as
+    /// A (crosshair cursor, HUD line, Esc and right-press cancel). The
+    /// armed click issues a plain Move (queue: false); on arrival the unit
+    /// goes idle, and idle units engage in-range targets without pursuing
+    /// (the sim's own law — the PLAN-M11 §3 facts). That IS ZH guard here.
+    pub(crate) guard_armed: bool,
+    /// PLAN-M11 §2 phase 3: whether the current Alt-held waypoint gesture
+    /// has spent its first click (the first click replaces any in-flight
+    /// order — queue: false; every later click queues). Reset when Alt is
+    /// released (the gesture ends); nothing is sent on the release itself.
+    pub(crate) waypoint_first_click_spent: bool,
     /// M9.1: the last submitted order (its seq and the ground point it
     /// targeted) — rejection feedback pings there.
     pub(crate) last_order: Option<(u32, Vec2Fx)>,
@@ -361,6 +372,8 @@ impl App {
             edge_scroll_enabled: settings.edge_scroll,
             focused: true,
             attack_move_armed: false,
+            guard_armed: false,
+            waypoint_first_click_spent: false,
             last_order: None,
             start_anchor,
             worker_kind: None,
@@ -820,6 +833,8 @@ impl App {
         self.last_event_ground = None;
         self.crosshair_cursor = false;
         self.attack_move_armed = false;
+        self.guard_armed = false;
+        self.waypoint_first_click_spent = false;
         self.last_order = None;
         self.drag_start = None;
         // A-011 (ADR-0201 Phase 1): the mission-scoped state resets with the
@@ -1063,6 +1078,7 @@ impl App {
             selection_size: self.selection.len(),
             controls_line: report::controls_line(
                 self.attack_move_armed,
+                self.guard_armed,
                 self.feedback.refusal_notice.is_some(),
             ),
         });
@@ -1678,7 +1694,8 @@ impl App {
         // M10.2 (PLAN §1.3): the crosshair cursor while attack-move is
         // armed (the plan's "change the cursor" half; set only on change —
         // not every frame).
-        let want_crosshair = self.attack_move_armed;
+        // PLAN-M11 §2 phase 3: either armed mode shows the crosshair.
+        let want_crosshair = self.attack_move_armed || self.guard_armed;
         if want_crosshair != self.crosshair_cursor {
             self.crosshair_cursor = want_crosshair;
             if let Some(window) = &self.window {
@@ -1701,7 +1718,13 @@ impl App {
             outcome: outcome.as_ref(),
             log_len: self.host.as_ref().map_or(0, |host| host.log().len()),
             viewport,
-            armed: self.attack_move_armed,
+            armed_line: if self.attack_move_armed {
+                Some(report::ATTACK_MOVE_LINE)
+            } else if self.guard_armed {
+                Some(report::GUARD_LINE)
+            } else {
+                None
+            },
             // A-011: the mission's objective HUD block (None = unchanged
             // mission-less HUD).
             mission: self.mission_hud.as_ref(),
@@ -1949,8 +1972,9 @@ pub(crate) struct OverlayInput<'a> {
     /// The window's pixel size (M9.1: the end screen centers in the actual
     /// viewport, not a guessed 320x240).
     viewport: (f32, f32),
-    /// M9.1: whether an attack-move is armed (the HUD instruction line).
-    armed: bool,
+    /// M9.1 + PLAN-M11 §2 phase 3: the armed mode's HUD instruction line
+    /// (attack-move or guard), when one is armed.
+    armed_line: Option<&'static str>,
     /// M9.1: the refusal notice line, when a recent order was refused.
     notice: Option<&'a str>,
     /// A-002 Part 2.2: the version prefix line ("pandemonium X.Y git Z") —
@@ -1978,7 +2002,7 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
         outcome,
         log_len,
         viewport,
-        armed,
+        armed_line,
         notice,
         version,
         mission,
@@ -2018,8 +2042,7 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
     // notice (red), directly under the resource line — one line each, so
     // the player always knows what the next click will do.
     let mut notice_top = MARGIN + line_height + 2.0 * PAD + MARGIN;
-    if armed {
-        let line = "ATTACK MOVE - left-click a target (Esc cancels)";
+    if let Some(line) = armed_line {
         let width = atlas.measure(line);
         quads.push(atlas.solid_rect(
             MARGIN,

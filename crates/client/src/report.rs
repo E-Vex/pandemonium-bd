@@ -65,15 +65,28 @@ pub const CONTROLS_TABLE: &[(&str, &str)] = &[
     ("Bug report", "F11"),
 ];
 
-/// The armed-attack-move instruction (the HUD line shown while 'A' is armed).
-pub const ATTACK_MOVE_LINE: &str = "ATTACK MOVE - left-click a target (Esc cancels)";
+/// The armed-attack-move instruction (the HUD line shown while 'A' is
+/// armed). PLAN-M11 §2 phase 3: ZH terms — "attack move", not "left-click
+/// a target".
+pub const ATTACK_MOVE_LINE: &str = "ATTACK MOVE - click the target ground (Esc cancels)";
 
-/// The controls line in effect at a moment of interest: the armed
-/// attack-move instruction, a showing refusal notice, or the standing
-/// controls summary. Pure — callers feed the same booleans the HUD reads.
-pub fn controls_line(attack_move_armed: bool, refusal_showing: bool) -> &'static str {
+/// PLAN-M11 §2 phase 3: the armed-guard instruction (the HUD line shown
+/// while 'G' is armed) — the same family as the attack-move line.
+pub const GUARD_LINE: &str = "GUARD - click where to stand guard (Esc cancels)";
+
+/// The controls line in effect at a moment of interest: an armed mode's
+/// instruction (attack-move or guard), a showing refusal notice, or the
+/// standing controls summary. Pure — callers feed the same state the HUD
+/// reads.
+pub fn controls_line(
+    attack_move_armed: bool,
+    guard_armed: bool,
+    refusal_showing: bool,
+) -> &'static str {
     if attack_move_armed {
         ATTACK_MOVE_LINE
+    } else if guard_armed {
+        GUARD_LINE
     } else if refusal_showing {
         "order refused - see HUD notice"
     } else {
@@ -335,7 +348,7 @@ mod tests {
             player_slot: 0,
             frame_count: 512,
             selection_size: 3,
-            controls_line: controls_line(false, false),
+            controls_line: controls_line(false, false, false),
         };
         // Same inputs -> identical bytes.
         assert_eq!(sidecar_text(&base), sidecar_text(&base));
@@ -351,7 +364,7 @@ mod tests {
         moved.selection_size = 4;
         assert_ne!(sidecar_text(&moved), sidecar_text(&base));
         let mut moved = base;
-        moved.controls_line = controls_line(true, false);
+        moved.controls_line = controls_line(true, false, false);
         assert_ne!(sidecar_text(&moved), sidecar_text(&base));
         // No wall-clock, no path, no environment: the text carries only the
         // reported fields (spot-check the stable fields' presence).
@@ -371,9 +384,13 @@ mod tests {
 
     #[test]
     fn the_controls_line_reflects_the_input_mode() {
-        assert_eq!(controls_line(true, false), ATTACK_MOVE_LINE);
-        assert_eq!(controls_line(false, true), "order refused - see HUD notice");
-        assert_eq!(controls_line(false, false), CONTROLS_LINE);
+        assert_eq!(controls_line(true, false, false), ATTACK_MOVE_LINE);
+        assert_eq!(controls_line(false, true, false), GUARD_LINE);
+        assert_eq!(
+            controls_line(false, false, true),
+            "order refused - see HUD notice"
+        );
+        assert_eq!(controls_line(false, false, false), CONTROLS_LINE);
     }
 
     #[test]
