@@ -23,7 +23,9 @@ identical state hashes because the pack never enters the simulation.
 | Location | Tracked in Git? | What goes there |
 |---|---|---|
 | `content/**` | **Yes** | Authoritative `.ron` data: rules, entities, factions, maps. Every peer in a match must have byte-identical content (this is the match's content identity). |
-| `crates/client/assets/{models,textures,audio,shaders,packs}/` | **No** (gitignored) | Local presentation data only. A fresh clone runs without them — colored boxes and synthesized audio are already in client code. |
+| **`E-Vex/pandemonium-assets`** (separate repo) | **Yes — in its own repo** | The official presentation packs. `default/` is the shipped pack (`pack_id: "tactical_field"`). Never committed here. |
+| `crates/client/assets/packs/` | **No** (gitignored) | The local install area the fetch script and the release archives fill in — see "The official pack" below. |
+| `crates/client/assets/{models,textures,audio,shaders}/` | **No** (gitignored) | Local presentation data only. A fresh clone runs without them — colored boxes and synthesized audio are already in client code. |
 | `/user-maps/`, `/user-packs/`, `/mods/` | **No** | User content discovered beside the executable at runtime; no engine change needed (ADR-0200 §5). |
 
 The stray `war-*.wav` files at the repo root are gitignored by the `*.wav`
@@ -35,6 +37,35 @@ The client can load an optional, local **asset pack** at startup. The pack is
 presentation-only: it maps entity kind ids (from `content/entities/*.ron`) and
 terrain class ids to local asset file paths. It is never hashed, never sent
 to peers, and never reaches the simulation.
+
+### The official pack (A-014)
+
+The official art lives in its own repository,
+**[E-Vex/pandemonium-assets](https://github.com/E-Vex/pandemonium-assets)**,
+not in this repo — art history stays out of the game's history, and the
+binary clones stay small. The repo holds the packs; `default/` is the one
+that ships (its manifest keeps `pack_id: "tactical_field"` — the id names
+the art style, `default/` names the slot it loads into).
+
+Three delivery paths, one pack:
+
+1. **Dev**: `scripts/fetch-assets.sh` — one command, idempotent. It clones
+   or updates the assets repo (shallow) under
+   `crates/client/assets/packs/` (gitignored) and copies `default/` to
+   `crates/client/assets/packs/default/`, the compile-time dev path.
+   Overrides for forks: `PANDEMONIUM_ASSETS_REPO` / `PANDEMONIUM_ASSETS_REF`.
+2. **Release**: the `release` workflow checks the assets repo out and
+   packages `default/` into every archive at `assets/packs/default/` —
+   next to the binary, discovery order #2 below — so a player unpacks and
+   sees the pack with zero setup. The packaged smoke FAILS if the manifest
+   is not the `tactical_field` pack, if any of the 8 entity textures is
+   missing, or if the headless client run does not print the pack-loaded
+   line (`asset pack 'tactical_field' (schema 1) loaded ...`).
+3. **Players/artists**: drop any pack under `<exe_dir>/assets/packs/<name>/`
+   or point `--pack <dir>` at it — always local, never hashed.
+
+The Designer never edits `content/` (Standing Orders v1.3): art enters a
+repo only through a Programmer brief, delivered via the Owner.
 
 ### Pack directory discovery
 
@@ -155,10 +186,11 @@ A missing or invalid custom pack never makes the simulation unusable.
 
 ## Adding visuals (no logic changes)
 
-1. Place the asset in a gitignored directory under
-   `crates/client/assets/` (or in the separate asset repository) — the
-   default dev pack is `crates/client/assets/packs/default/`, which is
-   gitignored, so nothing is committed. Alternatively pass `--pack <dir>`
+1. Art lives in the separate asset repository
+   (`E-Vex/pandemonium-assets`); the Programmer lands it there through a
+   brief, and `scripts/fetch-assets.sh` installs it locally as the default
+   dev pack `crates/client/assets/packs/default/` (gitignored — nothing is
+   committed to this repo). For private experiments, pass `--pack <dir>`
    to point at any local folder.
 2. Declare it in the pack manifest, keyed by the entity's kind id from
    `content/`. Never write asset paths into `content/*.ron` — those files stay
@@ -233,3 +265,10 @@ keeping the procedural terrain as the fallback.
 without any art assets — the client draws placeholders. If a PR touches
 `crates/sim` or `content/`, pinned golden hashes must not move; that is the
 logic check, and visuals are exempt from it.
+
+The release channel is the exception: since A-014 it ships the pack and
+gates on it. The `release` workflow checks `E-Vex/pandemonium-assets` out,
+packages `default/` at `assets/packs/default/` in every archive, and the
+packaged smoke fails the leg unless the tactical_field manifest, all 8
+entity textures, and the headless pack-loaded line are all present
+(see "The official pack" above).
