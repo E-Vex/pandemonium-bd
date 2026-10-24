@@ -174,11 +174,12 @@ impl WgpuRenderer {
                 },
             ],
         });
-        let terrain_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("terrain layout"),
-            bind_group_layouts: &[&camera_layout, &texture_layout],
-            push_constant_ranges: &[],
-        });
+        let terrain_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("terrain layout"),
+                bind_group_layouts: &[&camera_layout, &texture_layout],
+                push_constant_ranges: &[],
+            });
 
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain shader"),
@@ -1153,7 +1154,10 @@ impl WgpuRenderer {
     ) -> Option<(wgpu::Texture, wgpu::TextureView, wgpu::Sampler)> {
         let pack = pack?;
         // Try terrain first, then any entity asset.
-        let entry = pack.terrain.values().next()
+        let entry = pack
+            .terrain
+            .values()
+            .next()
             .cloned()
             .or_else(|| pack.entities.values().next().cloned())?;
         // Load the PNG file.

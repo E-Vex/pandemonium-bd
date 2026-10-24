@@ -1,6 +1,6 @@
 // `app/` (ADR-0100 part c, the ARCHITECTURE.md refactor map): the
 // non-input application state — the `App` struct, match hosting + restart,
-// the checkpoint trail, the `--record`/F8 wiring (`report.rs` stays the pure
+// the checkpoint trail, the `--record`/F11 wiring (`report.rs` stays the pure
 // seam), the menu/draw frame assembly, and the HUD quad builders. `main.rs`
 // remains the winit bootstrap; the event translation lives in `input/`
 // (ADR step 7).
@@ -29,8 +29,8 @@ use pandemonium_engine::{
     RtsCamera,
 };
 use pandemonium_sim_api::{
-    EntityId, Event, KindId, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot, TileFog,
-    Vec2Fx,
+    CommandKind, EntityId, Event, KindId, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot,
+    TileFog, Vec2Fx,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState};
@@ -111,8 +111,9 @@ pub(crate) struct App {
     pub(crate) renderer: Option<WgpuRenderer>,
     pub(crate) window: Option<Arc<Window>>,
     pub(crate) selection: Vec<EntityId>,
-    /// M8 (plan §11.3): control groups 1-9. Ctrl+digit assigns the current
-    /// selection to a group; digit alone recalls it.
+    /// M8 (plan §11.3) + PLAN-M11 §2: control groups 1-10 (Digit0 is the
+    /// tenth). Ctrl+digit assigns the current selection; digit alone
+    /// recalls it; Alt+digit views it without selecting.
     pub(crate) control_groups: Vec<Vec<EntityId>>,
     pub(crate) drag_start: Option<(f64, f64)>,
     pub(crate) drag_current: Option<(f64, f64)>,
@@ -141,6 +142,27 @@ pub(crate) struct App {
     /// M10.2 (PLAN §1.3): the last control-group digit press and when it
     /// landed — a double tap recalls the group and centers the camera on it.
     pub(crate) last_digit_press: Option<(usize, Instant)>,
+    /// PLAN-M11 §2 (phase 2): the E key's double-tap clock — two presses
+    /// inside DOUBLE_TAP_MS widen the same-kind select to the whole map.
+    pub(crate) last_e_press: Option<Instant>,
+    /// PLAN-M11 §2 (phase 2): the Q key's double-tap clock (same window).
+    pub(crate) last_q_press: Option<Instant>,
+    /// PLAN-M11 §2 (phase 2): the kind of the most recently *clicked*
+    /// entity — E's fallback kind for an empty or mixed selection. `None`
+    /// until the first pick (E is inert then; the card says so).
+    pub(crate) last_clicked_kind: Option<KindId>,
+    /// PLAN-M11 §2 (phase 2): the content's combat kinds (an Attack
+    /// capability), computed once per match — Q's filter. Never per frame.
+    pub(crate) combat_kinds: BTreeSet<KindId>,
+    /// PLAN-M11 §2 (phase 2): the content's unit kinds (a Move
+    /// capability — anything without it is a structure or a node),
+    /// computed once per match. Ctrl+Left/Right cycles these.
+    pub(crate) unit_kinds: BTreeSet<KindId>,
+    /// PLAN-M11 §2 (phase 2): the content's command-center kind (the
+    /// engine plan's own rule — the first producer whose producibles
+    /// include no attacking kind). H's target; `None` when the faction
+    /// has none (H falls back to the base anchor).
+    pub(crate) command_center_kind: Option<KindId>,
     /// M10.2 (PLAN §1.3): the last death's ground position (the Space
     /// jump's preferred target, else the start anchor — "jump to the last
     /// event or base").
@@ -160,6 +182,31 @@ pub(crate) struct App {
     /// orders through key repeats (the DEBT-008 human pass: "the control
     /// is bad").
     pub(crate) attack_move_armed: bool,
+    /// PLAN-M11 §2 phase 3: 'G' arms guard — the same arm/cancel family as
+    /// A (crosshair cursor, HUD line, Esc and right-press cancel). The
+    /// armed click issues a plain Move (queue: false); on arrival the unit
+    /// goes idle, and idle units engage in-range targets without pursuing
+    /// (the sim's own law — the PLAN-M11 §3 facts). That IS ZH guard here.
+    pub(crate) guard_armed: bool,
+    /// PLAN-M11 §2 phase 3: whether the current Alt-held waypoint gesture
+    /// has spent its first click (the first click replaces any in-flight
+    /// order — queue: false; every later click queues). Reset when Alt is
+    /// released (the gesture ends); nothing is sent on the release itself.
+    pub(crate) waypoint_first_click_spent: bool,
+    /// PLAN-M11 §2 phase 4: the eight F1–F8 camera bookmarks
+    /// (per-match, in-memory; a slot is `None` until Ctrl+F sets it).
+    pub(crate) camera_bookmarks: Vec<Option<CameraBookmark>>,
+    /// PLAN-M11 §2 phase 4: whether the left button is currently held
+    /// over the minimap (the drag-pan: every mouse move refocuses).
+    pub(crate) minimap_drag: bool,
+    /// PLAN-M11 §2 phase 5: whether the bottom command bar (selection
+    /// panel, command card, queue strip, minimap) is visible. F9 toggles
+    /// it; nothing persists; every match starts visible. Menus never hide.
+    pub(crate) hud_visible: bool,
+    /// PLAN-M11 §2 phase 5: whether the mission objective HUD panel is
+    /// visible (Tab toggles it; plain matches have no panel and the key is
+    /// inert). Every mission starts with it visible.
+    pub(crate) objectives_visible: bool,
     /// M9.1: the last submitted order (its seq and the ground point it
     /// targeted) — rejection feedback pings there.
     pub(crate) last_order: Option<(u32, Vec2Fx)>,
@@ -176,7 +223,7 @@ pub(crate) struct App {
     /// Display names of the loaded resources, indexed by ResourceId (the
     /// HUD's labels — data, not hardcoded).
     pub(crate) resource_names: Vec<String>,
-    /// Whether the §11.6 debug overlay is visible (F3).
+    /// Whether the §11.6 debug overlay is visible (F10).
     pub(crate) debug_overlay: bool,
     /// Verification affordance: exit after this many presented frames.
     pub(crate) frames_budget: Option<u64>,
@@ -238,11 +285,31 @@ pub(crate) struct App {
     /// restart resets this with the segment).
     pub(crate) record_written: bool,
     /// M10.1 (plan §6.5/§11.6): the checkpoint trail feeding `--record` and
-    /// the F8 dump — the tick-0 hash plus every periodic checkpoint the
+    /// the F11 dump — the tick-0 hash plus every periodic checkpoint the
     /// host reported per frame (the same assembly the tools' AI-match
     /// recorder uses). Reset by every begin_match; empty at the menu.
     pub(crate) checkpoints: Vec<(u32, u64)>,
 }
+
+/// PLAN-M11 §2 phase 4: one camera bookmark — the full view state (the
+/// five-tuple: target x/z, yaw, pitch, distance). Per-match, in-memory
+/// only (ZH-parity behavior; persistence is a logged deferral).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CameraBookmark {
+    /// The orbit target's ground x.
+    pub(crate) x: f32,
+    /// The orbit target's ground z.
+    pub(crate) z: f32,
+    /// The yaw (radians).
+    pub(crate) yaw: f32,
+    /// The pitch (radians).
+    pub(crate) pitch: f32,
+    /// The orbit distance (tiles).
+    pub(crate) distance: f32,
+}
+
+/// How many camera bookmark slots exist (the F1–F8 row).
+pub(crate) const CAMERA_BOOKMARK_COUNT: usize = 8;
 
 /// Active structure placement (plan §11.3's build placement mode with a
 /// legality preview).
@@ -325,6 +392,12 @@ impl App {
             middle_last: None,
             last_left_click: None,
             last_digit_press: None,
+            last_e_press: None,
+            last_q_press: None,
+            last_clicked_kind: None,
+            combat_kinds: BTreeSet::new(),
+            unit_kinds: BTreeSet::new(),
+            command_center_kind: None,
             last_event_ground: None,
             crosshair_cursor: false,
             // DEBT-014 repaid (PLAN-M10.2 §3.4): the toggle now comes from
@@ -333,6 +406,12 @@ impl App {
             edge_scroll_enabled: settings.edge_scroll,
             focused: true,
             attack_move_armed: false,
+            guard_armed: false,
+            waypoint_first_click_spent: false,
+            camera_bookmarks: vec![None; CAMERA_BOOKMARK_COUNT],
+            minimap_drag: false,
+            hud_visible: true,
+            objectives_visible: true,
             last_order: None,
             start_anchor,
             worker_kind: None,
@@ -361,7 +440,7 @@ impl App {
         })
     }
 
-    /// A-002 Part 2.2: the F3 overlay's first line — the build identity plus
+    /// A-002 Part 2.2: the F10 overlay's first line — the build identity plus
     /// the CURRENT bundle's content hash (a cached u64 read; a started match
     /// on another map shows that map's bundle, so the overlay never lies
     /// about which content is running).
@@ -547,6 +626,12 @@ impl App {
             ));
         self.worker_kind = Some(plan.worker);
         self.node_kind = plan.node;
+        // PLAN-M11 §2 (phase 2): the per-match selection vocabulary — Q's
+        // combat kinds and H's command-center kind, both derived from the
+        // bundle once (never per frame).
+        self.combat_kinds = combat_kinds(&self.bundle);
+        self.unit_kinds = unit_kinds(&self.bundle);
+        self.command_center_kind = command_center_kind(&self.bundle);
         self.reset_match_state();
         // The mission-scoped state: the restart source (the tree index) and
         // the presentation tracker (the HUD lines and end-screen text read
@@ -676,8 +761,14 @@ impl App {
             ));
         self.worker_kind = Some(plan.worker);
         self.node_kind = plan.node;
+        // PLAN-M11 §2 (phase 2): the per-match selection vocabulary — Q's
+        // combat kinds and H's command-center kind, both derived from the
+        // bundle once (never per frame).
+        self.combat_kinds = combat_kinds(&self.bundle);
+        self.unit_kinds = unit_kinds(&self.bundle);
+        self.command_center_kind = command_center_kind(&self.bundle);
         self.reset_match_state();
-        // PLAN-M10.2 §3.4: the debug overlay's default at match start (F3
+        // PLAN-M10.2 §3.4: the debug overlay's default at match start (F10
         // stays the live toggle), and the user zoom limits re-clamp the
         // opening view.
         self.debug_overlay = self.settings.debug_overlay;
@@ -774,9 +865,18 @@ impl App {
         self.middle_last = None;
         self.last_left_click = None;
         self.last_digit_press = None;
+        self.last_e_press = None;
+        self.last_q_press = None;
+        self.last_clicked_kind = None;
         self.last_event_ground = None;
         self.crosshair_cursor = false;
         self.attack_move_armed = false;
+        self.guard_armed = false;
+        self.waypoint_first_click_spent = false;
+        self.camera_bookmarks = vec![None; CAMERA_BOOKMARK_COUNT];
+        self.minimap_drag = false;
+        self.hud_visible = true;
+        self.objectives_visible = true;
         self.last_order = None;
         self.drag_start = None;
         // A-011 (ADR-0201 Phase 1): the mission-scoped state resets with the
@@ -821,10 +921,22 @@ impl App {
     }
 
     /// Interprets one menu effect (PLAN §3.1: "effects are an enum the app
-    /// layer interprets").
+    /// layer interprets"). The only loop-touching effect is QuitApp; the
+    /// rest route through [`App::apply_effect_core`], which the unit tests
+    /// drive without an event loop.
     pub(crate) fn apply_effect(&mut self, effect: Effect, event_loop: &ActiveEventLoop) {
+        if let Effect::QuitApp = effect {
+            event_loop.exit();
+            return;
+        }
+        self.apply_effect_core(effect);
+    }
+
+    /// Every non-QuitApp effect (the testable core).
+    pub(crate) fn apply_effect_core(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
+            Effect::QuitApp => {}
             Effect::StartMatch {
                 mode,
                 seed,
@@ -838,6 +950,17 @@ impl App {
             } => self.begin_mission(mission_index, seed),
             Effect::RestartMatch => self.restart_match(),
             Effect::DropMatch => self.drop_match(),
+            // PLAN-M11 §2 phase 5: Resign — the vocabulary's last unsent
+            // command, submitted through the normal order path (the gate,
+            // the cues), then the host unpauses so the sim's match rules
+            // can end the match and the end-screen promotion fires. The
+            // sim is untouched.
+            Effect::Resign => {
+                self.submit_order(CommandKind::Resign {}, None);
+                if let Some(host) = &mut self.host {
+                    host.set_paused(false);
+                }
+            }
             Effect::Pause => {
                 if let Some(host) = &mut self.host {
                     host.set_paused(true);
@@ -850,7 +973,6 @@ impl App {
             }
             Effect::SaveSettings => self.save_settings(),
             Effect::AdjustSetting { row, dir } => self.adjust_setting(row, dir),
-            Effect::QuitApp => event_loop.exit(),
         }
     }
 
@@ -904,8 +1026,23 @@ impl App {
         }
     }
 
+    /// PLAN-M11 §2 (phase 2): one AttackHit's radar contribution — the
+    /// Space jump's tracked ground becomes the victim's position when the
+    /// victim is an own entity (an attack on the player's forces is the
+    /// event a player most needs to see; attacks on enemies are not radar
+    /// events). The victim's ground position comes from `last_seen` (own
+    /// entities are always in the fog-filtered view). Called per event, in
+    /// arrival order, so the most recent radar event wins.
+    pub(crate) fn note_attack_radar(&mut self, target: EntityId) {
+        if let Some(&(pos, _, owner)) = self.last_seen.get(&target) {
+            if owner == HUMAN {
+                self.last_event_ground = Some((pos.x, pos.z));
+            }
+        }
+    }
+
     /// M10.1 (plan §6.5): folds one frame outcome's periodic checkpoints
-    /// into the trail `--record` and F8 read (the same accumulation the
+    /// into the trail `--record` and F11 read (the same accumulation the
     /// tools' AI-match recorder performs).
     pub(crate) fn collect_checkpoints(&mut self, outcome: &FrameOutcome) {
         for &(tick, hash) in &outcome.hashes {
@@ -964,7 +1101,7 @@ impl App {
         }
     }
 
-    /// M10.1 (plan §11.6): the deterministic F8 bug-report dump — the replay
+    /// M10.1 (plan §11.6): the deterministic F11 bug-report dump — the replay
     /// record of the match so far (`pandemonium-report-<seed>-tick<tick>.pdrp`)
     /// plus the sidecar info file (`…-info.txt`), written beside `--record`'s
     /// path or in the working directory, both filenames printed so the tester
@@ -1005,6 +1142,7 @@ impl App {
             selection_size: self.selection.len(),
             controls_line: report::controls_line(
                 self.attack_move_armed,
+                self.guard_armed,
                 self.feedback.refusal_notice.is_some(),
             ),
         });
@@ -1352,7 +1490,7 @@ impl App {
                 return;
             }
         };
-        // M10.1 (plan §6.5/§11.6): the trail feeding --record and F8.
+        // M10.1 (plan §6.5/§11.6): the trail feeding --record and F11.
         self.collect_checkpoints(&outcome);
         // M10.1 (plan §6.5): --record writes the segment's replay at the
         // match's end — the log is complete there, and the checkpoint at the
@@ -1394,11 +1532,18 @@ impl App {
                 }
                 Event::Died { entity } => {
                     if let Some(&(pos, kind, owner)) = self.last_seen.get(entity) {
-                        // M10.2 (PLAN §1.3): the most recent death is the
-                        // Space jump's "last event".
+                        // M10.2 (PLAN §1.3) + PLAN-M11 §2: the most recent
+                        // death is a radar event for the Space jump (own
+                        // and visible enemy deaths, as before).
                         self.last_event_ground = Some((pos.x, pos.z));
                         self.feedback.death(pos, kind, owner, self.frames_presented);
                     }
+                }
+                // PLAN-M11 §2 (phase 2): an attack landed on an own entity
+                // is a radar event too — the same tracked ground the deaths
+                // feed, in arrival order (chronological, last wins).
+                Event::AttackHit { target, .. } => {
+                    self.note_attack_radar(*target);
                 }
                 // A-011 (ADR-0201 §2, FD-9): the mission HUD's tracker
                 // consumes the objective's resolution after the step, from
@@ -1495,29 +1640,33 @@ impl App {
             .unwrap_or((1920.0, 1080.0));
         let layout = ui::bar_layout(viewport);
         let cursor_px = feedback::ndc_to_pixels(cursor, viewport);
-        let hover_info = if ui::cursor_over_bottom_bar(&layout, cursor_px.0, cursor_px.1) {
-            None
-        } else {
-            orders::pick_visible_entity_sized(
-                &self.camera,
-                &snapshot.entities,
-                glam::Vec2::new(cursor.0, cursor.1),
-                |entity| {
-                    // Big silhouettes read from farther out: structures get
-                    // an extra reach proportional to their footprint.
-                    ui::def_of(&self.bundle, entity.kind)
-                        .and_then(|def| def.footprint())
-                        .map(|(w, h)| (w.max(h) as f32) * 0.018)
-                        .unwrap_or(0.0)
-                },
-            )
-            .map(|entity| {
-                let name = ui::def_of(&self.bundle, entity.kind)
-                    .map(|def| def.display_name.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                (name, ui::owner_tag(entity.owner, HUMAN))
-            })
-        };
+        // PLAN-M11 §2 phase 5: a hidden command bar suppresses nothing —
+        // the tooltip may follow the cursor anywhere (input falls through
+        // to the world).
+        let hover_info =
+            if self.hud_visible && ui::cursor_over_bottom_bar(&layout, cursor_px.0, cursor_px.1) {
+                None
+            } else {
+                orders::pick_visible_entity_sized(
+                    &self.camera,
+                    &snapshot.entities,
+                    glam::Vec2::new(cursor.0, cursor.1),
+                    |entity| {
+                        // Big silhouettes read from farther out: structures get
+                        // an extra reach proportional to their footprint.
+                        ui::def_of(&self.bundle, entity.kind)
+                            .and_then(|def| def.footprint())
+                            .map(|(w, h)| (w.max(h) as f32) * 0.018)
+                            .unwrap_or(0.0)
+                    },
+                )
+                .map(|entity| {
+                    let name = ui::def_of(&self.bundle, entity.kind)
+                        .map(|def| def.display_name.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    (name, ui::owner_tag(entity.owner, HUMAN))
+                })
+            };
         let maps = self.map_list(); // before the renderer borrow
                                     // A-011: the mission list for the menu pass (the picker's field).
         let missions = self.mission_list();
@@ -1536,7 +1685,7 @@ impl App {
         }
         let view_projection = self.camera.view_projection();
         let eye = self.camera.eye();
-        // The HUD's `state_hash` is only read inside the F3 debug overlay,
+        // The HUD's `state_hash` is only read inside the F10 debug overlay,
         // so we use the cheap hud_state path every frame and only pay for
         // the canonical hash when the overlay is actually visible. The
         // hash is O(n) over the whole world — paying it every frame for a
@@ -1613,7 +1762,8 @@ impl App {
         // M10.2 (PLAN §1.3): the crosshair cursor while attack-move is
         // armed (the plan's "change the cursor" half; set only on change —
         // not every frame).
-        let want_crosshair = self.attack_move_armed;
+        // PLAN-M11 §2 phase 3: either armed mode shows the crosshair.
+        let want_crosshair = self.attack_move_armed || self.guard_armed;
         if want_crosshair != self.crosshair_cursor {
             self.crosshair_cursor = want_crosshair;
             if let Some(window) = &self.window {
@@ -1636,10 +1786,17 @@ impl App {
             outcome: outcome.as_ref(),
             log_len: self.host.as_ref().map_or(0, |host| host.log().len()),
             viewport,
-            armed: self.attack_move_armed,
+            armed_line: if self.attack_move_armed {
+                Some(report::ATTACK_MOVE_LINE)
+            } else if self.guard_armed {
+                Some(report::GUARD_LINE)
+            } else {
+                None
+            },
             // A-011: the mission's objective HUD block (None = unchanged
             // mission-less HUD).
             mission: self.mission_hud.as_ref(),
+            objectives_visible: self.objectives_visible,
             version: &version_line,
             notice: self
                 .feedback
@@ -1649,9 +1806,14 @@ impl App {
         }));
         // The bottom bar (plan §11.4): selection panel, command card, and
         // queue strip, rebuilt every frame; its buttons are hit-tested in
-        // the input pass before any world click.
+        // the input pass before any world click. PLAN-M11 §2 phase 5:
+        // F9 hides the whole command bar — nothing draws, no button rects
+        // exist, the minimap panel clears (its hit-test answers None), so
+        // every input falls through to the world. Menus never hide.
         self.ui_buttons.clear();
-        if let Some(view) = &self.latest_view {
+        let bar_live = self.hud_visible && self.latest_view.is_some();
+        if bar_live {
+            let view = self.latest_view.as_ref().expect("checked above");
             let built = ui::build_bottom_bar(ui::CardInput {
                 atlas: renderer.atlas(),
                 layout,
@@ -1709,6 +1871,10 @@ impl App {
                     legal,
                 })
             }));
+        } else {
+            // The hidden bar's minimap panel must stop hit-testing (the
+            // last frame's rect would otherwise keep answering).
+            renderer.clear_minimap_rect();
         }
         // PLAN-M10.2 §3.5/§3.6: when a menu owns the screen (pause menu,
         // end screen, settings-over-pause), its pass dims the live world
@@ -1884,12 +2050,13 @@ pub(crate) struct OverlayInput<'a> {
     /// The window's pixel size (M9.1: the end screen centers in the actual
     /// viewport, not a guessed 320x240).
     viewport: (f32, f32),
-    /// M9.1: whether an attack-move is armed (the HUD instruction line).
-    armed: bool,
+    /// M9.1 + PLAN-M11 §2 phase 3: the armed mode's HUD instruction line
+    /// (attack-move or guard), when one is armed.
+    armed_line: Option<&'static str>,
     /// M9.1: the refusal notice line, when a recent order was refused.
     notice: Option<&'a str>,
     /// A-002 Part 2.2: the version prefix line ("pandemonium X.Y git Z") —
-    /// the F3 overlay's first line names the build (the A14 bug-report
+    /// the F10 overlay's first line names the build (the A14 bug-report
     /// promise, automatic); the content hash joins it per frame from the
     /// live bundle.
     version: &'a str,
@@ -1897,6 +2064,9 @@ pub(crate) struct OverlayInput<'a> {
     /// objective HUD block draws under the notice lines (None = no mission,
     /// the HUD unchanged).
     mission: Option<&'a ui::MissionHud>,
+    /// PLAN-M11 §2 phase 5: whether the objective panel is visible (Tab
+    /// toggles it; a None mission draws nothing either way).
+    objectives_visible: bool,
 }
 
 /// Builds the overlay quads for one frame: the resource/population HUD
@@ -1913,7 +2083,8 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
         outcome,
         log_len,
         viewport,
-        armed,
+        armed_line,
+        objectives_visible,
         notice,
         version,
         mission,
@@ -1953,8 +2124,7 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
     // notice (red), directly under the resource line — one line each, so
     // the player always knows what the next click will do.
     let mut notice_top = MARGIN + line_height + 2.0 * PAD + MARGIN;
-    if armed {
-        let line = "ATTACK MOVE - left-click a target (Esc cancels)";
+    if let Some(line) = armed_line {
         let width = atlas.measure(line);
         quads.push(atlas.solid_rect(
             MARGIN,
@@ -1991,8 +2161,9 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
     // A-011 (ADR-0201 Phase 1, Task 2): the mission's objective HUD — one
     // panel under the notice lines, one line per objective with its state
     // marker (pending / completed / failed). A mission-less match draws
-    // nothing here (the block is gated on the tracker's presence).
-    if let Some(mission) = mission {
+    // nothing here (the block is gated on the tracker's presence), and
+    // PLAN-M11 §2 phase 5's Tab can hide the panel itself.
+    if let Some(mission) = mission.filter(|_| objectives_visible) {
         let (block, height) = ui::objective_hud_quads(atlas, mission, notice_top);
         quads.extend(block);
         notice_top += height + MARGIN;
@@ -2010,9 +2181,9 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
             format!("hash {:#018x}", hud.state_hash),
             format!("entities {entities}  selected {selected}  log {log_len}"),
             if hud.paused {
-                "PAUSED  [.] step  [F8] bug report".to_string()
+                "PAUSED  [.] step  [F11] bug report".to_string()
             } else {
-                "[F3] overlay  [P] pause  [F8] bug report".to_string()
+                "[F10] overlay  [P] pause  [F11] bug report".to_string()
             },
         ];
         let widest = lines
@@ -2116,6 +2287,65 @@ pub(crate) fn git_sha() -> &'static str {
 /// names come from the loaded bundle and never feed back into content.
 pub(crate) fn kind_names(bundle: &ContentBundle) -> Vec<String> {
     bundle.entities.iter().map(|def| def.id.clone()).collect()
+}
+
+/// PLAN-M11 §2 (phase 2): the content's combat kinds — every kind whose
+/// definition carries an Attack capability. Q's filter, computed once per
+/// match over the bundle (the same capability shape the engine's plan
+/// resolution and `kind_shapes` follow — never name-matched).
+pub(crate) fn combat_kinds(bundle: &ContentBundle) -> BTreeSet<KindId> {
+    bundle
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| def.capability("Attack").is_some())
+        .map(|(index, _)| KindId(index as u32))
+        .collect()
+}
+
+/// PLAN-M11 §2 (phase 2): the content's unit kinds — every kind whose
+/// definition carries a Move capability (workers, soldiers; structures
+/// and nodes have footprints instead). The Ctrl+Left/Right cycle's
+/// candidate filter, computed once per match.
+pub(crate) fn unit_kinds(bundle: &ContentBundle) -> BTreeSet<KindId> {
+    bundle
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| def.capability("Move").is_some())
+        .map(|(index, _)| KindId(index as u32))
+        .collect()
+}
+
+/// PLAN-M11 §2 (phase 2): the command-center kind through the engine
+/// plan's own rule (`alpha_plan`'s producer scan — the first producer
+/// whose producibles include no attacking kind), kept here so H reads a
+/// `None` when the faction has no such producer instead of the plan's
+/// `KindId(0)` fallback (kind 0 is the barracks on this content — a
+/// wrong jump target). Capability-shaped, never name-matched.
+pub(crate) fn command_center_kind(bundle: &ContentBundle) -> Option<KindId> {
+    let entities = &bundle.entities;
+    let kind_of = |id: &str| {
+        entities
+            .iter()
+            .position(|entity| entity.id == id)
+            .map(|index| KindId(index as u32))
+    };
+    let attacks = |kind: KindId| {
+        entities
+            .get(kind.0 as usize)
+            .is_some_and(|def| def.capability("Attack").is_some())
+    };
+    for (producer, producibles) in &bundle.faction().production {
+        let Some(producer_kind) = kind_of(producer) else {
+            continue;
+        };
+        let kinds: Vec<KindId> = producibles.iter().filter_map(|p| kind_of(p)).collect();
+        if !kinds.iter().any(|kind| attacks(*kind)) {
+            return Some(producer_kind);
+        }
+    }
+    None
 }
 
 /// Derives one multi-part silhouette per kind from the loaded bundle

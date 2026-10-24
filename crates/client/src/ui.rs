@@ -210,7 +210,7 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
         // first-time-player bar, plan §13's A14 "unaided" goal).
         let lines = [
             "left-click / drag: select    right-click: move / attack / gather",
-            "A + click: attack-move    S: stop    Q/E: rotate    Ctrl+wheel: pitch",
+            "A + click: attack-move    S: stop    arrows: scroll    Ctrl+wheel: pitch",
             "select a worker to build, a building to train and set rallies",
         ];
         for (index, line) in lines.iter().enumerate() {
@@ -1109,7 +1109,10 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
             // A-009 task 1: the Controls row on the pause menu.
             row(2, ButtonId::Controls, "Controls", String::new()),
             row(3, ButtonId::PauseRestart, "Restart", String::new()),
-            row(4, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
+            // PLAN-M11 §2 phase 5: the Resign row (confirm-gated like
+            // Restart and Quit to Menu).
+            row(4, ButtonId::PauseResign, "Resign", String::new()),
+            row(5, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
         ],
         Screen::EndScreen => vec![
             row(0, ButtonId::Rematch, "Rematch", String::new()),
@@ -1216,6 +1219,16 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         ) => (
             "QUIT TO MENU?".to_string(),
             Some("the current match will be lost".to_string()),
+        ),
+        // PLAN-M11 §2 phase 5: the Resign confirm.
+        (
+            crate::screens::Screen::Confirm {
+                action: crate::screens::ConfirmAction::Resign,
+            },
+            _,
+        ) => (
+            "RESIGN?".to_string(),
+            Some("the current match will be ended".to_string()),
         ),
         _ => ("PANDEMONIUM".to_string(), None),
     };
@@ -1373,7 +1386,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
 
     // A-009 task 4: the build-identity footer line. Small, dimmed, centered
     // at the bottom of the panel — "pandemonium X.Y git Z content HASH"
-    // (the same string the F8 sidecar and the F3 debug overlay print).
+    // (the same string the F11 sidecar and the F10 debug overlay print).
     // Drawn on the main menu and the pause menu only; other screens pass
     // an empty string and the `show_version` guard above excludes them.
     if show_version {

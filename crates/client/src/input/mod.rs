@@ -15,11 +15,14 @@
 //! lesson: presentation direction is invisible to the golden hashes, so
 //! only tests can keep it honest).
 
+pub(crate) mod actions;
 pub(crate) mod event;
 pub(crate) mod orders;
 
 use pandemonium_engine::RenderEntity;
-use pandemonium_sim_api::EntityId;
+use pandemonium_sim_api::{EntityId, KindId};
+
+use crate::HUMAN;
 
 /// How far (in pixels) the cursor may travel between a right-button press
 /// and its release for the gesture to count as a command click rather than
@@ -144,7 +147,7 @@ pub fn pixel_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// `cursor` (window pixels) in a `window`-sized viewport. Each component of
 /// the returned pair is a signed fraction of full pan speed (−1..1):
 /// positive `x` pans screen-right, positive `z` pans screen-up — the same
-/// signs the held-key pan uses. The magnitude grows linearly with the
+/// signs the arrow-key pan uses. The magnitude grows linearly with the
 /// cursor's depth into the [`EDGE_SCROLL_BAND_PX`] band, so the cursor at
 /// the window edge scrolls at full speed and halfway into the band at half
 /// speed. All four edges work and corners combine both axes.
@@ -167,7 +170,7 @@ pub fn edge_scroll_vector(cursor: (f64, f64), window: (f64, f64)) -> (f32, f32) 
     // Right edge: depth grows as the cursor approaches x = w.
     x += depth(w - 1.0 - cursor.0);
     // Top edge: depth grows as the cursor approaches y = 0; panning
-    // "up-screen" is +z (forward), matching the held-key convention.
+    // "up-screen" is +z (forward), matching the arrow-key convention.
     z += depth(cursor.1);
     // Bottom edge.
     z -= depth(h - 1.0 - cursor.1);
@@ -207,14 +210,13 @@ pub fn is_double_click(elapsed_ms: u64) -> bool {
     elapsed_ms <= DOUBLE_CLICK_MS
 }
 
-/// Shift+click on a picked entity (PLAN §1.3: "Shift+click adds or removes
-/// from the selection"): the picked id toggles — absent it is appended,
-/// present it is removed. Order is otherwise preserved.
+/// Shift+click on a picked entity (PLAN-M11 §2: **add-only** — the M10.2
+/// toggle-remove is reversed): the picked id joins the selection when
+/// absent; a member is never removed (removal is a re-select, per the
+/// card). Order is otherwise preserved.
 pub fn shift_click_selection(current: &[EntityId], picked: EntityId) -> Vec<EntityId> {
     let mut next = current.to_vec();
-    if let Some(index) = next.iter().position(|id| *id == picked) {
-        next.remove(index);
-    } else {
+    if !next.contains(&picked) {
         next.push(picked);
     }
     next
@@ -233,19 +235,27 @@ pub fn union_selection(current: &[EntityId], picked: &[EntityId]) -> Vec<EntityI
     next
 }
 
-/// Double-click on a picked entity (PLAN §1.3: "selects all visible units
-/// of the same kind"): every snapshot entity of the clicked entity's kind
-/// owned by the same player, in snapshot order. The snapshot the caller
-/// passes is the fog-filtered view, so "visible" is already the truth.
-/// `None` when the clicked entity is not in the snapshot (nothing to
-/// expand).
-pub fn same_kind_selection(entities: &[RenderEntity], clicked: EntityId) -> Option<Vec<EntityId>> {
+/// Double-click on a picked entity (PLAN-M11 §2: "select same-type units
+/// on screen"): every snapshot entity of the clicked entity's kind owned
+/// by the same player, **limited to the screen** (`on_screen` decides),
+/// in snapshot order. The snapshot the caller passes is the fog-filtered
+/// view, so "visible" is already the truth. `None` when the clicked
+/// entity is not in the snapshot (nothing to expand).
+///
+/// (The M10.2 form was whole-visible-map; PLAN-M11 §2's table pins the
+/// ZH target — same-type *on screen* — so the screen filter is the
+/// truth-pass fix, recorded in the report's audit deltas.)
+pub fn same_kind_selection(
+    entities: &[RenderEntity],
+    clicked: EntityId,
+    on_screen: impl Fn(&RenderEntity) -> bool,
+) -> Option<Vec<EntityId>> {
     let clicked = entities.iter().find(|entity| entity.id == clicked)?;
     let (owner, kind) = (clicked.owner, clicked.kind);
     Some(
         entities
             .iter()
-            .filter(|entity| entity.owner == owner && entity.kind == kind)
+            .filter(|entity| entity.owner == owner && entity.kind == kind && on_screen(entity))
             .map(|entity| entity.id)
             .collect(),
     )
@@ -278,6 +288,182 @@ pub fn group_center(entities: &[RenderEntity], group: &[EntityId]) -> Option<(f3
     }
     (count > 0).then(|| (sum.0 / count as f32, sum.1 / count as f32))
 }
+
+/// E's kind rule (PLAN-M11 §2): a uniform selection names its own kind; an
+/// empty or mixed selection falls back to the most recently *clicked*
+/// member's kind (the caller records it on every pick). `None` when no
+/// kind can be named — E is inert then (the card says so).
+pub fn same_kind_key_kind(
+    entities: &[RenderEntity],
+    selection: &[EntityId],
+    last_clicked_kind: Option<KindId>,
+) -> Option<KindId> {
+    let mut kinds = selection.iter().filter_map(|id| {
+        entities
+            .iter()
+            .find(|entity| entity.id == *id)
+            .map(|entity| entity.kind)
+    });
+    match kinds.next() {
+        // An empty selection (or one fully absent from the snapshot —
+        // dead ids): the clicked-kind rule.
+        None => last_clicked_kind,
+        Some(first) if kinds.all(|kind| kind == first) => Some(first),
+        // Mixed: the clicked-kind rule.
+        _ => last_clicked_kind,
+    }
+}
+
+/// E's target set (PLAN-M11 §2): every own entity of the named kind, on
+/// screen for a single tap, the whole visible map for a double tap.
+/// `None` when the set would be empty (an inert press keeps the
+/// selection — pressing E must never drop it to nothing).
+pub fn same_kind_key_selection(
+    entities: &[RenderEntity],
+    kind: KindId,
+    on_screen: impl Fn(&RenderEntity) -> bool,
+    whole_map: bool,
+) -> Option<Vec<EntityId>> {
+    let picked: Vec<EntityId> = entities
+        .iter()
+        .filter(|entity| {
+            entity.owner == HUMAN && entity.kind == kind && (whole_map || on_screen(entity))
+        })
+        .map(|entity| entity.id)
+        .collect();
+    (!picked.is_empty()).then_some(picked)
+}
+
+/// Q's target set (PLAN-M11 §2): every own *combat* unit — on screen for
+/// a single tap, the whole visible map for a double tap. `None` when the
+/// set would be empty (inert, like E).
+pub fn combat_key_selection(
+    entities: &[RenderEntity],
+    is_combat: impl Fn(&RenderEntity) -> bool,
+    on_screen: impl Fn(&RenderEntity) -> bool,
+    whole_map: bool,
+) -> Option<Vec<EntityId>> {
+    let picked: Vec<EntityId> = entities
+        .iter()
+        .filter(|entity| {
+            entity.owner == HUMAN && is_combat(entity) && (whole_map || on_screen(entity))
+        })
+        .map(|entity| entity.id)
+        .collect();
+    (!picked.is_empty()).then_some(picked)
+}
+
+/// Ctrl+Left/Right and Ctrl+Up/Down (PLAN-M11 §2): the next or previous
+/// own unit in ascending-id order, wrapping — the candidate list is the
+/// fog-filtered view ("on map") filtered by `candidate` (the unit cycle
+/// passes the movable kinds; the worker cycle passes the worker kind
+/// alone). With nothing selected (or no selection member among the
+/// candidates) the lowest-id candidate is selected; otherwise the unit
+/// after the selection's highest-id candidate becomes the sole selection
+/// (ZH's cycle walks one unit at a time). `None` when no candidate
+/// exists at all.
+pub fn cycled_selection(
+    entities: &[RenderEntity],
+    selection: &[EntityId],
+    candidate: impl Fn(&RenderEntity) -> bool,
+    forward: bool,
+) -> Option<Vec<EntityId>> {
+    // The candidates, ascending by id (the snapshot is already ascending;
+    // sort defensively so the order is the function's own contract).
+    let mut candidates: Vec<EntityId> = entities
+        .iter()
+        .filter(|entity| entity.owner == HUMAN && candidate(entity))
+        .map(|entity| entity.id)
+        .collect();
+    candidates.sort();
+    let first = *candidates.first()?;
+
+    // The anchor: the highest-id candidate that is currently selected.
+    // Nothing selected (or no selection member among the candidates — a
+    // structure selected while worker-cycling): the lowest id, whichever
+    // direction was pressed (PLAN-M11 §2: "with nothing selected, select
+    // the lowest-id own unit").
+    let next = match candidates
+        .iter()
+        .rev()
+        .find(|id| selection.contains(id))
+        .copied()
+    {
+        None => first,
+        Some(anchor) => {
+            if forward {
+                // The smallest candidate id above the anchor, wrapping.
+                candidates
+                    .iter()
+                    .find(|id| **id > anchor)
+                    .copied()
+                    .unwrap_or(first)
+            } else {
+                // The largest candidate id below the anchor, wrapping.
+                candidates
+                    .iter()
+                    .rev()
+                    .find(|id| **id < anchor)
+                    .copied()
+                    .unwrap_or(*candidates.last()?)
+            }
+        }
+    };
+    Some(vec![next])
+}
+
+/// H's jump target (PLAN-M11 §2): the first own Command Center in
+/// snapshot order (ascending id). `None` when the kind is unknown or no
+/// own CC is visible — the caller falls back to the base anchor.
+pub fn command_center_position(
+    entities: &[RenderEntity],
+    command_center_kind: Option<KindId>,
+) -> Option<(f32, f32)> {
+    let kind = command_center_kind?;
+    entities
+        .iter()
+        .find(|entity| entity.owner == HUMAN && entity.kind == kind)
+        .map(|entity| (entity.pos.x, entity.pos.z))
+}
+
+/// X's scatter offsets (PLAN-M11 §2 phase 3): one world-space target per
+/// selected unit, each its current position pushed along ray
+/// `index mod 8` of an 8-ray ring — the index is the unit's position in
+/// the ASCENDING-id order of the selection, so the same selection always
+/// produces the same command list (deterministic, no RNG; the client
+/// computes, the sim receives Moves). Units already moving receive it too
+/// (the Move replaces, `queue: false` — the caller's flag).
+pub fn scatter_targets(
+    entities: &[RenderEntity],
+    selection: &[EntityId],
+) -> Vec<(EntityId, f32, f32)> {
+    // Ascending-id order (the snapshot is already ascending; sort is the
+    // function's own contract).
+    let mut ids: Vec<EntityId> = selection.to_vec();
+    ids.sort();
+    let mut targets = Vec::with_capacity(ids.len());
+    for (index, id) in ids.iter().enumerate() {
+        let Some(entity) = entities.iter().find(|entity| entity.id == *id) else {
+            continue; // a dead id weighs nothing
+        };
+        // Ray `index mod 8` around the ring: ray 0 is world +x, each next
+        // ray 45 degrees on (the world x/z plane).
+        let angle = (index % 8) as f32 * (std::f32::consts::TAU / 8.0);
+        let (dx, dz) = (angle.cos(), angle.sin());
+        targets.push((
+            *id,
+            entity.pos.x + dx * SCATTER_DISTANCE,
+            entity.pos.z + dz * SCATTER_DISTANCE,
+        ));
+    }
+    targets
+}
+
+/// How far X's scatter pushes each unit, in world tiles — one
+/// acquisition-range-ish hop (the Alpha's acquire ranges run 5-9 tiles;
+/// 3 is a visible, formation-preserving burst that never throws a unit
+/// out of its own sight). Named and tuned once (PLAN-M11 §4 phase 3).
+pub const SCATTER_DISTANCE: f32 = 3.0;
 
 /// What Escape does first (PLAN §1.3: "Escape cancels an armed command or
 /// clears the selection"): the cancellation ladder, one rung at a time per
@@ -458,7 +644,7 @@ mod tests {
         );
         // Right edge: screen-right.
         assert_eq!(edge_scroll_vector((1919.0, 540.0), window).0, 1.0);
-        // Top edge: up-screen (+z), the held-key W convention.
+        // Top edge: up-screen (+z), the arrow-key Up convention.
         assert_eq!(edge_scroll_vector((960.0, 0.0), window).1, 1.0);
         // Bottom edge: down-screen (-z).
         assert_eq!(edge_scroll_vector((960.0, 1079.0), window).1, -1.0);
@@ -561,17 +747,20 @@ mod tests {
     }
 
     #[test]
-    fn shift_click_toggles_membership() {
+    fn shift_click_adds_only_it_never_removes() {
+        // PLAN-M11 §5.2 (the reversal of M10.2's toggle): the picked id
+        // joins the selection when absent; a member is never removed
+        // (removal is a re-select, the card says so).
         let current = vec![EntityId(1), EntityId(2)];
         // Absent: appended.
         assert_eq!(
             shift_click_selection(&current, EntityId(3)),
             vec![EntityId(1), EntityId(2), EntityId(3)]
         );
-        // Present: removed.
+        // Present: KEPT (add-only).
         assert_eq!(
             shift_click_selection(&current, EntityId(1)),
-            vec![EntityId(2)]
+            vec![EntityId(1), EntityId(2)]
         );
         // An empty selection takes the pick.
         assert_eq!(shift_click_selection(&[], EntityId(3)), vec![EntityId(3)]);
@@ -590,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn double_click_expands_to_all_visible_same_kind_same_owner() {
+    fn double_click_expands_to_the_same_kind_same_owner_on_screen() {
         let own = PlayerId(0);
         let other = PlayerId(1);
         let entities = vec![
@@ -600,18 +789,218 @@ mod tests {
             entity(4, own, KindId(5)),   // own other kind
             entity(5, own, KindId(2)),
         ];
+        // On screen: the whole same-kind set (PLAN-M11 §2's ZH target).
+        let all = |_: &RenderEntity| true;
         assert_eq!(
-            same_kind_selection(&entities, EntityId(2)),
+            same_kind_selection(&entities, EntityId(2), all),
             Some(vec![EntityId(1), EntityId(2), EntityId(5)])
         );
         // The enemy's double-click (were it clickable) expands to its own
         // side's kind members only.
         assert_eq!(
-            same_kind_selection(&entities, EntityId(3)),
+            same_kind_selection(&entities, EntityId(3), all),
             Some(vec![EntityId(3)])
         );
         // An id outside the snapshot expands to nothing.
-        assert_eq!(same_kind_selection(&entities, EntityId(99)), None);
+        assert_eq!(same_kind_selection(&entities, EntityId(99), all), None);
+        // Off-screen members are left out (the screen filter is real).
+        let none = |_: &RenderEntity| false;
+        assert_eq!(
+            same_kind_selection(&entities, EntityId(2), none),
+            Some(vec![])
+        );
+    }
+
+    // ---- PLAN-M11 §2 phase 2: E / Q / cycling / H ------------------------
+
+    #[test]
+    fn e_names_the_uniform_selection_kind_else_the_clicked_kind() {
+        let own = PlayerId(0);
+        let entities = vec![
+            entity(1, own, KindId(2)),
+            entity(2, own, KindId(2)),
+            entity(3, own, KindId(7)),
+        ];
+        // A uniform selection names its own kind.
+        assert_eq!(
+            same_kind_key_kind(&entities, &[EntityId(1), EntityId(2)], None),
+            Some(KindId(2))
+        );
+        // A mixed selection falls back to the clicked kind.
+        assert_eq!(
+            same_kind_key_kind(&entities, &[EntityId(1), EntityId(3)], Some(KindId(7))),
+            Some(KindId(7))
+        );
+        // An empty selection uses the clicked kind, or is inert when
+        // nothing was ever clicked.
+        assert_eq!(
+            same_kind_key_kind(&entities, &[], Some(KindId(2))),
+            Some(KindId(2))
+        );
+        assert_eq!(same_kind_key_kind(&entities, &[], None), None);
+        // A selection of dead ids also falls back to the clicked kind.
+        assert_eq!(
+            same_kind_key_kind(&entities, &[EntityId(77)], Some(KindId(5))),
+            Some(KindId(5))
+        );
+    }
+
+    #[test]
+    fn e_selects_on_screen_and_the_double_tap_takes_the_whole_map() {
+        let own = PlayerId(0);
+        let entities = vec![
+            entity(1, own, KindId(2)),
+            entity(2, own, KindId(2)),
+            entity(3, own, KindId(2)),
+            entity(4, own, KindId(5)),
+        ];
+        let on_screen =
+            |entity: &RenderEntity| entity.id == EntityId(1) || entity.id == EntityId(2);
+        // Single tap: only the on-screen members of the kind.
+        assert_eq!(
+            same_kind_key_selection(&entities, KindId(2), on_screen, false),
+            Some(vec![EntityId(1), EntityId(2)])
+        );
+        // Double tap: every visible member of the kind on the map.
+        assert_eq!(
+            same_kind_key_selection(&entities, KindId(2), on_screen, true),
+            Some(vec![EntityId(1), EntityId(2), EntityId(3)])
+        );
+        // An empty set is inert (None keeps the selection).
+        assert_eq!(
+            same_kind_key_selection(&entities, KindId(9), on_screen, false),
+            None
+        );
+        assert_eq!(
+            same_kind_key_selection(&entities, KindId(5), |_| false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn q_selects_own_combat_units_and_only_those() {
+        let own = PlayerId(0);
+        let enemy = PlayerId(1);
+        let entities = vec![
+            entity(1, own, KindId(2)),   // own combat
+            entity(2, own, KindId(3)),   // own worker (not combat)
+            entity(3, enemy, KindId(2)), // enemy combat: never Q's
+            entity(4, own, KindId(2)),   // own combat, off screen
+        ];
+        let combat = |entity: &RenderEntity| entity.kind == KindId(2);
+        let on_screen = |entity: &RenderEntity| entity.id != EntityId(4);
+        assert_eq!(
+            combat_key_selection(&entities, combat, on_screen, false),
+            Some(vec![EntityId(1)])
+        );
+        assert_eq!(
+            combat_key_selection(&entities, combat, on_screen, true),
+            Some(vec![EntityId(1), EntityId(4)])
+        );
+        // No combat units at all: inert.
+        let no_combat = |_: &RenderEntity| false;
+        assert_eq!(
+            combat_key_selection(&entities, no_combat, on_screen, false),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_arrows_cycle_in_ascending_id_order_and_wrap() {
+        let own = PlayerId(0);
+        let units = |entity: &RenderEntity| entity.kind != KindId(9); // not a structure
+        let entities = vec![
+            entity(3, own, KindId(2)),
+            entity(7, own, KindId(2)),
+            entity(11, own, KindId(2)),
+        ];
+        // Nothing selected: the lowest id.
+        assert_eq!(
+            cycled_selection(&entities, &[], units, true),
+            Some(vec![EntityId(3)])
+        );
+        // Forward from 7 -> 11.
+        assert_eq!(
+            cycled_selection(&entities, &[EntityId(7)], units, true),
+            Some(vec![EntityId(11)])
+        );
+        // Forward from the max wraps to the lowest.
+        assert_eq!(
+            cycled_selection(&entities, &[EntityId(11)], units, true),
+            Some(vec![EntityId(3)])
+        );
+        // Backward from 7 -> 3.
+        assert_eq!(
+            cycled_selection(&entities, &[EntityId(7)], units, false),
+            Some(vec![EntityId(3)])
+        );
+        // Backward from the lowest wraps to the max.
+        assert_eq!(
+            cycled_selection(&entities, &[EntityId(3)], units, false),
+            Some(vec![EntityId(11)])
+        );
+        // A multi-selection anchors on its highest-id member.
+        assert_eq!(
+            cycled_selection(&entities, &[EntityId(3), EntityId(7)], units, true),
+            Some(vec![EntityId(11)])
+        );
+        // A structure selected while unit-cycling: the lowest unit.
+        let with_structure = vec![
+            entity(1, own, KindId(9)), // a structure, never a candidate
+            entity(3, own, KindId(2)),
+            entity(7, own, KindId(2)),
+        ];
+        assert_eq!(
+            cycled_selection(&with_structure, &[EntityId(1)], units, true),
+            Some(vec![EntityId(3)]),
+            "a non-candidate selection selects the lowest candidate"
+        );
+    }
+
+    #[test]
+    fn the_worker_cycle_filters_to_the_worker_kind() {
+        let own = PlayerId(0);
+        let entities = vec![
+            entity(2, own, KindId(3)), // worker
+            entity(5, own, KindId(2)), // combat
+            entity(8, own, KindId(3)), // worker
+        ];
+        let workers = |entity: &RenderEntity| entity.kind == KindId(3);
+        let everyone = |_: &RenderEntity| true;
+        assert_eq!(
+            cycled_selection(&entities, &[], workers, true),
+            Some(vec![EntityId(2)])
+        );
+        assert_eq!(
+            cycled_selection(&entities, &[EntityId(2)], workers, true),
+            Some(vec![EntityId(8)])
+        );
+        // The unit cycle (every own entity here) ignores the worker filter.
+        assert_eq!(
+            cycled_selection(&entities, &[EntityId(2)], everyone, true),
+            Some(vec![EntityId(5)])
+        );
+        // No workers: inert.
+        let none = |_: &RenderEntity| false;
+        assert_eq!(cycled_selection(&entities, &[], none, true), None);
+    }
+
+    #[test]
+    fn h_targets_the_first_own_command_center() {
+        let own = PlayerId(0);
+        let enemy = PlayerId(1);
+        let entities = vec![
+            entity(1, own, KindId(4)),
+            entity(2, enemy, KindId(4)), // enemy CC: never H's target
+            entity(3, own, KindId(4)),   // second own CC (first in id order wins)
+        ];
+        assert_eq!(
+            command_center_position(&entities, Some(KindId(4))),
+            Some((1.0, 99.0))
+        );
+        // Unknown kind or no CC: None (the base-anchor fallback).
+        assert_eq!(command_center_position(&entities, None), None);
+        assert_eq!(command_center_position(&entities, Some(KindId(9))), None);
     }
 
     #[test]
@@ -788,10 +1177,12 @@ mod tests {
     // ---- direction pinning: middle-drag rotate ---------------------------
 
     #[test]
-    fn middle_drag_right_orbits_the_same_way_e_does() {
-        // E (orbit right) applies a positive yaw rate; a rightward
-        // middle-drag must apply positive yaw too, at both pinned yaws.
-        // The wiring's exact formula: yaw delta = radians per pixel * dx.
+    fn middle_drag_right_orbits_clockwise_at_both_pinned_yaws() {
+        // PLAN-M11 phase 1: middle-drag is the one always-available rotate
+        // (the Q/E keys are Zero Hour selection keys now). A rightward
+        // middle-drag applies positive yaw — the same sign the numpad
+        // rotate keys and the old E key used, pinned at both yaws. The
+        // wiring's exact formula: yaw delta = radians per pixel * dx.
         let delta_of = |dx_px: f32| MIDDLE_DRAG_RAD_PER_PX * dx_px;
         assert!(delta_of(120.0) > 0.0);
         let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
@@ -808,5 +1199,52 @@ mod tests {
         }
         // The scale: one pixel is MIDDLE_DRAG_RAD_PER_PX.
         assert!((delta_of(1.0) - MIDDLE_DRAG_RAD_PER_PX).abs() < 1e-6);
+    }
+
+    // ---- direction pinning: arrow-key scroll -----------------------------
+
+    #[test]
+    fn arrow_holds_pan_the_screen_axes_at_yaw_0_and_yaw_90() {
+        // PLAN-M11 phase 1: the arrows are the keyboard scroll. The held
+        // tags feed about_to_wait's pan with the M9.1 sign convention:
+        // pan's +dz is "forward" (screen-up), pan's +dx is screen-right.
+        // In world terms that is -z/up and +x/right at yaw 0, and
+        // -x/up and -z/right at yaw 90 (the camera orbits the target).
+        // Pinned at both yaws, the M9.1 discipline: presentation direction
+        // is invisible to the golden hashes.
+        for (yaw, up, right) in [
+            (
+                0.0f32,
+                glam::Vec3::new(0.0, 0.0, -1.0),
+                glam::Vec3::new(1.0, 0.0, 0.0),
+            ),
+            (
+                std::f32::consts::FRAC_PI_2,
+                glam::Vec3::new(-1.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 0.0, -1.0),
+            ),
+        ] {
+            let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+            camera.focus(32.0, 32.0, 24.0);
+            camera.rotate(yaw - camera.yaw());
+            // "up" held: pan(0, +v) moves the target along `up`.
+            let before = camera.target();
+            camera.pan(0.0, 4.0);
+            let delta = camera.target() - before;
+            assert!(
+                delta.dot(up) > 3.0 && delta.dot(right).abs() < 1e-3,
+                "yaw {yaw}: up-arrow pans along {up} ({before:?} -> {:?})",
+                camera.target()
+            );
+            // "right" held: pan(+v, 0) moves the target along `right`.
+            let before = camera.target();
+            camera.pan(4.0, 0.0);
+            let delta = camera.target() - before;
+            assert!(
+                delta.dot(right) > 3.0 && delta.dot(up).abs() < 1e-3,
+                "yaw {yaw}: right-arrow pans along {right} ({before:?} -> {:?})",
+                camera.target()
+            );
+        }
     }
 }

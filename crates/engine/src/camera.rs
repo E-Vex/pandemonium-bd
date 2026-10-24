@@ -23,6 +23,9 @@ const NEAR: f32 = 0.1;
 const FAR: f32 = 500.0;
 /// Pitch clamp: never fully horizontal (degenerate), never fully top-down-only.
 const PITCH_RANGE: (f32, f32) = (0.25, 1.45);
+/// The default pitch a fresh camera opens at (PLAN-M11 §2 phase 4:
+/// Numpad 5's reset restores it by name, not by magic number).
+pub const DEFAULT_PITCH: f32 = 1.0;
 /// Distance clamp in tiles. Public since M10.2 Phase 3 (PLAN §3.4): the
 /// client's settings file stores user zoom limits and clamps through
 /// [`RtsCamera::clamp_distance_to`] — the defaults mirror this range so a
@@ -60,7 +63,7 @@ impl RtsCamera {
         Self {
             target: Vec3::new(map_width as f32 / 2.0, 0.0, map_height as f32 / 2.0),
             yaw: 0.0,
-            pitch: 1.0,
+            pitch: DEFAULT_PITCH,
             distance: (map_width.max(map_height) as f32) * 0.9,
             fov_y: DEFAULT_FOV_Y,
             aspect,
