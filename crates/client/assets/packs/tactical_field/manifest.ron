@@ -1,0 +1,20 @@
+(
+    pack_id: "tactical_field",
+    schema_version: 1,
+    terrain: {
+        "grass": "textures/terrain/grass.png",
+        "gravel": "textures/terrain/gravel.png",
+        "rock": "textures/terrain/rock.png",
+        "sand": "textures/terrain/sand.png",
+    },
+    entities: {
+        "barracks": "textures/entities/barracks.png",
+        "command_center": "textures/entities/command_center.png",
+        "guardian": "textures/entities/guardian.png",
+        "raider": "textures/entities/raider.png",
+        "rifleman": "textures/entities/rifleman.png",
+        "supply_depot": "textures/entities/supply_depot.png",
+        "turret": "textures/entities/turret.png",
+        "worker": "textures/entities/worker.png",
+    },
+)
