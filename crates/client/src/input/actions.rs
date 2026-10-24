@@ -112,6 +112,12 @@ pub enum WorldKeyAction {
     /// Numpad 5 — reset the camera to the defaults (yaw 0, default pitch,
     /// the opening distance; the target stays).
     CameraReset,
+    /// F9 — toggle the bottom command bar (HUD + minimap; menus never
+    /// hide; pure presentation, nothing persists).
+    ToggleCommandBar,
+    /// Tab — toggle the mission objective HUD panel (in plain matches the
+    /// panel does not exist and the key is inert — the card says so).
+    ToggleObjectives,
     /// F1–F8 — jump to camera bookmark `slot` (restores the five-tuple).
     BookmarkJump { slot: usize },
     /// Ctrl+F1–F8 — set camera bookmark `slot` to the current view.
@@ -214,6 +220,10 @@ pub fn world_key_action(code: KeyCode, mods: KeyMods, pressed: bool) -> WorldKey
             pressed,
         },
         KeyCode::Numpad5 if pressed => WorldKeyAction::CameraReset,
+        // PLAN-M11 §2 phase 5: F9 toggles the command bar, Tab the
+        // objective panel (missions only).
+        KeyCode::F9 if pressed => WorldKeyAction::ToggleCommandBar,
+        KeyCode::Tab if pressed => WorldKeyAction::ToggleObjectives,
         KeyCode::F1 if pressed => bookmark(0, mods),
         KeyCode::F2 if pressed => bookmark(1, mods),
         KeyCode::F3 if pressed => bookmark(2, mods),
@@ -506,6 +516,18 @@ mod tests {
         assert_eq!(
             world_key_action(KeyCode::Numpad5, PLAIN, true),
             WorldKeyAction::CameraReset
+        );
+    }
+
+    #[test]
+    fn f9_and_tab_toggle_their_panels() {
+        assert_eq!(
+            world_key_action(KeyCode::F9, PLAIN, true),
+            WorldKeyAction::ToggleCommandBar
+        );
+        assert_eq!(
+            world_key_action(KeyCode::Tab, PLAIN, true),
+            WorldKeyAction::ToggleObjectives
         );
     }
 

@@ -1109,7 +1109,10 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
             // A-009 task 1: the Controls row on the pause menu.
             row(2, ButtonId::Controls, "Controls", String::new()),
             row(3, ButtonId::PauseRestart, "Restart", String::new()),
-            row(4, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
+            // PLAN-M11 §2 phase 5: the Resign row (confirm-gated like
+            // Restart and Quit to Menu).
+            row(4, ButtonId::PauseResign, "Resign", String::new()),
+            row(5, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
         ],
         Screen::EndScreen => vec![
             row(0, ButtonId::Rematch, "Rematch", String::new()),
@@ -1216,6 +1219,16 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         ) => (
             "QUIT TO MENU?".to_string(),
             Some("the current match will be lost".to_string()),
+        ),
+        // PLAN-M11 §2 phase 5: the Resign confirm.
+        (
+            crate::screens::Screen::Confirm {
+                action: crate::screens::ConfirmAction::Resign,
+            },
+            _,
+        ) => (
+            "RESIGN?".to_string(),
+            Some("the current match will be ended".to_string()),
         ),
         _ => ("PANDEMONIUM".to_string(), None),
     };

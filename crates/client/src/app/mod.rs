@@ -29,8 +29,8 @@ use pandemonium_engine::{
     RtsCamera,
 };
 use pandemonium_sim_api::{
-    EntityId, Event, KindId, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot, TileFog,
-    Vec2Fx,
+    CommandKind, EntityId, Event, KindId, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot,
+    TileFog, Vec2Fx,
 };
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState};
@@ -199,6 +199,14 @@ pub(crate) struct App {
     /// PLAN-M11 §2 phase 4: whether the left button is currently held
     /// over the minimap (the drag-pan: every mouse move refocuses).
     pub(crate) minimap_drag: bool,
+    /// PLAN-M11 §2 phase 5: whether the bottom command bar (selection
+    /// panel, command card, queue strip, minimap) is visible. F9 toggles
+    /// it; nothing persists; every match starts visible. Menus never hide.
+    pub(crate) hud_visible: bool,
+    /// PLAN-M11 §2 phase 5: whether the mission objective HUD panel is
+    /// visible (Tab toggles it; plain matches have no panel and the key is
+    /// inert). Every mission starts with it visible.
+    pub(crate) objectives_visible: bool,
     /// M9.1: the last submitted order (its seq and the ground point it
     /// targeted) — rejection feedback pings there.
     pub(crate) last_order: Option<(u32, Vec2Fx)>,
@@ -402,6 +410,8 @@ impl App {
             waypoint_first_click_spent: false,
             camera_bookmarks: vec![None; CAMERA_BOOKMARK_COUNT],
             minimap_drag: false,
+            hud_visible: true,
+            objectives_visible: true,
             last_order: None,
             start_anchor,
             worker_kind: None,
@@ -865,6 +875,8 @@ impl App {
         self.waypoint_first_click_spent = false;
         self.camera_bookmarks = vec![None; CAMERA_BOOKMARK_COUNT];
         self.minimap_drag = false;
+        self.hud_visible = true;
+        self.objectives_visible = true;
         self.last_order = None;
         self.drag_start = None;
         // A-011 (ADR-0201 Phase 1): the mission-scoped state resets with the
@@ -909,10 +921,22 @@ impl App {
     }
 
     /// Interprets one menu effect (PLAN §3.1: "effects are an enum the app
-    /// layer interprets").
+    /// layer interprets"). The only loop-touching effect is QuitApp; the
+    /// rest route through [`App::apply_effect_core`], which the unit tests
+    /// drive without an event loop.
     pub(crate) fn apply_effect(&mut self, effect: Effect, event_loop: &ActiveEventLoop) {
+        if let Effect::QuitApp = effect {
+            event_loop.exit();
+            return;
+        }
+        self.apply_effect_core(effect);
+    }
+
+    /// Every non-QuitApp effect (the testable core).
+    pub(crate) fn apply_effect_core(&mut self, effect: Effect) {
         match effect {
             Effect::None => {}
+            Effect::QuitApp => {}
             Effect::StartMatch {
                 mode,
                 seed,
@@ -926,6 +950,17 @@ impl App {
             } => self.begin_mission(mission_index, seed),
             Effect::RestartMatch => self.restart_match(),
             Effect::DropMatch => self.drop_match(),
+            // PLAN-M11 §2 phase 5: Resign — the vocabulary's last unsent
+            // command, submitted through the normal order path (the gate,
+            // the cues), then the host unpauses so the sim's match rules
+            // can end the match and the end-screen promotion fires. The
+            // sim is untouched.
+            Effect::Resign => {
+                self.submit_order(CommandKind::Resign {}, None);
+                if let Some(host) = &mut self.host {
+                    host.set_paused(false);
+                }
+            }
             Effect::Pause => {
                 if let Some(host) = &mut self.host {
                     host.set_paused(true);
@@ -938,7 +973,6 @@ impl App {
             }
             Effect::SaveSettings => self.save_settings(),
             Effect::AdjustSetting { row, dir } => self.adjust_setting(row, dir),
-            Effect::QuitApp => event_loop.exit(),
         }
     }
 
@@ -1606,29 +1640,33 @@ impl App {
             .unwrap_or((1920.0, 1080.0));
         let layout = ui::bar_layout(viewport);
         let cursor_px = feedback::ndc_to_pixels(cursor, viewport);
-        let hover_info = if ui::cursor_over_bottom_bar(&layout, cursor_px.0, cursor_px.1) {
-            None
-        } else {
-            orders::pick_visible_entity_sized(
-                &self.camera,
-                &snapshot.entities,
-                glam::Vec2::new(cursor.0, cursor.1),
-                |entity| {
-                    // Big silhouettes read from farther out: structures get
-                    // an extra reach proportional to their footprint.
-                    ui::def_of(&self.bundle, entity.kind)
-                        .and_then(|def| def.footprint())
-                        .map(|(w, h)| (w.max(h) as f32) * 0.018)
-                        .unwrap_or(0.0)
-                },
-            )
-            .map(|entity| {
-                let name = ui::def_of(&self.bundle, entity.kind)
-                    .map(|def| def.display_name.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                (name, ui::owner_tag(entity.owner, HUMAN))
-            })
-        };
+        // PLAN-M11 §2 phase 5: a hidden command bar suppresses nothing —
+        // the tooltip may follow the cursor anywhere (input falls through
+        // to the world).
+        let hover_info =
+            if self.hud_visible && ui::cursor_over_bottom_bar(&layout, cursor_px.0, cursor_px.1) {
+                None
+            } else {
+                orders::pick_visible_entity_sized(
+                    &self.camera,
+                    &snapshot.entities,
+                    glam::Vec2::new(cursor.0, cursor.1),
+                    |entity| {
+                        // Big silhouettes read from farther out: structures get
+                        // an extra reach proportional to their footprint.
+                        ui::def_of(&self.bundle, entity.kind)
+                            .and_then(|def| def.footprint())
+                            .map(|(w, h)| (w.max(h) as f32) * 0.018)
+                            .unwrap_or(0.0)
+                    },
+                )
+                .map(|entity| {
+                    let name = ui::def_of(&self.bundle, entity.kind)
+                        .map(|def| def.display_name.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    (name, ui::owner_tag(entity.owner, HUMAN))
+                })
+            };
         let maps = self.map_list(); // before the renderer borrow
                                     // A-011: the mission list for the menu pass (the picker's field).
         let missions = self.mission_list();
@@ -1758,6 +1796,7 @@ impl App {
             // A-011: the mission's objective HUD block (None = unchanged
             // mission-less HUD).
             mission: self.mission_hud.as_ref(),
+            objectives_visible: self.objectives_visible,
             version: &version_line,
             notice: self
                 .feedback
@@ -1767,9 +1806,14 @@ impl App {
         }));
         // The bottom bar (plan §11.4): selection panel, command card, and
         // queue strip, rebuilt every frame; its buttons are hit-tested in
-        // the input pass before any world click.
+        // the input pass before any world click. PLAN-M11 §2 phase 5:
+        // F9 hides the whole command bar — nothing draws, no button rects
+        // exist, the minimap panel clears (its hit-test answers None), so
+        // every input falls through to the world. Menus never hide.
         self.ui_buttons.clear();
-        if let Some(view) = &self.latest_view {
+        let bar_live = self.hud_visible && self.latest_view.is_some();
+        if bar_live {
+            let view = self.latest_view.as_ref().expect("checked above");
             let built = ui::build_bottom_bar(ui::CardInput {
                 atlas: renderer.atlas(),
                 layout,
@@ -1827,6 +1871,10 @@ impl App {
                     legal,
                 })
             }));
+        } else {
+            // The hidden bar's minimap panel must stop hit-testing (the
+            // last frame's rect would otherwise keep answering).
+            renderer.clear_minimap_rect();
         }
         // PLAN-M10.2 §3.5/§3.6: when a menu owns the screen (pause menu,
         // end screen, settings-over-pause), its pass dims the live world
@@ -2016,6 +2064,9 @@ pub(crate) struct OverlayInput<'a> {
     /// objective HUD block draws under the notice lines (None = no mission,
     /// the HUD unchanged).
     mission: Option<&'a ui::MissionHud>,
+    /// PLAN-M11 §2 phase 5: whether the objective panel is visible (Tab
+    /// toggles it; a None mission draws nothing either way).
+    objectives_visible: bool,
 }
 
 /// Builds the overlay quads for one frame: the resource/population HUD
@@ -2033,6 +2084,7 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
         log_len,
         viewport,
         armed_line,
+        objectives_visible,
         notice,
         version,
         mission,
@@ -2109,8 +2161,9 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
     // A-011 (ADR-0201 Phase 1, Task 2): the mission's objective HUD — one
     // panel under the notice lines, one line per objective with its state
     // marker (pending / completed / failed). A mission-less match draws
-    // nothing here (the block is gated on the tracker's presence).
-    if let Some(mission) = mission {
+    // nothing here (the block is gated on the tracker's presence), and
+    // PLAN-M11 §2 phase 5's Tab can hide the panel itself.
+    if let Some(mission) = mission.filter(|_| objectives_visible) {
         let (block, height) = ui::objective_hud_quads(atlas, mission, notice_top);
         quads.extend(block);
         notice_top += height + MARGIN;

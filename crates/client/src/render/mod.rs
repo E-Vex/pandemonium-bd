@@ -457,6 +457,13 @@ impl WgpuRenderer {
     /// Rebuilds the minimap quad for a panel rectangle (window pixels).
     /// The screen-size uniform is shared with the UI pass and refreshed in
     /// `render`, so only the rect matters here.
+    /// Clears the minimap panel (PLAN-M11 §2 phase 5: the hidden command
+    /// bar's input fall-through — `minimap_hit` answers None until the
+    /// bar returns).
+    pub fn clear_minimap_rect(&mut self) {
+        self.minimap_rect = None;
+    }
+
     pub fn set_minimap_rect(&mut self, rect: [f32; 4]) {
         let (x, y, w, h) = (rect[0], rect[1], rect[2], rect[3]);
         let v = |px: f32, py: f32, u: f32, vv: f32| MinimapVertex {

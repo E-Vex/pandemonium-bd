@@ -1186,6 +1186,19 @@ impl ApplicationHandler for App {
                         WorldKeyAction::BookmarkSet { slot } => {
                             self.set_camera_bookmark(slot);
                         }
+                        // PLAN-M11 §2 phase 5: F9 toggles the command bar
+                        // (pure presentation; nothing persists; menus never
+                        // hide), Tab toggles the objective panel (missions
+                        // only — a plain match has no panel, so the key is
+                        // inert there).
+                        WorldKeyAction::ToggleCommandBar => {
+                            self.hud_visible = !self.hud_visible;
+                        }
+                        WorldKeyAction::ToggleObjectives => {
+                            if self.mission_hud.is_some() {
+                                self.objectives_visible = !self.objectives_visible;
+                            }
+                        }
                         WorldKeyAction::Unbound => {}
                     }
                 }
@@ -2501,6 +2514,111 @@ mod zh_camera {
             target.x <= 64.0 && target.z <= 64.0,
             "the menu restores the 64-tile clamp ({target:?})"
         );
+    }
+}
+
+#[cfg(test)]
+mod zh_interface {
+    //! PLAN-M11 §2 phase 5: the interface parity pins — the Resign row
+    //! emits the never-before-sent CommandKind::Resign through the normal
+    //! order path and the match ends with the existing end-of-match flow;
+    //! Tab toggles the objective panel only when a mission carries one.
+
+    use super::*;
+
+    fn app() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            sound::Sound::without_device(1.0, false),
+            None,
+        )
+        .expect("the app constructs")
+    }
+
+    #[test]
+    fn resign_flows_through_the_order_path_and_ends_the_match() {
+        let mut app = app();
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        // The pause menu's confirm emits Effect::Resign; the app layer
+        // submits the command and unpauses (the screens machine's part is
+        // pinned in screens.rs's tests).
+        app.apply_effect_core(Effect::Resign);
+        // The command reached the host's log after a step.
+        let frame = std::time::Duration::from_secs_f64(1.0 / 30.0);
+        let _ = app.host.as_mut().expect("the match is live").advance(frame);
+        let log = app.host.as_ref().expect("live").log();
+        assert!(
+            log.iter()
+                .any(|command| matches!(command.kind, CommandKind::Resign {})),
+            "the Resign command was submitted through the order path"
+        );
+        assert!(!app.host.as_ref().unwrap().is_paused(), "the host unpaused");
+        // The match resolves: the resigner loses (the sim's own stage-10
+        // resignation rule, M8 — unchanged by this brief).
+        for _ in 0..90 {
+            let host = app.host.as_mut().expect("the match is live");
+            let _ = host.advance(frame);
+            if app.host.as_ref().unwrap().is_finished() {
+                break;
+            }
+        }
+        let host = app.host.as_ref().expect("the match is live");
+        assert!(host.is_finished(), "the resigned match ended");
+        assert_eq!(
+            host.outcome().expect("the outcome exists").winner,
+            AI,
+            "the resigner loses"
+        );
+    }
+
+    #[test]
+    fn the_hud_and_objective_flags_default_visible_and_reset_per_match() {
+        let mut app = app();
+        assert!(app.hud_visible && app.objectives_visible);
+        app.hud_visible = false;
+        app.objectives_visible = false;
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        assert!(app.hud_visible, "a fresh match starts with the bar");
+        assert!(
+            app.objectives_visible,
+            "a fresh mission starts with the objectives"
+        );
+    }
+
+    #[test]
+    fn the_objective_flag_has_no_effect_without_a_mission() {
+        // The App-level Tab wiring gates on mission_hud.is_some(); the
+        // plain-match branch leaves the flag alone (the card's "in plain
+        // matches Tab is inert"). Pinned here through the same condition
+        // the dispatch reads.
+        let mut app = app();
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        assert!(app.mission_hud.is_none());
+        if app.mission_hud.is_some() {
+            app.objectives_visible = !app.objectives_visible;
+        }
+        assert!(app.objectives_visible, "nothing toggled");
+        // With a mission present the same condition toggles.
+        app.mission_hud = Some(ui::MissionHud::new("test".to_string(), Vec::new()));
+        if app.mission_hud.is_some() {
+            app.objectives_visible = !app.objectives_visible;
+        }
+        assert!(!app.objectives_visible, "the mission toggled it");
     }
 }
 

@@ -199,6 +199,11 @@ pub enum ConfirmAction {
     Restart,
     /// Quit to the main menu (the existing `Effect::DropMatch` path).
     QuitToMenu,
+    /// PLAN-M11 §2 phase 5: resign the match — submits the existing,
+    /// never-before-sent `CommandKind::Resign` (the vocabulary gap
+    /// closes without touching the sim) and the match flows to the
+    /// existing end screen.
+    Resign,
 }
 
 /// The window focus / minimize signals the pure auto-pause decision reads
@@ -326,6 +331,10 @@ pub enum Effect {
     RestartMatch,
     /// Drop the host and return to the menu.
     DropMatch,
+    /// PLAN-M11 §2 phase 5: submit the human's `CommandKind::Resign` and
+    /// unpause — the sim's own match rules end the match and the existing
+    /// end-screen promotion takes over.
+    Resign,
     /// Pause the host (opening the pause menu).
     Pause,
     /// Unpause the host (leaving the pause menu).
@@ -436,6 +445,8 @@ pub enum ButtonId {
     Resume,
     /// Pause menu: restart the match.
     PauseRestart,
+    /// PLAN-M11 §2 phase 5: pause menu: resign the match (confirm-gated).
+    PauseResign,
     /// Pause menu: quit to the main menu.
     QuitToMenu,
     /// End screen: restart (rematch).
@@ -530,7 +541,8 @@ impl AppState {
             (Screen::PauseMenu, 1) => ButtonId::Settings,
             (Screen::PauseMenu, 2) => ButtonId::Controls,
             (Screen::PauseMenu, 3) => ButtonId::PauseRestart,
-            (Screen::PauseMenu, 4) => ButtonId::QuitToMenu,
+            (Screen::PauseMenu, 4) => ButtonId::PauseResign,
+            (Screen::PauseMenu, 5) => ButtonId::QuitToMenu,
             (Screen::EndScreen, 0) => ButtonId::Rematch,
             (Screen::EndScreen, 1) => ButtonId::ToMenu,
             (Screen::Controls { .. }, 0) => ButtonId::Back,
@@ -551,7 +563,7 @@ impl AppState {
             Screen::MissionPicker(_) => 4, // Mission/Seed/Start/Back
             Screen::Settings { .. } => 9, // 8 settings rows + Done
             Screen::InMatch => 0,
-            Screen::PauseMenu => 5,
+            Screen::PauseMenu => 6,
             Screen::EndScreen => 2,
             Screen::Controls { .. } => 1, // Back
             Screen::Confirm { .. } => 2,  // Cancel + Confirm
@@ -832,6 +844,14 @@ impl AppState {
                 };
                 (next, Effect::None)
             }
+            ButtonId::PauseResign => {
+                // PLAN-M11 §2 phase 5: Resign opens the confirm rung like
+                // every destructive row (a mis-press must never end a match).
+                next.screen = Screen::Confirm {
+                    action: ConfirmAction::Resign,
+                };
+                (next, Effect::None)
+            }
             ButtonId::QuitToMenu => {
                 next.screen = Screen::Confirm {
                     action: ConfirmAction::QuitToMenu,
@@ -868,6 +888,13 @@ impl AppState {
                         ConfirmAction::QuitToMenu => {
                             next.screen = Screen::MainMenu;
                             (next, Effect::DropMatch)
+                        }
+                        // PLAN-M11 §2 phase 5: the successor screen is
+                        // InMatch (unpaused) so the match's own end-screen
+                        // promotion fires when the Resign resolves.
+                        ConfirmAction::Resign => {
+                            next.screen = Screen::InMatch;
+                            (next, Effect::Resign)
                         }
                     },
                     // Confirm* outside a Confirm screen is unreachable
@@ -1211,14 +1238,55 @@ mod tests {
     #[test]
     fn pause_menu_quit_to_menu_opens_the_confirm_screen() {
         // A-009 task 2: Quit to Menu no longer drops the match directly — it
-        // opens the confirm rung first.
-        let (next, effect) = at(Screen::PauseMenu).activate_index(4, &ctx());
+        // opens the confirm rung first. (PLAN-M11 §2 phase 5 moved it to
+        // row 5; Resign took row 4.)
+        let (next, effect) = at(Screen::PauseMenu).activate_index(5, &ctx());
         assert_eq!(
             next.screen,
             Screen::Confirm {
                 action: ConfirmAction::QuitToMenu
             }
         );
+        assert_eq!(effect, Effect::None);
+    }
+
+    // ---- the Resign row (PLAN-M11 §2 phase 5) -------------------------
+
+    #[test]
+    fn pause_menu_has_six_rows_and_resign_is_row_four() {
+        let pause = at(Screen::PauseMenu);
+        assert_eq!(pause.button_count(), 6);
+        assert_eq!(pause.button_at(4), Some(ButtonId::PauseResign));
+        assert_eq!(pause.button_at(5), Some(ButtonId::QuitToMenu));
+    }
+
+    #[test]
+    fn pause_menu_resign_opens_the_confirm_screen() {
+        // PLAN-M11 §2 phase 5: Resign is confirm-gated like every
+        // destructive row — a mis-press must never end a match.
+        let (next, effect) = at(Screen::PauseMenu).activate_index(4, &ctx());
+        assert_eq!(
+            next.screen,
+            Screen::Confirm {
+                action: ConfirmAction::Resign
+            }
+        );
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn confirm_proceed_on_resign_emits_the_resign_effect_and_returns_in_match() {
+        // The successor screen is InMatch (unpaused) so the match's own
+        // end-screen promotion fires when the Resign resolves.
+        let confirm = at(Screen::Confirm {
+            action: ConfirmAction::Resign,
+        });
+        let (next, effect) = confirm.activate_index(1, &ctx()); // Confirm
+        assert_eq!(next.screen, Screen::InMatch);
+        assert_eq!(effect, Effect::Resign);
+        // Cancel still returns to the pause menu with no effect.
+        let (next, effect) = confirm.activate_index(0, &ctx());
+        assert_eq!(next.screen, Screen::PauseMenu);
         assert_eq!(effect, Effect::None);
     }
 
