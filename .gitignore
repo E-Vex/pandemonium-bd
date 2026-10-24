@@ -47,3 +47,6 @@
 .*.sw[a-z]
 .DS_Store
 Thumbs.db
+
+# Kilo agent worktrees / configs — local tooling, not part of the project:
+.kilo/

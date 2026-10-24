@@ -31,7 +31,7 @@ pub(super) struct EntityInstance {
 }
 
 pub(super) const ENTITY_SHADER_SRC: &str = r#"
-struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32 };
+struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32, map_size: vec2<f32> };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
 const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);

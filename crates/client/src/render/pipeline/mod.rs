@@ -65,6 +65,8 @@ impl WgpuRenderer {
                 view_projection: glam::Mat4::IDENTITY.to_cols_array_2d(),
                 eye: [0.0; 3],
                 time: 0.0,
+                map_size: [0.0; 2],
+                _pad: [0.0; 2],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -98,13 +100,44 @@ impl WgpuRenderer {
             push_constant_ranges: &[],
         });
 
+        // The pack-texture layout (filtering sampler + sampled 2D texture) bound
+        // at group 1 of the terrain pipeline: the terrain fragment samples it to
+        // modulate the vertex-colored terrain. A pack-less renderer still gets a
+        // valid 1x1 white bind group so this layout stays satisfied.
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pack texture layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let terrain_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("terrain layout"),
+            bind_group_layouts: &[&camera_layout, &texture_layout],
+            push_constant_ranges: &[],
+        });
+
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain shader"),
             source: wgpu::ShaderSource::Wgsl(TERRAIN_SHADER.into()),
         });
         let terrain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("terrain pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&terrain_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &terrain_shader,
                 entry_point: Some("vs_main"),
@@ -876,6 +909,41 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
+        let pack_texture = Self::load_pack_texture(&device, &queue, pack.as_ref());
+        // Bind the pack texture (or a 1x1 white fallback when no pack is
+        // loaded) at group 1 of the terrain pipeline so the terrain fragment
+        // can sample it. The fallback keeps the untextured look unchanged.
+        let texture_bind_group = {
+            // When there is no pack, a 1x1 white fallback texture is built here
+            // and kept alive (in `fallback`) for the rest of this block so the
+            // bind group can reference its view/sampler; with a pack it stays
+            // None and the pack texture's own view/sampler are used instead.
+            let fallback: Option<(wgpu::Texture, wgpu::TextureView, wgpu::Sampler)> =
+                if pack_texture.is_some() {
+                    None
+                } else {
+                    Some(Self::white_fallback_texture(&device, &queue))
+                };
+            let (view, sampler) = match (&pack_texture, fallback.as_ref()) {
+                (Some(t), _) => (&t.1, &t.2),
+                (None, Some(f)) => (&f.1, &f.2),
+                (None, None) => unreachable!("pack texture or fallback must exist"),
+            };
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("pack texture bind group"),
+                layout: &texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                ],
+            })
+        };
         Ok(Self {
             _window: window,
             surface,
@@ -912,7 +980,9 @@ impl WgpuRenderer {
             fog_texture_size,
             fog_map_size: (fog_map_size[0], fog_map_size[1]),
             kind_specs,
-            pack,
+            pack: pack.clone(),
+            texture: pack_texture,
+            texture_bind_group,
             decal_pipeline,
             quad_vertex_buf,
             quad_vertex_count: quad.len() as u32,
@@ -953,6 +1023,114 @@ impl WgpuRenderer {
                 view_formats: &[],
             })
             .create_view(&Default::default())
+    }
+
+    /// Loads the first available PNG texture from the pack (terrain or entity).
+    /// This is the natural iteration: basic PNG loaded from the asset pack.
+    fn load_pack_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pack: Option<&AssetPack>,
+    ) -> Option<(wgpu::Texture, wgpu::TextureView, wgpu::Sampler)> {
+        let pack = pack?;
+        // Try terrain first, then any entity asset.
+        let entry = pack.terrain.values().next()
+            .cloned()
+            .or_else(|| pack.entities.values().next().cloned())?;
+        // Load the PNG file.
+        let img = image::open(&entry.resolved).ok()?;
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let data = rgba.as_raw();
+        let texture_size = wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("pack texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            texture_size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("pack sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        Some((texture, view, sampler))
+    }
+
+    /// A 1x1 white RGBA texture so the terrain pipeline always has something
+    /// to sample when no asset pack is loaded, keeping the untextured look.
+    fn white_fallback_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("pack texture fallback"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255u8, 255, 255, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("pack fallback sampler"),
+            ..Default::default()
+        });
+        (texture, view, sampler)
     }
 
     /// Reconfigures the surface and depth target on window resize.
