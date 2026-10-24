@@ -193,6 +193,12 @@ pub(crate) struct App {
     /// order — queue: false; every later click queues). Reset when Alt is
     /// released (the gesture ends); nothing is sent on the release itself.
     pub(crate) waypoint_first_click_spent: bool,
+    /// PLAN-M11 §2 phase 4: the eight F1–F8 camera bookmarks
+    /// (per-match, in-memory; a slot is `None` until Ctrl+F sets it).
+    pub(crate) camera_bookmarks: Vec<Option<CameraBookmark>>,
+    /// PLAN-M11 §2 phase 4: whether the left button is currently held
+    /// over the minimap (the drag-pan: every mouse move refocuses).
+    pub(crate) minimap_drag: bool,
     /// M9.1: the last submitted order (its seq and the ground point it
     /// targeted) — rejection feedback pings there.
     pub(crate) last_order: Option<(u32, Vec2Fx)>,
@@ -276,6 +282,26 @@ pub(crate) struct App {
     /// recorder uses). Reset by every begin_match; empty at the menu.
     pub(crate) checkpoints: Vec<(u32, u64)>,
 }
+
+/// PLAN-M11 §2 phase 4: one camera bookmark — the full view state (the
+/// five-tuple: target x/z, yaw, pitch, distance). Per-match, in-memory
+/// only (ZH-parity behavior; persistence is a logged deferral).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CameraBookmark {
+    /// The orbit target's ground x.
+    pub(crate) x: f32,
+    /// The orbit target's ground z.
+    pub(crate) z: f32,
+    /// The yaw (radians).
+    pub(crate) yaw: f32,
+    /// The pitch (radians).
+    pub(crate) pitch: f32,
+    /// The orbit distance (tiles).
+    pub(crate) distance: f32,
+}
+
+/// How many camera bookmark slots exist (the F1–F8 row).
+pub(crate) const CAMERA_BOOKMARK_COUNT: usize = 8;
 
 /// Active structure placement (plan §11.3's build placement mode with a
 /// legality preview).
@@ -374,6 +400,8 @@ impl App {
             attack_move_armed: false,
             guard_armed: false,
             waypoint_first_click_spent: false,
+            camera_bookmarks: vec![None; CAMERA_BOOKMARK_COUNT],
+            minimap_drag: false,
             last_order: None,
             start_anchor,
             worker_kind: None,
@@ -835,6 +863,8 @@ impl App {
         self.attack_move_armed = false;
         self.guard_armed = false;
         self.waypoint_first_click_spent = false;
+        self.camera_bookmarks = vec![None; CAMERA_BOOKMARK_COUNT];
+        self.minimap_drag = false;
         self.last_order = None;
         self.drag_start = None;
         // A-011 (ADR-0201 Phase 1): the mission-scoped state resets with the

@@ -387,6 +387,52 @@ impl App {
         }
     }
 
+    /// PLAN-M11 §2 phase 4: Ctrl+F-slot — set the bookmark to the current
+    /// view (the five-tuple: target, yaw, pitch, distance).
+    pub(crate) fn set_camera_bookmark(&mut self, slot: usize) {
+        if slot >= self.camera_bookmarks.len() {
+            return;
+        }
+        let target = self.camera.target();
+        self.camera_bookmarks[slot] = Some(crate::app::CameraBookmark {
+            x: target.x,
+            z: target.z,
+            yaw: self.camera.yaw(),
+            pitch: self.camera.pitch(),
+            distance: self.camera.distance(),
+        });
+    }
+
+    /// PLAN-M11 §2 phase 4: F-slot — jump to the bookmark: restore all
+    /// five values through the camera's own clamp discipline (focus clamps
+    /// the target into the map and the distance into the engine range; the
+    /// user's zoom limits narrow it after — the same discipline every
+    /// other zoom mutation follows). An unset slot is inert.
+    pub(crate) fn jump_camera_bookmark(&mut self, slot: usize) {
+        let Some(mark) = self.camera_bookmarks.get(slot).copied().flatten() else {
+            return;
+        };
+        self.camera.focus(mark.x, mark.z, mark.distance);
+        self.camera.set_pitch(mark.pitch);
+        self.camera.rotate(mark.yaw - self.camera.yaw());
+        self.camera
+            .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
+    }
+
+    /// PLAN-M11 §2 phase 4: Numpad 5 — reset the camera to the defaults:
+    /// yaw 0, the default pitch, the opening distance; the orbit target
+    /// stays where it is (ZH's reset re-frames the view, not the position).
+    pub(crate) fn reset_camera(&mut self) {
+        let target = self.camera.target();
+        self.camera
+            .focus(target.x, target.z, crate::START_CAMERA_DISTANCE);
+        self.camera
+            .set_pitch(pandemonium_engine::camera::DEFAULT_PITCH);
+        self.camera.rotate(-self.camera.yaw());
+        self.camera
+            .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
+    }
+
     /// Whether an entity's projection lands inside the NDC viewport —
     /// PLAN-M11 §2's "on screen" (`camera.project` within ±1 on both
     /// axes; behind-camera projections are infinite and never count).

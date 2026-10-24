@@ -89,6 +89,13 @@ pub(crate) const MAX_PAN_FRAME_SECONDS: f32 = 0.05;
 /// old map-center default at 58 tiles out rendered the starting force as
 /// specks — "nothing appears on the screen").
 pub(crate) const START_CAMERA_DISTANCE: f32 = 18.0;
+/// PLAN-M11 §2 phase 1: the camera yaw rotation rate the held keys apply
+/// (the old Q/E semantics, now the numpad 4/6 and middle-drag domain).
+pub(crate) const ROTATE_RAD_PER_SEC: f32 = pandemonium_engine::camera::DEFAULT_ROTATE_RAD_PER_SEC;
+/// PLAN-M11 §2 phase 4: the numpad zoom keys' multiplicative rate per
+/// second (holding Numpad 8 for one second halves the distance; 2 doubles
+/// it back). Named and tuned once.
+pub(crate) const NUMPAD_ZOOM_FACTOR_PER_SEC: f32 = 0.5;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -546,6 +553,21 @@ impl ApplicationHandler for App {
                     self.menu_hover();
                     return;
                 }
+                // PLAN-M11 §2 phase 4: minimap drag-pan — while the left
+                // button is held over the minimap, every move refocuses the
+                // camera there (the press captured the flag; the release
+                // clears it below). Off-minimap moves end nothing — the
+                // camera simply holds its last focus until the release.
+                if self.minimap_drag {
+                    if let Some(renderer) = self.renderer.as_ref() {
+                        if let Some((world_x, world_z)) =
+                            renderer.minimap_hit(position.x as f32, position.y as f32)
+                        {
+                            let distance = self.camera.distance();
+                            self.camera.focus(world_x, world_z, distance);
+                        }
+                    }
+                }
                 // M10.2 (PLAN §1.2): right-drag map scrolling — once the
                 // right button's gesture crosses the command threshold, the
                 // ground point grabbed at the press follows the cursor
@@ -616,6 +638,11 @@ impl ApplicationHandler for App {
                     if (button, state) == (MouseButton::Left, ElementState::Pressed) {
                         self.menu_click(event_loop);
                     }
+                    // PLAN-M11 §2 phase 4: a minimap drag whose release
+                    // lands at a menu (Esc opened one mid-drag) ends here
+                    // — a stale flag would refocus on the next move after
+                    // the menu closes.
+                    self.minimap_drag = false;
                     return;
                 }
                 let Some(window) = &self.window else { return };
@@ -638,7 +665,10 @@ impl ApplicationHandler for App {
                             return;
                         }
                         // A minimap click moves the camera (plan §11.4's
-                        // click-to-move-camera).
+                        // click-to-move-camera) — and PLAN-M11 §2 phase 4
+                        // makes the press the first sample of a drag: every
+                        // mouse move while the button stays down refocuses
+                        // (the continuous drag-pan; the release ends it).
                         let minimap_hit = self
                             .renderer
                             .as_ref()
@@ -646,6 +676,7 @@ impl ApplicationHandler for App {
                         if let Some((world_x, world_z)) = minimap_hit {
                             let distance = self.camera.distance();
                             self.camera.focus(world_x, world_z, distance);
+                            self.minimap_drag = true;
                             return;
                         }
                         if self.placement.is_some() {
@@ -676,6 +707,10 @@ impl ApplicationHandler for App {
                         }
                     }
                     (MouseButton::Left, ElementState::Released) => {
+                        // PLAN-M11 §2 phase 4: the minimap drag ends with
+                        // the button (a minimap press never set a
+                        // drag_start, so this is the drag's only cleanup).
+                        self.minimap_drag = false;
                         if let Some(start) = self.drag_start.take() {
                             let start_ndc = Self::to_ndc(window, start.0, start.1);
                             let dragged = (start_ndc.0 - ndc.0).abs() > CLICK_SLOP
@@ -1125,6 +1160,32 @@ impl ApplicationHandler for App {
                                 self.issue_scatter();
                             }
                         }
+                        // PLAN-M11 §2 phase 4: the numpad camera keys (held
+                        // rotate/zoom feed the same held-key set the arrows
+                        // use; 5 resets) and the F1–F8 bookmark row.
+                        WorldKeyAction::CameraRotate { left, pressed } => {
+                            set_key(
+                                &mut self.keys,
+                                if left { "rot_left" } else { "rot_right" },
+                                pressed,
+                            );
+                        }
+                        WorldKeyAction::CameraZoom { in_, pressed } => {
+                            set_key(
+                                &mut self.keys,
+                                if in_ { "zoom_in" } else { "zoom_out" },
+                                pressed,
+                            );
+                        }
+                        WorldKeyAction::CameraReset => {
+                            self.reset_camera();
+                        }
+                        WorldKeyAction::BookmarkJump { slot } => {
+                            self.jump_camera_bookmark(slot);
+                        }
+                        WorldKeyAction::BookmarkSet { slot } => {
+                            self.set_camera_bookmark(slot);
+                        }
                         WorldKeyAction::Unbound => {}
                     }
                 }
@@ -1257,10 +1318,37 @@ impl ApplicationHandler for App {
         if dx != 0.0 || dz != 0.0 {
             self.camera.pan(dx, dz);
         }
-        // PLAN-M11 §4 phase 1: the Q/E held rotation is gone (Q and E are
-        // Zero Hour selection keys). Camera rotation survives through the
-        // kept middle-drag superset; the numpad rotate keys arrive in
-        // phase 4.
+        // PLAN-M11 §2 phase 4: the numpad rotate keys — the same
+        // continuous-rate semantics the Q/E rotation had (frame-delta
+        // scaled; a full turn takes ~6 s), direction-pinned by the tests
+        // at yaw 0 and 90. Numpad 6 orbits the way a rightward middle-drag
+        // does (positive yaw).
+        let mut yaw_delta = 0.0;
+        if self.keys.contains(&Key::Character("rot_left")) {
+            yaw_delta -= ROTATE_RAD_PER_SEC * dt;
+        }
+        if self.keys.contains(&Key::Character("rot_right")) {
+            yaw_delta += ROTATE_RAD_PER_SEC * dt;
+        }
+        if yaw_delta != 0.0 {
+            self.camera.rotate(yaw_delta);
+        }
+        // PLAN-M11 §2 phase 4: the numpad zoom keys — a continuous
+        // multiplicative rate (holding 8 for one second halves the
+        // distance), clamped to the engine range and the user's limits
+        // like every other zoom mutation.
+        let mut zoom_factor = 1.0;
+        if self.keys.contains(&Key::Character("zoom_in")) {
+            zoom_factor *= NUMPAD_ZOOM_FACTOR_PER_SEC.powf(dt);
+        }
+        if self.keys.contains(&Key::Character("zoom_out")) {
+            zoom_factor /= NUMPAD_ZOOM_FACTOR_PER_SEC.powf(dt);
+        }
+        if zoom_factor != 1.0 {
+            self.camera.zoom(zoom_factor);
+            self.camera
+                .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -2232,6 +2320,186 @@ mod zh_modes {
         panic!(
             "the two-point path did not resolve within the tick budget \
              (near A at {near_a_tick:?})"
+        );
+    }
+}
+
+#[cfg(test)]
+mod zh_camera {
+    //! PLAN-M11 §2 phase 4: the camera parity pins — the numpad rotate
+    //! and zoom directions (pinned at yaw 0 and 90, the M9.1 discipline),
+    //! the bookmark set/jump round-trip over the five-tuple, Numpad 5's
+    //! reset, and the map-bounds regression (a match on a non-default map
+    //! clamps to THAT map's extent; the menu's default map restores its
+    //! own).
+
+    use super::*;
+    use pandemonium_engine::RtsCamera;
+
+    fn app_with_match() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        let mut app = App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            sound::Sound::without_device(1.0, false),
+            None,
+        )
+        .expect("the app constructs");
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        app
+    }
+
+    #[test]
+    fn numpad_rotate_orbits_the_middle_drag_way_at_both_pinned_yaws() {
+        // Numpad 6 (rot_right) applies positive yaw — the same sign a
+        // rightward middle-drag applies; Numpad 4 mirrors it. Pinned at
+        // yaw 0 and 90 (presentation direction is invisible to hashes).
+        let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+        for yaw in [0.0f32, std::f32::consts::FRAC_PI_2] {
+            camera.rotate(yaw - camera.yaw());
+            let before = camera.yaw();
+            camera.rotate(ROTATE_RAD_PER_SEC * (1.0 / 60.0)); // "rot_right" one frame
+            assert!(camera.yaw() > before, "yaw {yaw}: Numpad 6 increases yaw");
+            camera.rotate(-2.0 * ROTATE_RAD_PER_SEC * (1.0 / 60.0)); // "rot_left" hard
+            assert!(camera.yaw() < before, "yaw {yaw}: Numpad 4 decreases yaw");
+        }
+    }
+
+    #[test]
+    fn numpad_zoom_moves_the_distance_and_respects_the_user_limits() {
+        let mut app = app_with_match();
+        let before = app.camera.distance();
+        // "zoom_in" one second: the distance halves (the named rate).
+        app.camera.zoom(NUMPAD_ZOOM_FACTOR_PER_SEC.powf(1.0));
+        assert!(
+            app.camera.distance() < before,
+            "Numpad 8 zooms in ({} -> {})",
+            before,
+            app.camera.distance()
+        );
+        // "zoom_out" two seconds: past the start, capped by the engine and
+        // the user's limits.
+        app.camera.zoom(1.0 / NUMPAD_ZOOM_FACTOR_PER_SEC.powf(2.0));
+        assert!(app.camera.distance() > before);
+        // The user clamp narrows like every other zoom mutation.
+        app.camera
+            .clamp_distance_to(app.settings.zoom_min, app.settings.zoom_max);
+        assert!(app.camera.distance() <= app.settings.zoom_max);
+    }
+
+    #[test]
+    fn bookmarks_round_trip_the_five_tuple() {
+        let mut app = app_with_match();
+        // Park the camera somewhere distinctive.
+        app.camera.focus(20.0, 30.0, 40.0);
+        app.camera.rotate(0.75);
+        app.camera.set_pitch(0.9);
+        let parked = (
+            app.camera.target().x,
+            app.camera.target().z,
+            app.camera.yaw(),
+            app.camera.pitch(),
+            app.camera.distance(),
+        );
+        app.set_camera_bookmark(3);
+        // Wander away.
+        app.camera.focus(5.0, 5.0, 15.0);
+        app.camera.rotate(-1.2);
+        app.camera.set_pitch(1.3);
+        // An unset slot is inert; slot 3 jumps home.
+        let before = app.camera.target();
+        app.jump_camera_bookmark(7);
+        assert_eq!(app.camera.target(), before, "an unset bookmark is inert");
+        app.jump_camera_bookmark(3);
+        let restored = (
+            app.camera.target().x,
+            app.camera.target().z,
+            app.camera.yaw(),
+            app.camera.pitch(),
+            app.camera.distance(),
+        );
+        let wants = [parked.0, parked.1, parked.2, parked.3, parked.4];
+        let gots = [restored.0, restored.1, restored.2, restored.3, restored.4];
+        for ((want, got), name) in wants
+            .iter()
+            .zip(gots.iter())
+            .zip(["x", "z", "yaw", "pitch", "distance"])
+        {
+            assert!(
+                (want - got).abs() < 1e-4,
+                "bookmark restores {name}: {want} vs {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn numpad_five_resets_the_view_not_the_position() {
+        let mut app = app_with_match();
+        app.camera.focus(21.0, 22.0, 40.0);
+        app.camera.rotate(1.1);
+        app.camera.set_pitch(1.3);
+        let target = app.camera.target();
+        app.reset_camera();
+        assert!(
+            (app.camera.yaw()).abs() < 1e-4,
+            "yaw resets to 0 ({})",
+            app.camera.yaw()
+        );
+        assert!(
+            (app.camera.pitch() - pandemonium_engine::camera::DEFAULT_PITCH).abs() < 1e-4,
+            "pitch resets to the default"
+        );
+        assert_eq!(app.camera.distance(), START_CAMERA_DISTANCE);
+        assert_eq!(
+            (app.camera.target().x, app.camera.target().z),
+            (target.x, target.z),
+            "the target stays"
+        );
+    }
+
+    #[test]
+    fn a_match_on_a_larger_map_clamps_to_that_maps_extent() {
+        // The PLAN-M11 §3 "known bug" regression: the camera's bounds
+        // must follow the live map (begin_match's set_bounds — the audit
+        // found the fix already on master; this test keeps it pinned).
+        // The tree's second map is 96x96 (the default is 64x64).
+        let mut app = app_with_match();
+        assert_eq!(app.bundle.map.width, 64, "the default map is 64 wide");
+        app.begin_match(MatchMode::PlayerVsAi, 7, 1);
+        assert_eq!(app.bundle.map.width, 96, "map index 1 is the 96-wide map");
+        // Pan hard into the far corner: the clamp uses THIS map's extent.
+        // (pan's +dz is forward = world -z at yaw 0, so -dz pushes z up.)
+        app.camera.pan(500.0, -500.0);
+        let target = app.camera.target();
+        assert!(
+            target.x <= 96.0 && target.z <= 96.0,
+            "the 96-wide map clamps at 96 ({target:?})"
+        );
+        assert!(
+            target.x > 64.0 && target.z > 64.0,
+            "the clamp is not the default map's 64 ({target:?})"
+        );
+        // Dropping the match restores the default map's bounds (the menu
+        // backdrop).
+        app.drop_match();
+        app.camera.pan(500.0, -500.0);
+        let target = app.camera.target();
+        assert!(
+            target.x <= 64.0 && target.z <= 64.0,
+            "the menu restores the 64-tile clamp ({target:?})"
         );
     }
 }

@@ -104,6 +104,18 @@ pub enum WorldKeyAction {
     CycleWorker { forward: bool },
     /// H — jump the camera to the own Command Center (base fallback).
     JumpToBase,
+    /// Numpad 4 / 6 — rotate the camera left / right (held; the same rate
+    /// semantics the Q/E rotation had).
+    CameraRotate { left: bool, pressed: bool },
+    /// Numpad 8 / 2 — zoom in / out (held, at the named step rate).
+    CameraZoom { in_: bool, pressed: bool },
+    /// Numpad 5 — reset the camera to the defaults (yaw 0, default pitch,
+    /// the opening distance; the target stays).
+    CameraReset,
+    /// F1–F8 — jump to camera bookmark `slot` (restores the five-tuple).
+    BookmarkJump { slot: usize },
+    /// Ctrl+F1–F8 — set camera bookmark `slot` to the current view.
+    BookmarkSet { slot: usize },
     /// The key is not bound in the world map (menus may still bind it).
     Unbound,
 }
@@ -136,6 +148,15 @@ pub fn world_key_action(code: KeyCode, mods: KeyMods, pressed: bool) -> WorldKey
             WorldKeyAction::ViewGroup { index }
         } else {
             WorldKeyAction::RecallGroup { index }
+        }
+    };
+    // PLAN-M11 §2 phase 4: Ctrl+F-slot sets the bookmark, plain F-slot
+    // jumps to it.
+    let bookmark = |slot: usize, mods: KeyMods| {
+        if mods.ctrl {
+            WorldKeyAction::BookmarkSet { slot }
+        } else {
+            WorldKeyAction::BookmarkJump { slot }
         }
     };
     match code {
@@ -176,10 +197,35 @@ pub fn world_key_action(code: KeyCode, mods: KeyMods, pressed: bool) -> WorldKey
         KeyCode::Digit8 if pressed => group(7),
         KeyCode::Digit9 if pressed => group(8),
         KeyCode::Digit0 if pressed => group(9),
+        // PLAN-M11 §2 phase 4: the numpad camera keys (held rotate and
+        // zoom; 5 resets) and the F1–F8 bookmark row (Ctrl sets, plain
+        // jumps). The tools stay on F10/F11.
+        KeyCode::Numpad4 => WorldKeyAction::CameraRotate {
+            left: true,
+            pressed,
+        },
+        KeyCode::Numpad6 => WorldKeyAction::CameraRotate {
+            left: false,
+            pressed,
+        },
+        KeyCode::Numpad8 => WorldKeyAction::CameraZoom { in_: true, pressed },
+        KeyCode::Numpad2 => WorldKeyAction::CameraZoom {
+            in_: false,
+            pressed,
+        },
+        KeyCode::Numpad5 if pressed => WorldKeyAction::CameraReset,
+        KeyCode::F1 if pressed => bookmark(0, mods),
+        KeyCode::F2 if pressed => bookmark(1, mods),
+        KeyCode::F3 if pressed => bookmark(2, mods),
+        KeyCode::F4 if pressed => bookmark(3, mods),
+        KeyCode::F5 if pressed => bookmark(4, mods),
+        KeyCode::F6 if pressed => bookmark(5, mods),
+        KeyCode::F7 if pressed => bookmark(6, mods),
+        KeyCode::F8 if pressed => bookmark(7, mods),
         // W is reserved for air selection (no air content yet), D is
-        // simply free, Ctrl+H is reserved for a hero. F3 and F8 are
-        // vacated for the bookmark row.
-        KeyCode::KeyW | KeyCode::KeyD | KeyCode::F3 | KeyCode::F8 => WorldKeyAction::Unbound,
+        // simply free, Ctrl+H is reserved for a hero. F3 and F8 are bound
+        // as bookmark slots 3 and 8 now (the tools live on F10/F11).
+        KeyCode::KeyW | KeyCode::KeyD => WorldKeyAction::Unbound,
         _ => WorldKeyAction::Unbound,
     }
 }
@@ -275,11 +321,12 @@ mod tests {
             world_key_action(KeyCode::F11, PLAIN, true),
             WorldKeyAction::BugReport
         );
-        // The F1–F8 row is vacated for the camera bookmarks (phase 4
-        // binds it); F3 and F8 do nothing today.
-        for code in [KeyCode::F3, KeyCode::F8] {
-            assert_eq!(world_key_action(code, PLAIN, true), WorldKeyAction::Unbound);
-        }
+        // The F1–F8 row belongs to the camera bookmarks now (phase 4
+        // bound it); the tools never return to it.
+        assert_ne!(
+            world_key_action(KeyCode::F3, PLAIN, true),
+            WorldKeyAction::Unbound
+        );
     }
 
     #[test]
@@ -406,6 +453,84 @@ mod tests {
             world_key_action(KeyCode::KeyH, CTRL, true),
             WorldKeyAction::Unbound,
             "Ctrl+H stays reserved for a hero (no hero content)"
+        );
+    }
+
+    // ---- the phase 4 rows (PLAN-M11 §4 phase 4's acceptance) ------------
+
+    #[test]
+    fn the_numpad_camera_keys_are_held_rotate_and_zoom_plus_reset() {
+        assert_eq!(
+            world_key_action(KeyCode::Numpad4, PLAIN, true),
+            WorldKeyAction::CameraRotate {
+                left: true,
+                pressed: true
+            }
+        );
+        assert_eq!(
+            world_key_action(KeyCode::Numpad6, PLAIN, true),
+            WorldKeyAction::CameraRotate {
+                left: false,
+                pressed: true
+            }
+        );
+        // The holds clear on release like the arrows (no stuck rotate).
+        assert_eq!(
+            world_key_action(KeyCode::Numpad4, PLAIN, false),
+            WorldKeyAction::CameraRotate {
+                left: true,
+                pressed: false
+            }
+        );
+        assert_eq!(
+            world_key_action(KeyCode::Numpad8, PLAIN, true),
+            WorldKeyAction::CameraZoom {
+                in_: true,
+                pressed: true
+            }
+        );
+        assert_eq!(
+            world_key_action(KeyCode::Numpad2, PLAIN, true),
+            WorldKeyAction::CameraZoom {
+                in_: false,
+                pressed: true
+            }
+        );
+        assert_eq!(
+            world_key_action(KeyCode::Numpad2, PLAIN, false),
+            WorldKeyAction::CameraZoom {
+                in_: false,
+                pressed: false
+            }
+        );
+        assert_eq!(
+            world_key_action(KeyCode::Numpad5, PLAIN, true),
+            WorldKeyAction::CameraReset
+        );
+    }
+
+    #[test]
+    fn f1_through_f8_are_camera_bookmarks_and_ctrl_sets_them() {
+        for (code, slot) in [(KeyCode::F1, 0), (KeyCode::F4, 3), (KeyCode::F8, 7)] {
+            assert_eq!(
+                world_key_action(code, PLAIN, true),
+                WorldKeyAction::BookmarkJump { slot },
+                "{code:?} jumps to bookmark {slot}"
+            );
+            assert_eq!(
+                world_key_action(code, CTRL, true),
+                WorldKeyAction::BookmarkSet { slot },
+                "Ctrl+{code:?} sets bookmark {slot}"
+            );
+        }
+        // The tools stayed on F10/F11 (phase 1's relocation holds).
+        assert_eq!(
+            world_key_action(KeyCode::F10, PLAIN, true),
+            WorldKeyAction::ToggleDebugOverlay
+        );
+        assert_eq!(
+            world_key_action(KeyCode::F11, PLAIN, true),
+            WorldKeyAction::BugReport
         );
     }
 
