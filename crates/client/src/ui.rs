@@ -210,7 +210,8 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
         // first-time-player bar, plan §13's A14 "unaided" goal).
         let lines = [
             "left-click / drag: select    right-click: move / attack / gather",
-            "A + click: attack-move    S: stop    arrows: scroll    Ctrl+wheel: pitch",
+            "A: attack-move   S: stop   G: guard   X: scatter   arrows: scroll",
+            "E/Q: select kind/combat   1-0: groups   F10: overlay   F11: report",
             "select a worker to build, a building to train and set rallies",
         ];
         for (index, line) in lines.iter().enumerate() {
