@@ -36,7 +36,7 @@ pub(super) struct EntityInstance {
 }
 
 pub(super) const ENTITY_SHADER_SRC: &str = r#"
-struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32 };
+struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32, map_size: vec2<f32> };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
 // The entity skin: one shared sampler + one texture per draw, bound at

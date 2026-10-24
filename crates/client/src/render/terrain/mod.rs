@@ -5,8 +5,10 @@ use bytemuck::{Pod, Zeroable};
 use pandemonium_engine::mesh::TerrainVertex;
 
 pub(super) const TERRAIN_SHADER: &str = r#"
-struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32 };
+struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32, map_size: vec2<f32> };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
+@group(1) @binding(0) var pack_sampler: sampler;
+@group(1) @binding(1) var pack_tex: texture_2d<f32>;
 
 const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
 // Distance haze: far ground dissolves toward the void color the frame is
@@ -110,6 +112,12 @@ fn value_noise(p: vec2<f32>) -> f32 {
         let exposed = smoothstep(0.20, 0.42, slope);
         color = mix(color, color * vec3<f32>(0.52, 0.53, 0.55), exposed * 0.5);
     }
+    // The pack texture (terrain/entity PNG) tiles over the whole map in
+    // world space and modulates the vertex-colored terrain. When no pack is
+    // loaded the bind group holds a 1x1 white texture, so this is a no-op.
+    let pack_uv = in.world / max(camera.map_size, vec2<f32>(1.0, 1.0));
+    let pack = textureSample(pack_tex, pack_sampler, pack_uv);
+    color = color * pack.rgb;
     return vec4<f32>(mix(color, HAZE_COLOR, haze(vec3<f32>(in.world.x, 0.0, in.world.y))), 1.0);
 }
 "#;

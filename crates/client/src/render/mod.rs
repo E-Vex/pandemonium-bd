@@ -51,6 +51,14 @@ struct CameraUniform {
     view_projection: [[f32; 4]; 4],
     eye: [f32; 3],
     time: f32,
+    /// Map extent in tiles; the terrain fragment divides world position by
+    /// this to get world-space UVs into the pack texture. Mirrors the WGSL
+    /// `CameraUniform` in both the terrain and entity shaders.
+    map_size: [f32; 2],
+    /// Trailing pad: WGSL std140 rounds the uniform struct up to its base
+    /// alignment (16), so this keeps the Rust layout (88 bytes) matching the
+    /// shader's expected 96 bytes.
+    _pad: [f32; 2],
 }
 
 /// What each kind renders as: the multi-part silhouette from the pure
@@ -187,6 +195,14 @@ pub struct WgpuRenderer {
     /// bundle by the client (the kind-name table + capability fallback in
     /// [`crate::silhouette`]) and handed to the renderer once at startup.
     kind_specs: Vec<KindShape>,
+    /// Loaded PNG texture (terrain/entity) — natural iteration: basic PNG loaded
+    /// from pack. Kept alive so the pack-texture bind group's view stays valid;
+    /// bound at group 1 of the terrain pipeline by [`WgpuRenderer::render`].
+    #[allow(dead_code)] // stored for the renderer follow-up that consumes pack assets
+    texture: Option<(wgpu::Texture, wgpu::TextureView, wgpu::Sampler)>,
+    /// Pack texture bound at group 1 of the terrain pipeline (the pack texture,
+    /// or a 1x1 white fallback when no pack is loaded).
+    texture_bind_group: wgpu::BindGroup,
     /// The loaded client-side asset pack, if any. Presentation-only — the
     /// renderer resolves an entity's kind id through this pack for asset
     /// references: loadable `.png` entries become uploaded entity skins at
@@ -571,6 +587,8 @@ impl Renderer for WgpuRenderer {
                 view_projection: frame.view_projection.to_cols_array_2d(),
                 eye: frame.eye.to_array(),
                 time,
+                map_size: [self.fog_map_size.0, self.fog_map_size.1],
+                _pad: [0.0; 2],
             }),
         );
         // The fog pass shares the camera; it also carries the map size for
@@ -684,6 +702,7 @@ impl Renderer for WgpuRenderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(1, &self.texture_bind_group, &[]);
             pass.set_pipeline(&self.terrain_pipeline);
             pass.set_vertex_buffer(0, self.terrain_vertex_buf.slice(..));
             pass.set_index_buffer(self.terrain_index_buf.slice(..), wgpu::IndexFormat::Uint32);
