@@ -1,23 +1,33 @@
-PANDEMONIUM — STANDING ORDERS v1.2 (from the PM; apply to every task until superseded)
+PANDEMONIUM — STANDING ORDERS v1.3 (from the PM; apply to every task until superseded)
 
-1. CHAIN OF COMMAND
-The PM assigns work via written briefs relayed by the owner. Do only what the brief says; never self-assign. You do not talk to the other agent. If you need something from their lane, list it under "Cross-lane requests" in your report and the PM will route it.
+1. CHAIN OF COMMAND AND ROSTER
+The team is four parties:
+- Owner — tests, merges, relays briefs.
+- PM/Claude — plans, writes briefs, reviews reports.
+- Programmer — executes briefs; both former lanes; ONE brief at a time.
+- Designer — makes art outside the repo, delivers via the Owner; art enters
+  repos only through a Programmer brief.
+The PM assigns work via written briefs relayed by the Owner. Do only what the
+brief says; never self-assign. The parties do not bypass the relay: if you
+need something from another lane, list it under "Cross-lane requests" in your
+report and the PM will route it.
 
 2. CONSTITUTION
 plan.md §2 (FD-1..FD-10), §5 (determinism), §18 (dangerous shortcuts) and §19 (invariants) stay absolute. Changing any of them needs an ADR approved by PM + owner; never silently.
 AMENDMENT: plan.md §0's "foundation, not a game / no content or polish" clause and §1.6 anti-goals were scoped to the Alpha. For any brief marked PRODUCT PHASE they are suspended: menus, audio, art, packaging and content are allowed. Architecture rules still bind that work (UI never mutates the sim, no floats in sim, content stays data).
 AI-Handoff.md and plan.md are edited only when a brief says so.
 
-3. LANES
-Agent A owns: crates/client, crates/engine, README.md, docs/product/, .github/workflows/release.yml.
-Agent B owns: crates/{fx,sim,sim_api,content,ai,replay,tools}, tests/, content/, .github/workflows/ci.yml and nightly.yml, docs/pm/.
-Do not edit the other lane, except a minimal mechanical change needed to keep the build green; flag it in the report.
+3. AREAS (v1.3 — one Programmer runs both; ONE brief at a time)
+client/presentation: crates/client, crates/engine, README.md, docs/product/, .github/workflows/release.yml.
+sim/content/tools: crates/{fx,sim,sim_api,content,ai,replay,tools}, tests/, content/, .github/workflows/ci.yml and nightly.yml, docs/pm/.
+Do not edit outside the brief's area, except a minimal mechanical change needed to keep the build green; flag it in the report.
+The Designer never edits content/. Art enters any repo only through a Programmer brief: the Designer delivers files to the Owner, the Owner hands them to the Programmer, the Programmer commits them.
 
 4. GIT
 Never push to master. Branches: a/<task-id>-<slug> or b/<task-id>-<slug>. One logical change per commit, existing message style. Rebase on latest master before reporting done. The owner merges. If you cannot push, say so and give the owner exact commands. Cargo.lock conflicts: take master's and regenerate with cargo; never hand-merge.
 
-5. REGISTER ID RANGES (prevents merge collisions)
-Agent A: assumptions A-100.., debt DEBT-100.., ADR 0100... Agent B: A-200.., DEBT-200.., ADR 0200.. Existing IDs untouched.
+5. REGISTER ID RANGES (prevents merge collisions; v1.3 — ranges follow the AREA, not the agent)
+client/presentation: assumptions A-100.., debt DEBT-100.., ADR 0100... sim/content/tools: A-200.., DEBT-200.., ADR 0200.. Existing IDs untouched.
 
 6. DEFINITION OF DONE
 Green in both profiles: cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace; cargo test --workspace --release. Plus every acceptance criterion in the brief, each with evidence (command + output, file path, or run URL). Registers updated. Report delivered in the format in section 10.
@@ -45,3 +55,8 @@ MP-6 Push early: the first push right after branch creation, then after every co
 MP-7 No edits to the other lane's files unless the brief names the file. Cross-lane needs go in report section 11.
 MP-8 The only required status check on master is `ci-required`.
 MP-9 (added in v1.2, from the B-002R loss) Every report is committed as `docs/pm/reports/<TASK-ID>.md` in the branch's final commit, so the repo is the record. A report that exists only in the chat or the agent's local state does not exist; the B-002R record had to be recovered from CI history because its report was never pushed.
+
+AMENDMENT HISTORY
+v1.1 — merge protocol added (section 11).
+v1.2 — MP-9: every report committed into the repo.
+v1.3 (A-014) — four-party roster (Owner, PM/Claude, Programmer, Designer); the Programmer runs both former lanes, ONE brief at a time; register ID ranges follow the area, not the agent; the Designer never edits content/.
