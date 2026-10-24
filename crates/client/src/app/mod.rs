@@ -111,8 +111,9 @@ pub(crate) struct App {
     pub(crate) renderer: Option<WgpuRenderer>,
     pub(crate) window: Option<Arc<Window>>,
     pub(crate) selection: Vec<EntityId>,
-    /// M8 (plan §11.3): control groups 1-9. Ctrl+digit assigns the current
-    /// selection to a group; digit alone recalls it.
+    /// M8 (plan §11.3) + PLAN-M11 §2: control groups 1-10 (Digit0 is the
+    /// tenth). Ctrl+digit assigns the current selection; digit alone
+    /// recalls it; Alt+digit views it without selecting.
     pub(crate) control_groups: Vec<Vec<EntityId>>,
     pub(crate) drag_start: Option<(f64, f64)>,
     pub(crate) drag_current: Option<(f64, f64)>,
@@ -141,6 +142,27 @@ pub(crate) struct App {
     /// M10.2 (PLAN §1.3): the last control-group digit press and when it
     /// landed — a double tap recalls the group and centers the camera on it.
     pub(crate) last_digit_press: Option<(usize, Instant)>,
+    /// PLAN-M11 §2 (phase 2): the E key's double-tap clock — two presses
+    /// inside DOUBLE_TAP_MS widen the same-kind select to the whole map.
+    pub(crate) last_e_press: Option<Instant>,
+    /// PLAN-M11 §2 (phase 2): the Q key's double-tap clock (same window).
+    pub(crate) last_q_press: Option<Instant>,
+    /// PLAN-M11 §2 (phase 2): the kind of the most recently *clicked*
+    /// entity — E's fallback kind for an empty or mixed selection. `None`
+    /// until the first pick (E is inert then; the card says so).
+    pub(crate) last_clicked_kind: Option<KindId>,
+    /// PLAN-M11 §2 (phase 2): the content's combat kinds (an Attack
+    /// capability), computed once per match — Q's filter. Never per frame.
+    pub(crate) combat_kinds: BTreeSet<KindId>,
+    /// PLAN-M11 §2 (phase 2): the content's unit kinds (a Move
+    /// capability — anything without it is a structure or a node),
+    /// computed once per match. Ctrl+Left/Right cycles these.
+    pub(crate) unit_kinds: BTreeSet<KindId>,
+    /// PLAN-M11 §2 (phase 2): the content's command-center kind (the
+    /// engine plan's own rule — the first producer whose producibles
+    /// include no attacking kind). H's target; `None` when the faction
+    /// has none (H falls back to the base anchor).
+    pub(crate) command_center_kind: Option<KindId>,
     /// M10.2 (PLAN §1.3): the last death's ground position (the Space
     /// jump's preferred target, else the start anchor — "jump to the last
     /// event or base").
@@ -325,6 +347,12 @@ impl App {
             middle_last: None,
             last_left_click: None,
             last_digit_press: None,
+            last_e_press: None,
+            last_q_press: None,
+            last_clicked_kind: None,
+            combat_kinds: BTreeSet::new(),
+            unit_kinds: BTreeSet::new(),
+            command_center_kind: None,
             last_event_ground: None,
             crosshair_cursor: false,
             // DEBT-014 repaid (PLAN-M10.2 §3.4): the toggle now comes from
@@ -547,6 +575,12 @@ impl App {
             ));
         self.worker_kind = Some(plan.worker);
         self.node_kind = plan.node;
+        // PLAN-M11 §2 (phase 2): the per-match selection vocabulary — Q's
+        // combat kinds and H's command-center kind, both derived from the
+        // bundle once (never per frame).
+        self.combat_kinds = combat_kinds(&self.bundle);
+        self.unit_kinds = unit_kinds(&self.bundle);
+        self.command_center_kind = command_center_kind(&self.bundle);
         self.reset_match_state();
         // The mission-scoped state: the restart source (the tree index) and
         // the presentation tracker (the HUD lines and end-screen text read
@@ -676,6 +710,12 @@ impl App {
             ));
         self.worker_kind = Some(plan.worker);
         self.node_kind = plan.node;
+        // PLAN-M11 §2 (phase 2): the per-match selection vocabulary — Q's
+        // combat kinds and H's command-center kind, both derived from the
+        // bundle once (never per frame).
+        self.combat_kinds = combat_kinds(&self.bundle);
+        self.unit_kinds = unit_kinds(&self.bundle);
+        self.command_center_kind = command_center_kind(&self.bundle);
         self.reset_match_state();
         // PLAN-M10.2 §3.4: the debug overlay's default at match start (F10
         // stays the live toggle), and the user zoom limits re-clamp the
@@ -774,6 +814,9 @@ impl App {
         self.middle_last = None;
         self.last_left_click = None;
         self.last_digit_press = None;
+        self.last_e_press = None;
+        self.last_q_press = None;
+        self.last_clicked_kind = None;
         self.last_event_ground = None;
         self.crosshair_cursor = false;
         self.attack_move_armed = false;
@@ -900,6 +943,21 @@ impl App {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             } else {
                 window.set_fullscreen(None);
+            }
+        }
+    }
+
+    /// PLAN-M11 §2 (phase 2): one AttackHit's radar contribution — the
+    /// Space jump's tracked ground becomes the victim's position when the
+    /// victim is an own entity (an attack on the player's forces is the
+    /// event a player most needs to see; attacks on enemies are not radar
+    /// events). The victim's ground position comes from `last_seen` (own
+    /// entities are always in the fog-filtered view). Called per event, in
+    /// arrival order, so the most recent radar event wins.
+    pub(crate) fn note_attack_radar(&mut self, target: EntityId) {
+        if let Some(&(pos, _, owner)) = self.last_seen.get(&target) {
+            if owner == HUMAN {
+                self.last_event_ground = Some((pos.x, pos.z));
             }
         }
     }
@@ -1394,11 +1452,18 @@ impl App {
                 }
                 Event::Died { entity } => {
                     if let Some(&(pos, kind, owner)) = self.last_seen.get(entity) {
-                        // M10.2 (PLAN §1.3): the most recent death is the
-                        // Space jump's "last event".
+                        // M10.2 (PLAN §1.3) + PLAN-M11 §2: the most recent
+                        // death is a radar event for the Space jump (own
+                        // and visible enemy deaths, as before).
                         self.last_event_ground = Some((pos.x, pos.z));
                         self.feedback.death(pos, kind, owner, self.frames_presented);
                     }
+                }
+                // PLAN-M11 §2 (phase 2): an attack landed on an own entity
+                // is a radar event too — the same tracked ground the deaths
+                // feed, in arrival order (chronological, last wins).
+                Event::AttackHit { target, .. } => {
+                    self.note_attack_radar(*target);
                 }
                 // A-011 (ADR-0201 §2, FD-9): the mission HUD's tracker
                 // consumes the objective's resolution after the step, from
@@ -2116,6 +2181,65 @@ pub(crate) fn git_sha() -> &'static str {
 /// names come from the loaded bundle and never feed back into content.
 pub(crate) fn kind_names(bundle: &ContentBundle) -> Vec<String> {
     bundle.entities.iter().map(|def| def.id.clone()).collect()
+}
+
+/// PLAN-M11 §2 (phase 2): the content's combat kinds — every kind whose
+/// definition carries an Attack capability. Q's filter, computed once per
+/// match over the bundle (the same capability shape the engine's plan
+/// resolution and `kind_shapes` follow — never name-matched).
+pub(crate) fn combat_kinds(bundle: &ContentBundle) -> BTreeSet<KindId> {
+    bundle
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| def.capability("Attack").is_some())
+        .map(|(index, _)| KindId(index as u32))
+        .collect()
+}
+
+/// PLAN-M11 §2 (phase 2): the content's unit kinds — every kind whose
+/// definition carries a Move capability (workers, soldiers; structures
+/// and nodes have footprints instead). The Ctrl+Left/Right cycle's
+/// candidate filter, computed once per match.
+pub(crate) fn unit_kinds(bundle: &ContentBundle) -> BTreeSet<KindId> {
+    bundle
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, def)| def.capability("Move").is_some())
+        .map(|(index, _)| KindId(index as u32))
+        .collect()
+}
+
+/// PLAN-M11 §2 (phase 2): the command-center kind through the engine
+/// plan's own rule (`alpha_plan`'s producer scan — the first producer
+/// whose producibles include no attacking kind), kept here so H reads a
+/// `None` when the faction has no such producer instead of the plan's
+/// `KindId(0)` fallback (kind 0 is the barracks on this content — a
+/// wrong jump target). Capability-shaped, never name-matched.
+pub(crate) fn command_center_kind(bundle: &ContentBundle) -> Option<KindId> {
+    let entities = &bundle.entities;
+    let kind_of = |id: &str| {
+        entities
+            .iter()
+            .position(|entity| entity.id == id)
+            .map(|index| KindId(index as u32))
+    };
+    let attacks = |kind: KindId| {
+        entities
+            .get(kind.0 as usize)
+            .is_some_and(|def| def.capability("Attack").is_some())
+    };
+    for (producer, producibles) in &bundle.faction().production {
+        let Some(producer_kind) = kind_of(producer) else {
+            continue;
+        };
+        let kinds: Vec<KindId> = producibles.iter().filter_map(|p| kind_of(p)).collect();
+        if !kinds.iter().any(|kind| attacks(*kind)) {
+            return Some(producer_kind);
+        }
+    }
+    None
 }
 
 /// Derives one multi-part silhouette per kind from the loaded bundle

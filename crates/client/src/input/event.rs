@@ -224,11 +224,129 @@ impl App {
     }
 
     /// M8 (plan §11.3): assign the current selection to control group `index`
-    /// (0-8 mapping to display 1-9).
+    /// (0-9 mapping to display 1-10 — PLAN-M11 §2 extended the groups to ten).
     pub(crate) fn assign_control_group(&mut self, index: usize) {
         if index < self.control_groups.len() {
             self.control_groups[index] = self.selection.clone();
         }
+    }
+
+    /// PLAN-M11 §2 (phase 2): Alt+digit — view the group. The camera jumps
+    /// to the group's live center (distance kept); the selection is NOT
+    /// touched (ZH's view-without-selecting). A group with no live member
+    /// is inert.
+    pub(crate) fn view_control_group(&mut self, index: usize) {
+        if index >= self.control_groups.len() {
+            return;
+        }
+        if let Some((x, z)) =
+            super::group_center(&self.view_snapshot().entities, &self.control_groups[index])
+        {
+            let distance = self.camera.distance();
+            self.camera.focus(x, z, distance);
+        }
+    }
+
+    /// Whether an entity's projection lands inside the NDC viewport —
+    /// PLAN-M11 §2's "on screen" (`camera.project` within ±1 on both
+    /// axes; behind-camera projections are infinite and never count).
+    pub(crate) fn is_on_screen(&self, entity: &pandemonium_engine::RenderEntity) -> bool {
+        let projected = self.camera.project(entity.pos);
+        projected.x.is_finite()
+            && projected.y.is_finite()
+            && projected.x.abs() <= 1.0
+            && projected.y.abs() <= 1.0
+    }
+
+    /// PLAN-M11 §2 (phase 2): E — select the same-kind units on screen
+    /// (the whole visible map on a double tap). The kind comes from a
+    /// uniform selection, else the most recently clicked member's kind
+    /// (nothing ever clicked: inert). An empty result is inert too (E
+    /// must never drop the selection to nothing). `add` (shift held)
+    /// unions with the current selection instead of replacing it.
+    pub(crate) fn select_same_kind(&mut self, whole_map: bool, add: bool) {
+        let entities = self.view_snapshot().entities;
+        let Some(kind) =
+            super::same_kind_key_kind(&entities, &self.selection, self.last_clicked_kind)
+        else {
+            return;
+        };
+        let Some(picked) = super::same_kind_key_selection(
+            &entities,
+            kind,
+            |entity| self.is_on_screen(entity),
+            whole_map,
+        ) else {
+            return;
+        };
+        let next = if add {
+            super::union_selection(&self.selection, &picked)
+        } else {
+            picked
+        };
+        self.set_selection(next);
+    }
+
+    /// PLAN-M11 §2 (phase 2): Q — select every own combat unit on screen
+    /// (the whole visible map on a double tap). Replaces the selection;
+    /// `add` (shift held) unions instead. An empty result is inert.
+    pub(crate) fn select_combat(&mut self, whole_map: bool, add: bool) {
+        let entities = self.view_snapshot().entities;
+        let combat = &self.combat_kinds;
+        let Some(picked) = super::combat_key_selection(
+            &entities,
+            |entity| combat.contains(&entity.kind),
+            |entity| self.is_on_screen(entity),
+            whole_map,
+        ) else {
+            return;
+        };
+        let next = if add {
+            super::union_selection(&self.selection, &picked)
+        } else {
+            picked
+        };
+        self.set_selection(next);
+    }
+
+    /// PLAN-M11 §2 (phase 2): Ctrl+Left/Right cycles the selection
+    /// through own units in ascending-id order (wrapping); Ctrl+Up/Down
+    /// restricts the cycle to the worker kind. Nothing selected selects
+    /// the lowest-id candidate. Inert when no candidate exists.
+    pub(crate) fn cycle_selection(&mut self, workers_only: bool, forward: bool) {
+        let entities = self.view_snapshot().entities;
+        // The candidate filter: every own unit, or just the worker kind.
+        let worker_kind = self.worker_kind;
+        let units = &self.unit_kinds;
+        let next = if workers_only {
+            super::cycled_selection(
+                &entities,
+                &self.selection,
+                |entity| Some(entity.kind) == worker_kind,
+                forward,
+            )
+        } else {
+            super::cycled_selection(
+                &entities,
+                &self.selection,
+                |entity| units.contains(&entity.kind),
+                forward,
+            )
+        };
+        if let Some(next) = next {
+            self.set_selection(next);
+        }
+    }
+
+    /// PLAN-M11 §2 (phase 2): H — jump the camera (distance kept) to the
+    /// own Command Center; the base anchor is the fallback when the
+    /// faction has no CC or none is visible.
+    pub(crate) fn jump_to_base(&mut self) {
+        let entities = self.view_snapshot().entities;
+        let (x, z) = super::command_center_position(&entities, self.command_center_kind)
+            .unwrap_or(self.start_anchor);
+        let distance = self.camera.distance();
+        self.camera.focus(x, z, distance);
     }
 
     /// Runs a bottom-bar button press (the input pass hit-tested it). Every

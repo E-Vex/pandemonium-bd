@@ -71,8 +71,9 @@ pub(crate) const AI: PlayerId = PlayerId(1);
 pub(crate) const CLICK_SLOP: f32 = 0.01;
 /// Heightmap units -> tiles of vertical displacement (display-only, ADR-0001).
 pub(crate) const HEIGHT_SCALE: f32 = 0.02;
-/// How many control groups the client tracks (plan §11.3: control groups).
-pub(crate) const CONTROL_GROUP_COUNT: usize = 9;
+/// How many control groups the client tracks (plan §11.3; PLAN-M11 §2
+/// extended them to ten — Digit0 is group 10).
+pub(crate) const CONTROL_GROUP_COUNT: usize = 10;
 /// Camera pan speed comes from the settings file now (PLAN-M10.2 §3.4:
 /// `pan_speed`, default [`config::DEFAULT_PAN_SPEED`]) — keys and the edge
 /// band share it, scaled by the real frame delta so pan speed does not
@@ -693,10 +694,26 @@ impl ApplicationHandler for App {
                                 });
                                 self.last_left_click = Some(now);
                                 if let Some(picked) = self.pick_own_entity(ndc) {
+                                    // PLAN-M11 §2 (phase 2): record the most
+                                    // recently clicked member's kind — E's
+                                    // fallback for an empty or mixed selection.
+                                    if let Some(entity) = self
+                                        .view_snapshot()
+                                        .entities
+                                        .iter()
+                                        .find(|entity| entity.id == picked)
+                                    {
+                                        self.last_clicked_kind = Some(entity.kind);
+                                    }
                                     if double {
+                                        // PLAN-M11 §2: the double-click set is
+                                        // the same-kind units ON SCREEN (the ZH
+                                        // target; the old whole-visible-map form
+                                        // is the audit delta this fixes).
                                         let same_kind = input::same_kind_selection(
                                             &self.view_snapshot().entities,
                                             picked,
+                                            |entity| self.is_on_screen(entity),
                                         )
                                         .unwrap_or_default();
                                         let next = if shift {
@@ -706,20 +723,27 @@ impl ApplicationHandler for App {
                                         };
                                         self.set_selection(next);
                                     } else if shift {
-                                        // Shift+click toggles membership.
+                                        // PLAN-M11 §5.2's reversal:
+                                        // shift+click is add-only — the picked
+                                        // id joins the selection, never removes
+                                        // (removal is a re-select, the card
+                                        // says so).
                                         let next =
                                             input::shift_click_selection(&self.selection, picked);
                                         self.set_selection(next);
                                     } else {
                                         self.set_selection(vec![picked]);
                                     }
+                                } else {
+                                    // PLAN-M11 §5.1 — the A-091 reversal: a
+                                    // click on empty ground deselects (the Zero
+                                    // Hour rule). Left never orders; the
+                                    // selection gate cues the change only when
+                                    // the membership actually changes (an empty
+                                    // re-click is silent). Esc's ladder keeps
+                                    // its own ClearSelection rung.
+                                    self.set_selection(Vec::new());
                                 }
-                                // else: a click on empty ground. PLAN §1.1:
-                                // "Click on empty ground with a selection
-                                // and nothing else = nothing happens" —
-                                // never an order (left never orders), and
-                                // not even a deselect; Escape clears the
-                                // selection.
                             }
                         }
                     }
@@ -895,8 +919,12 @@ impl ApplicationHandler for App {
                     // only stops), and the tools moved off the F1–F8 row
                     // (debug overlay F10, bug report F11 — the bookmark
                     // row's future home stays clear).
-                    use input::actions::{world_key_action, WorldKeyAction};
-                    match world_key_action(code, self.modifiers.control_key(), pressed) {
+                    use input::actions::{world_key_action, KeyMods, WorldKeyAction};
+                    let mods = KeyMods {
+                        ctrl: self.modifiers.control_key(),
+                        alt: self.modifiers.alt_key(),
+                    };
+                    match world_key_action(code, mods, pressed) {
                         WorldKeyAction::CameraHold { dir, pressed } => {
                             set_key(&mut self.keys, dir.tag(), pressed);
                         }
@@ -931,40 +959,47 @@ impl ApplicationHandler for App {
                                 self.collect_checkpoints(&outcome);
                             }
                         }
-                        // M8 (plan §11.3): control groups. Ctrl+digit
-                        // assigns the current selection; digit alone
-                        // recalls. M10.2 (PLAN §1.3): a double tap of the
-                        // same digit within DOUBLE_TAP_MS recalls AND
-                        // centers the camera on the group's live members.
-                        WorldKeyAction::ControlGroup { index } => {
-                            if self.modifiers.control_key() {
-                                self.assign_control_group(index);
-                                // An assign breaks the double-tap chain —
-                                // the next double tap must be two recalls.
-                                self.last_digit_press = None;
-                            } else {
-                                let now = Instant::now();
-                                let double_tap =
-                                    self.last_digit_press.is_some_and(|(last_index, then)| {
-                                        last_index == index
-                                            && input::is_double_tap(
-                                                now.duration_since(then).as_millis() as u64,
-                                            )
-                                    });
-                                self.recall_control_group(index);
-                                if double_tap {
-                                    // Center the camera on the group's
-                                    // live members (dead ids weigh nothing).
-                                    if let Some((x, z)) = input::group_center(
-                                        &self.view_snapshot().entities,
-                                        &self.control_groups[index],
-                                    ) {
-                                        let distance = self.camera.distance();
-                                        self.camera.focus(x, z, distance);
-                                    }
+                        // M8 (plan §11.3) + PLAN-M11 §2: the control
+                        // groups — ten of them (Digit0 is group 10). The
+                        // table already split the modifier duties:
+                        // Ctrl assigns, Alt views, plain recalls (a double
+                        // tap of the same digit within DOUBLE_TAP_MS
+                        // recalls AND centers the camera on the group's
+                        // live members).
+                        WorldKeyAction::AssignGroup { index } => {
+                            self.assign_control_group(index);
+                            // An assign breaks the double-tap chain — the
+                            // next double tap must be two recalls.
+                            self.last_digit_press = None;
+                        }
+                        WorldKeyAction::RecallGroup { index } => {
+                            let now = Instant::now();
+                            let double_tap =
+                                self.last_digit_press.is_some_and(|(last_index, then)| {
+                                    last_index == index
+                                        && input::is_double_tap(
+                                            now.duration_since(then).as_millis() as u64,
+                                        )
+                                });
+                            self.recall_control_group(index);
+                            if double_tap {
+                                // Center the camera on the group's
+                                // live members (dead ids weigh nothing).
+                                if let Some((x, z)) = input::group_center(
+                                    &self.view_snapshot().entities,
+                                    &self.control_groups[index],
+                                ) {
+                                    let distance = self.camera.distance();
+                                    self.camera.focus(x, z, distance);
                                 }
-                                self.last_digit_press = Some((index, now));
                             }
+                            self.last_digit_press = Some((index, now));
+                        }
+                        // PLAN-M11 §2: Alt+digit views the group — the
+                        // camera jumps to the live center, the selection
+                        // is not touched.
+                        WorldKeyAction::ViewGroup { index } => {
+                            self.view_control_group(index);
                         }
                         // M8 (plan §9.7, A15): 'R' restarts the match when
                         // it has ended. The host's outcome surfaces through
@@ -1020,6 +1055,43 @@ impl ApplicationHandler for App {
                                 input::jump_target(self.last_event_ground, self.start_anchor);
                             let distance = self.camera.distance();
                             self.camera.focus(x, z, distance);
+                        }
+                        // PLAN-M11 §2 (phase 2): E — same-kind selection.
+                        // A double tap inside the shared 350 ms window
+                        // widens the set from on-screen to the whole
+                        // visible map; shift unions instead of replacing.
+                        WorldKeyAction::SelectSameKind => {
+                            let now = Instant::now();
+                            let double_tap = self.last_e_press.is_some_and(|then| {
+                                input::is_double_tap(now.duration_since(then).as_millis() as u64)
+                            });
+                            self.select_same_kind(double_tap, self.modifiers.shift_key());
+                            self.last_e_press = Some(now);
+                        }
+                        // PLAN-M11 §2 (phase 2): Q — every own combat unit
+                        // on screen (double tap: the whole visible map).
+                        WorldKeyAction::SelectCombat => {
+                            let now = Instant::now();
+                            let double_tap = self.last_q_press.is_some_and(|then| {
+                                input::is_double_tap(now.duration_since(then).as_millis() as u64)
+                            });
+                            self.select_combat(double_tap, self.modifiers.shift_key());
+                            self.last_q_press = Some(now);
+                        }
+                        // PLAN-M11 §2 (phase 2): Ctrl+arrow cycling — one
+                        // unit at a time, ascending id, wrapping; the
+                        // worker cycle keeps Ctrl+Up/Down. (The table
+                        // guaranteed the press never pans the camera.)
+                        WorldKeyAction::CycleUnit { forward } => {
+                            self.cycle_selection(false, forward);
+                        }
+                        WorldKeyAction::CycleWorker { forward } => {
+                            self.cycle_selection(true, forward);
+                        }
+                        // PLAN-M11 §2 (phase 2): H — the camera jumps to the
+                        // own Command Center (base anchor fallback).
+                        WorldKeyAction::JumpToBase => {
+                            self.jump_to_base();
                         }
                         WorldKeyAction::Unbound => {}
                     }
@@ -1485,6 +1557,354 @@ mod mode_pins {
         assert_ne!(
             player_vs_ai.0, sandbox.0,
             "sandbox differs from Player vs AI"
+        );
+    }
+}
+
+#[cfg(test)]
+mod zh_selection {
+    //! PLAN-M11 §2 (phase 2): the Zero Hour selection parity pins at the App
+    //! level, over the repo content and a live host — the ten control
+    //! groups' Digit0 parity, Alt+digit's view-without-selecting, E/Q over
+    //! the real view, the Ctrl+arrow cycle, and H's command-center jump.
+    //! The pure halves live in `input/mod.rs`'s tests; these pin the wiring.
+
+    use super::*;
+    use pandemonium_sim_api::{EntityView, KindId, MoveState, Snapshot};
+
+    /// An app over the repo content with the null audio arm (the same
+    /// shape `audio_wiring` uses — a private helper cannot cross modules).
+    fn app() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            sound::Sound::without_device(1.0, false),
+            None,
+        )
+        .expect("the app constructs")
+    }
+
+    /// An app with a live Player-vs-AI match and one pushed view (the same
+    /// fog-filtered push `draw` performs — the selection keys read it).
+    fn app_with_match() -> App {
+        let mut app = app();
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        let view = app.host().player_view(HUMAN);
+        app.view_interp.push(Snapshot {
+            tick: view.tick,
+            entities: view.entities.clone(),
+        });
+        app
+    }
+
+    /// The own entities of a kind in the live view (the whole-visible-map
+    /// set a double tap should produce).
+    fn own_of_kind(app: &App, kind: KindId) -> Vec<EntityId> {
+        app.view_snapshot()
+            .entities
+            .iter()
+            .filter(|entity| entity.owner == HUMAN && entity.kind == kind)
+            .map(|entity| entity.id)
+            .collect()
+    }
+
+    #[test]
+    fn the_content_resolves_a_command_center_kind_for_h() {
+        // The engine-plan rule over the real content: the command center
+        // is the producer whose producibles include no attacking kind, and
+        // it is NOT kind 0 (the barracks — the plan's fallback trap).
+        let mut app = app();
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        let cc = app
+            .command_center_kind
+            .expect("the alpha content has a command center");
+        let names = app::kind_names(&app.bundle);
+        assert_eq!(names[cc.0 as usize], "command_center");
+        assert_ne!(cc, KindId(0));
+        // Q's combat vocabulary resolves over the same content.
+        let combat_names: Vec<&str> = app
+            .combat_kinds
+            .iter()
+            .map(|kind| names[kind.0 as usize].as_str())
+            .collect();
+        for expected in ["guardian", "raider", "rifleman", "turret"] {
+            assert!(
+                combat_names.contains(&expected),
+                "combat kinds miss {expected}: {combat_names:?}"
+            );
+        }
+        assert!(
+            !combat_names.contains(&"worker"),
+            "workers are not combat units"
+        );
+    }
+
+    #[test]
+    fn group_ten_assigns_recalls_and_centers_like_the_other_nine() {
+        // PLAN-M11 §2: Digit0 is group 10 — full parity with 1-9.
+        let mut app = app_with_match();
+        let units = own_of_kind(&app, app.command_center_kind.unwrap());
+        // The starting force: at least one own unit to assign.
+        let some_units: Vec<EntityId> = app
+            .view_snapshot()
+            .entities
+            .iter()
+            .filter(|entity| entity.owner == HUMAN)
+            .map(|entity| entity.id)
+            .take(3)
+            .collect();
+        assert_eq!(app.control_groups.len(), 10, "ten groups exist");
+        app.selection = some_units.clone();
+        app.assign_control_group(9);
+        assert_eq!(app.control_groups[9], some_units, "Ctrl+0 assigns");
+        app.selection = Vec::new();
+        app.recall_control_group(9);
+        assert_eq!(app.selection, some_units, "0 recalls");
+        // The double-tap center: the camera lands on the group's live
+        // center (group_center over the same view).
+        let center = input::group_center(&app.view_snapshot().entities, &app.control_groups[9]);
+        if let Some((x, z)) = center {
+            let distance = app.camera.distance();
+            app.camera.focus(x, z, distance);
+            let target = app.camera.target();
+            assert!((target.x - x).abs() < 0.5 && (target.z - z).abs() < 0.5);
+        }
+        let _ = units;
+    }
+
+    #[test]
+    fn alt_digit_views_the_group_without_touching_the_selection() {
+        let mut app = app_with_match();
+        let units: Vec<EntityId> = app
+            .view_snapshot()
+            .entities
+            .iter()
+            .filter(|entity| entity.owner == HUMAN)
+            .map(|entity| entity.id)
+            .take(2)
+            .collect();
+        app.selection = units.clone();
+        app.assign_control_group(0);
+        // Park the camera far away so the view jump is observable.
+        app.camera.focus(1.0, 1.0, app.camera.distance());
+        app.view_control_group(0);
+        assert_eq!(app.selection, units, "the selection is untouched");
+        let center = input::group_center(&app.view_snapshot().entities, &app.control_groups[0])
+            .expect("the group has live members");
+        let target = app.camera.target();
+        assert!(
+            (target.x - center.0).abs() < 0.5 && (target.z - center.1).abs() < 0.5,
+            "the camera jumped to the group's center ({target:?} vs {center:?})"
+        );
+        // An empty group's view is inert (the camera stays).
+        let before = app.camera.target();
+        app.view_control_group(5);
+        assert_eq!(app.camera.target(), before, "an empty group moves nothing");
+    }
+
+    #[test]
+    fn e_double_tap_takes_the_whole_visible_map_and_single_stays_on_screen() {
+        let mut app = app_with_match();
+        // Pick a kind with several members: the workers.
+        let worker_kind = app.worker_kind.expect("the content has a worker");
+        let all = own_of_kind(&app, worker_kind);
+        assert!(all.len() >= 2, "the starting force has workers");
+        app.selection = vec![all[0]];
+        app.last_clicked_kind = Some(worker_kind);
+        // Single tap: on-screen members only (every selected member must
+        // project inside the viewport by the defining property).
+        app.select_same_kind(false, false);
+        assert!(!app.selection.is_empty());
+        for id in &app.selection {
+            let snapshot = app.view_snapshot();
+            let entity = snapshot
+                .entities
+                .iter()
+                .find(|entity| entity.id == *id)
+                .expect("a live member");
+            assert!(app.is_on_screen(entity), "a single tap keeps to the screen");
+        }
+        // Double tap: every visible member of the kind on the map.
+        app.select_same_kind(true, false);
+        assert_eq!(app.selection, all, "the double tap takes the whole map");
+    }
+
+    /// An EntityView the tests can place (the synthetic-view helper — the
+    /// pushed snapshot carries views; the interpolator renders entities).
+    fn placed(id: u64, owner: PlayerId, kind: KindId, x: f32, z: f32) -> EntityView {
+        EntityView {
+            id: EntityId(id),
+            owner,
+            kind,
+            pos: Vec2Fx::new(
+                pandemonium_fx::Fx::from_milli((x * 1000.0) as i32),
+                pandemonium_fx::Fx::from_milli((z * 1000.0) as i32),
+            ),
+            facing: Vec2Fx::new(
+                pandemonium_fx::Fx::from_milli(0),
+                pandemonium_fx::Fx::from_milli(0),
+            ),
+            hp_fraction_milli: 1000,
+            move_state: MoveState::Idle,
+        }
+    }
+
+    #[test]
+    fn q_is_inert_without_combat_units_and_selects_them_when_they_exist() {
+        let mut app = app_with_match();
+        // The Alpha starting force is 1 CC + 4 workers — no combat units,
+        // so Q at the opening is inert (an empty set keeps the selection).
+        app.selection = vec![EntityId(1)];
+        app.select_combat(false, false);
+        assert_eq!(app.selection, vec![EntityId(1)], "no combat: Q is inert");
+        // Two riflemen beside the base (the kind from the real content's
+        // combat vocabulary), a worker among them, and an enemy rifleman
+        // that must never join.
+        let names = app::kind_names(&app.bundle);
+        let rifleman = names
+            .iter()
+            .position(|name| name == "rifleman")
+            .map(|index| KindId(index as u32))
+            .expect("the content has a rifleman");
+        let worker = app.worker_kind.unwrap();
+        let target = app.camera.target();
+        let entities = vec![
+            placed(9001, HUMAN, rifleman, target.x + 1.0, target.z + 1.0),
+            placed(9002, HUMAN, rifleman, target.x - 1.0, target.z - 1.0),
+            placed(9003, HUMAN, worker, target.x, target.z + 2.0), // not combat
+            placed(9004, AI, rifleman, target.x + 2.0, target.z),  // never Q's
+        ];
+        app.view_interp.push(Snapshot { tick: 1, entities });
+        app.selection = Vec::new();
+        app.select_combat(false, false);
+        assert_eq!(
+            app.selection,
+            vec![EntityId(9001), EntityId(9002)],
+            "Q takes the own on-screen combat units, and only those"
+        );
+        // Shift+Q unions with the current selection instead of replacing.
+        app.selection = vec![EntityId(9003)];
+        app.select_combat(false, true);
+        assert!(
+            app.selection.contains(&EntityId(9003)) && app.selection.contains(&EntityId(9001)),
+            "shift unions, never drops"
+        );
+    }
+
+    #[test]
+    fn ctrl_arrows_cycle_the_selection_one_unit_at_a_time() {
+        let mut app = app_with_match();
+        // The cycle's candidate set: own UNITS (the starting CC is a
+        // structure — the Alpha force is 1 CC + 4 workers, so the
+        // candidates are exactly the four workers).
+        let units = app.unit_kinds.clone();
+        let mut sorted: Vec<EntityId> = app
+            .view_snapshot()
+            .entities
+            .iter()
+            .filter(|entity| entity.owner == HUMAN && units.contains(&entity.kind))
+            .map(|entity| entity.id)
+            .collect();
+        sorted.sort();
+        assert!(sorted.len() >= 2, "the starting force has units");
+        // Nothing selected: the lowest id.
+        app.selection = Vec::new();
+        app.cycle_selection(false, true);
+        assert_eq!(app.selection, vec![sorted[0]]);
+        // Forward walks one at a time.
+        app.cycle_selection(false, true);
+        assert_eq!(app.selection, vec![sorted[1]]);
+        // Backward returns.
+        app.cycle_selection(false, false);
+        assert_eq!(app.selection, vec![sorted[0]]);
+        // The worker cycle stays among workers.
+        app.cycle_selection(true, true);
+        let worker_kind = app.worker_kind.unwrap();
+        let snapshot = app.view_snapshot();
+        let entity = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.id == app.selection[0])
+            .expect("a live member");
+        assert_eq!(entity.kind, worker_kind);
+    }
+
+    #[test]
+    fn h_jumps_to_the_own_command_center_over_the_real_content() {
+        let mut app = app_with_match();
+        let cc = app.command_center_kind.unwrap();
+        let own_cc: Vec<EntityId> = own_of_kind(&app, cc);
+        assert!(!own_cc.is_empty(), "the starting base has a command center");
+        let snapshot = app.view_snapshot();
+        let expected = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.id == own_cc[0])
+            .expect("the CC is live")
+            .pos;
+        // Park the camera elsewhere, then jump.
+        app.camera.focus(1.0, 1.0, app.camera.distance());
+        app.jump_to_base();
+        let target = app.camera.target();
+        assert!(
+            (target.x - expected.x).abs() < 0.5 && (target.z - expected.z).abs() < 0.5,
+            "H lands on the own command center ({target:?} vs {expected:?})"
+        );
+    }
+
+    #[test]
+    fn the_radar_event_tracks_attacks_on_own_forces_too() {
+        // PLAN-M11 §2: Space's target broadens beyond deaths. The pure
+        // ordering lives in the draw loop; here the pin is that an
+        // AttackHit on an own entity updates the tracked ground while an
+        // attack on an enemy does not. (The draw loop's real combat run
+        // is the Xvfb machine pass's job; this pins the rule.)
+        let mut app = app_with_match();
+        // Seed last_seen the way draw does, then feed synthetic events
+        // through the same method the draw loop calls.
+        for entity in app.view_snapshot().entities {
+            app.last_seen
+                .insert(entity.id, (entity.pos, entity.kind, entity.owner));
+        }
+        let snapshot = app.view_snapshot();
+        let own = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.owner == HUMAN)
+            .expect("an own entity")
+            .id;
+        // The fog hides the enemy at tick 0; last_seen is the tracker the
+        // method reads, so a synthetic enemy stands in for a scouted one.
+        let enemy = EntityId(888);
+        app.last_seen
+            .insert(enemy, (glam::Vec3::new(40.0, 0.0, 40.0), KindId(0), AI));
+        // The draw loop's exact per-event calls, in arrival order.
+        let own_pos = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.id == own)
+            .expect("the own entity")
+            .pos;
+        app.note_attack_radar(enemy); // an attack on an enemy: not radar
+        app.note_attack_radar(own); // an attack on an own force: radar
+        assert_eq!(
+            app.last_event_ground,
+            Some((own_pos.x, own_pos.z)),
+            "the last radar event is the attack on the own force"
         );
     }
 }
