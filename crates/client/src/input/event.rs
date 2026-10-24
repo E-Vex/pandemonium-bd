@@ -328,18 +328,3 @@ pub(crate) fn set_key(
         keys.remove(&key);
     }
 }
-
-pub(crate) fn digit_to_group_index(code: winit::keyboard::KeyCode) -> usize {
-    match code {
-        winit::keyboard::KeyCode::Digit1 => 1,
-        winit::keyboard::KeyCode::Digit2 => 2,
-        winit::keyboard::KeyCode::Digit3 => 3,
-        winit::keyboard::KeyCode::Digit4 => 4,
-        winit::keyboard::KeyCode::Digit5 => 5,
-        winit::keyboard::KeyCode::Digit6 => 6,
-        winit::keyboard::KeyCode::Digit7 => 7,
-        winit::keyboard::KeyCode::Digit8 => 8,
-        winit::keyboard::KeyCode::Digit9 => 9,
-        _ => 0,
-    }
-}

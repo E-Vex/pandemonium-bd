@@ -19,7 +19,7 @@ use pack::AssetPack;
 #[cfg(test)]
 mod hw;
 mod input;
-use input::event::{digit_to_group_index, set_key};
+use input::event::set_key;
 
 mod render;
 mod report;
@@ -77,11 +77,6 @@ pub(crate) const CONTROL_GROUP_COUNT: usize = 9;
 /// `pan_speed`, default [`config::DEFAULT_PAN_SPEED`]) — keys and the edge
 /// band share it, scaled by the real frame delta so pan speed does not
 /// depend on the display's refresh rate.
-/// Camera yaw rotation speed in radians per second (Generals-style Q/E
-/// camera rotation). Held keys apply this rate, scaled by the frame
-/// delta, so a full turn takes ~6 s — fast enough to re-orient without
-/// inducing motion sickness.
-pub(crate) const ROTATE_RAD_PER_SEC: f32 = pandemonium_engine::camera::DEFAULT_ROTATE_RAD_PER_SEC;
 /// Pitch adjustment per wheel notch when Ctrl is held (Generals-style
 /// Ctrl+wheel pitch control). ~12 notches cover the full pitch range.
 pub(crate) const PITCH_PER_WHEEL_NOTCH: f32 =
@@ -893,95 +888,55 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    match code {
-                        winit::keyboard::KeyCode::KeyW => set_key(&mut self.keys, "w", pressed),
-                        // M9.1: the arrow keys alias the WASD pan (plan
-                        // §11.3's key panning covers both habits).
-                        winit::keyboard::KeyCode::ArrowUp => set_key(&mut self.keys, "w", pressed),
-                        winit::keyboard::KeyCode::KeyA => {
-                            set_key(&mut self.keys, "a", pressed);
+                    // PLAN-M11 §4 phase 1: the ONE key map — a pure table
+                    // in `input::actions` that the tests pin. W/A/S/D/Q/E
+                    // lost their camera duties (arrows are the keyboard
+                    // scroll, as in Zero Hour; A only arms attack-move, S
+                    // only stops), and the tools moved off the F1–F8 row
+                    // (debug overlay F10, bug report F11 — the bookmark
+                    // row's future home stays clear).
+                    use input::actions::{world_key_action, WorldKeyAction};
+                    match world_key_action(code, self.modifiers.control_key(), pressed) {
+                        WorldKeyAction::CameraHold { dir, pressed } => {
+                            set_key(&mut self.keys, dir.tag(), pressed);
+                        }
+                        WorldKeyAction::ArmAttackMove => {
                             // M9.1 (plan §11.3): 'A' arms attack-move; the
-                            // next left-click places it (pressing the key
-                            // no longer fires at the cursor — that fought
-                            // the key's camera-pan role). Only while the
+                            // next left-click places it. Only while the
                             // match is ongoing; the end screen takes over.
-                            if pressed && !self.host.as_ref().is_some_and(|h| h.is_finished()) {
+                            if !self.host.as_ref().is_some_and(|h| h.is_finished()) {
                                 self.attack_move_armed = true;
                             }
                         }
-                        winit::keyboard::KeyCode::ArrowLeft => {
-                            set_key(&mut self.keys, "a", pressed)
-                        }
-                        winit::keyboard::KeyCode::KeyS => {
-                            set_key(&mut self.keys, "s", pressed);
-                            // M8: 'S' is also the Stop hotkey on press.
-                            if pressed && !self.host.as_ref().is_some_and(|h| h.is_finished()) {
+                        WorldKeyAction::Stop => {
+                            // M8: 'S' is the Stop hotkey on press.
+                            if !self.host.as_ref().is_some_and(|h| h.is_finished()) {
                                 self.issue_stop();
                             }
                         }
-                        winit::keyboard::KeyCode::ArrowDown => {
-                            set_key(&mut self.keys, "s", pressed)
-                        }
-                        winit::keyboard::KeyCode::KeyD => set_key(&mut self.keys, "d", pressed),
-                        winit::keyboard::KeyCode::ArrowRight => {
-                            set_key(&mut self.keys, "d", pressed)
-                        }
-                        // Generals-style camera rotation: Q orbits left, E
-                        // orbits right. Held keys apply a continuous yaw rate
-                        // scaled by the frame delta (about_to_wait). Both
-                        // keys are also camera-only — they never fire commands
-                        // and they cancel an armed attack-move (so the player
-                        // can re-orient mid-order without losing it).
-                        winit::keyboard::KeyCode::KeyQ => {
-                            set_key(&mut self.keys, "q", pressed);
-                            if pressed {
-                                self.attack_move_armed = false;
-                            }
-                        }
-                        winit::keyboard::KeyCode::KeyE => {
-                            set_key(&mut self.keys, "e", pressed);
-                            if pressed {
-                                self.attack_move_armed = false;
-                            }
-                        }
-                        // §11.6 debug tooling: overlay toggle, pause, single-step,
-                        // and the M10.1 F8 bug-report dump (seed + tick,
-                        // deterministic — see report.rs).
-                        winit::keyboard::KeyCode::F3 if pressed => {
+                        WorldKeyAction::ToggleDebugOverlay => {
                             self.debug_overlay = !self.debug_overlay;
                         }
-                        winit::keyboard::KeyCode::F8 if pressed => {
+                        WorldKeyAction::BugReport => {
                             self.dump_bug_report();
                         }
-                        winit::keyboard::KeyCode::KeyP if pressed => {
+                        WorldKeyAction::Pause => {
                             if let Some(host) = &mut self.host {
                                 host.set_paused(!host.is_paused());
                             }
                         }
-                        winit::keyboard::KeyCode::Period if pressed => {
+                        WorldKeyAction::SingleStep => {
                             if let Some(host) = &mut self.host {
                                 let outcome = host.step_once();
                                 self.collect_checkpoints(&outcome);
                             }
                         }
-                        // M8 (plan §11.3): control groups 1-9. Ctrl+digit
+                        // M8 (plan §11.3): control groups. Ctrl+digit
                         // assigns the current selection; digit alone
                         // recalls. M10.2 (PLAN §1.3): a double tap of the
                         // same digit within DOUBLE_TAP_MS recalls AND
                         // centers the camera on the group's live members.
-                        // Digit 0 is unused (9 groups, 1-9).
-                        winit::keyboard::KeyCode::Digit1
-                        | winit::keyboard::KeyCode::Digit2
-                        | winit::keyboard::KeyCode::Digit3
-                        | winit::keyboard::KeyCode::Digit4
-                        | winit::keyboard::KeyCode::Digit5
-                        | winit::keyboard::KeyCode::Digit6
-                        | winit::keyboard::KeyCode::Digit7
-                        | winit::keyboard::KeyCode::Digit8
-                        | winit::keyboard::KeyCode::Digit9
-                            if pressed =>
-                        {
-                            let index = digit_to_group_index(code) - 1;
+                        WorldKeyAction::ControlGroup { index } => {
                             if self.modifiers.control_key() {
                                 self.assign_control_group(index);
                                 // An assign breaks the double-tap chain —
@@ -1014,7 +969,7 @@ impl ApplicationHandler for App {
                         // M8 (plan §9.7, A15): 'R' restarts the match when
                         // it has ended. The host's outcome surfaces through
                         // the boundary; restart drops + reconstructs.
-                        winit::keyboard::KeyCode::KeyR if pressed => {
+                        WorldKeyAction::Rematch => {
                             // The end-screen rematch shortcut for the sliver
                             // between the match ending and the draw-time
                             // promotion; the end screen itself owns R after.
@@ -1022,14 +977,11 @@ impl ApplicationHandler for App {
                                 self.restart_match();
                             }
                         }
-                        winit::keyboard::KeyCode::Escape if pressed => {
+                        WorldKeyAction::Escape => {
                             // M10.2 (PLAN §1.3): Escape climbs the ladder
                             // one rung per press — armed command, then
                             // placement, then the selection, and only then
-                            // quit (the old code quit on the first press
-                            // whenever nothing was armed; an accidental
-                            // Esc with units selected cost the player
-                            // their window, not just their selection).
+                            // the pause menu.
                             match input::escape_action(
                                 self.attack_move_armed,
                                 self.placement.is_some(),
@@ -1063,13 +1015,13 @@ impl ApplicationHandler for App {
                         // position (the most recent death — the class of
                         // event a player most wants to look at), else the
                         // player's base. The zoom distance is kept.
-                        winit::keyboard::KeyCode::Space if pressed => {
+                        WorldKeyAction::JumpLastEvent => {
                             let (x, z) =
                                 input::jump_target(self.last_event_ground, self.start_anchor);
                             let distance = self.camera.distance();
                             self.camera.focus(x, z, distance);
                         }
-                        _ => {}
+                        WorldKeyAction::Unbound => {}
                     }
                 }
             }
@@ -1153,19 +1105,20 @@ impl ApplicationHandler for App {
         let pan = self.settings.pan_speed * dt;
         let mut dx = 0.0;
         let mut dz = 0.0;
-        // M9.1: W pans the view up-screen (away from the camera), D pans
-        // right — the M3 signs were mirrored along with the camera's right
-        // axis (the DEBT-008 human pass: "d goes left and a goes right").
-        if self.keys.contains(&Key::Character("w")) {
+        // PLAN-M11 §4 phase 1: the arrows are the keyboard scroll (ZH) —
+        // W/A/S/D and Q/E lost their camera duties. The signs keep the
+        // M9.1 direction convention (up-screen is +z, right is +x), pinned
+        // by the direction tests in `input/mod.rs`.
+        if self.keys.contains(&Key::Character("up")) {
             dz += pan;
         }
-        if self.keys.contains(&Key::Character("s")) {
+        if self.keys.contains(&Key::Character("down")) {
             dz -= pan;
         }
-        if self.keys.contains(&Key::Character("a")) {
+        if self.keys.contains(&Key::Character("left")) {
             dx -= pan;
         }
-        if self.keys.contains(&Key::Character("d")) {
+        if self.keys.contains(&Key::Character("right")) {
             dx += pan;
         }
         // M10.2 (PLAN §1.2): edge scrolling — a depth-scaled band instead
@@ -1194,18 +1147,10 @@ impl ApplicationHandler for App {
         if dx != 0.0 || dz != 0.0 {
             self.camera.pan(dx, dz);
         }
-        // Generals-style camera rotation (Q/E): a continuous yaw rate, scaled
-        // by the frame delta — frame-rate-independent, like the pan above.
-        let mut yaw_delta = 0.0;
-        if self.keys.contains(&Key::Character("q")) {
-            yaw_delta -= ROTATE_RAD_PER_SEC * dt;
-        }
-        if self.keys.contains(&Key::Character("e")) {
-            yaw_delta += ROTATE_RAD_PER_SEC * dt;
-        }
-        if yaw_delta != 0.0 {
-            self.camera.rotate(yaw_delta);
-        }
+        // PLAN-M11 §4 phase 1: the Q/E held rotation is gone (Q and E are
+        // Zero Hour selection keys). Camera rotation survives through the
+        // kept middle-drag superset; the numpad rotate keys arrive in
+        // phase 4.
         if let Some(window) = &self.window {
             window.request_redraw();
         }

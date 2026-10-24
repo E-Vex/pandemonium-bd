@@ -210,7 +210,7 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
         // first-time-player bar, plan §13's A14 "unaided" goal).
         let lines = [
             "left-click / drag: select    right-click: move / attack / gather",
-            "A + click: attack-move    S: stop    Q/E: rotate    Ctrl+wheel: pitch",
+            "A + click: attack-move    S: stop    arrows: scroll    Ctrl+wheel: pitch",
             "select a worker to build, a building to train and set rallies",
         ];
         for (index, line) in lines.iter().enumerate() {
@@ -1373,7 +1373,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
 
     // A-009 task 4: the build-identity footer line. Small, dimmed, centered
     // at the bottom of the panel — "pandemonium X.Y git Z content HASH"
-    // (the same string the F8 sidecar and the F3 debug overlay print).
+    // (the same string the F11 sidecar and the F10 debug overlay print).
     // Drawn on the main menu and the pause menu only; other screens pass
     // an empty string and the `show_version` guard above excludes them.
     if show_version {

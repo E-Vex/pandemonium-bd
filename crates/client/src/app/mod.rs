@@ -1,6 +1,6 @@
 // `app/` (ADR-0100 part c, the ARCHITECTURE.md refactor map): the
 // non-input application state — the `App` struct, match hosting + restart,
-// the checkpoint trail, the `--record`/F8 wiring (`report.rs` stays the pure
+// the checkpoint trail, the `--record`/F11 wiring (`report.rs` stays the pure
 // seam), the menu/draw frame assembly, and the HUD quad builders. `main.rs`
 // remains the winit bootstrap; the event translation lives in `input/`
 // (ADR step 7).
@@ -176,7 +176,7 @@ pub(crate) struct App {
     /// Display names of the loaded resources, indexed by ResourceId (the
     /// HUD's labels — data, not hardcoded).
     pub(crate) resource_names: Vec<String>,
-    /// Whether the §11.6 debug overlay is visible (F3).
+    /// Whether the §11.6 debug overlay is visible (F10).
     pub(crate) debug_overlay: bool,
     /// Verification affordance: exit after this many presented frames.
     pub(crate) frames_budget: Option<u64>,
@@ -238,7 +238,7 @@ pub(crate) struct App {
     /// restart resets this with the segment).
     pub(crate) record_written: bool,
     /// M10.1 (plan §6.5/§11.6): the checkpoint trail feeding `--record` and
-    /// the F8 dump — the tick-0 hash plus every periodic checkpoint the
+    /// the F11 dump — the tick-0 hash plus every periodic checkpoint the
     /// host reported per frame (the same assembly the tools' AI-match
     /// recorder uses). Reset by every begin_match; empty at the menu.
     pub(crate) checkpoints: Vec<(u32, u64)>,
@@ -361,7 +361,7 @@ impl App {
         })
     }
 
-    /// A-002 Part 2.2: the F3 overlay's first line — the build identity plus
+    /// A-002 Part 2.2: the F10 overlay's first line — the build identity plus
     /// the CURRENT bundle's content hash (a cached u64 read; a started match
     /// on another map shows that map's bundle, so the overlay never lies
     /// about which content is running).
@@ -677,7 +677,7 @@ impl App {
         self.worker_kind = Some(plan.worker);
         self.node_kind = plan.node;
         self.reset_match_state();
-        // PLAN-M10.2 §3.4: the debug overlay's default at match start (F3
+        // PLAN-M10.2 §3.4: the debug overlay's default at match start (F10
         // stays the live toggle), and the user zoom limits re-clamp the
         // opening view.
         self.debug_overlay = self.settings.debug_overlay;
@@ -905,7 +905,7 @@ impl App {
     }
 
     /// M10.1 (plan §6.5): folds one frame outcome's periodic checkpoints
-    /// into the trail `--record` and F8 read (the same accumulation the
+    /// into the trail `--record` and F11 read (the same accumulation the
     /// tools' AI-match recorder performs).
     pub(crate) fn collect_checkpoints(&mut self, outcome: &FrameOutcome) {
         for &(tick, hash) in &outcome.hashes {
@@ -964,7 +964,7 @@ impl App {
         }
     }
 
-    /// M10.1 (plan §11.6): the deterministic F8 bug-report dump — the replay
+    /// M10.1 (plan §11.6): the deterministic F11 bug-report dump — the replay
     /// record of the match so far (`pandemonium-report-<seed>-tick<tick>.pdrp`)
     /// plus the sidecar info file (`…-info.txt`), written beside `--record`'s
     /// path or in the working directory, both filenames printed so the tester
@@ -1352,7 +1352,7 @@ impl App {
                 return;
             }
         };
-        // M10.1 (plan §6.5/§11.6): the trail feeding --record and F8.
+        // M10.1 (plan §6.5/§11.6): the trail feeding --record and F11.
         self.collect_checkpoints(&outcome);
         // M10.1 (plan §6.5): --record writes the segment's replay at the
         // match's end — the log is complete there, and the checkpoint at the
@@ -1536,7 +1536,7 @@ impl App {
         }
         let view_projection = self.camera.view_projection();
         let eye = self.camera.eye();
-        // The HUD's `state_hash` is only read inside the F3 debug overlay,
+        // The HUD's `state_hash` is only read inside the F10 debug overlay,
         // so we use the cheap hud_state path every frame and only pay for
         // the canonical hash when the overlay is actually visible. The
         // hash is O(n) over the whole world — paying it every frame for a
@@ -1889,7 +1889,7 @@ pub(crate) struct OverlayInput<'a> {
     /// M9.1: the refusal notice line, when a recent order was refused.
     notice: Option<&'a str>,
     /// A-002 Part 2.2: the version prefix line ("pandemonium X.Y git Z") —
-    /// the F3 overlay's first line names the build (the A14 bug-report
+    /// the F10 overlay's first line names the build (the A14 bug-report
     /// promise, automatic); the content hash joins it per frame from the
     /// live bundle.
     version: &'a str,
@@ -2010,9 +2010,9 @@ pub(crate) fn overlay_quads(input: OverlayInput<'_>) -> Vec<UiQuad> {
             format!("hash {:#018x}", hud.state_hash),
             format!("entities {entities}  selected {selected}  log {log_len}"),
             if hud.paused {
-                "PAUSED  [.] step  [F8] bug report".to_string()
+                "PAUSED  [.] step  [F11] bug report".to_string()
             } else {
-                "[F3] overlay  [P] pause  [F8] bug report".to_string()
+                "[F10] overlay  [P] pause  [F11] bug report".to_string()
             },
         ];
         let widest = lines

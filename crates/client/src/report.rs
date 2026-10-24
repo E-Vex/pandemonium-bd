@@ -6,7 +6,7 @@
 //!   match's `ReplayFile`, assembled exactly as the tools' AI-match recorder
 //!   does (`crates/tools/src/ai_match.rs`), written at match end / clean
 //!   exit so `tools replay-verify` accepts it.
-//! - **F8, the bug-report dump** — plan §11.6's "deterministic seed + tick
+//! - **F11, the bug-report dump** — plan §11.6's "deterministic seed + tick
 //!   dump": a `.pdrp` replay record of the match so far *plus* a sidecar
 //!   `…-info.txt` carrying the seed, tick, content identity, and the client
 //!   state a reproducer needs. Deterministic content only — no wall-clock,
@@ -27,16 +27,18 @@ use pandemonium_sim::TrivialWorld;
 use pandemonium_sim_api::{Command, MatchSetup};
 
 /// The standing controls line (mirrors the README's controls paragraph and
-/// the UI's first-time-player reminder, `ui.rs`).
+/// the UI's first-time-player reminder, `ui.rs`). PLAN-M11 phase 1: the
+/// arrows are the keyboard scroll (WASD/QE camera duties removed), and the
+/// tools live on F10/F11.
 pub const CONTROLS_LINE: &str = "left-click/drag select; right-click move/attack/gather; \
-     A+click attack-move; S stop; Q/E rotate; Ctrl+wheel pitch; P pause; \
-     F3 overlay; F8 bug report; R restart";
+     A+click attack-move; S stop; arrows scroll; wheel zoom; Ctrl+wheel pitch; \
+     P pause; F10 overlay; F11 bug report; R restart";
 
 /// The full controls reference table — every binding the client actually
 /// handles, derived from the winit event translation in `main.rs` and the
 /// pure state machine's menu navigation in `screens.rs`/`ui.rs`. Lives in
 /// ONE place next to [`CONTROLS_LINE`] so the standing summary, the
-/// Controls screen, and the F8 sidecar (which prints `controls_line`)
+/// Controls screen, and the F11 sidecar (which prints `controls_line`)
 /// cannot drift apart silently.
 ///
 /// Each entry is `(action, binding)`. ASCII only — the embedded font is an
@@ -46,10 +48,9 @@ pub const CONTROLS_LINE: &str = "left-click/drag select; right-click move/attack
 /// selection/orders, then match/debug). The table fits the smallest
 /// supported window (800×600 logical) at the menu pass's line pitch.
 pub const CONTROLS_TABLE: &[(&str, &str)] = &[
-    ("Pan camera", "W A S D / Arrows"),
-    ("Rotate camera", "Q/E held or middle-drag"),
+    ("Pan camera", "Arrows / right-drag"),
+    ("Rotate camera", "middle-drag"),
     ("Zoom / pitch", "wheel / Ctrl+wheel"),
-    ("Camera pan (alt)", "right-drag"),
     ("Select units", "left-click / left-drag"),
     ("Move/Attack/Gather", "right-click"),
     ("Attack-move", "A + left-click"),
@@ -60,8 +61,8 @@ pub const CONTROLS_TABLE: &[(&str, &str)] = &[
     ("Cancel / open pause", "Esc (ladder)"),
     ("Restart (after end)", "R"),
     ("Single-step (paused)", "Period (.)"),
-    ("Debug overlay", "F3"),
-    ("Bug report", "F8"),
+    ("Debug overlay", "F10"),
+    ("Bug report", "F11"),
 ];
 
 /// The armed-attack-move instruction (the HUD line shown while 'A' is armed).
@@ -391,13 +392,13 @@ mod tests {
             "right-click", // move/attack/gather
             "A",           // attack-move
             "S",           // stop
-            "Q",           // rotate
-            "E",           // rotate
-            "Ctrl+wheel",  // pitch
-            "P",           // pause
-            "F3",          // overlay
-            "F8",          // bug report
-            "R",           // restart
+            "rrows",       // scroll (the Q/E rows are gone — PLAN-M11; matches
+            // both the line's "arrows" and the table's "Arrows")
+            "Ctrl+wheel", // pitch
+            "P",          // pause
+            "F10",        // overlay (relocated off the bookmark row)
+            "F11",        // bug report
+            "R",          // restart
         ] {
             assert!(
                 table_text.contains(needle),

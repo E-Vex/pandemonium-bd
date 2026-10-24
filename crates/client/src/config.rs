@@ -38,7 +38,7 @@ pub struct Settings {
     pub muted: bool,
     /// Whether the window starts fullscreen.
     pub fullscreen: bool,
-    /// Whether the F3 debug overlay is visible at match start.
+    /// Whether the F10 debug overlay is visible at match start.
     pub debug_overlay: bool,
 }
 

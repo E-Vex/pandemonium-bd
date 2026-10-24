@@ -15,6 +15,7 @@
 //! lesson: presentation direction is invisible to the golden hashes, so
 //! only tests can keep it honest).
 
+pub(crate) mod actions;
 pub(crate) mod event;
 pub(crate) mod orders;
 
@@ -144,7 +145,7 @@ pub fn pixel_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// `cursor` (window pixels) in a `window`-sized viewport. Each component of
 /// the returned pair is a signed fraction of full pan speed (−1..1):
 /// positive `x` pans screen-right, positive `z` pans screen-up — the same
-/// signs the held-key pan uses. The magnitude grows linearly with the
+/// signs the arrow-key pan uses. The magnitude grows linearly with the
 /// cursor's depth into the [`EDGE_SCROLL_BAND_PX`] band, so the cursor at
 /// the window edge scrolls at full speed and halfway into the band at half
 /// speed. All four edges work and corners combine both axes.
@@ -167,7 +168,7 @@ pub fn edge_scroll_vector(cursor: (f64, f64), window: (f64, f64)) -> (f32, f32) 
     // Right edge: depth grows as the cursor approaches x = w.
     x += depth(w - 1.0 - cursor.0);
     // Top edge: depth grows as the cursor approaches y = 0; panning
-    // "up-screen" is +z (forward), matching the held-key convention.
+    // "up-screen" is +z (forward), matching the arrow-key convention.
     z += depth(cursor.1);
     // Bottom edge.
     z -= depth(h - 1.0 - cursor.1);
@@ -458,7 +459,7 @@ mod tests {
         );
         // Right edge: screen-right.
         assert_eq!(edge_scroll_vector((1919.0, 540.0), window).0, 1.0);
-        // Top edge: up-screen (+z), the held-key W convention.
+        // Top edge: up-screen (+z), the arrow-key Up convention.
         assert_eq!(edge_scroll_vector((960.0, 0.0), window).1, 1.0);
         // Bottom edge: down-screen (-z).
         assert_eq!(edge_scroll_vector((960.0, 1079.0), window).1, -1.0);
@@ -788,10 +789,12 @@ mod tests {
     // ---- direction pinning: middle-drag rotate ---------------------------
 
     #[test]
-    fn middle_drag_right_orbits_the_same_way_e_does() {
-        // E (orbit right) applies a positive yaw rate; a rightward
-        // middle-drag must apply positive yaw too, at both pinned yaws.
-        // The wiring's exact formula: yaw delta = radians per pixel * dx.
+    fn middle_drag_right_orbits_clockwise_at_both_pinned_yaws() {
+        // PLAN-M11 phase 1: middle-drag is the one always-available rotate
+        // (the Q/E keys are Zero Hour selection keys now). A rightward
+        // middle-drag applies positive yaw — the same sign the numpad
+        // rotate keys and the old E key used, pinned at both yaws. The
+        // wiring's exact formula: yaw delta = radians per pixel * dx.
         let delta_of = |dx_px: f32| MIDDLE_DRAG_RAD_PER_PX * dx_px;
         assert!(delta_of(120.0) > 0.0);
         let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
@@ -808,5 +811,52 @@ mod tests {
         }
         // The scale: one pixel is MIDDLE_DRAG_RAD_PER_PX.
         assert!((delta_of(1.0) - MIDDLE_DRAG_RAD_PER_PX).abs() < 1e-6);
+    }
+
+    // ---- direction pinning: arrow-key scroll -----------------------------
+
+    #[test]
+    fn arrow_holds_pan_the_screen_axes_at_yaw_0_and_yaw_90() {
+        // PLAN-M11 phase 1: the arrows are the keyboard scroll. The held
+        // tags feed about_to_wait's pan with the M9.1 sign convention:
+        // pan's +dz is "forward" (screen-up), pan's +dx is screen-right.
+        // In world terms that is -z/up and +x/right at yaw 0, and
+        // -x/up and -z/right at yaw 90 (the camera orbits the target).
+        // Pinned at both yaws, the M9.1 discipline: presentation direction
+        // is invisible to the golden hashes.
+        for (yaw, up, right) in [
+            (
+                0.0f32,
+                glam::Vec3::new(0.0, 0.0, -1.0),
+                glam::Vec3::new(1.0, 0.0, 0.0),
+            ),
+            (
+                std::f32::consts::FRAC_PI_2,
+                glam::Vec3::new(-1.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 0.0, -1.0),
+            ),
+        ] {
+            let mut camera = RtsCamera::new(64, 64, 16.0 / 9.0);
+            camera.focus(32.0, 32.0, 24.0);
+            camera.rotate(yaw - camera.yaw());
+            // "up" held: pan(0, +v) moves the target along `up`.
+            let before = camera.target();
+            camera.pan(0.0, 4.0);
+            let delta = camera.target() - before;
+            assert!(
+                delta.dot(up) > 3.0 && delta.dot(right).abs() < 1e-3,
+                "yaw {yaw}: up-arrow pans along {up} ({before:?} -> {:?})",
+                camera.target()
+            );
+            // "right" held: pan(+v, 0) moves the target along `right`.
+            let before = camera.target();
+            camera.pan(4.0, 0.0);
+            let delta = camera.target() - before;
+            assert!(
+                delta.dot(right) > 3.0 && delta.dot(up).abs() < 1e-3,
+                "yaw {yaw}: right-arrow pans along {right} ({before:?} -> {:?})",
+                camera.target()
+            );
+        }
     }
 }
