@@ -241,7 +241,9 @@ CLOSE = ("close",)
 MATCH_PREFIX = [K("Enter"), K("Down"), K("Down"), K("Down"), K("Enter"), S(PRE_RUN), K("Escape")]
 PAUSE_TO_CONTROLS = [K("Down"), K("Down"), K("Enter")]                    # row 2
 PAUSE_TO_RESTART  = [K("Down"), K("Down"), K("Down"), K("Enter")]         # row 3
-PAUSE_TO_QUIT     = [K("Down"), K("Down"), K("Down"), K("Down"), K("Enter")]  # row 4
+# PLAN-M11 phase 5: the pause menu gained the Resign row (row 4); Quit to
+# Menu moved to row 5.
+PAUSE_TO_QUIT     = [K("Down"), K("Down"), K("Down"), K("Down"), K("Down"), K("Enter")]  # row 5
 
 CHECKS = [
     ("c0", "environment gate: the windowed client presents 60 frames at the main menu",

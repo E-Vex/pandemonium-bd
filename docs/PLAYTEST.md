@@ -95,7 +95,7 @@ re-verifies headlessly:
 ./pandemonium-tools replay-verify my-match.pdrp
 ```
 
-A mid-match dump on demand exists too — F8, section 6.
+A mid-match dump on demand exists too — F11, section 6.
 
 ### Build from source (for developers)
 
@@ -125,33 +125,46 @@ content and refuses to start.
 
 ## 2. Controls card
 
-Copy of the README's controls paragraph, verbatim, plus the F8 bug-report key:
+Copy of the README's controls paragraph, verbatim, plus the F11 bug-report
+key:
 
 Controls (Generals: Zero Hour muscle memory):
 
 **Selecting** — **left-click** selects, **left-drag** box-selects; left never
-issues an order, and a click on empty ground does nothing (Esc clears the
-selection). **Shift+click** adds or removes one unit, **shift+drag** adds the
-box's picks, **double-click** selects every visible unit of the same kind.
+issues an order, and a click on empty ground deselects (**Esc** clears it
+too). **Shift+click** or **shift+drag** adds — never removes (removal is a
+re-select). **Double-click** or **E** selects the same-kind units on screen
+(**E** twice: every visible one on the map); **Q** selects all combat units
+on screen (twice: the whole visible map); **Ctrl+arrows** cycles your units
+one at a time (**Ctrl+up/down**: just the workers).
 
 **Commanding** — **right-click** is the only way to command: on an enemy it
 attacks, on an ore node it gathers (workers), on open ground it moves, and on
 a single selected producer it sets the rally point. A click under 6 px of
 travel orders; **right-drag** beyond that grabs and scrolls the map (the
 release then orders nothing). **A** arms attack-move for the next left-click,
-**S** stops.
+**S** stops, **G** arms guard (move there, then stand and fight what comes in
+range), **X** scatters, and **Alt+click** chains waypoints — the first click
+replaces the in-flight order, each later click queues it. **Ctrl+click**
+force-fire is **not yet available** (planned).
 
-**Camera** — **right-drag** scrolls (the main way to move the map),
-**middle-drag** rotates, **WASD / arrows / screen edges** pan (the edge is a
-14 px band whose speed scales with depth), **Q / E** rotate, the **wheel**
-zooms toward the cursor, **Ctrl+wheel** tilts the pitch.
+**Camera** — **arrows / screen edges / right-drag** scroll (the edge is a
+14 px band whose speed scales with depth; right-drag is the main way to move
+the map), **middle-drag** or **Numpad 4/6** rotates, the **wheel** or
+**Numpad 8/2** zooms, **Ctrl+wheel** tilts the pitch, **Numpad 5** resets
+the view. **F1–F8** jump to camera bookmarks (**Ctrl+F1–F8** sets them).
 
-**Groups & jumps** — **1–9** recall control groups, **Ctrl+1–9** assigns,
-double-tapping a digit recalls and centers the camera on the group. **Space**
-jumps to the last death (or your base). **Esc** climbs one rung per press:
-armed command → placement → selection → **pause menu**. **P** pauses without
-the menu, **F3** toggles the debug overlay, **R** restarts after the match
-ends (the end screen offers Rematch / Main Menu too).
+**Groups, jumps & interface** — **1–0** recall control groups, **Ctrl+1–0**
+assigns, double-tapping a digit recalls and centers the camera on the group,
+**Alt+1–0** views it without selecting. **Space** jumps to the last radar
+event (a death or an attack on your forces; else your base), **H** jumps to
+your Command Center. **F9** toggles the command bar (minimap included),
+**Tab** toggles the mission objectives panel (missions only). **Esc** climbs
+one rung per press: armed command → placement → selection → **pause menu**
+(Resign lives there, confirm-gated). **P** pauses without the menu, **.**
+single-steps while paused, **R** restarts after the match ends (the end
+screen offers Rematch / Main Menu too). **F10** toggles the debug overlay,
+**F11** writes the bug-report dump; **F12** (screenshot) is not bound.
 
 **Menus** — the game starts at the **main menu**; every screen is reachable
 by keyboard alone (arrows + Enter, Esc backs out) and by mouse alone (hover
@@ -163,9 +176,9 @@ fullscreen, and the debug-overlay default — the volume row is live and
 audible (the nine synthesized cues; the owner's re-test verified them on
 real hardware), mute silences everything, and both persist; **Done saves**
 to the config file, **Esc leaves without saving**. In a match, the pause menu
-(Esc's last rung) offers Resume / Settings / Restart / Quit to Menu.
+(Esc's last rung) offers Resume / Settings / Restart / Resign / Quit to Menu.
 
-**[F8] bug report** — press it at (or right after) the moment anything goes
+**[F11] bug report** — press it at (or right after) the moment anything goes
 wrong; it writes two files (section 6).
 
 Economy controls worth knowing exist (the game itself shows these as the
@@ -213,7 +226,7 @@ tester.
 
 1. **Placement guess (DEBT-012):** did any build-placement preview say **legal**
    when the order was then refused, or **illegal** when it should have
-   succeeded? (yes/no; if yes — seed + tick, or an F8 dump)
+   succeeded? (yes/no; if yes — seed + tick, or an F11 dump)
 2. **Audio (DEBT-011, repaid in M10.2 Phase 4; the owner's re-test came
    back clean — A-126 — so the probe now guards against regression):**
    do the nine cues fire at their moments
@@ -227,7 +240,7 @@ tester.
 
 ## 6. Bug-report procedure
 
-1. Press **F8** at (or right after — pause first with **P** if you need a
+1. Press **F11** at (or right after — pause first with **P** if you need a
    moment) the moment of the problem. The client prints two filenames and pings
    the screen: a replay record `pandemonium-report-<seed>-tick<tick>.pdrp` and
    a sidecar `…-info.txt` (seed, tick, content identity, player slot, the
@@ -258,7 +271,7 @@ flips A14 in `docs/ALPHA_DECLARATION.md` (or records the finding) citing
 this file. Fill the row as the session runs: date, OS, build commit (the
 full `--version` line — run `pandemonium-client --version`), the loop verdict
 per section 3, the spectator verdict per section 4, the section-5 probes, and
-any F8 incidents.
+any F11 incidents.
 
 | Slot | Wave / target date | Focus (the session stays unaided — this only steers the report) |
 |---|---|---|
@@ -281,6 +294,21 @@ players complete the loop unaided*). The owner's re-test rows above are
 not substitutes — they steered the fixes; these five honest T-rows are
 the gate. A failed tester is a finding — record them anyway; they are
 often the most valuable row in the table.
+
+### The M11 finding source — the owner's Zero Hour verdict (PLAN-M11 §1)
+
+The owner sat down at the post-A-014 build, tried the README's "Generals:
+Zero Hour muscle memory" claim, and ruled it **false**: the M10.2 pass had
+fixed the mouse skeleton (left selects, right commands, right-drag scrolls)
+but kept a camera/keyboard map that contradicts Zero Hour at nearly every
+key — A pans the camera instead of arming attack-move only, S pans instead
+of stopping only, W/Q/E rotate instead of selecting, H, X, G, Alt+click and
+Ctrl+click do nothing, nine control groups instead of ten, F3/F8 squat on
+the bookmark row, and left-click on empty ground deliberately did nothing.
+`docs/PLAN-M11.md` is the specification that verdict produced; the A-013
+delivery (phases 0-5) is the fix, and this card's §2 is rewritten to the new
+truth. The owner's human re-test of the new scheme is the feel gate the
+machine pass cannot replace.
 
 ### Result #1 in detail — the owner's playtest-1 (M10.2's source)
 
@@ -315,7 +343,7 @@ Audit of `crates/client/src/main.rs` + `orders.rs` at the base commit
 | W/A/S/D + arrows | Pan (A also arms attack-move; S also stops) |
 | Q / E | Rotate |
 | 1–9 / Ctrl+1–9 | Recall / assign control groups (no double-tap centering) |
-| P, `.`, F3, F8 | Pause, single-step, debug overlay, bug report |
+| P, `.`, F10, F11 | Pause, single-step, debug overlay, bug report |
 | R / Esc | Restart after the match ends / cancel armed order or placement, else quit |
 | Edge scroll | 24 px binary full-speed zone on all four edges (focused windows only) |
 

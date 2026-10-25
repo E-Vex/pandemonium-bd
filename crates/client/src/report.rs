@@ -31,7 +31,8 @@ use pandemonium_sim_api::{Command, MatchSetup};
 /// arrows are the keyboard scroll (WASD/QE camera duties removed), and the
 /// tools live on F10/F11.
 pub const CONTROLS_LINE: &str = "left-click/drag select; right-click move/attack/gather; \
-     A+click attack-move; S stop; arrows scroll; wheel zoom; Ctrl+wheel pitch; \
+     A+click attack-move; S stop; G+click guard; X scatter; Alt+click waypoints; \
+     E/Q select; 1-0 groups; arrows scroll; wheel zoom; Ctrl+wheel pitch; \
      P pause; F10 overlay; F11 bug report; R restart";
 
 /// The full controls reference table — every binding the client actually
@@ -48,21 +49,41 @@ pub const CONTROLS_LINE: &str = "left-click/drag select; right-click move/attack
 /// selection/orders, then match/debug). The table fits the smallest
 /// supported window (800×600 logical) at the menu pass's line pitch.
 pub const CONTROLS_TABLE: &[(&str, &str)] = &[
-    ("Pan camera", "Arrows / right-drag"),
-    ("Rotate camera", "middle-drag"),
-    ("Zoom / pitch", "wheel / Ctrl+wheel"),
-    ("Select units", "left-click / left-drag"),
-    ("Move/Attack/Gather", "right-click"),
-    ("Attack-move", "A + left-click"),
-    ("Stop", "S"),
-    ("Control groups", "1-9 (Ctrl=assign, 2x=center)"),
-    ("Jump to event/base", "Space"),
-    ("Pause", "P"),
-    ("Cancel / open pause", "Esc (ladder)"),
-    ("Restart (after end)", "R"),
-    ("Single-step (paused)", "Period (.)"),
-    ("Debug overlay", "F10"),
-    ("Bug report", "F11"),
+    ("Pan camera", "Arrows / edge band / right-drag"),
+    ("Rotate camera", "middle-drag / Numpad 4-6"),
+    ("Zoom / pitch", "wheel / Numpad 8-2 / Ctrl+wheel"),
+    ("Reset camera", "Numpad 5"),
+    (
+        "Select / deselect",
+        "left-click / drag; empty ground deselects",
+    ),
+    ("Add to selection", "Shift+click or drag (never removes)"),
+    (
+        "Same kind / all combat",
+        "E / Q (twice: the whole visible map)",
+    ),
+    ("Control groups", "1-0 recall (Ctrl assign, 2x center)"),
+    (
+        "View a group / cycle units",
+        "Alt+1-0 / Ctrl+arrows (Up-Down: workers)",
+    ),
+    ("Jump to event / base", "Space / H"),
+    (
+        "Move / attack / gather",
+        "right-click (under 6 px of travel)",
+    ),
+    ("Attack-move / stop", "A + left-click / S"),
+    ("Guard / scatter", "G + left-click / X"),
+    (
+        "Waypoints",
+        "Alt + left-clicks (first replaces, rest queue)",
+    ),
+    ("Force-fire", "Ctrl + left-click - NOT YET AVAILABLE"),
+    ("Camera bookmarks", "F1-F8 jump / Ctrl+F1-F8 set"),
+    ("Command bar / objectives", "F9 / Tab (missions only)"),
+    ("Pause / step / rematch", "P / . / R"),
+    ("Cancel / open pause", "Esc (the ladder)"),
+    ("Debug overlay / bug report", "F10 / F11"),
 ];
 
 /// The armed-attack-move instruction (the HUD line shown while 'A' is

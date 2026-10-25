@@ -185,18 +185,20 @@ startup line and a silent game; every other system runs normally
 
 ## The Field Manual
 
-Controls follow **Generals: Zero Hour muscle memory** — the left hand of the
-mouse selects, the right hand commands.
+Controls follow **Generals: Zero Hour muscle memory** — a Zero Hour player
+sits down and every binding they try works.
 
 **Selection** — *left never issues an order*
 
 | input | effect |
 |---|---|
 | <kbd>Click</kbd> / <kbd>Left-drag</kbd> | select / box-select |
-| <kbd>Shift</kbd>+<kbd>Click</kbd> | add or remove one unit |
-| <kbd>Shift</kbd>+<kbd>Drag</kbd> | add the box's picks |
-| <kbd>Double-click</kbd> | select every visible unit of the same kind |
-| <kbd>Esc</kbd> | clear the selection |
+| <kbd>Click</kbd> empty ground | deselect |
+| <kbd>Shift</kbd>+<kbd>Click</kbd> / <kbd>Drag</kbd> | add (never remove — removal is a re-select) |
+| <kbd>Double-click</kbd> / <kbd>E</kbd> | select the same-kind units on screen (double-tap <kbd>E</kbd>: every visible one on the map) |
+| <kbd>Q</kbd> | select all combat units on screen (double-tap: every visible one on the map) |
+| <kbd>Ctrl</kbd>+<kbd>←</kbd>/<kbd>→</kbd>, <kbd>Ctrl</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> | cycle units / workers (one at a time, wrapping) |
+| <kbd>Esc</kbd> | clear the selection (the ladder's rung — see below) |
 
 **Command** — *right is the only way to order*
 
@@ -206,6 +208,10 @@ mouse selects, the right hand commands.
 | <kbd>Right-click</kbd> a single selected producer | set the rally point |
 | <kbd>A</kbd> | arm attack-move for the next left-click |
 | <kbd>S</kbd> | stop |
+| <kbd>G</kbd> | arm guard for the next left-click (a move; on arrival the unit stands and engages in-range targets) |
+| <kbd>X</kbd> | scatter (each selected unit hops one ring-ray out) |
+| <kbd>Alt</kbd>+<kbd>Click</kbd> | waypoints — the first click replaces the in-flight order, each later click queues it |
+| <kbd>Ctrl</kbd>+<kbd>Click</kbd> | force-fire — **not yet available** (planned) |
 
 A click under 6 px of travel orders; a right-drag beyond that grabs and
 scrolls the map instead, and the release then orders nothing.
@@ -214,19 +220,26 @@ scrolls the map instead, and the release then orders nothing.
 
 | input | effect |
 |---|---|
-| <kbd>Right-drag</kbd> / <kbd>Middle-drag</kbd> | scroll / rotate |
-| <kbd>WASD</kbd> / arrows / screen edges | pan |
-| <kbd>Q</kbd> / <kbd>E</kbd> | rotate |
-| <kbd>Wheel</kbd> / <kbd>Ctrl</kbd>+<kbd>Wheel</kbd> | zoom toward the cursor / tilt the pitch |
+| <kbd>Arrows</kbd> / screen edges / <kbd>Right-drag</kbd> | scroll |
+| <kbd>Middle-drag</kbd> / <kbd>Numpad 4</kbd>/<kbd>6</kbd> | rotate |
+| <kbd>Wheel</kbd> / <kbd>Numpad 8</kbd>/<kbd>2</kbd> | zoom (toward the cursor / at the view center) |
+| <kbd>Ctrl</kbd>+<kbd>Wheel</kbd> | tilt the pitch |
+| <kbd>Numpad 5</kbd> | reset the camera (yaw, pitch, distance) |
+| <kbd>F1</kbd>–<kbd>F8</kbd> / <kbd>Ctrl</kbd>+<kbd>F1</kbd>–<kbd>F8</kbd> | jump to / set a camera bookmark |
 
-**Groups & jumps**
+**Groups, jumps & interface**
 
 | input | effect |
 |---|---|
-| <kbd>1</kbd>–<kbd>9</kbd> / <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>9</kbd> | recall / assign a control group; double-tap centers on it |
-| <kbd>Space</kbd> | jump to the last death — or your base |
-| <kbd>Esc</kbd> | climb one rung per press: armed command → placement → selection → **pause menu** |
-| <kbd>P</kbd> · <kbd>F3</kbd> · <kbd>F8</kbd> · <kbd>R</kbd> | pause · debug overlay · bug-report dump · rematch |
+| <kbd>1</kbd>–<kbd>0</kbd> / <kbd>Ctrl</kbd>+<kbd>1</kbd>–<kbd>0</kbd> | recall / assign a control group; double-tap centers on it |
+| <kbd>Alt</kbd>+<kbd>1</kbd>–<kbd>0</kbd> | view a group (camera only, selection untouched) |
+| <kbd>Space</kbd> | jump to the last radar event — a death or an attack on your forces — or your base |
+| <kbd>H</kbd> | jump to your Command Center |
+| <kbd>F9</kbd> | toggle the command bar (minimap included) |
+| <kbd>Tab</kbd> | toggle the mission objectives panel (missions only) |
+| <kbd>Esc</kbd> | climb one rung per press: armed command → placement → selection → **pause menu** (Resign lives there, confirm-gated) |
+| <kbd>P</kbd> · <kbd>.</kbd> · <kbd>R</kbd> | pause · single-step (paused) · rematch |
+| <kbd>F10</kbd> · <kbd>F11</kbd> · <kbd>F12</kbd> | debug overlay · bug-report dump · screenshot — **F12 not bound** |
 
 The tester-facing copy of this card — and the playtest protocol around it — is
 [`docs/PLAYTEST.md`](docs/PLAYTEST.md).
@@ -281,7 +294,7 @@ an [ADR](docs/adr/README.md) with evidence — never a silent edit.
 
 A report that includes the seed and the tick is a **reproducible incident**;
 anything else is a war story. The windowed client writes the report for you:
-press <kbd>F8</kbd> at (or right after) the moment of the problem and it drops
+press <kbd>F11</kbd> at (or right after) the moment of the problem and it drops
 a replay record (`pandemonium-report-<seed>-tick<tick>.pdrp`) plus a sidecar
 `…-info.txt` carrying the seed, the tick, and the content identity. Attach
 both files to the issue; the replay re-verifies headlessly:
