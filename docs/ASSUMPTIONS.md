@@ -1278,3 +1278,98 @@ confirms or rejects it.
   release smoke remain the demo value's executable enforcement (the
   inventory is recorded truthfully in ci.yml's comment and AI-Handoff §2's
   baseline table).
+
+- **A-131 (A-013, PLAN-M11 §2 "kept, not reversed").** The right-drag
+  grab-scroll stays as the one camera deviation the card owns: Zero Hour's
+  right-drag is a velocity "rapid scroll", while Pandemonium's is M10.2's
+  grab-the-ground pan. The owner's M10.2 re-test passed the grab form, and
+  PLAN-M11 §5 item 6 keeps it explicitly rather than reversing it with the
+  other M10.2 decisions. The card says "right-drag scrolls"; it does not
+  claim the ZH velocity feel.
+- **A-132 (A-013, PLAN-M11 phase 3).** Guard is a plain Move
+  (`queue: false`) with no new CommandKind: on arrival the order completes,
+  the unit goes idle, and the sim's own law makes an idle unit engage
+  in-range targets without pursuing (combat's acquisition only commands
+  pursuit through an `AttackUnit` order, and movement only follows Orders —
+  `tests/combat.rs`'s `turret_attacks_but_does_not_move` and the chase-pop
+  discipline in `crates/sim/src/combat.rs::clear_dead_targets` pin those
+  facts). That IS Zero Hour guard under this simulation; the PLAN-M11 §4
+  citation names `out_of_range_attacker_does_not_hit_but_acquires` and "the
+  chase-pop suite" — no test carries those exact names on master (recorded
+  as a spec-vs-tree delta in the A-013 report); the behaviors they name are
+  the ones cited here.
+- **A-133 (A-013, PLAN-M11 phase 3).** X's scatter is a client-side
+  approximation of ZH's engine scatter: each selected own unit receives one
+  Move to its current position pushed `SCATTER_DISTANCE` (3.0 tiles) along
+  ray `index mod 8` of a ring, the index being the unit's position in the
+  ascending-id selection order. Deterministic, no RNG; the deviation from
+  ZH (which scatters around each unit's local crowd) is accepted and
+  carded as "each selected unit hops one ring-ray out".
+- **A-134 (A-013, PLAN-M11 phase 3).** The waypoint gesture semantics:
+  while Alt is held, each left click resolves exactly as a plain
+  right-click context order would (Move on ground, Attack/Gather on
+  entities, rally for a lone producer), with the first click of the gesture
+  replacing any in-flight order exactly once (`queue: false`) and every
+  later click appending (`queue: true`, the sim's existing queue arms).
+  Releasing Alt ends the gesture and sends nothing. The queued path draws
+  as the existing command pings — one frame-counted ground marker per
+  waypoint — rather than connected lines; the markers chain the path.
+- **A-135 (A-013, PLAN-M11 phase 2).** E's kind rule: a uniform selection
+  names its own kind; an empty or mixed selection (or one whose members are
+  all absent from the fog view) falls back to the most recently *clicked*
+  member's kind, recorded on every pick. E is inert until something has
+  been clicked (the card says so), and inert when the resulting set would
+  be empty (pressing E must never drop the selection to nothing — same for
+  Q).
+- **A-136 (A-013, PLAN-M11 phase 1).** F10/F11 for the relocated tools:
+  under the Xvfb machine pass (no window manager) both keys arrive —
+  `tests/xvfb/a013_phase1_f10_f11_probe.sh` proves F11's dump files and a
+  clean run through F10 — so the spec's GraveAccent fallback was not
+  needed. A real desktop's window manager may still claim F10 (menu-key
+  conventions); that risk is the owner's re-test to judge, and the card
+  names the keys either way.
+- **A-137 (A-013, PLAN-M11 phase 2).** The radar-event definition for
+  Space: the most recent of (a) any death the player can see (own or
+  visible enemy — the M10.2 rule, via `last_seen`) and (b) any attack that
+  landed on an own entity. Attacks BY own units on enemies are not radar
+  events. Ordering is event-arrival order within the chronological stream,
+  so the last update wins.
+- **A-138 (A-013, PLAN-M11 phase 2).** H resolves the command-center kind
+  through the engine plan's own producer rule (the first producer whose
+  producibles include no attacking kind) rather than the plan struct's
+  `command_center` field, because that field's `KindId(0)` fallback is the
+  barracks on this content — a wrong jump target. The client's
+  `command_center_kind` returns `None` when no such producer exists and H
+  falls back to the base anchor (also when no own CC is visible).
+- **A-139 (A-013, PLAN-M11 phase 2).** The unit cycle's anchor: the
+  highest-id selected member present among the candidates; with nothing
+  selected (or a selection of non-candidates — structures while
+  worker-cycling) the lowest-id candidate is selected regardless of
+  direction ("with nothing selected, select the lowest-id own unit"). A
+  multi-selection walks from its highest-id member; each cycle step
+  replaces the selection with the single next unit (ZH walks one at a
+  time).
+- **A-140 (A-013, PLAN-M11 phase 4).** Numpad 5's reset restores
+  `START_CAMERA_DISTANCE` (18.0 — M9.1's readable opening distance) rather
+  than the spec text's "26.0": the code's one named opening distance is the
+  single source of truth, and 26.0 appears nowhere else in the tree
+  (recorded as a spec-vs-code reading; the behavior — "reset to the
+  defaults" — is unchanged in spirit).
+- **A-141 (A-013, PLAN-M11 phase 2, the audit delta).** The double-click
+  same-kind select is now limited to the screen: PLAN-M11 §2's table marked
+  the row "unchanged (exists)" believing the existing code was
+  screen-limited, but `same_kind_selection` actually took every visible
+  same-kind unit on the map. The ZH target ("select same-type units on
+  screen") wins; the change is recorded here and in the report's audit
+  deltas.
+- **A-142 (A-013, PLAN-M11 phase 4).** Camera bookmarks are per-match and
+  in-memory (ZH-parity): a jump restores the stored five-tuple through the
+  camera's own clamp discipline — an off-map stored target clamps into the
+  live map, the distance clamps into the engine range, and the user's zoom
+  limits narrow it after (the same discipline every zoom mutation follows).
+  Persistence is DEBT-101, not a behavior.
+- **A-143 (A-013, PLAN-M11 phase 5).** The Resign row's successor screen
+  is InMatch (unpaused): the sim's stage-10 resignation rule ends the match
+  and the existing draw-loop promotion raises the end screen — the client
+  adds no new end-state path, it only submits the command that has existed
+  (and been pinned by sim tests) since M8.

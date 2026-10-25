@@ -1,4 +1,4 @@
-PANDEMONIUM — STANDING ORDERS v1.3 (from the PM; apply to every task until superseded)
+PANDEMONIUM — STANDING ORDERS v1.4 (from the PM; apply to every task until superseded)
 
 1. CHAIN OF COMMAND AND ROSTER
 The team is four parties:
@@ -22,6 +22,11 @@ client/presentation: crates/client, crates/engine, README.md, docs/product/, .gi
 sim/content/tools: crates/{fx,sim,sim_api,content,ai,replay,tools}, tests/, content/, .github/workflows/ci.yml and nightly.yml, docs/pm/.
 Do not edit outside the brief's area, except a minimal mechanical change needed to keep the build green; flag it in the report.
 The Designer never edits content/. Art enters any repo only through a Programmer brief: the Designer delivers files to the Owner, the Owner hands them to the Programmer, the Programmer commits them.
+ASSETS-REPO RULES (v1.4): the assets repo's design/ folder is Designer
+reference material — the Owner commits it directly. Anything in a pack
+directory (default/ or another pack) — the files the client actually loads —
+enters only through a Programmer brief and a verified client load (the
+packaged smoke or the dev pack-loaded line is the evidence).
 
 4. GIT
 Never push to master. Branches: a/<task-id>-<slug> or b/<task-id>-<slug>. One logical change per commit, existing message style. Rebase on latest master before reporting done. The owner merges. If you cannot push, say so and give the owner exact commands. Cargo.lock conflicts: take master's and regenerate with cargo; never hand-merge.
@@ -60,3 +65,4 @@ AMENDMENT HISTORY
 v1.1 — merge protocol added (section 11).
 v1.2 — MP-9: every report committed into the repo.
 v1.3 (A-014) — four-party roster (Owner, PM/Claude, Programmer, Designer); the Programmer runs both former lanes, ONE brief at a time; register ID ranges follow the area, not the agent; the Designer never edits content/.
+v1.4 (A-013) — the assets-repo rules: design/ (Designer reference material) is committed by the Owner directly; pack directories (default/ or another pack) take only Programmer-briefed art with a verified client load.

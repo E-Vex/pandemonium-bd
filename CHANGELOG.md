@@ -7,6 +7,58 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [M11] — Zero Hour controls parity (A-013, phases 0-5)
+
+The README claimed "Generals: Zero Hour muscle memory"; the owner sat down
+and ruled the claim false. This milestone makes the shipped control scheme
+actually the ZH scheme (phases 0-5 of `docs/PLAN-M11.md`; the force-fire sim
+seam — phase 6 — is held for its own brief, A-015). Presentation/input only:
+everything lives in `crates/client` and `crates/engine` above the sim
+boundary, and all four goldens re-verified bit-identical in both profiles.
+
+- **the keyboard freed (phase 1)**: W/A/S/D and Q/E lose their camera
+  duties (arrows are the keyboard scroll, as in ZH; A only arms
+  attack-move, S only stops); the tools relocate off the bookmark row
+  (debug overlay F3 → F10, bug report F8 → F11, Xvfb-verified arriving).
+  The in-match dispatch now reads ONE pure key table,
+  `input::actions::world_key_action`, shared with the tests that pin it.
+- **selection parity (phase 2)**: E selects same-kind on screen (double
+  tap: the whole visible map), Q selects all combat units (same double
+  tap), left-click on empty ground deselects again (the A-091 reversal),
+  shift+click is add-only (the toggle-remove is gone), control groups
+  extend to ten (Digit0), Alt+digit views a group without selecting,
+  Ctrl+arrows cycle units (Ctrl+up/down: workers) without panning, Space's
+  radar event broadens to attacks on own forces, and H jumps to the
+  Command Center resolved through the engine plan's own producer rule.
+- **unit modes (phase 3)**: G arms guard (a plain Move — on arrival the
+  unit stands and engages in-range targets without pursuing, which IS ZH
+  guard under this sim's laws; no new CommandKind), X scatters
+  deterministically along an 8-ray ring, and Alt+click chains waypoints —
+  the first click replaces the in-flight order once, later clicks queue
+  (the sim's existing `Command.queue` arms), proven end-to-end by walking
+  a real two-point queued path in order. The attack-move HUD line now
+  speaks ZH terms.
+- **camera parity (phase 4)**: Numpad 4/6 rotate, 8/2 zoom, 5 resets the
+  view; F1-F8 are camera bookmarks (Ctrl sets, jump restores the full
+  five-tuple through the clamp discipline); the minimap left-press became
+  a drag-pan; and the map-bounds regression is pinned (a match on the
+  96-tile map clamps to 96 — the audit's "never rebuilt" finding was
+  already fixed on master; this keeps it that way).
+- **interface parity (phase 5)**: F9 toggles the command bar (minimap
+  included; input falls through to the world), Tab toggles the mission
+  objectives panel, and the pause menu gains a confirm-gated Resign row
+  that submits the existing, never-before-sent `CommandKind::Resign` —
+  the vocabulary gap closes with zero sim changes. F12 (screenshot) is
+  not bound (DEBT-100).
+- **the truth pass (phase 7)**: README, PLAYTEST, QUICKSTART, and the
+  in-game Controls card rewritten so every line is literally true —
+  Ctrl+click force-fire is marked "not yet available". The owner's verdict
+  is recorded in `docs/PLAYTEST.md` §7; registers updated (A-131…A-143,
+  DEBT-100…102). The Xvfb+XTEST machine pass grew `a013_zh_controls.sh`
+  (nine checks: camera keys, selection keys, scatter, guard, waypoints,
+  F9/Tab, the minimap drag, and Resign to the end screen) and a010's 13
+  checks re-ran green after the pause-menu row shift.
+
 ## [Post-M10.2] — the soak instrument: A7's crash telemetry made real
 
 An engineering pass between milestones (the A14 playtest is scheduled and

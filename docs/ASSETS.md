@@ -31,6 +31,22 @@ identical state hashes because the pack never enters the simulation.
 The stray `war-*.wav` files at the repo root are gitignored by the `*.wav`
 rule and must not be `git add`-ed.
 
+### The assets repo's two zones (Standing Orders v1.4)
+
+The assets repo carries two kinds of directories with two different entry
+rules:
+
+- **`design/` — Designer reference material** (art bibles, palettes, concept
+  boards, role notes). The Owner commits it directly; no Programmer brief,
+  no client load — nothing in `design/` ever ships or loads.
+- **Pack directories — `default/` and any other pack** (the manifests and
+  files the client actually loads). These enter **only through a Programmer
+  brief and a verified client load**: the Designer delivers to the Owner,
+  the Owner relays a brief, the Programmer commits, and the load is proven
+  (the release pipeline's packaged smoke or the dev run's
+  `asset pack '...' loaded` line). Reference material that wants to ship
+  moves from `design/` into a pack through that same path.
+
 ## Asset pack system (implemented)
 
 The client can load an optional, local **asset pack** at startup. The pack is
@@ -64,8 +80,10 @@ Three delivery paths, one pack:
 3. **Players/artists**: drop any pack under `<exe_dir>/assets/packs/<name>/`
    or point `--pack <dir>` at it — always local, never hashed.
 
-The Designer never edits `content/` (Standing Orders v1.3): art enters a
-repo only through a Programmer brief, delivered via the Owner.
+The Designer never edits `content/` (Standing Orders v1.4): art enters a
+pack only through a Programmer brief and a verified client load, delivered
+via the Owner; Designer reference material lives in the assets repo's
+`design/` and the Owner commits it directly.
 
 ### Pack directory discovery
 

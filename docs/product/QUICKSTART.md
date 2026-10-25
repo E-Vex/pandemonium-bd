@@ -44,32 +44,44 @@ game still runs — see below.
 ## Controls (Generals: Zero Hour muscle memory)
 
 **Selecting** — **left-click** selects, **left-drag** box-selects; left never
-issues an order, and a click on empty ground does nothing (**Esc** clears
-the selection). **Shift+click** adds or removes one unit, **shift+drag** adds
-the box's picks, **double-click** selects every visible unit of the same kind.
+issues an order, and a click on empty ground deselects (**Esc** clears it
+too). **Shift+click** or **shift+drag** adds — never removes (removal is a
+re-select). **Double-click** or **E** selects the same-kind units on screen
+(**E** twice: every visible one on the map); **Q** selects all combat units
+on screen (twice: the whole visible map); **Ctrl+arrows** cycles your units
+one at a time (**Ctrl+up/down**: just the workers).
 
 **Commanding** — **right-click** is the only way to command: on an enemy it
 attacks, on an ore node it gathers (workers), on open ground it moves, and on
 a single selected producer it sets the rally point. A click under 6 px of
 travel orders; **right-drag** beyond that grabs and scrolls the map (the
 release then orders nothing). **A** arms attack-move for the next left-click,
-**S** stops.
+**S** stops, **G** arms guard (move there, then stand and fight what comes in
+range), **X** scatters, and **Alt+click** chains waypoints — the first click
+replaces the in-flight order, each later click queues it. **Ctrl+click**
+force-fire is **not yet available** (planned).
 
-**Camera** — **right-drag** scrolls, **middle-drag** rotates, **WASD /
-arrows / screen edges** pan, **Q / E** rotate, the **wheel** zooms toward the
-cursor, **Ctrl+wheel** tilts the pitch.
+**Camera** — **arrows / screen edges / right-drag** scroll, **middle-drag**
+or **Numpad 4/6** rotates, the **wheel** or **Numpad 8/2** zooms,
+**Ctrl+wheel** tilts the pitch, **Numpad 5** resets the view. **F1–F8** jump
+to camera bookmarks (**Ctrl+F1–F8** sets them).
 
-**Groups & jumps** — **1–9** recall control groups, **Ctrl+1–9** assigns,
-double-tap centers on the group. **Space** jumps to the last death (or your
-base). **Esc** climbs one rung per press: armed command → placement →
-selection → **pause menu**. **P** pauses without the menu, **F3** toggles the
-debug overlay, **F8** writes the bug-report dump, **R** restarts after the
-match ends.
+**Groups, jumps & interface** — **1–0** recall control groups,
+**Ctrl+1–0** assigns, double-tap centers on the group, **Alt+1–0** views it
+without selecting. **Space** jumps to the last radar event (a death or an
+attack on your forces; else your base), **H** jumps to your Command Center.
+**F9** toggles the command bar (minimap included), **Tab** toggles the
+mission objectives panel (missions only). **Esc** climbs one rung per press:
+armed command → placement → selection → **pause menu** (Resign lives there,
+confirm-gated). **P** pauses without the menu, **.** single-steps while
+paused, **R** restarts after the match ends. **F10** toggles the debug
+overlay, **F11** writes the bug-report dump; **F12** (screenshot) is not
+bound.
 
 ## Telling us what broke (the 30-second version)
 
-1. Press **F8** in-game — a bug report is written next to the executable.
-2. Note the build: run `pandemonium-client --version` (or read the F3
+1. Press **F11** in-game — a bug report is written next to the executable.
+2. Note the build: run `pandemonium-client --version` (or read the F10
    overlay's first line) — it prints the version, the exact commit, and the
    content hash.
 3. The seed you played: set it yourself in New Match (or pass `--seed N`).
