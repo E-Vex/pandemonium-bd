@@ -1423,3 +1423,67 @@ confirms or rejects it.
   client tree through it (the client already reads files and decodes PNG);
   `utils` is unused. Version pinned to the 1.4 line (1.4.1 on crates.io at
   2026-10-25; MIT OR Apache-2.0, both on the deny.toml allow-list).
+- **A-151 (A-017, M12 phase 1 — the crate's validator is never run).** The
+  loader parses through `Gltf::from_slice_without_validation` and validates
+  its own subset instead, because gltf-json's own validator indexes the
+  accessor table unchecked in its POSITION hook (`gltf-json/src/mesh.rs:151`,
+  `root.accessors[pos_index.value()]`) — the phase 1 fuzz loop caught the
+  reachable panic (a single corrupted byte in the POSITION accessor index
+  crashes validation before it can report). The loader's own checks are
+  total: every table access is `get`-guarded, every enum matched with its
+  `Invalid` arm, every byte range checked before any slice. The never-crash
+  promise (ADR-0101 §5) outranks the validator's convenience; what its
+  checks would have added beyond the loader's own (POSITION min/max
+  presence, unconsumed-section index sanity) is not needed to consume the
+  M12 subset safely.
+- **A-152 (A-017, M12 phase 1 — the subset's precise rejections).** Reading
+  "the ART_SPEC §10 subset validation" as a total, checkable rule: besides
+  the plan's listed rejection paths (oversized, malformed JSON, truncated
+  BIN, non-TRIANGLES mode, missing POSITION, non-PNG texture, non-OPAQUE
+  alpha), the loader also refuses precisely: no default scene, a scene with
+  nothing drawable, any external `uri` (buffer or image), an embedded image
+  without a mimeType (the exact input that panics the crate's high-level
+  `Image::source()` — refused here instead), a `texCoord` other than 0,
+  sparse accessors, attribute component types/dimensions outside
+  VEC3/VEC2-FLOAT and U8/U16/U32-SCALAR, indices referencing vertices past
+  the position count, and cyclic or >64-deep node hierarchies (the parser
+  checks neither — the recursion guard is the never-crash promise's
+  floor). Indexed or non-indexed both accepted; a non-indexed count that is
+  not a multiple of 3 is not refused (the renderer steps in threes; stray
+  vertices draw nothing and crash nothing).
+- **A-153 (A-017, M12 phase 2 — the v2 example is illustrative, not
+  literal).** Two spec-vs-RON deltas surfaced when the fixtures were
+  written: ron 0.9 rejects the parenthesized map-entry form ADR-0101 §4's
+  example shows for `sounds` — the working form is the plain
+  `"cue": "path"` map the v1 terrain map has always used; and the example's
+  `"select"` cue name is not in the engine's vocabulary (`SelectionClick`
+  is). The manifest contract is the working form checked against the real
+  nine-cue vocabulary — a pack copying the example verbatim gets two
+  precise errors naming both. The v2 floats are plain serde-defaulted
+  values (not `Some(..)` options) so the example's bare `scale: 1.0`
+  syntax is literally valid RON — absent and explicit-default remain
+  indistinguishable by design (both yield the same value; only the range
+  check matters).
+- **A-154 (A-017, M12 phase 2 — severity split and the single enforcement
+  point).** Manifest schema violations are fatal `PackError`s (unknown
+  fields, out-of-range floats, non-`.png` icons, unknown sound cues —
+  strict like path traversal, so an authored pack fails loudly at load),
+  while missing files stay non-fatal per-reference skips: a v2 entry
+  survives with its remaining references and an empty-primary placeholder
+  tier, but a missing v1 file still skips the whole entry (v1's pinned
+  behavior). The `model` field accepts any extension at the manifest layer
+  — the `.glb`-only rule is enforced at exactly one place, the loader's
+  `NotGlb` rejection, which serves both the v1 `.gltf` migration and a v2
+  `.gltf` model field identically. Per-reference diagnostics (model/skin/
+  icon/sound-not-readable) currently print one line each; phase 4's
+  fallback-chain brief unifies them under the A-146 one-line-per-kind
+  pin.
+- **A-155 (A-017, M12 phase 2 — `asset`/`resolved` are the renderable
+  primary).** The v1 `AssetEntry` fields keep their role as "the path the
+  pre-model renderer consumes": the skin when one is declared, else the
+  model, and **empty** when the entry declares neither (an icon/sounds-only
+  kind) — an empty primary reads as no asset through the untouched
+  `kind_of` filter in `render::texture`, so v1 rendering behavior is
+  preserved by construction and an icon-only kind renders the placeholder
+  instead of accidentally wearing its icon as a skin. Phase 3's model pass
+  reads the typed `model`/`skin` fields, not the primary.
