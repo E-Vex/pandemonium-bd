@@ -144,6 +144,11 @@ fn allowed_external() -> BTreeMap<&'static str, &'static [&'static str]> {
             "egui",
             "fontdue",
             "glam",
+            // gltf joined the client's allow-list with ADR-0101 (M12 model
+            // pipeline): glTF 2.0 binary parsing for the presentation pack's
+            // static entity models — client-only, parse-only, never in the
+            // sim's tree.
+            "gltf",
             "image",
             "pollster",
             "ron",

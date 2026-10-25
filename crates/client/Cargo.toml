@@ -20,6 +20,10 @@ bytemuck = { version = "1", features = ["derive"] }
 # png decoder rides along — no image-format zoo, no rayon.
 image = { version = "0.25", default-features = false, features = ["png"] }
 fontdue = "0.9"
+# glTF 2.0 binary parsing for the pack's static entity models
+# (ADR-0101): parse-only — no fs import (that would pull base64,
+# image, urlencoding), `names` for the team_color material lookup.
+gltf = { version = "1.4", default-features = false, features = ["names"] }
 pollster = "0.4"
 ron = "0.9"
 serde = { version = "1", features = ["derive"] }

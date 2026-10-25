@@ -23,6 +23,11 @@ use crate::text::{TextAtlas, UiQuad};
 
 mod entities;
 mod minimap;
+// The M12 Phase 1 pure-data GLB loader (ADR-0101): nothing in the renderer
+// consumes it until the Phase 3 model pass lands, so the module rides
+// allow(dead_code) until then — its own tests exercise it headless today.
+#[allow(dead_code)]
+mod model;
 mod overlay;
 mod pipeline;
 mod terrain;

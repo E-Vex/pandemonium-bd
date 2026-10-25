@@ -1,7 +1,7 @@
 # ADR-0101: The model pipeline — glTF static meshes, team-color tinting, and pack manifest schema 2
 
 - **Date:** 2026-10-25
-- **Status:** proposed (for owner sign-off)
+- **Status:** accepted (owner sign-off, 2026-10-25 — brief A-017)
 - **Frozen decision affected:** plan §3.2 / plan §4 dependency law — the `gltf`
   crate joins `pandemonium-client`'s external allow-list, following the
   ADR-0001 (`glam`) and ADR-0002 (`rodio`) precedent: client-only,
@@ -468,5 +468,15 @@ M12 scope (§4).
 
 ## Decision
 
-<Not yet filled in — proposed, awaiting the owner's sign-off per brief
-A-016.>
+**Accepted by the owner, 2026-10-25** — the model pipeline as specified
+is law: the `gltf` crate joins `pandemonium-client`'s external allow-list
+(parse-only, `names` feature — §7), the pack manifest contract gains
+`schema_version: 2` with v1 packs loading unchanged through the forward
+migration (§4), and the fallback chain with its one-diagnostic guarantee
+(§5) and the `METERS_PER_TILE = 3.0` seam (§6) bind every M12 phase. The
+first implementation brief (A-017, M12 phases 0-2) landed only after this
+verdict, exactly as §7's ordering requires: the allow-list line in
+`tests/architecture_law.rs` follows the acceptance, never precedes it.
+§1's current-state description is historical — it describes the tree
+*before* M12 (the placeholder-era `pack/mod.rs`, the
+"forward-looking" model extensions), not the tree at acceptance.
