@@ -7,7 +7,7 @@
 > This document fills the D-002 slot the art bible reserved ("the technical
 > asset spec (model format, poly budget, axes, export scale) arrives in
 > D-002 once the model pipeline exists" — art bible §9) and is the companion
-> of [ADR-0101](adr/0101-model-pipeline.md) (status: proposed).
+> of [ADR-0101](adr/0101-model-pipeline.md) (status: accepted, 2026-10-25).
 >
 > **What this is not.** Gameplay numbers do not live here and never will:
 > footprints, collision radii, selection sizes, vision, and stats come from
