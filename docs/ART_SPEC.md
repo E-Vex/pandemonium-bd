@@ -194,12 +194,17 @@ ship a mis-scaled or mis-facing export: origin, orientation, and scale per
 | `.glb`, size class XL | ≤ 8 MiB per file |
 | Client hard refuse (pre-parse) | 32 MiB — a larger file is never parsed; one diagnostic, fallback renders |
 | Icon PNG | ≤ 256 KiB, 128×128 |
-| Whole pack (all files) | ≤ 48 MiB — release archives ship the pack beside the binary |
 
-Budget honesty: the nine current kinds at their class caps sum to ≤ 28 MiB
-of models — the pack cap leaves room for icons, skins, and terrain without
-touching the archive budget that matters (A-014: the pack added ~2.5 MB to
-a ~8.1 MB archive; keep it in that spirit).
+The per-class caps and the pre-parse refuse are the enforced rules (the
+loader's `MAX_GLB_BYTES` carries the 32 MiB refuse; per-class caps are the
+delivery checklist's own gate). No pack-total cap is carried: nothing
+enforces one, and an unenforced number is documentation debt, not a limit
+(dropped per report A-016 §9 P5's cleanup, brief A-017). Budget honesty:
+the nine current kinds at their class caps sum to ≤ 28 MiB of models —
+headroom the release archive absorbs easily (A-014: the pack added ~2.5 MB
+to a ~8.1 MB archive; keep it in that spirit). If a future pack ever
+grows toward archive-budget pressure, the right move is a loader-enforced
+cap with its own diagnostic, not a number on this page.
 
 ## 10. What the pipeline does with your file (debugging map)
 
