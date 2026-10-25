@@ -1373,3 +1373,53 @@ confirms or rejects it.
   and the existing draw-loop promotion raises the end screen — the client
   adds no new end-state path, it only submits the command that has existed
   (and been pinned by sim tests) since M8.
+- **A-144 (A-016, ADR-0101 §4 — manifest v2 field semantics).** The PM's
+  per-entity field list (`model, scale, rotation_deg, ground_offset, icon,
+  optional sounds`) is completed with a `skin` field (the v1 PNG path's new
+  name): the PM's own fallback chain needs both tiers addressable for one
+  kind, and v1's string entries forward-migrate into `skin` (`.png`) or
+  `model` (`.glb`/`.gltf`). Defaults: `scale` 1.0 (range 0.05..=10.0),
+  `rotation_deg` 0.0 (−360..=360, yaw about +Y at the origin, applied
+  before scale), `ground_offset` 0.0 m (positive lifts), `icon`/`sounds`
+  absent. All are floats/data in the client's presentation tree only —
+  plan §5's float ban scopes to the determinism crates, which the pack
+  never touches.
+- **A-145 (A-016, ADR-0101 §6 — the meters/tile seam).** "1 tile = 3 m"
+  (art bible §6) becomes one named client constant `METERS_PER_TILE = 3.0`;
+  models author at 1 glTF unit = 1 m (the glTF spec's own unit) and the
+  pipeline divides by 3 at load. The renderer's world units stay tiles
+  (`mesh.rs` terrain vertices at integer tile corners; `silhouette.rs`
+  parts in tile units) — no camera or terrain change rides along.
+- **A-146 (A-016, ADR-0101 §5 — "one diagnostic" pinned).** The PM's "logs
+  one diagnostic" is read as: exactly one log line per failing kind per
+  run, emitted at startup load (deduplicated; a kind failing model *and*
+  skin logs once, naming the tier it landed on). Per-frame render paths
+  never resolve or log — presentation plans are built once at load, the
+  skin pipeline's "once, never per frame" rule generalized to models.
+- **A-147 (A-016, ADR-0200 §7 — which Lane A record this is).** ADR-0101
+  is the "later Lane A ADR" ADR-0200 §7 promised for presentation-pack
+  internals, scoped to the model slice (manifest entity fields + model
+  loading). The §7 *common* manifest fields (id, version, kind, engine-api
+  range, content-schema range, dependencies, licence, author) stay deferred
+  until the mod/pack era — v2 carries only what M12 consumes or pins,
+  refusing the abstraction ADR-0200 §8 itself forbids.
+- **A-148 (A-016, milestone numbering).** "M12" continues the post-M10
+  handoff status-board convention (M10.2, M11, Mission Phase 1 preceded it
+  there; `plan.md` §14 itself still ends at M10). No `PLAN-M12.md` is
+  authored by this brief — the phased plan with acceptance tests lives in
+  the A-016 report §12, for the PM to lift into briefs (or a PLAN doc) when
+  M12 starts.
+- **A-149 (A-016, art bible §6 vs content).** Two width rows disagree with
+  content collision data: rifleman (bible 0.6 tile; content
+  `radius_milli_tiles: 350` → 0.7 diameter) and raider (bible 0.8; content
+  300 → 0.6). Content wins (hashed, tested, balanced); ART_SPEC §4 encodes
+  the content-derived numbers, and the bible rows are flagged for an
+  Owner-side correction in `design/` (report A-016 §9 P1) — models follow
+  content, not the two stale rows.
+- **A-150 (A-016, ADR-0101 §7 — the gltf pin).** The dependency is
+  `gltf = { version = "1.4", default-features = false, features = ["names"] }`
+  — `names` is required for the `team_color` material lookup; `import` is
+  deliberately avoided so `base64`/`image`/`urlencoding` never enter the
+  client tree through it (the client already reads files and decodes PNG);
+  `utils` is unused. Version pinned to the 1.4 line (1.4.1 on crates.io at
+  2026-10-25; MIT OR Apache-2.0, both on the deny.toml allow-list).
