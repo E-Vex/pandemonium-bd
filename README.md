@@ -258,10 +258,10 @@ main menu, the match setup screen, and a match in progress:
 | | |
 |---|---|
 | **Stage** | M10.2 complete — the Alpha awaits one thing: **A14, the human playtest** (five first-time tester slots, [`docs/PLAYTEST.md`](docs/PLAYTEST.md)) |
-| **Tests** | 570+ automated, green in dev **and** release (the five should-panic invariants are debug-only) |
+| **Tests** | 907 dev / 902 release, green in both profiles (the five should-panic invariants are debug-only) |
 | **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
 | **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x6e9a18bd7c5f699f` (seed 7 · 7,200 ticks · AI vs AI) · content `0x9bc18c521107b262` — bit-identical across every change |
-| **In flight** | the mission system's first phase ([ADR-0201](docs/adr/0201-missions-campaigns-cutscenes.md)): Crossroads 01 — destroy the enemy command center |
+| **In flight** | M12, the model pipeline ([ADR-0101](docs/adr/0101-model-pipeline.md)): glTF static meshes rendered per kind down the model → skin → placeholder chain — the first official-pack delivery is the pending half |
 
 The live status board is [`AI-Handoff.md`](AI-Handoff.md) — an out-of-date
 handoff is treated as a bug. The Alpha's *system* properties are declared

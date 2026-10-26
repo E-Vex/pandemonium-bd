@@ -7,6 +7,61 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [M12] — the model pipeline (ADR-0101: A-016 spec · A-017 phases 0-2 · A-018 phases 3-4 · A-019 phase 5)
+
+The client drew every entity as an instanced box silhouette (wearing a PNG
+skin since A-014) and its own docs said "No GLB loading is coming". ADR-0101
+(owner-accepted 2026-10-25) chose glTF static meshes, team-color tinting,
+and pack manifest schema 2; this milestone lands the whole pipeline,
+presentation-only end to end (one allow-list line in the architecture law,
+zero sim-tree files, zero content edits, all four goldens bit-identical).
+
+- **the data layer (phases 0-2, A-017)**: the `gltf` crate joins the
+  client's allow-list parse-only (`names` feature only — nothing below it
+  but gltf-json/serde_json, asserted by cargo tree); `render/model.rs` is
+  the pure-data GLB loader — the ART_SPEC subset (self-contained `.glb`,
+  embedded PNG textures, `TRIANGLES`, `OPAQUE` alpha, the 32 MiB pre-parse
+  cap), 19 precise rejection paths and never a panic (the 10k-iteration
+  fuzz loop caught gltf-json's own validator panic before it shipped,
+  A-151); the pack manifest gains `schema_version: 2` — typed per-kind
+  entries with `model`/`skin`/`icon`/`sounds` and the placement fields
+  `scale`/`rotation_deg`/`ground_offset` — with v1 packs migrating forward
+  at load, unchanged.
+- **the renderer pass (phase 3, A-018)**: kinds whose model loads draw the
+  real glTF mesh — instanced per-primitive per-kind from the same
+  fog-filtered snapshot the boxes use; the orientation seam is pinned by
+  direction-pinned tests at yaw 0 and yaw 90 with the handedness proof
+  (`bake_gltf_to_entity`: `(x, y, z) → (−z, y, x)`; the correct-handed
+  yaw, A-156); `METERS_PER_TILE = 3.0` lives as the one named constant in
+  `render/entities/mod.rs`; the material named `team_color` multiplies the
+  owning player's color; the manifest placement bakes once at upload.
+- **the fallback chain (phase 4, A-018)**: each kind's presentation is
+  model → skin → placeholder, resolved once at startup (the walk is lazy —
+  a kind whose model wins never decodes its skin) with the A-146 pin made
+  structural: at most ONE diagnostic line per failing kind per run,
+  naming the tier it landed on — proven live by a full `--frames 900` run
+  grepping the corrupted-model diagnostic exactly once.
+- **the pilot pack (A-018)**: `scripts/make-pilot-pack.sh` builds a
+  schema-2 pack outside the repository from the three staged D-002 `.glb`
+  models plus the official pack's skins and terrain, read-only;
+  `cargo run -p pandemonium-client -- --pack /tmp/pandemonium-pilot-pack`
+  shows the models (three Xvfb frames ride in the A-018 report; the look
+  is the owner's eyes, per Standing Orders §8).
+- **the truth pass (phase 5, A-019)**: `docs/ASSETS.md` now matches the
+  shipped behavior — the models row ("loaded and rendered as static
+  meshes"), the manifest v2 fields, the fallback chain, the
+  one-diagnostic-per-kind rule, the pilot-pack script, and the honest
+  terrain-texture state (#50's single whole-map tint, per-class sampling
+  still pending) — and the retired "No GLB loading is coming" sentence is
+  gone; `docs/ARCHITECTURE.md`'s render map names `render/model.rs`, the
+  model pass, and `METERS_PER_TILE`; ADR-0101 §6 records the
+  implementation seam; README and AI-Handoff counts and status synced.
+
++56 tests total (907 dev / 902 release, both green). The first
+official-pack delivery through the Standing Orders v1.4 path (Designer →
+Owner → Programmer brief → verified client load) is the pending half —
+A-020's brief.
+
 ## [M11] — Zero Hour controls parity (A-013, phases 0-5)
 
 The README claimed "Generals: Zero Hour muscle memory"; the owner sat down
