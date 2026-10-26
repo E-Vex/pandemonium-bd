@@ -358,12 +358,21 @@ comparison. The module boundaries below are the code as it stands; plan §19's
 presentation rewrite stays scheduled and starts from these seams:
 
 - `render/` — the wgpu renderer split by pipeline: `mod.rs` (the
-  `WgpuRenderer` surface, the `Renderer` frame pass, the shared `DECAL_LIFT`)
-  + `pipeline/` (device, surface, common bind groups — the constructor and
-  the surface lifecycle; the shared decal instance buffer is born here, per
-  the AI-Handoff §9 ordering gotcha), `terrain/` (the terrain shaders, the
-  GPU vertex copy, the fog uniform + alpha consts), `entities/` (the
-  silhouette pass, team palette, shadow stream, death fades),
+  `WgpuRenderer` surface, the `Renderer` frame pass, the shared `DECAL_LIFT`,
+  and — since M12 — `build_model_pass`, the startup walk that runs each
+  kind through the fallback chain model → skin → placeholder and uploads
+  the winners) + `pipeline/` (device, surface, common bind groups — the
+  constructor and the surface lifecycle; the shared decal instance buffer
+  is born here, per the AI-Handoff §9 ordering gotcha), `terrain/` (the
+  terrain shaders, the GPU vertex copy, the fog uniform + alpha consts),
+  `model.rs` (M12 phase 1: the pure-data GLB loader — parse and
+  conversion only, no GPU: the ART_SPEC subset with a precise
+  `ModelLoadError` per rejection, node transforms baked, the 32 MiB
+  pre-parse cap), `entities/` (the silhouette pass, team palette, shadow
+  stream, death fades — and, since M12 phase 3, the model pass's
+  per-kind instance stream with the orientation seam
+  (`bake_gltf_to_entity`, `entity_yaw_rotate`) and `METERS_PER_TILE =
+  3.0`, the meters-to-tiles constant),
   `overlay/` (the decal geometry + the ring streams), `minimap/` (the
   minimap shader, geometry, and the marker painter).
 - `app/` — the non-input application state: the `App` struct (moved out of
