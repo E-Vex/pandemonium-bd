@@ -434,6 +434,23 @@ impl WgpuRenderer {
             }
         }
 
+        // The model pass (M12 phase 3, ADR-0101): one call builds the whole
+        // pass — pipeline, instance buffer, per-kind uploads, evidence
+        // lines. Everything model-shaped lives in `render/mod.rs`'s
+        // `build_model_pass`; this constructor only hands its result to the
+        // struct.
+        let model_pass = Self::build_model_pass(ModelPassInputs {
+            device: &device,
+            queue: &queue,
+            pipeline_layout: &entity_pipeline_layout,
+            skin_layout: &entity_skin_layout,
+            skin_sampler: &entity_skin_sampler,
+            placeholder_skin: &entity_skins[0],
+            pack: pack.as_ref(),
+            kind_names: &kind_names,
+            format: config.format,
+        });
+
         // The UI overlay pass (plan §11.4 HUD + §11.6 debug overlays): the
         // glyph atlas as an R8Unorm texture, a screen-size uniform, an
         // alpha-blended pipeline, and a dynamic vertex stream.
@@ -1083,6 +1100,11 @@ impl WgpuRenderer {
             entity_instance_capacity,
             entity_skins,
             kind_skin_slots,
+            model_pipeline: model_pass.pipeline,
+            model_instance_buf: model_pass.instance_buf,
+            model_instance_capacity: model_pass.capacity,
+            kind_models: model_pass.models,
+            kind_renders_model: model_pass.kind_renders_model,
             atlas,
             screen_buffer,
             screen_bind_group,
