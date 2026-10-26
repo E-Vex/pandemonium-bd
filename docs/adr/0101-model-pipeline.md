@@ -260,6 +260,25 @@ conflated a presentation constant with a gameplay authority, and §6 of the
 bible is the wrong source to cite for collision truth. ART_SPEC cites both,
 correctly labeled.
 
+Implementation note (M12 phase 3, A-018; recorded per that report's §9 P1
+— no decision above changes): "−Z → forward" is pinned in code as
+`bake_gltf_to_entity` in `render/entities/mod.rs` — the fixed basis bake
+`(x, y, z) → (−z, y, x)`, a proper rotation (determinant +1, never a
+mirror) that puts the model's glTF forward (−Z) on the yaw-0 facing (+X,
+east) and its right (+X) on +Z, exactly where a box silhouette carries
+right-hand parts. The per-instance yaw then uses the *correct-handed*
+form (`c·x − s·z, s·x + c·z` — the transposed convention
+`build_entity_instances` maps part offsets with), deliberately not the box
+shader's mirrored form, because authored geometry must turn toward its
+facing. The motivating finding (A-018 report §8): the renderer's world —
+x-east, y-up, z-north, facing at `yaw = atan2(facing.z, facing.x)` —
+reads rotations about +Y as the mirror of the glTF authoring convention,
+which is why the box shader's form reads "mirrored" against `atan2` and
+why the model yaw needed the transposed form. Both ends are
+direction-pinned at yaw 0 (east) and yaw 90° (north), with the bake's
+handedness and the right/up convention each carrying their own test —
+assumption A-156 records the full math.
+
 ### 7. Dependency: the `gltf` crate joins the client allow-list (the exact change)
 
 The pipeline's parser is the `gltf` crate ([gltf-rs/gltf](https://github.com/gltf-rs/gltf)),
