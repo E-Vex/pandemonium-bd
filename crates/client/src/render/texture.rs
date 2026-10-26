@@ -8,8 +8,6 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use crate::pack::{AssetEntry, AssetKind, AssetPack};
-
 /// The largest texture dimension the renderer accepts, per side. Generous
 /// for entity art (a box face is a handful of tiles on screen) while keeping
 /// a decoded image — and its GPU copy — inside 16 MiB RGBA8, well under the
@@ -113,41 +111,6 @@ pub(super) fn decode_png(path: &Path) -> Result<DecodedTexture, TextureLoadError
         height,
         rgba: rgba.into_raw(),
     })
-}
-
-/// One kind's resolved texture plan: the kind id (for diagnostics and GPU
-/// labels) and the validated PNG path the renderer will open.
-#[derive(Clone, Debug)]
-pub(super) struct KindTexturePlan {
-    pub(super) kind: String,
-    pub(super) path: PathBuf,
-}
-
-/// Resolves which kinds get a PNG skin from the pack: per kind name (aligned
-/// with `kind_specs` by index), the pack's entity entry — but only when it
-/// is a texture the renderer can actually consume. A `.glb` entry, an
-/// unmapped kind, or no pack at all yields `None`, and the kind keeps its
-/// placeholder silhouette. This is the seam where "declared" and "rendered"
-/// stay distinct: an entry only becomes a plan when the renderer can load
-/// it, so nothing downstream mistakes a parsed manifest line for an
-/// in-memory texture.
-pub(super) fn resolve_kind_textures(
-    pack: Option<&AssetPack>,
-    kind_names: &[String],
-) -> Vec<Option<KindTexturePlan>> {
-    kind_names
-        .iter()
-        .map(|kind| {
-            let pack = pack?;
-            let entry: &AssetEntry = pack.asset_for(kind)?;
-            let is_loadable_texture =
-                AssetPack::kind_of(entry.resolved.as_path()) == Some(AssetKind::Texture);
-            is_loadable_texture.then(|| KindTexturePlan {
-                kind: kind.clone(),
-                path: entry.resolved.clone(),
-            })
-        })
-        .collect()
 }
 
 /// One uploaded entity skin: the GPU texture (kept alive explicitly — the
@@ -408,72 +371,8 @@ mod tests {
         assert_eq!(white.rgba, vec![255, 255, 255, 255]);
     }
 }
-
-#[cfg(test)]
-mod resolve_tests {
-    use super::*;
-
-    /// A minimal pack on disk: manifest plus the referenced files, so
-    /// entries resolve inside the pack root.
-    fn pack_with(manifest: &str, files: &[(&str, &[u8])]) -> Option<AssetPack> {
-        let dir = std::env::temp_dir().join(format!(
-            "pandemonium-plan-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(dir.join("textures")).expect("creating pack dirs");
-        std::fs::create_dir_all(dir.join("models")).expect("creating models dir");
-        for (name, bytes) in files {
-            let path = dir.join(name);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("creating file parent");
-            }
-            std::fs::write(&path, bytes).expect("writing pack file");
-        }
-        std::fs::write(dir.join("manifest.ron"), manifest).expect("writing manifest");
-        AssetPack::load(&dir).expect("the pack loads")
-    }
-
-    #[test]
-    fn only_png_entries_become_plans() {
-        let pack = pack_with(
-            r#"(
-                pack_id: "t", schema_version: 1,
-                entities: {
-                    "rifleman": "textures/rifleman.png",
-                    "command_center": "models/command_center.glb",
-                },
-            )"#,
-            &[
-                ("textures/rifleman.png", b"fake png"),
-                ("models/command_center.glb", b"fake glb"),
-            ],
-        )
-        .expect("pack exists");
-        let names = vec!["rifleman".to_string(), "command_center".to_string()];
-        let plans = resolve_kind_textures(Some(&pack), &names);
-        // The PNG is a plan the renderer can load...
-        let rifleman = plans[0].as_ref().expect("the png entry plans a texture");
-        assert_eq!(rifleman.kind, "rifleman");
-        assert!(rifleman.path.ends_with("rifleman.png"));
-        // ...the GLB is not: models stay placeholder until model loading
-        // lands, declared-but-not-renderable is exactly the distinction.
-        assert!(
-            plans[1].is_none(),
-            "a model entry must not plan a texture load"
-        );
-    }
-
-    #[test]
-    fn unmapped_kinds_and_no_pack_plan_nothing() {
-        // No pack at all: every kind plans nothing.
-        let plans = resolve_kind_textures(None, &["rifleman".to_string()]);
-        assert!(plans[0].is_none());
-        // A pack without the kind mapped: same answer.
-        let pack = pack_with(r#"( pack_id: "t", schema_version: 1, )"#, &[]).expect("pack exists");
-        let plans = resolve_kind_textures(Some(&pack), &["rifleman".to_string()]);
-        assert!(plans[0].is_none());
-    }
-}
+// (The resolve_kind_textures plan tests that lived here moved out with the
+// function: M12 phase 4's chain resolution — pack/mod.rs's
+// resolve_presentation suite and render/mod.rs's model pass — owns the
+// declared-vs-renderable distinction now, reading the typed model/skin
+// fields per A-155 instead of planning off the v1 primary.)

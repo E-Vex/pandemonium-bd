@@ -60,6 +60,8 @@ pub struct ModelData {
     pub materials: Vec<MaterialData>,
     /// The index of the first material named `team_color` (ADR-0101 §3);
     /// `None` when the model carries none.
+    #[allow(dead_code)] // the resolution's index output, pinned by the loader suite;
+    // the conversion reads the per-material flag instead
     pub team_color: Option<usize>,
     /// How many materials are named `team_color` — 0 or 1 is clean; more
     /// than one resolves to the first and is reported by the caller as one
@@ -166,6 +168,16 @@ pub enum ModelLoadError {
     },
     #[error("the index buffer references vertex {index} but the primitive has {count} positions")]
     InvalidIndices { index: u32, count: usize },
+    #[error(
+        "primitive {index}'s {semantic} accessor holds {found} elements but POSITION holds {expected} \
+         — one primitive's attributes must agree (glTF 2.0 §3.6.2)"
+    )]
+    AttributeCountMismatch {
+        index: usize,
+        semantic: &'static str,
+        expected: usize,
+        found: usize,
+    },
     #[error("the node hierarchy is invalid at node {node} ({reason})")]
     InvalidNodeHierarchy { node: usize, reason: &'static str },
     #[error("the GLB has no default scene — nothing to draw")]
@@ -511,12 +523,44 @@ impl<'a> Loader<'a> {
             position_accessor.ok_or(ModelLoadError::MissingPositions { index })?;
 
         let mut positions = self.read_vec3(position_accessor, "POSITION")?;
+        // A primitive's attribute accessors must all carry the same element
+        // count (glTF 2.0 §3.6.2); the parser does not check it, and the
+        // phase 3 conversion indexes normals/uvs position-wise — so the
+        // mismatch is refused here, precisely, instead of panicking later.
+        let normal_accessor_len = normal_accessor
+            .map(|accessor| self.accessor_count(accessor))
+            .transpose()?;
+        let uv_accessor_len = uv_accessor
+            .map(|accessor| self.accessor_count(accessor))
+            .transpose()?;
+        if let Some(found) = normal_accessor_len {
+            if found != positions.len() {
+                return Err(ModelLoadError::AttributeCountMismatch {
+                    index,
+                    semantic: "NORMAL",
+                    expected: positions.len(),
+                    found,
+                });
+            }
+        }
+        if let Some(found) = uv_accessor_len {
+            if found != positions.len() {
+                return Err(ModelLoadError::AttributeCountMismatch {
+                    index,
+                    semantic: "TEXCOORD_0",
+                    expected: positions.len(),
+                    found,
+                });
+            }
+        }
         let normal_matrix = Mat3::from_mat4(world).inverse().transpose();
         for position in positions.iter_mut() {
             *position = world
                 .transform_point3(Vec3::from_array(*position))
                 .to_array();
         }
+        // The count check above proved normals/uvs align with positions,
+        // so the position-wise indexing below cannot go out of bounds.
         let normals = match normal_accessor {
             Some(accessor) => {
                 let mut normals = self.read_vec3(accessor, "NORMAL")?;
@@ -568,6 +612,17 @@ impl<'a> Loader<'a> {
             indices,
             material,
         })
+    }
+
+    /// An accessor's element count (the bounds-checked table lookup only —
+    /// no bytes read).
+    fn accessor_count(&self, accessor_index: usize) -> Result<usize, ModelLoadError> {
+        let accessor = self
+            .root
+            .accessors
+            .get(accessor_index)
+            .ok_or_else(|| ModelLoadError::Parse("accessor index out of range".to_string()))?;
+        Ok(accessor.count.0 as usize)
     }
 
     /// Reads a `VEC3` `FLOAT` accessor.
@@ -774,6 +829,210 @@ fn read_f32(data: &[u8], offset: usize) -> f32 {
         data[offset + 2],
         data[offset + 3],
     ])
+}
+
+// ---------------------------------------------------------------------------
+// The phase 3 conversion: ModelData (meters, glTF basis) to GPU-ready
+// vertices (tiles, entity basis, per-kind placement baked). Still pure data
+// — no wgpu types, unit-testable headless; the renderer's constructor runs
+// it exactly once per loaded model and never again (A-146's build-once
+// discipline, the skin pipeline's rule generalized to models).
+// ---------------------------------------------------------------------------
+
+/// One GPU-ready model vertex (48 bytes): the loader's meters converted to
+/// the renderer's tile space, the fixed glTF-to-entity basis baked in, and
+/// the material's per-primitive data riding along (the albedo the fragment
+/// multiplies, and the team-tint flag in `base_color.w` — 1.0 on the
+/// `team_color` material's vertices, .0 everywhere else).
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct ModelVertex {
+    /// Position in tiles: glTF meters scaled, yawed by the manifest's
+    /// `rotation_deg`, lifted by `ground_offset`, divided by
+    /// [`METERS_PER_TILE`](super::entities::METERS_PER_TILE), and rotated
+    /// onto the entity basis (−Z forward → +X east) — all baked once here.
+    pub position: [f32; 3],
+    /// The matching normal (same rotations; uniform scale never skews it).
+    pub normal: [f32; 3],
+    /// `TEXCOORD_0`, or `(0, 0)` when the primitive carries none (a
+    /// textured material then samples one texel — degenerate, never a
+    /// crash; Blender exports always write UVs).
+    pub uv: [f32; 2],
+    /// `.xyz` the material's albedo factor (white when the albedo is a
+    /// texture — the texel modulates instead); `.w` the team-tint flag.
+    pub base_color: [f32; 4],
+}
+
+/// One primitive converted for the GPU: its vertex stream (flat normals
+/// generated when the file carried none, per ART_SPEC §5), its index stream
+/// when the file had one, and the material slice the renderer needs to
+/// build the draw's group(1) binding.
+#[derive(Clone, Debug)]
+pub struct GpuPrimitive {
+    /// The converted vertices, one entry per (possibly duplicated) vertex.
+    pub vertices: Vec<ModelVertex>,
+    /// The file's indices when it carried an index buffer.
+    pub indices: Option<Vec<u32>>,
+    /// The material's base-color factor — what the vertices' `base_color`
+    /// already carry; kept for the renderer's labels and tests.
+    #[allow(dead_code)] // rides every vertex already; kept for tests and labels
+    pub factor: [f32; 3],
+    /// The material's embedded PNG bytes when the albedo is a texture —
+    /// the renderer decodes and uploads it as this primitive's group(1).
+    pub texture: Option<Vec<u8>>,
+    /// This primitive's material is the `team_color` material
+    /// (ADR-0101 §3 — its vertices carry the team-tint flag).
+    #[allow(dead_code)] // rides every vertex already; kept for tests and labels
+    pub team_tint: bool,
+}
+
+/// The manifest's per-kind model placement (A-144/ADR-0101 §4): the pack's
+/// art fixes, range-validated at manifest load and applied here exactly
+/// once — `rotation_deg` yaws the model about its origin (glTF
+/// right-handed, counterclockwise seen from above) *before* `scale`
+/// multiplies uniformly in meters and `ground_offset` lifts (positive) or
+/// sinks (negative) the result, still in meters, before the
+/// meters-to-tiles division.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelPlacement {
+    /// Uniform scale in meters (default 1.0).
+    pub scale: f32,
+    /// Yaw about the origin, degrees (default 0.0).
+    pub rotation_deg: f32,
+    /// Vertical lift in meters (default 0.0).
+    pub ground_offset: f32,
+}
+
+impl Default for ModelPlacement {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            rotation_deg: 0.0,
+            ground_offset: 0.0,
+        }
+    }
+}
+
+/// Converts one loaded model into GPU-ready primitives: every vertex is
+/// rotated by `rotation_deg`, scaled by `scale`, lifted by `ground_offset`,
+/// divided by `METERS_PER_TILE`, and rotated onto the entity basis; the
+/// per-material albedo and team flag ride the vertices; primitives whose
+/// file carried no normals get true flat normals (each triangle's face
+/// normal, vertices duplicated per triangle so shading stays faceted).
+/// Pure — the renderer uploads the result once and never recomputes it.
+pub fn gpu_primitives(
+    model: &ModelData,
+    placement: &ModelPlacement,
+    meters_per_tile: f32,
+    bake: fn([f32; 3]) -> [f32; 3],
+) -> Vec<GpuPrimitive> {
+    let yaw = placement.rotation_deg.to_radians();
+    let (sin, cos) = yaw.sin_cos();
+    // glTF's right-handed yaw about +Y, applied in the model's own meters
+    // before anything else (A-144: rotation, then scale, then ground
+    // offset) — the same Ry(φ) the loader's node transforms use.
+    let rotate = |v: [f32; 3]| [cos * v[0] + sin * v[2], v[1], -sin * v[0] + cos * v[2]];
+    // The full vertex pipeline: rotate → scale → lift → meters-to-tiles →
+    // the fixed glTF-to-entity basis (the `bake` fn, injected so this
+    // module stays independent of the entities module's constants).
+    let place = |v: [f32; 3]| {
+        let rotated = rotate(v);
+        let scaled = [
+            rotated[0] * placement.scale,
+            rotated[1] * placement.scale + placement.ground_offset,
+            rotated[2] * placement.scale,
+        ];
+        let tiles = [
+            scaled[0] / meters_per_tile,
+            scaled[1] / meters_per_tile,
+            scaled[2] / meters_per_tile,
+        ];
+        bake(tiles)
+    };
+    let mut out = Vec::with_capacity(model.primitives.len());
+    for primitive in &model.primitives {
+        let material = primitive.material.and_then(|i| model.materials.get(i));
+        let (factor, texture) = match material.map(|m| &m.albedo) {
+            Some(Albedo::Texture(bytes)) => ([1.0, 1.0, 1.0], Some(bytes.clone())),
+            Some(Albedo::Factor(rgba)) => ([rgba[0], rgba[1], rgba[2]], None),
+            None => ([1.0, 1.0, 1.0], None), // the glTF default material
+        };
+        let team_tint = material.is_some_and(|m| m.team_color);
+        let base_color = [
+            factor[0],
+            factor[1],
+            factor[2],
+            if team_tint { 1.0 } else { 0.0 },
+        ];
+        let positions: &[[f32; 3]] = &primitive.positions;
+        let uvs = primitive.uvs.as_ref();
+        let mut vertices: Vec<ModelVertex> = Vec::with_capacity(positions.len());
+        match primitive.normals.as_ref() {
+            Some(normals) => {
+                for (index, position) in positions.iter().enumerate() {
+                    vertices.push(ModelVertex {
+                        position: place(*position),
+                        normal: bake(rotate(normals[index])),
+                        uv: uvs
+                            .and_then(|u| u.get(index).copied())
+                            .unwrap_or([0.0, 0.0]),
+                        base_color,
+                    });
+                }
+            }
+            None => {
+                // Flat normals (ART_SPEC §5): every triangle's face normal
+                // on its own three vertices, duplicated so facets stay
+                // facets. Non-indexed soup steps in threes (A-152).
+                let triangles: Vec<[usize; 3]> = match &primitive.indices {
+                    Some(indices) => indices
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize])
+                        .collect(),
+                    None => (0..positions.len() / 3)
+                        .map(|t| [t * 3, t * 3 + 1, t * 3 + 2])
+                        .collect(),
+                };
+                for &[a, b, c] in &triangles {
+                    let pa = Vec3::from_array(positions[a]);
+                    let pb = Vec3::from_array(positions[b]);
+                    let pc = Vec3::from_array(positions[c]);
+                    // normalize_or_zero: a degenerate triangle's zero cross
+                    // yields the zero normal, never NaN.
+                    let face = (pb - pa).cross(pc - pa).normalize_or_zero().to_array();
+                    for &index in &[a, b, c] {
+                        vertices.push(ModelVertex {
+                            position: place(positions[index]),
+                            normal: bake(rotate(face)),
+                            uv: uvs
+                                .and_then(|u| u.get(index).copied())
+                                .unwrap_or([0.0, 0.0]),
+                            base_color,
+                        });
+                    }
+                }
+            }
+        }
+        // An indexed primitive keeps its file indices (they still address
+        // the same vertices); the flat-normal expansion above makes an
+        // indexed-and-normal-less primitive's stream non-indexed instead,
+        // since its vertices were duplicated per triangle.
+        let indices = if primitive.normals.is_some() {
+            primitive.indices.clone()
+        } else {
+            None
+        };
+        out.push(GpuPrimitive {
+            vertices,
+            indices,
+            factor,
+            texture,
+            team_tint,
+        });
+    }
+    out
 }
 
 #[cfg(test)]

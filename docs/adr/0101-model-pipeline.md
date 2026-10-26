@@ -151,12 +151,18 @@ Consequence — the v2 shape (RON, `deny_unknown_fields` stays on,
             rotation_deg: 0.0,     // optional, default 0.0, -360.0..=360.0
             ground_offset: 0.0,    // optional, meters, default 0.0
             icon: Some("icons/rifleman.png"),            // optional
-            sounds: { ("select": "audio/rifleman/select.ogg") }, // optional
+            sounds: { "SelectionClick": "audio/rifleman/select.ogg" }, // optional
         ),
     },
     terrain: { "grass": "textures/terrain/grass.png" },  // unchanged from v1
 )
 ```
+
+(RON/vocabulary note, A-153: map entries take the plain
+`"key": value` form — ron 0.9 rejects the parenthesized `("key": value)`
+form this example originally showed — and sound cue names come from the
+engine's nine-cue vocabulary (`SelectionClick`, not `select`). The example
+above parses verbatim against the M12 loader.)
 
 - **One completion to the PM's field list (the challenge log):** the list
   names no field for the PNG skin, yet the PM's own fallback chain (§5) makes

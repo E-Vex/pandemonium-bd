@@ -7,7 +7,7 @@
 use super::entities::ENTITY_SHADER_SRC;
 use super::minimap::{cube_vertices, CubeVertex, MinimapVertex, MINIMAP_SHADER_SRC};
 use super::overlay::{quad_vertices, ring_vertices, DecalInstance, DECAL_SHADER_SRC};
-use super::texture::{decode_png, resolve_kind_textures, upload_skin, DecodedTexture};
+use super::texture::{upload_skin, DecodedTexture};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -381,12 +381,9 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
-        // The skin library (the asset pack MVP's PNG half): slot 0 is the
-        // built-in white 1x1 skin every placeholder draw samples; each kind
-        // whose pack entry resolves to a loadable PNG gets one more slot.
-        // Decode, upload, and bind-group creation all happen exactly once
-        // here — the frame pass only ever *binds* these. A kind that fails
-        // anywhere along the way keeps slot 0, with a diagnostic saying why.
+        // The skin library's slot 0 — the built-in white 1x1 placeholder
+        // every placeholder draw and every factor-material model primitive
+        // samples (built here, owned by `entity_skins` below).
         let placeholder_skin = upload_skin(
             &device,
             &queue,
@@ -396,43 +393,24 @@ impl WgpuRenderer {
             "placeholder skin",
         );
         let mut entity_skins = vec![placeholder_skin];
-        let mut kind_skin_slots = vec![0u32; kind_names.len()];
-        for (index, plan) in resolve_kind_textures(pack.as_ref(), &kind_names)
-            .iter()
-            .enumerate()
-        {
-            let Some(plan) = plan else {
-                continue; // no pack entry, an unmapped kind, or a model
-            };
-            match decode_png(&plan.path) {
-                Ok(decoded) => {
-                    println!(
-                        "pandemonium client — entity skin '{}' loaded ({}x{} PNG from {})",
-                        plan.kind,
-                        decoded.width,
-                        decoded.height,
-                        plan.path.display()
-                    );
-                    kind_skin_slots[index] = entity_skins.len() as u32;
-                    entity_skins.push(upload_skin(
-                        &device,
-                        &queue,
-                        &entity_skin_layout,
-                        &entity_skin_sampler,
-                        &decoded,
-                        &plan.kind,
-                    ));
-                }
-                Err(error) => {
-                    eprintln!(
-                        "pandemonium pack: entity skin for '{}' could not be loaded from {} \
-                         ({error}); using placeholder rendering",
-                        plan.kind,
-                        plan.path.display()
-                    );
-                }
-            }
-        }
+        // The presentation chain (M12 phases 3-4, ADR-0101 §§3-5): per
+        // kind, model → skin → placeholder, resolved once here with the
+        // A-146 one-diagnostic discipline. Everything model- and
+        // skin-shaped lives in `render/mod.rs`'s `build_model_pass` — the
+        // pipeline, the instance buffer, the probes, the uploads, and the
+        // skin slots this constructor used to fill with its own loop.
+        let model_pass = Self::build_model_pass(ModelPassInputs {
+            device: &device,
+            queue: &queue,
+            pipeline_layout: &entity_pipeline_layout,
+            skin_layout: &entity_skin_layout,
+            skin_sampler: &entity_skin_sampler,
+            placeholder_skin: &entity_skins[0],
+            pack: pack.as_ref(),
+            kind_names: &kind_names,
+            format: config.format,
+        });
+        entity_skins.extend(model_pass.1);
 
         // The UI overlay pass (plan §11.4 HUD + §11.6 debug overlays): the
         // glyph atlas as an R8Unorm texture, a screen-size uniform, an
@@ -1082,7 +1060,12 @@ impl WgpuRenderer {
             entity_instance_buf,
             entity_instance_capacity,
             entity_skins,
-            kind_skin_slots,
+            kind_skin_slots: model_pass.0.kind_skin_slots,
+            model_pipeline: model_pass.0.pipeline,
+            model_instance_buf: model_pass.0.instance_buf,
+            model_instance_capacity: model_pass.0.capacity,
+            kind_models: model_pass.0.models,
+            kind_renders_model: model_pass.0.kind_renders_model,
             atlas,
             screen_buffer,
             screen_bind_group,

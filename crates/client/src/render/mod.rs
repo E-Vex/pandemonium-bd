@@ -23,10 +23,10 @@ use crate::text::{TextAtlas, UiQuad};
 
 mod entities;
 mod minimap;
-// The M12 Phase 1 pure-data GLB loader (ADR-0101): nothing in the renderer
-// consumes it until the Phase 3 model pass lands, so the module rides
-// allow(dead_code) until then — its own tests exercise it headless today.
-#[allow(dead_code)]
+// The M12 GLB pipeline (ADR-0101): `model` owns the pure-data loader
+// (phase 1) and the GPU-ready conversion (phase 3) — consumed by the model
+// pass below, which loads and uploads each kind's model exactly once at
+// construction and only binds and draws per frame.
 mod model;
 mod overlay;
 mod pipeline;
@@ -34,9 +34,11 @@ mod terrain;
 mod texture;
 
 use entities::{
-    build_instances, build_shadows, death_instance, fallback_shape, group_by_skin, EntityInstance,
+    bake_gltf_to_entity, build_instances, build_model_instances, build_shadows, death_instance,
+    fallback_shape, group_by_skin, EntityInstance, ModelInstance, METERS_PER_TILE,
 };
 pub use entities::{DyingCue, PlacementGhost, TEAM_P0, TEAM_P1};
+use model::{ModelPlacement, ModelVertex};
 
 use minimap::{paint_minimap_markers, MinimapVertex};
 use overlay::{build_rings, build_team_rings, ring_pulse, DecalInstance, DECAL_FLAT};
@@ -180,6 +182,22 @@ pub struct WgpuRenderer {
     /// Per-kind skin slot (KindId → slot, aligned with `kind_specs`).
     /// Kinds without a loadable texture stay at slot 0 (the placeholder).
     kind_skin_slots: Vec<u32>,
+    /// The model pass (M12 phase 3, ADR-0101): the pipeline over the same
+    /// camera + skin bind layouts the entity pass uses, the shared model
+    /// instance stream, and the per-kind uploaded models. Everything here
+    /// is born once in the constructor — file reads, GLB parses, the
+    /// meters-to-tiles conversion, GPU uploads, and bind groups — so the
+    /// frame pass only binds and draws (A-146's build-once discipline).
+    model_pipeline: wgpu::RenderPipeline,
+    model_instance_buf: wgpu::Buffer,
+    model_instance_capacity: u64,
+    /// Per kind (index = KindId, aligned with `kind_specs`): its uploaded
+    /// model, or `None` (the silhouette/skin box path carries it).
+    kind_models: Vec<Option<UploadedModel>>,
+    /// The flat per-kind model lookup the two instance builders share
+    /// (`kind_models[k].is_some()`); kept as its own table so the frame
+    /// pass never allocates it.
+    kind_renders_model: Vec<bool>,
     atlas: TextAtlas,
     screen_buffer: wgpu::Buffer,
     screen_bind_group: wgpu::BindGroup,
@@ -586,6 +604,471 @@ impl WgpuRenderer {
 /// rasterization noise, small enough to look glued to the ground.
 const DECAL_LIFT: f32 = 0.02;
 
+/// One uploaded model primitive (M12 phase 3): the vertex/index buffers and
+/// the group(1) binding its draws sample — the material's own uploaded PNG
+/// (kept alive in `skin`) when the albedo is a texture, or a clone of the
+/// built-in white placeholder skin's bind group when it is a factor
+/// (sampling the 1×1 white multiplies by exactly 1.0, so factor materials
+/// never see a texture).
+struct UploadedModelPrimitive {
+    vertex_buf: wgpu::Buffer,
+    /// The file's index buffer and its index count, when it carried one.
+    index_buf: Option<(wgpu::Buffer, u32)>,
+    /// The vertex count (non-indexed draws).
+    vertex_count: u32,
+    /// The material's uploaded texture, kept alive for the bind group.
+    #[allow(dead_code)] // held to keep the texture alive through the bind group
+    skin: Option<texture::EntitySkin>,
+    bind_group: wgpu::BindGroup,
+}
+
+/// One kind's uploaded model: every primitive converted, uploaded, and
+/// bound once at construction — the frame pass only rebinds them.
+struct UploadedModel {
+    #[allow(dead_code)] // GPU debugging labels; not read on the CPU
+    label: String,
+    primitives: Vec<UploadedModelPrimitive>,
+}
+
+/// What [`WgpuRenderer::build_model_pass`] hands the constructor: the whole
+/// model pass plus the skin tier's slot table in one value, so the
+/// constructor's footprint on this state is one call and a few field moves.
+struct ModelPassGpu {
+    pipeline: wgpu::RenderPipeline,
+    instance_buf: wgpu::Buffer,
+    capacity: u64,
+    models: Vec<Option<UploadedModel>>,
+    kind_renders_model: Vec<bool>,
+    /// Per-kind skin slot (the skin tier's outcome; 0 = the placeholder
+    /// skin, the placeholder tier) — the field the pre-model constructor's
+    /// skin loop used to fill.
+    kind_skin_slots: Vec<u32>,
+}
+
+/// Decodes a GLB-embedded PNG (a model material's albedo bytes, straight
+/// from the BIN chunk) under the same guards the skin path's file decoder
+/// applies: the header's dimensions are read before a single pixel decodes
+/// (the decode bomb never fires before the limit check), the per-side cap
+/// holds, and the output is RGBA8. A model whose material cannot decode is
+/// not presentation-ready — the caller fails the whole model and the kind
+/// walks the fallback chain (one line, A-146).
+fn decode_embedded_png(bytes: &[u8]) -> Result<texture::DecodedTexture, String> {
+    use std::io::Cursor;
+    let dimensions = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Png)
+        .into_dimensions()
+        .map_err(|error| format!("not a decodable PNG: {error}"))?;
+    if dimensions.0 == 0
+        || dimensions.1 == 0
+        || dimensions.0 > texture::MAX_TEXTURE_DIMENSION
+        || dimensions.1 > texture::MAX_TEXTURE_DIMENSION
+    {
+        return Err(format!(
+            "image is {}x{} but the per-side limit is {}x{}",
+            dimensions.0,
+            dimensions.1,
+            texture::MAX_TEXTURE_DIMENSION,
+            texture::MAX_TEXTURE_DIMENSION
+        ));
+    }
+    let decoded = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Png)
+        .decode()
+        .map_err(|error| format!("PNG decode failed: {error}"))?;
+    let rgba = decoded.into_rgba8();
+    Ok(texture::DecodedTexture {
+        width: dimensions.0,
+        height: dimensions.1,
+        rgba: rgba.into_raw(),
+    })
+}
+
+/// What [`WgpuRenderer::build_model_pass`] needs (grouped so the builder
+/// stays one argument): the device/queue pair, the entity pass's own
+/// `[camera, skin]` pipeline layout and skin bind layout + sampler (the
+/// model pass deliberately shares them), the built-in white placeholder
+/// skin (factor materials bind its group), the pack, the content kind
+/// names, and the surface format.
+struct ModelPassInputs<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    pipeline_layout: &'a wgpu::PipelineLayout,
+    skin_layout: &'a wgpu::BindGroupLayout,
+    skin_sampler: &'a wgpu::Sampler,
+    placeholder_skin: &'a texture::EntitySkin,
+    pack: Option<&'a AssetPack>,
+    kind_names: &'a [String],
+    format: wgpu::TextureFormat,
+}
+
+/// One kind's model probe outcome: the loaded data, the converted
+/// primitives, and every material's decoded texture (aligned by primitive,
+/// `None` for factor materials) when the model won. The probe is total —
+/// by the time it returns `Ok`, nothing between here and the GPU upload can
+/// fail, so a tier that wins always uploads whole (A-146: the tier decision
+/// and the upload happen in one walk, exactly once per run).
+type ModelProbe = Option<
+    Result<
+        (
+            model::ModelData,
+            Vec<model::GpuPrimitive>,
+            Vec<Option<texture::DecodedTexture>>,
+        ),
+        String,
+    >,
+>;
+
+impl WgpuRenderer {
+    /// Builds the model pass and resolves every kind's presentation tier
+    /// (M12 phases 3-4, ADR-0101 §§3-5): the pipeline over the entity pass's
+    /// own `[camera, skin]` layout, the shared instance buffer, and — per
+    /// kind, in one walk — the fallback chain model → skin → placeholder.
+    /// Runs exactly once per renderer: every file read, GLB parse,
+    /// meters-to-tiles conversion, PNG decode, GPU upload, and bind group
+    /// is born here and never again, and the chain is lazy — a kind that
+    /// renders its model never decodes its skin (A-146: the frame path
+    /// resolves and logs nothing; the tier decision never re-runs).
+    ///
+    /// Diagnostics (the A-146 pin): a kind whose walk passed any failure —
+    /// a pack-recorded missing file, a model that would not load, a skin
+    /// that would not decode — prints exactly ONE line naming the tier it
+    /// landed on; a clean load prints its positive evidence line; a kind
+    /// with nothing declared prints nothing. The chain rule itself is
+    /// [`AssetPack::resolve_presentation`] in the pack module, pure and
+    /// unit-pinned; this function owns the probes and the uploads.
+    fn build_model_pass(inputs: ModelPassInputs<'_>) -> (ModelPassGpu, Vec<texture::EntitySkin>) {
+        let ModelPassInputs {
+            device,
+            queue,
+            pipeline_layout,
+            skin_layout,
+            skin_sampler,
+            placeholder_skin,
+            pack,
+            kind_names,
+            format,
+        } = inputs;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("model shader"),
+            source: wgpu::ShaderSource::Wgsl(entities::MODEL_SHADER_SRC.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("model pipeline"),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<ModelVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 12,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 24,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 32,
+                                shader_location: 3,
+                            },
+                        ],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<ModelInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 4,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32,
+                                offset: 12,
+                                shader_location: 5,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 16,
+                                shader_location: 6,
+                            },
+                        ],
+                    },
+                ],
+            },
+            primitive: wgpu::PrimitiveState {
+                // Cull stays off, matching the entity pass: exporter winding
+                // conventions vary, and a wrongly-culled model is worse
+                // than a double-shaded backface the depth buffer eats.
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let capacity = 1024u64;
+        let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("model instances"),
+            size: capacity * std::mem::size_of::<ModelInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut models: Vec<Option<UploadedModel>> = kind_names.iter().map(|_| None).collect();
+        let mut kind_skin_slots: Vec<u32> = kind_names.iter().map(|_| 0).collect();
+        // The skins this walk uploads (the caller extends its library with
+        // them after the borrow on the placeholder ends; slot 0 is always
+        // the placeholder, so the first new skin is slot 1).
+        let mut new_skins: Vec<texture::EntitySkin> = Vec::new();
+        for (index, kind) in kind_names.iter().enumerate() {
+            let Some(pack) = pack else {
+                break; // no pack at all — every kind keeps the placeholder
+            };
+            let Some(entry) = pack.asset_for(kind) else {
+                continue; // an unmapped kind — the box path (v1 skips print at load)
+            };
+            // Tier 1 — the model probe: read, parse, convert. The outcome
+            // (and the converted data, when it won) is kept for the upload
+            // below; the placement comes from the manifest's typed fields
+            // (A-155 — never the v1 `asset` primary).
+            let model_probe: ModelProbe = entry.model.as_ref().map(|model_ref| {
+                std::fs::read(&model_ref.resolved)
+                    .map_err(|error| {
+                        format!("model '{}' could not be read ({error})", model_ref.path)
+                    })
+                    .and_then(|bytes| {
+                        model::load(&bytes).map_err(|error| {
+                            format!("model '{}' could not be loaded ({error})", model_ref.path)
+                        })
+                    })
+                    .and_then(|data| {
+                        let placement = ModelPlacement {
+                            scale: entry.scale,
+                            rotation_deg: entry.rotation_deg,
+                            ground_offset: entry.ground_offset,
+                        };
+                        let primitives = model::gpu_primitives(
+                            &data,
+                            &placement,
+                            METERS_PER_TILE,
+                            bake_gltf_to_entity,
+                        );
+                        // A material whose embedded PNG cannot decode fails
+                        // the whole model (a half-textured model is worse
+                        // than the clean fallback tier) — decoded HERE, in
+                        // the probe, so the chain routes to a lower tier
+                        // before anything uploads.
+                        let mut textures = Vec::with_capacity(primitives.len());
+                        for (primitive_index, gpu) in primitives.iter().enumerate() {
+                            let decoded = match &gpu.texture {
+                                Some(png_bytes) => {
+                                    Some(decode_embedded_png(png_bytes).map_err(|error| {
+                                        format!(
+                                            "model '{}' could not be loaded (material \
+                                             {primitive_index}: {error})",
+                                            model_ref.path
+                                        )
+                                    })?)
+                                }
+                                None => None,
+                            };
+                            textures.push(decoded);
+                        }
+                        Ok((data, primitives, textures))
+                    })
+            });
+            // Tier 2 — the skin probe, lazy: only when the model tier did
+            // not win (a kind that renders its model never decodes its
+            // skin). The skin reference is the typed field (A-155).
+            let model_won = matches!(model_probe, Some(Ok(_)));
+            let skin_probe = if model_won {
+                None
+            } else {
+                entry.skin.as_ref().map(|skin_ref| {
+                    texture::decode_png(&skin_ref.resolved).map_err(|error| {
+                        format!("skin '{}' could not be loaded ({error})", skin_ref.path)
+                    })
+                })
+            };
+            // The chain rule, pure and unit-pinned in the pack module: tier
+            // + every failure the walk passed (pack notes first, then the
+            // model probe, then the skin probe).
+            let resolution = pack.resolve_presentation(
+                kind,
+                model_probe
+                    .as_ref()
+                    .map(|result| result.as_ref().map(|_| ()).map_err(Clone::clone)),
+                skin_probe
+                    .as_ref()
+                    .map(|result| result.as_ref().map(|_| ()).map_err(Clone::clone)),
+            );
+            // The upload follows the decision, still inside this one walk —
+            // and cannot fail: the probe decoded every texture already.
+            match resolution.tier {
+                crate::pack::PresentationTier::Model => {
+                    let Some(Ok((data, primitives, textures))) = model_probe else {
+                        // Unreachable by the chain rule (Model only when the
+                        // probe won) — guard anyway: never index past.
+                        continue;
+                    };
+                    // One uploaded primitive per mesh primitive.
+                    let mut uploaded = Vec::with_capacity(primitives.len());
+                    for (primitive_index, gpu) in primitives.iter().enumerate() {
+                        let label = format!("{kind}#{primitive_index}");
+                        let (skin, bind_group) = match &textures[primitive_index] {
+                            Some(decoded) => {
+                                let skin = texture::upload_skin(
+                                    device,
+                                    queue,
+                                    skin_layout,
+                                    skin_sampler,
+                                    decoded,
+                                    &label,
+                                );
+                                let bind_group = skin.bind_group.clone();
+                                (Some(skin), bind_group)
+                            }
+                            None => (None, placeholder_skin.bind_group.clone()),
+                        };
+                        let vertex_buf =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some(&label),
+                                contents: bytemuck::cast_slice(&gpu.vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            });
+                        let index_buf = gpu.indices.as_ref().map(|indices| {
+                            let buffer =
+                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some(&label),
+                                    contents: bytemuck::cast_slice(indices),
+                                    usage: wgpu::BufferUsages::INDEX,
+                                });
+                            (buffer, indices.len() as u32)
+                        });
+                        uploaded.push(UploadedModelPrimitive {
+                            vertex_buf,
+                            index_buf,
+                            vertex_count: gpu.vertices.len() as u32,
+                            skin,
+                            bind_group,
+                        });
+                    }
+                    // The positive evidence line the Xvfb machine pass greps
+                    // — the loader's per-file metadata (ignored animation
+                    // blocks, duplicated team_color materials) rides the
+                    // same line so a load says exactly one thing (A-146).
+                    let triangles: usize = primitives
+                        .iter()
+                        .map(|gpu| {
+                            gpu.indices
+                                .as_ref()
+                                .map_or(gpu.vertices.len() / 3, |i| i.len() / 3)
+                        })
+                        .sum();
+                    let mut extras = String::new();
+                    if data.ignored_animation_data > 0 {
+                        extras.push_str(&format!(
+                            ", {} ignored animation blocks",
+                            data.ignored_animation_data
+                        ));
+                    }
+                    if data.team_color_materials > 1 {
+                        extras.push_str(&format!(
+                            ", {} team_color materials (first wins)",
+                            data.team_color_materials
+                        ));
+                    }
+                    println!(
+                        "pandemonium client — entity model '{kind}' loaded ({} primitives, \
+                         {triangles} triangles{extras}, from {})",
+                        uploaded.len(),
+                        entry
+                            .model
+                            .as_ref()
+                            .expect("the model tier implies a ref")
+                            .path
+                    );
+                    models[index] = Some(UploadedModel {
+                        label: kind.clone(),
+                        primitives: uploaded,
+                    });
+                }
+                crate::pack::PresentationTier::Skin => {
+                    let Some(Ok(decoded)) = skin_probe else {
+                        continue; // the chain rule guarantees this arm's probe won
+                    };
+                    println!(
+                        "pandemonium client — entity skin '{kind}' loaded ({}x{} PNG from {})",
+                        decoded.width,
+                        decoded.height,
+                        entry
+                            .skin
+                            .as_ref()
+                            .expect("the skin tier implies a ref")
+                            .path
+                    );
+                    kind_skin_slots[index] = (1 + new_skins.len()) as u32;
+                    new_skins.push(texture::upload_skin(
+                        device,
+                        queue,
+                        skin_layout,
+                        skin_sampler,
+                        &decoded,
+                        kind,
+                    ));
+                }
+                crate::pack::PresentationTier::Placeholder => {}
+            }
+            // The A-146 pin, one line per failing kind naming the tier it
+            // landed on (pure formatter, unit-pinned in the pack module).
+            if let Some(line) = crate::pack::presentation_diagnostic(kind, &resolution) {
+                eprintln!("{line}");
+            }
+        }
+        let kind_renders_model: Vec<bool> = models.iter().map(Option::is_some).collect();
+        (
+            ModelPassGpu {
+                pipeline,
+                instance_buf,
+                capacity,
+                models,
+                kind_renders_model,
+                kind_skin_slots,
+            },
+            new_skins,
+        )
+    }
+}
+
 impl Renderer for WgpuRenderer {
     fn render(&mut self, frame: Frame<'_>) {
         // Camera uniform: the matrix plus the eye the view-dependent
@@ -626,6 +1109,7 @@ impl Renderer for WgpuRenderer {
             frame.flashes,
             &self.kind_specs,
             &self.kind_skin_slots,
+            &self.kind_renders_model,
             self.entity_instance_capacity as usize,
         );
         // Death fades append their shrinking masses (the entity is gone
@@ -836,6 +1320,60 @@ impl Renderer for WgpuRenderer {
                     pass.draw(0..36, start as u32..(start + count) as u32);
                 }
             }
+            // The model pass (M12 phase 3, ADR-0101): the kinds the boxes
+            // skipped draw here instead — the same snapshot (ADR-0200 §4's
+            // invariant), the same camera group, the same depth buffer —
+            // one instance per entity, grouped per kind, and one draw per
+            // (kind primitive, kind instance run). All GPU state was born
+            // in the constructor; this only binds and draws.
+            let (mut model_instances, model_draws) = build_model_instances(
+                frame.snapshot,
+                frame.selection,
+                frame.flashes,
+                &self.kind_renders_model,
+                self.model_instance_capacity as usize,
+            );
+            if !model_instances.is_empty() {
+                for instance in &mut model_instances {
+                    instance.position[1] +=
+                        self.ground_height_at(instance.position[0], instance.position[2]);
+                }
+                let bytes = bytemuck::cast_slice(&model_instances);
+                let capacity_bytes =
+                    self.model_instance_capacity as usize * std::mem::size_of::<ModelInstance>();
+                let capped = &bytes[..bytes.len().min(capacity_bytes)];
+                self.queue.write_buffer(&self.model_instance_buf, 0, capped);
+            }
+            if !model_draws.is_empty() {
+                pass.set_pipeline(&self.model_pipeline);
+                // The camera group is still bound from the entity pass, but
+                // rebind it anyway — the pass's own law (and the source
+                // scan test) keeps each pipeline's contract self-contained.
+                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_vertex_buffer(1, self.model_instance_buf.slice(..));
+                for (kind, start, count) in model_draws {
+                    let Some(Some(model)) = self.kind_models.get(kind) else {
+                        continue; // an unknown kind index — never index past
+                    };
+                    for primitive in &model.primitives {
+                        pass.set_bind_group(1, &primitive.bind_group, &[]);
+                        pass.set_vertex_buffer(0, primitive.vertex_buf.slice(..));
+                        let instances = start as u32..(start + count) as u32;
+                        match &primitive.index_buf {
+                            Some((index_buf, index_count)) => {
+                                pass.set_index_buffer(
+                                    index_buf.slice(..),
+                                    wgpu::IndexFormat::Uint32,
+                                );
+                                pass.draw_indexed(0..*index_count, 0, instances);
+                            }
+                            None => {
+                                pass.draw(0..primitive.vertex_count, instances);
+                            }
+                        }
+                    }
+                }
+            }
             // The minimap rides over the world but under the HUD quads (the
             // viewport indicator and panel border draw in the UI pass on
             // top of it): it rebinds group(0) to its own layout, like the
@@ -884,7 +1422,7 @@ fn terrain_height_grid(terrain: &TerrainMesh, width: u32, height: u32) -> Vec<f3
 
 #[cfg(test)]
 mod tests {
-    use super::entities::ENTITY_SHADER_SRC;
+    use super::entities::{ENTITY_SHADER_SRC, MODEL_SHADER_SRC};
     use super::overlay::DECAL_SHADER_SRC;
     use super::*;
 
@@ -902,6 +1440,7 @@ mod tests {
         for (name, source) in [
             ("terrain", TERRAIN_SHADER),
             ("entity", ENTITY_SHADER_SRC),
+            ("model", MODEL_SHADER_SRC),
             ("ui", UI_SHADER_SRC),
             ("fog", FOG_SHADER_SRC),
             ("decal", DECAL_SHADER_SRC),
@@ -982,6 +1521,10 @@ mod tests {
             (
                 "pass.set_pipeline(&self.entity_pipeline);",
                 "pass.set_vertex_buffer(1, self.entity_instance_buf.slice(..));",
+            ),
+            (
+                "pass.set_pipeline(&self.model_pipeline);",
+                "pass.set_vertex_buffer(1, self.model_instance_buf.slice(..));",
             ),
         ] {
             let set_pipeline = code
@@ -1209,7 +1752,7 @@ mod silhouette_tests {
         // Room for exactly three entities' silhouettes (2 instances each) —
         // the fourth is dropped whole, never half-drawn.
         let specs = [unit_shape(), unit_shape(), unit_shape(), unit_shape()];
-        let instances = build_instances(&snapshot, &[], &[], &specs, &[], 6);
+        let instances = build_instances(&snapshot, &[], &[], &specs, &[], &[], 6);
         assert_eq!(instances.len(), 6);
         assert!(instances
             .iter()
@@ -1222,7 +1765,7 @@ mod silhouette_tests {
             tick: 0,
             entities: vec![entity(1, 99, PlayerId(0), MoveState::Idle)],
         };
-        let instances = build_instances(&snapshot, &[], &[], &[], &[], 64);
+        let instances = build_instances(&snapshot, &[], &[], &[], &[], &[], 64);
         assert_eq!(instances.len(), 1, "the fallback silhouette still renders");
     }
 }
@@ -1595,7 +2138,7 @@ mod skin_tests {
         // kind's slot, never the placeholder's.
         let specs = [unit_shape(), unit_shape(), unit_shape()];
         let slots = [2u32, 1u32, 0u32];
-        let instances = build_instances(&snapshot(&[0, 1, 2]), &[], &[], &specs, &slots, 64);
+        let instances = build_instances(&snapshot(&[0, 1, 2]), &[], &[], &specs, &slots, &[], 64);
         assert!(instances
             .iter()
             .filter(|i| i.position[0] == 1.0)
@@ -1615,7 +2158,7 @@ mod skin_tests {
         // A slot table shorter than the kind list (or empty — the no-pack
         // client) must fall back to slot 0, never panic.
         let specs = [unit_shape(), unit_shape(), unit_shape()];
-        let instances = build_instances(&snapshot(&[0, 2]), &[], &[], &specs, &[], 64);
+        let instances = build_instances(&snapshot(&[0, 2]), &[], &[], &specs, &[], &[], 64);
         assert!(!instances.is_empty());
         assert!(
             instances.iter().all(|i| i.skin == 0),
@@ -1731,5 +2274,447 @@ mod skin_tests {
                 crate::silhouette::Tone::Body,
             )],
         )
+    }
+}
+
+#[cfg(test)]
+mod model_pass_tests {
+    //! The M12 phase 3 acceptance set (A-016 §12): the direction-pinned
+    //! orientation math (the M9.1 lesson — presentation direction is
+    //! invisible to hashes, so it is pinned by name at yaw 0 and yaw 90),
+    //! the headless model-pipeline conversion (fixture GLB → GPU-ready
+    //! buffers), and the instance-stream laws.
+
+    use super::entities::{
+        bake_gltf_to_entity, build_model_instances, entity_yaw_rotate, ModelInstance,
+    };
+    use super::*;
+    use glam::Vec3;
+    use pandemonium_engine::RenderEntity;
+    use pandemonium_sim_api::{EntityId, KindId, MoveState, PlayerId};
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    fn assert_vec3(actual: [f32; 3], expected: [f32; 3], what: &str) {
+        assert!(
+            approx(actual[0], expected[0])
+                && approx(actual[1], expected[1])
+                && approx(actual[2], expected[2]),
+            "{what}: got ({}, {}, {}), want ({}, {}, {})",
+            actual[0],
+            actual[1],
+            actual[2],
+            expected[0],
+            expected[1],
+            expected[2]
+        );
+    }
+
+    // -- The direction-pinned orientation math (yaw 0 and yaw 90) ----------
+
+    /// Yaw 0: an entity facing east (facing (1, 0, 0), yaw = atan2(0, 1) =
+    /// 0). The model's glTF forward (−Z) must land on east — the same
+    /// direction the box silhouettes put "forward" parts at yaw 0.
+    #[test]
+    fn at_yaw_0_the_model_forward_points_east() {
+        let forward = bake_gltf_to_entity([0.0, 0.0, -1.0]);
+        assert_vec3(forward, [1.0, 0.0, 0.0], "the baked forward");
+        let world = entity_yaw_rotate(0.0, forward);
+        assert_vec3(world, [1.0, 0.0, 0.0], "the drawn forward at yaw 0");
+        // And the entity convention agrees: facing east *is* yaw 0.
+        let east = Vec3::new(1.0, 0.0, 0.0);
+        assert!((east.z.atan2(east.x)).abs() < 1e-5);
+    }
+
+    /// Yaw 90: an entity facing north (facing (0, 0, 1), yaw = atan2(1, 0) =
+    /// π/2). The same baked forward must now land on north.
+    #[test]
+    fn at_yaw_90_the_model_forward_points_north() {
+        let north = Vec3::new(0.0, 0.0, 1.0);
+        let yaw = north.z.atan2(north.x);
+        assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        let forward = bake_gltf_to_entity([0.0, 0.0, -1.0]);
+        let world = entity_yaw_rotate(yaw, forward);
+        assert_vec3(world, [0.0, 0.0, 1.0], "the drawn forward at yaw 90");
+    }
+
+    /// The model's right side and up land where the box silhouettes carry
+    /// theirs: at yaw 0 (facing east) the model's right (+X) points to +Z
+    /// (the a_facing_turn test's "right = forward × up" law), and at yaw 90
+    /// (facing north) it points west (−X) — exactly where that test watches
+    /// a north-facing rifleman's right-hand carry land.
+    #[test]
+    fn the_model_right_and_up_match_the_box_convention() {
+        let right = bake_gltf_to_entity([1.0, 0.0, 0.0]);
+        assert_vec3(right, [0.0, 0.0, 1.0], "the baked right");
+        assert_vec3(
+            entity_yaw_rotate(0.0, right),
+            [0.0, 0.0, 1.0],
+            "right at yaw 0 (east-facing): +Z",
+        );
+        assert_vec3(
+            entity_yaw_rotate(std::f32::consts::FRAC_PI_2, right),
+            [-1.0, 0.0, 0.0],
+            "right at yaw 90 (north-facing): -X, like the rifleman's carry",
+        );
+        let up = bake_gltf_to_entity([0.0, 1.0, 0.0]);
+        assert_vec3(up, [0.0, 1.0, 0.0], "up stays up through the bake");
+        assert_vec3(
+            entity_yaw_rotate(2.1, up),
+            [0.0, 1.0, 0.0],
+            "and through any yaw",
+        );
+    }
+
+    /// The bake is a proper rotation (determinant +1), never a mirror: a
+    /// mirrored model would render inside-out and light backwards, and no
+    /// direction test would catch it directly — the handedness does.
+    #[test]
+    fn the_bake_preserves_handedness() {
+        let x = bake_gltf_to_entity([1.0, 0.0, 0.0]);
+        let y = bake_gltf_to_entity([0.0, 1.0, 0.0]);
+        let z = bake_gltf_to_entity([0.0, 0.0, 1.0]);
+        let cross = [
+            y[1] * z[2] - y[2] * z[1],
+            y[2] * z[0] - y[0] * z[2],
+            y[0] * z[1] - y[1] * z[0],
+        ];
+        assert_vec3(cross, x, "cross(baked Y, baked Z) == baked X");
+    }
+
+    // -- The headless pipeline conversion (fixture GLB → GPU-ready) --------
+
+    /// Assembles a GLB container around one JSON chunk and one BIN chunk
+    /// (the loader suite's container discipline, kept local so this module
+    /// stays self-contained).
+    fn assemble_glb(json: &str, bin: &[u8]) -> Vec<u8> {
+        let mut json_chunk = json.as_bytes().to_vec();
+        while !json_chunk.len().is_multiple_of(4) {
+            json_chunk.push(b' ');
+        }
+        let bin_padded = bin.len().div_ceil(4) * 4;
+        let total = 12 + 8 + json_chunk.len() + 8 + bin_padded;
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(json_chunk.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"JSON");
+        out.extend_from_slice(&json_chunk);
+        out.extend_from_slice(&(bin_padded as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(bin);
+        out.extend(std::iter::repeat_n(0u8, bin_padded - bin.len()));
+        out
+    }
+
+    fn push_f32s(out: &mut Vec<u8>, values: &[f32]) {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn push_u16s(out: &mut Vec<u8>, values: &[u16]) {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    /// One team-colored quad in meters: 4 positions (a recognizable
+    /// corner first), 4 up-normals, 4 uvs, 6 u16 indices.
+    fn quad_glb() -> Vec<u8> {
+        let mut bin = Vec::new();
+        push_f32s(
+            &mut bin,
+            &[
+                -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5,
+            ],
+        );
+        for _ in 0..4 {
+            push_f32s(&mut bin, &[0.0, 1.0, 0.0]);
+        }
+        for uv in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+            push_f32s(&mut bin, &uv);
+        }
+        push_u16s(&mut bin, &[0, 1, 2, 1, 3, 2]);
+        let json = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],"materials":[{"name":"team_color","pbrMetallicRoughness":{"baseColorFactor":[0.25,0.5,0.75,1.0]}}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-0.5,-0.5,-0.5],"max":[0.5,0.5,0.5]},{"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":4,"type":"VEC2"},{"bufferView":3,"componentType":5123,"count":6,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":48},{"buffer":0,"byteOffset":96,"byteLength":32},{"buffer":0,"byteOffset":128,"byteLength":12}],"buffers":[{"byteLength":140}]}"#;
+        assemble_glb(json, &bin)
+    }
+
+    /// A fixture GLB is GPU-ready headlessly: load → convert → assert every
+    /// baked quantity — the meters-to-tiles division, the glTF-to-entity
+    /// basis, the passthrough of indices/uvs, the team flag, and the
+    /// material factor the vertices carry (the plan's "fixture .glb →
+    /// GPU-ready buffers", all pure functions, no GPU).
+    #[test]
+    fn a_fixture_glb_becomes_gpu_ready_buffers_headless() {
+        let data = model::load(&quad_glb()).expect("the fixture quad loads");
+        let primitives = model::gpu_primitives(
+            &data,
+            &ModelPlacement::default(),
+            METERS_PER_TILE,
+            bake_gltf_to_entity,
+        );
+        assert_eq!(primitives.len(), 1);
+        let quad = &primitives[0];
+        assert_eq!(
+            quad.vertices.len(),
+            4,
+            "no duplication with normals present"
+        );
+        assert_eq!(quad.indices.as_deref(), Some(&[0u32, 1, 2, 1, 3, 2][..]));
+        // Vertex 0 sits at (-0.5, -0.5, -0.5) m: ÷3 → (-1/6, -1/6, -1/6)
+        // tiles, then the basis bake (x,y,z) → (-z,y,x) → (1/6, -1/6, -1/6).
+        assert_vec3(
+            quad.vertices[0].position,
+            [1.0 / 6.0, -1.0 / 6.0, -1.0 / 6.0],
+            "the first corner, in tiles on the entity basis",
+        );
+        // The up-normal survives both the bake and the placement untouched.
+        assert_vec3(quad.vertices[0].normal, [0.0, 1.0, 0.0], "the up normal");
+        // The factor rides every vertex with the team flag set.
+        for vertex in &quad.vertices {
+            assert_eq!(vertex.base_color, [0.25, 0.5, 0.75, 1.0]);
+        }
+        assert!(quad.team_tint);
+        assert_eq!(quad.factor, [0.25, 0.5, 0.75]);
+        assert!(quad.texture.is_none());
+        assert_eq!(quad.vertices[2].uv, [0.0, 1.0], "uvs pass through");
+    }
+
+    /// The manifest placement (scale, rotation_deg, ground_offset — A-144)
+    /// bakes into the vertices exactly once, in the documented order:
+    /// rotate about +Y, scale in meters, lift in meters, divide by
+    /// METERS_PER_TILE, then the basis bake.
+    #[test]
+    fn the_manifest_placement_bakes_in_the_documented_order() {
+        let data = model::load(&quad_glb()).expect("the fixture quad loads");
+        let placement = ModelPlacement {
+            scale: 2.0,
+            rotation_deg: 90.0,
+            ground_offset: 3.0,
+        };
+        let primitives =
+            model::gpu_primitives(&data, &placement, METERS_PER_TILE, bake_gltf_to_entity);
+        // Vertex 1 at (0.5, -0.5, -0.5) m: Ry(90°) → (cos90·0.5 + sin90·(-0.5),
+        // -0.5, -sin90·0.5 + cos90·(-0.5)) = (-0.5, -0.5, -0.5); ×2 →
+        // (-1, -1, -1); +offset → (-1, 2, -1); ÷3 → (-1/3, 2/3, -1/3);
+        // bake → (1/3, 2/3, -1/3).
+        assert_vec3(
+            primitives[0].vertices[1].position,
+            [1.0 / 3.0, 2.0 / 3.0, -1.0 / 3.0],
+            "vertex 1 under the full placement",
+        );
+    }
+
+    /// A normal-less primitive gets true flat normals — one face normal per
+    /// triangle on its own three vertices, the index stream dropped (the
+    /// vertices were duplicated per triangle).
+    #[test]
+    fn a_normalless_primitive_gets_flat_normals() {
+        let mut bin = Vec::new();
+        // One ground triangle in meters.
+        push_f32s(&mut bin, &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let json = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],"materials":[{"name":"body","pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,1.0]}}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,0.0,1.0]}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],"buffers":[{"byteLength":36}]}"#;
+        let data = model::load(&assemble_glb(json, &bin)).expect("the triangle loads");
+        let primitives = model::gpu_primitives(
+            &data,
+            &ModelPlacement::default(),
+            METERS_PER_TILE,
+            bake_gltf_to_entity,
+        );
+        let triangle = &primitives[0];
+        assert_eq!(triangle.vertices.len(), 3, "one vertex per corner");
+        assert!(
+            triangle.indices.is_none(),
+            "the duplicated stream drops indices"
+        );
+        assert!(!triangle.team_tint, "the body material is not team_color");
+        // The face normal of (0,0,0)-(1,0,0)-(0,0,1) is -Y in glTF; the
+        // bake keeps it -Y.
+        for vertex in &triangle.vertices {
+            assert_vec3(vertex.normal, [0.0, -1.0, 0.0], "the flat face normal");
+        }
+    }
+
+    /// A textured material's PNG bytes ride the primitive for the renderer
+    /// to decode and upload, with a white factor on the vertices (the texel
+    /// modulates instead) — the skin path's discipline, generalized.
+    #[test]
+    fn a_textured_material_carries_its_png_and_a_white_factor() {
+        let mut bin = Vec::new();
+        push_f32s(
+            &mut bin,
+            &[
+                -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5,
+            ],
+        );
+        for _ in 0..4 {
+            push_f32s(&mut bin, &[0.0, 1.0, 0.0]);
+        }
+        for uv in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+            push_f32s(&mut bin, &uv);
+        }
+        push_u16s(&mut bin, &[0, 1, 2, 1, 3, 2]);
+        bin.extend_from_slice(&[1u8, 2, 3, 4]); // the "PNG" payload (decoding is the renderer's step)
+        let json = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],"materials":[{"name":"camo","pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}],"textures":[{"source":0}],"images":[{"bufferView":4,"mimeType":"image/png"}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-0.5,-0.5,-0.5],"max":[0.5,0.5,0.5]},{"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":4,"type":"VEC2"},{"bufferView":3,"componentType":5123,"count":6,"type":"SCALAR"}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":48},{"buffer":0,"byteOffset":96,"byteLength":32},{"buffer":0,"byteOffset":128,"byteLength":12},{"buffer":0,"byteOffset":140,"byteLength":4}],"buffers":[{"byteLength":144}]}"#;
+        let data = model::load(&assemble_glb(json, &bin)).expect("the textured quad loads");
+        let primitives = model::gpu_primitives(
+            &data,
+            &ModelPlacement::default(),
+            METERS_PER_TILE,
+            bake_gltf_to_entity,
+        );
+        let quad = &primitives[0];
+        assert_eq!(quad.texture.as_deref(), Some(&[1u8, 2, 3, 4][..]));
+        assert_eq!(
+            quad.factor,
+            [1.0, 1.0, 1.0],
+            "the factor is white — the texel modulates"
+        );
+        assert!(!quad.team_tint);
+        for vertex in &quad.vertices {
+            assert_eq!(vertex.base_color, [1.0, 1.0, 1.0, 0.0]);
+        }
+    }
+
+    /// The renderer's embedded-PNG decoder (the material-albedo half of the
+    /// upload path) round-trips a real encoded PNG under the skin path's
+    /// guards — pure `image`-crate work, so it is testable headless.
+    #[test]
+    fn embedded_pngs_decode_under_the_skin_guards() {
+        let mut png = Vec::new();
+        let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 100, 50, 255]));
+        image
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encoding a 2x2 PNG");
+        let decoded = decode_embedded_png(&png).expect("a real PNG decodes");
+        assert_eq!((decoded.width, decoded.height), (2, 2));
+        assert_eq!(decoded.rgba.len(), 16);
+        // The guards: garbage bytes refuse with a reason, never a panic.
+        assert!(decode_embedded_png(&[9, 9, 9, 9]).is_err());
+        assert!(decode_embedded_png(b"").is_err());
+    }
+
+    // -- The instance stream (the per-entity half of the model pass) -------
+
+    fn entity(id: u64, kind: u32, owner: PlayerId, facing: Vec3) -> RenderEntity {
+        RenderEntity {
+            id: EntityId(id),
+            owner,
+            kind: KindId(kind),
+            pos: Vec3::new(5.0, 0.0, 7.0),
+            facing,
+            hp_fraction_milli: 1000,
+            move_state: MoveState::Idle,
+        }
+    }
+
+    fn snapshot(entities: Vec<RenderEntity>) -> pandemonium_engine::RenderSnapshot {
+        pandemonium_engine::RenderSnapshot { tick: 0, entities }
+    }
+
+    /// Model kinds contribute one instance per entity, grouped per kind
+    /// into contiguous runs, yawed by their facing, and team-colored —
+    /// while their boxes vanish from the silhouette stream (one entity,
+    /// one draw path).
+    #[test]
+    fn model_kinds_draw_one_instance_per_entity_and_skip_their_boxes() {
+        let entities = vec![
+            entity(1, 0, PlayerId(0), Vec3::new(1.0, 0.0, 0.0)),
+            entity(2, 1, PlayerId(0), Vec3::ZERO), // a box kind
+            entity(3, 0, PlayerId(1), Vec3::new(0.0, 0.0, 1.0)),
+        ];
+        let snap = snapshot(entities);
+        let renders_model = [true, false];
+        // The box stream: kind 1's silhouette only.
+        let specs = [
+            crate::silhouette::Silhouette::from_parts(
+                true,
+                vec![crate::silhouette::Part::at(
+                    [0.0, 0.3, 0.0],
+                    [0.4, 0.6, 0.4],
+                    crate::silhouette::Tone::Body,
+                )],
+            ),
+            crate::silhouette::Silhouette::from_parts(
+                true,
+                vec![crate::silhouette::Part::at(
+                    [0.0, 0.3, 0.0],
+                    [0.4, 0.6, 0.4],
+                    crate::silhouette::Tone::Body,
+                )],
+            ),
+        ];
+        let boxes = build_instances(&snap, &[], &[], &specs, &[0, 0], &renders_model, 64);
+        assert!(!boxes.is_empty(), "the box kind still draws its box");
+        assert!(
+            boxes.iter().all(|b| b.position[0] == 5.0),
+            "only kind 1's box remains"
+        );
+        // The model stream: kind 0's two entities, one instance each.
+        let (instances, draws) = build_model_instances(&snap, &[], &[], &renders_model, 64);
+        assert_eq!(instances.len(), 2);
+        assert_eq!(draws, vec![(0, 0, 2)], "one contiguous run for kind 0");
+        assert!(
+            (instances[0].yaw - 0.0).abs() < 1e-5,
+            "east-facing yaws to 0"
+        );
+        assert!(
+            (instances[1].yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-5,
+            "north-facing yaws to 90"
+        );
+        assert_eq!(instances[0].color, TEAM_P0);
+        assert_eq!(instances[1].color, TEAM_P1);
+        assert_eq!(instances[0].position, [5.0, 0.0, 7.0]);
+    }
+
+    /// Selection and hit flashes brighten a model's team color exactly as
+    /// they brighten the boxes' (the same `team_color` resolve).
+    #[test]
+    fn selection_brightens_a_models_team_color() {
+        let snap = snapshot(vec![entity(1, 0, PlayerId(0), Vec3::new(1.0, 0.0, 0.0))]);
+        let renders_model = [true];
+        let (plain, _) = build_model_instances(&snap, &[], &[], &renders_model, 64);
+        let (instances, _) = build_model_instances(&snap, &[EntityId(1)], &[], &renders_model, 64);
+        let brightness = |instance: &ModelInstance| instance.color.iter().sum::<f32>();
+        assert!(brightness(&instances[0]) > brightness(&plain[0]));
+    }
+
+    /// The stream respects the capacity whole entities at a time: a
+    /// too-small budget clips the tail, never half-drawing a kind's run.
+    #[test]
+    fn the_model_stream_respects_the_capacity() {
+        let entities: Vec<RenderEntity> = (1..=4)
+            .map(|id| entity(id, 0, PlayerId(0), Vec3::new(1.0, 0.0, 0.0)))
+            .collect();
+        let snap = snapshot(entities);
+        let renders_model = [true];
+        let (instances, draws) = build_model_instances(&snap, &[], &[], &renders_model, 3);
+        assert_eq!(instances.len(), 3, "the fourth is clipped");
+        assert_eq!(draws, vec![(0, 0, 3)], "the run still covers exactly it");
+    }
+
+    /// No models anywhere (the no-pack client, or a skins-only pack): both
+    /// paths behave exactly as before — every kind keeps its boxes, the
+    /// model stream is empty.
+    #[test]
+    fn without_models_both_paths_stay_untouched() {
+        let snap = snapshot(vec![entity(1, 0, PlayerId(0), Vec3::ZERO)]);
+        let specs = [crate::silhouette::Silhouette::from_parts(
+            true,
+            vec![crate::silhouette::Part::at(
+                [0.0, 0.3, 0.0],
+                [0.4, 0.6, 0.4],
+                crate::silhouette::Tone::Body,
+            )],
+        )];
+        let boxes = build_instances(&snap, &[], &[], &specs, &[0], &[], 64);
+        assert_eq!(boxes.len(), 1, "the box still draws");
+        let (instances, draws) = build_model_instances(&snap, &[], &[], &[], 64);
+        assert!(instances.is_empty());
+        assert!(draws.is_empty());
     }
 }

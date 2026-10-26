@@ -1,14 +1,62 @@
 // `entities/` (ADR-0100 part c, the ARCHITECTURE.md refactor map): the
 // instanced boxes — the silhouette pass, the team palette, the shadow blob
-// stream, and the death fades. `EntityInstance` and the entity shader feed
-// the entity pipeline; `PlacementGhost` and `DyingCue` are the client's
-// per-frame cues into it.
+// stream, and the death fades — and, since M12 phase 3, the model pass's
+// per-kind instance stream with its orientation seam (ADR-0101 §6).
+// `EntityInstance` and the entity shader feed the entity pipeline;
+// `ModelInstance` and the model shader feed the model pipeline;
+// `PlacementGhost` and `DyingCue` are the client's per-frame cues into it.
 use bytemuck::{Pod, Zeroable};
 
 use pandemonium_sim_api::{MoveState, PlayerId};
 
 use super::overlay::DECAL_SOFT_RADIAL;
 use super::{DecalInstance, KindShape, DECAL_LIFT};
+
+/// One world tile, in meters (art bible §6, ADR-0101 §6, A-145): models
+/// author at 1 glTF unit = 1 m (the glTF spec's own unit) and this is the
+/// one named constant that converts between their meters and the renderer's
+/// tile-based world (terrain vertices at integer tile corners, silhouette
+/// parts in tile units — no camera or terrain change rides along). The
+/// model pass divides model-space meters by this at upload; nothing else
+/// ever multiplies a world unit by it.
+pub const METERS_PER_TILE: f32 = 3.0;
+
+/// The fixed glTF-to-entity basis bake (ADR-0101 §6, the "−Z → forward"
+/// mapping): glTF authors models right-handed (+Y up, −Z forward, +X right),
+/// while the renderer's world is x-east / y-up / z-north with an entity's
+/// facing at `yaw = atan2(facing.z, facing.x)` (so yaw 0 faces east, yaw 90°
+/// faces north). Baking `(x, y, z) → (−z, y, x)` is the rotation that puts a
+/// model's forward (−Z) on the yaw-0 facing (+X, east) and its right (+X) on
+/// +Z — exactly where a box silhouette carries its right-hand parts (right =
+/// forward × up, the convention `build_entity_instances` maps offsets with).
+/// It is a proper rotation (determinant +1), never a mirror: winding and
+/// normals survive intact. Applied once per model at GPU upload, so the
+/// per-instance shader math stays a plain yaw about Y.
+pub(super) fn bake_gltf_to_entity(vertex: [f32; 3]) -> [f32; 3] {
+    [-vertex[2], vertex[1], vertex[0]]
+}
+
+/// Rotates a baked model-space vector by an entity's yaw — the *transposed*
+/// (correct-handed) convention, the same math `build_entity_instances` uses
+/// to map a part's local +x onto the facing direction: at yaw 0 the vector
+/// is unchanged (facing east), at yaw 90° local +x lands on +z (facing
+/// north). The box shader rotates its unit cubes with the mirrored form
+/// (`c·x + s·z, −s·x + c·z`); models are authored geometry, not generated
+/// boxes, so the model shader uses this form — the direction-pinned tests
+/// below pin both ends of that difference so a copy-paste between the two
+/// conventions cannot pass silently.
+#[allow(dead_code)] // the pure twin of the model shader's inline yaw math — the
+                    // shader carries the live copy; the direction-pinned tests
+                    // pin this one (M9.1: presentation direction needs named
+                    // tests, and WGSL cannot be the test's subject)
+pub(super) fn entity_yaw_rotate(yaw: f32, vertex: [f32; 3]) -> [f32; 3] {
+    let (sin, cos) = yaw.sin_cos();
+    [
+        cos * vertex[0] - sin * vertex[2],
+        vertex[1],
+        sin * vertex[0] + cos * vertex[2],
+    ]
+}
 
 /// One entity instance: a rotated, non-uniformly-scaled colored box (48
 /// bytes). One *entity* renders as one or more instances — its silhouette
@@ -170,6 +218,94 @@ fn value_noise(p: vec2<f32>) -> f32 {
 }
 "#;
 
+pub(super) const MODEL_SHADER_SRC: &str = r#"
+// The model pass (M12 phase 3, ADR-0101): instanced per-primitive draws of
+// loaded glTF static meshes. Everything per-model lives in the vertex data
+// (positions already baked into tiles — METERS_PER_TILE divided, the
+// glTF-to-entity basis applied, the manifest's scale/rotation_deg/
+// ground_offset baked once at upload); everything per-entity is the instance
+// stream (position, yaw, team color); everything per-material rides the
+// per-vertex base color and the group(1) texture — the skin path's
+// discipline, generalized: factor materials bind the built-in white 1x1
+// skin, textured materials bind their own uploaded PNG.
+struct CameraUniform { view_projection: mat4x4<f32>, eye: vec3<f32>, time: f32, map_size: vec2<f32> };
+@group(0) @binding(0) var<uniform> camera: CameraUniform;
+
+@group(1) @binding(0) var skin_sampler: sampler;
+@group(1) @binding(1) var skin_tex: texture_2d<f32>;
+
+const SUN: vec3<f32> = vec3<f32>(0.45, 0.85, 0.30);
+const HAZE_COLOR: vec3<f32> = vec3<f32>(0.04, 0.06, 0.09);
+const HAZE_START: f32 = 50.0;
+const HAZE_END: f32 = 130.0;
+
+fn haze(world: vec3<f32>) -> f32 {
+    return smoothstep(HAZE_START, HAZE_END, distance(world, camera.eye)) * 0.85;
+}
+
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) team_tint: f32, @location(4) uv: vec2<f32> };
+
+@vertex fn vs_main(
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) base_color: vec4<f32>,
+    @location(4) instance_position: vec3<f32>,
+    @location(5) instance_yaw: f32,
+    @location(6) instance_color: vec3<f32>,
+) -> VsOut {
+    var out: VsOut;
+    // The entity yaw rotation in its correct-handed form — the same math as
+    // entities::entity_yaw_rotate (the pure Rust twin the direction-pinned
+    // tests pin), NOT the box shader's mirrored form: authored geometry must
+    // turn toward its facing, not away from it.
+    let c = cos(instance_yaw);
+    let s = sin(instance_yaw);
+    let world = vec3<f32>(c * position.x - s * position.z, position.y, s * position.x + c * position.z) + instance_position;
+    let n = vec3<f32>(c * normal.x - s * normal.z, normal.y, s * normal.x + c * normal.z);
+    // The entity pass's hemisphere + sun lighting, verbatim, so a model and
+    // the boxes beside it shade as one scene.
+    let up = n.y * 0.5 + 0.5;
+    let sky = vec3<f32>(0.46, 0.50, 0.58);
+    let bounce = vec3<f32>(0.30, 0.27, 0.22);
+    let ambient = mix(bounce, sky, up);
+    let sun = vec3<f32>(1.00, 0.94, 0.80) * max(dot(n, normalize(SUN)), 0.0) * 0.62;
+    // The team-color multiply (ADR-0101 §3): the `team_color` material's
+    // base color (authored white) times the instance's player color; every
+    // other material keeps its own albedo.
+    let tint = mix(vec3<f32>(1.0, 1.0, 1.0), instance_color, base_color.a);
+    out.color = base_color.rgb * tint * (ambient + sun);
+    out.world = world;
+    out.normal = n;
+    out.team_tint = base_color.a;
+    out.uv = uv;
+    return out;
+}
+
+@fragment fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    var color = in.color;
+    // The skin path's unconditional sample + alpha cutout: factor materials
+    // bind the white 1x1 placeholder (the texel is 1.0 everywhere, nothing
+    // is ever cut), a textured material's fully transparent texels are cut
+    // away exactly like a skinned box's.
+    let texel = textureSample(skin_tex, skin_sampler, in.uv);
+    if (texel.a < 0.5) {
+        discard;
+    }
+    color = color * texel.rgb;
+    // The entity pass's view-dependent shading, matched (a model is a
+    // mixed-material object, so a single mid specular replaces the box
+    // pass's metal/mason split).
+    let view = normalize(camera.eye - in.world);
+    let half_vector = normalize(normalize(SUN) + view);
+    let spec = pow(max(dot(in.normal, half_vector), 0.0), 24.0) * 0.20;
+    color += vec3<f32>(1.0, 0.96, 0.88) * spec;
+    let fresnel = pow(1.0 - clamp(dot(in.normal, view), 0.0, 1.0), 3.0);
+    color += vec3<f32>(0.30, 0.38, 0.52) * fresnel * 0.16;
+    return vec4<f32>(mix(color, HAZE_COLOR, haze(in.world)), 1.0);
+}
+"#;
+
 /// The team palette (PLAN-M10.2 §2.2, A-102): P0 blue, P1 orange — the
 /// colorblind-safe pair the owner picked — and gold for the neutral slot.
 /// The mapping is presentation-only: content files and the content hash
@@ -264,18 +400,32 @@ pub(super) fn fallback_shape() -> KindShape {
 /// snapshot's contract) under the instance buffer's capacity. `skin_slots`
 /// is the per-kind skin lookup (aligned with `kind_specs` by index); kinds
 /// without one render with the placeholder skin, slot 0.
+/// `kind_renders_model` (same alignment) names the kinds the model pass
+/// carries — their boxes are skipped here so one entity never draws twice
+/// (M12 phase 3: the model replaces the silhouette, the way a skin replaced
+/// the painted box for its kind). Dying entities are the deliberate
+/// exception: their fade is always a placeholder mass, whatever the kind
+/// rendered in life.
 pub(super) fn build_instances(
     snapshot: &pandemonium_engine::RenderSnapshot,
     selection: &[pandemonium_sim_api::EntityId],
     flashes: &[pandemonium_sim_api::EntityId],
     kind_specs: &[KindShape],
     skin_slots: &[u32],
+    kind_renders_model: &[bool],
     capacity: usize,
 ) -> Vec<EntityInstance> {
     let mut instances = Vec::with_capacity(snapshot.entities.len() * 2);
     for entity in &snapshot.entities {
         if instances.len() >= capacity {
             break; // an over-full frame clips its tail, never panics
+        }
+        if kind_renders_model
+            .get(entity.kind.0 as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue; // the model pass draws this kind (see build_model_instances)
         }
         let shape = kind_specs
             .get(entity.kind.0 as usize)
@@ -322,6 +472,90 @@ pub(super) fn group_by_skin(
         ordered.extend_from_slice(bucket);
     }
     (ordered, skin_draws)
+}
+
+/// One model instance (M12 phase 3, ADR-0101): everything the per-primitive
+/// model draws need per entity — 28 bytes, all `f32`, no padding. The
+/// per-primitive data (vertices, material albedo, team-tint flag) lives in
+/// the model's own buffers; this is the per-entity half of the instancing:
+/// where the model stands (tiles), which way it faces (the entity yaw), and
+/// the lit team color the `team_color` material multiplies by.
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub(super) struct ModelInstance {
+    /// The entity's ground position (tiles; the frame pass lifts it onto
+    /// the display terrain like every box instance).
+    pub(super) position: [f32; 3],
+    /// The entity's yaw (`atan2(facing.z, facing.x)` — see
+    /// [`entity_yaw_rotate`]).
+    pub(super) yaw: f32,
+    /// The team color (brightened when selected or flashing — the same
+    /// [`team_color`] the boxes use) for the `team_color` material's
+    /// multiply; non-team materials ignore it.
+    pub(super) color: [f32; 3],
+}
+
+/// Builds the model pass's instance stream, grouped by kind: every entity
+/// whose kind renders a model contributes exactly one instance (a model is
+/// one mesh, not a composition — the silhouette pass's per-part boxes have
+/// no model-pass equivalent), and each kind's instances land in one
+/// contiguous run so the frame pass can draw each of the kind's model
+/// primitives over exactly that range. Ascending snapshot order within a
+/// kind (the snapshot's contract, same source as the silhouette pass —
+/// ADR-0200 §4's invariant); the whole stream respects `capacity` and an
+/// over-full frame clips its tail entity by entity, never half-drawing a
+/// kind's run. `kind_renders_model` is the per-kind model lookup (aligned
+/// with `kind_specs` by index); kinds without one never reach this stream —
+/// their boxes carry them. Models do not squat when moving (the box pass's
+/// half-extent cue would distort authored geometry; motion is the animation
+/// ADR's business, ADR-0101 §2).
+pub(super) fn build_model_instances(
+    snapshot: &pandemonium_engine::RenderSnapshot,
+    selection: &[pandemonium_sim_api::EntityId],
+    flashes: &[pandemonium_sim_api::EntityId],
+    kind_renders_model: &[bool],
+    capacity: usize,
+) -> (Vec<ModelInstance>, Vec<(usize, u64, u64)>) {
+    let mut buckets: Vec<Vec<ModelInstance>> =
+        kind_renders_model.iter().map(|_| Vec::new()).collect();
+    let mut written = 0usize;
+    for entity in &snapshot.entities {
+        if written >= capacity {
+            break; // an over-full frame clips its tail, never panics
+        }
+        if !kind_renders_model
+            .get(entity.kind.0 as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue; // a box kind (or an unknown kind) — not this pass's business
+        }
+        let yaw = if entity.facing.length_squared() > 0.25 {
+            entity.facing.z.atan2(entity.facing.x)
+        } else {
+            0.0
+        };
+        buckets[entity.kind.0 as usize].push(ModelInstance {
+            position: [entity.pos.x, entity.pos.y, entity.pos.z],
+            yaw,
+            color: team_color(
+                entity.owner,
+                selection.contains(&entity.id),
+                flashes.contains(&entity.id),
+            ),
+        });
+        written += 1;
+    }
+    // One contiguous run per kind that drew anything: (kind, start, count).
+    let mut ordered: Vec<ModelInstance> = Vec::with_capacity(written);
+    let mut draws: Vec<(usize, u64, u64)> = Vec::new();
+    for (kind, bucket) in buckets.iter().enumerate() {
+        if !bucket.is_empty() {
+            draws.push((kind, ordered.len() as u64, bucket.len() as u64));
+            ordered.extend_from_slice(bucket);
+        }
+    }
+    (ordered, draws)
 }
 
 /// Builds the shadow blob stream: one dark ellipse under every entity,
