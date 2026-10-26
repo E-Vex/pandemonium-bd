@@ -1487,3 +1487,58 @@ confirms or rejects it.
   preserved by construction and an icon-only kind renders the placeholder
   instead of accidentally wearing its icon as a skin. Phase 3's model pass
   reads the typed `model`/`skin` fields, not the primary.
+- **A-156 (A-018, M12 phase 3 — the orientation seam's exact math).** The
+  fixed glTF-to-entity mapping (ADR-0101 §6's "−Z → forward") is pinned as
+  `bake_gltf_to_entity`: `(x, y, z) → (−z, y, x)` — a proper rotation
+  (determinant +1, never a mirror) that puts glTF forward (−Z) on the
+  yaw-0 facing (+X east) and glTF right (+X) on +Z, which is exactly where
+  the box silhouettes carry right-hand parts (right = forward × up, the
+  `a_facing_turn` test's law). The per-instance yaw then uses the
+  *correct-handed* form (`c·x − s·z, s·x + c·z` — the transposed
+  convention `build_entity_instances` maps part offsets with), NOT the box
+  shader's mirrored form: authored geometry must turn toward its facing.
+  Both are direction-pinned at yaw 0 (east) and yaw 90 (north), with the
+  right/up convention and the bake's handedness each carrying their own
+  test (M9.1's lesson: presentation direction needs named tests, because
+  hashes cannot see it and WGSL cannot be the test's subject).
+- **A-157 (A-018, M12 phase 3 — what the model tier replaces, and what it
+  does not).** A kind's model replaces exactly the silhouette pass's boxes
+  for that kind; everything else the entity already had stays: the blob
+  shadow and the team/selection rings keep using the silhouette's
+  content-derived radius, death fades stay placeholder masses (the skin
+  path's discipline — a dying model kind shrinks a box, not the mesh), and
+  models do **not** squat when moving (the box pass's half-extent cue
+  would distort authored geometry; motion is the animation ADR's
+  business). Selection and hit-flash brightening ride the team color the
+  `team_color` material multiplies, so they tint exactly the parts the
+  Designer marked.
+- **A-158 (A-018, M12 phase 3 — probe totality and the 20th rejection).**
+  The renderer's model probe is total: read, parse, convert, *and* decode
+  every embedded texture before the tier decision — a material whose PNG
+  cannot decode fails the whole model (a half-textured model is worse than
+  the clean fallback tier), so a tier that wins always uploads whole and
+  the upload path itself cannot fail. Feeding that, the loader gained one
+  precise rejection: a primitive whose NORMAL/TEXCOORD_0 accessor count
+  differs from POSITION's is refused (`AttributeCountMismatch`, glTF 2.0
+  §3.6.2's same-count rule — unchecked by the crate's parser, and the
+  conversion indexes position-wise), keeping the never-crash promise ahead
+  of a permissive read.
+- **A-159 (A-018, M12 phase 4 — the one-diagnostic unification's scope).**
+  Exactly one diagnostic line per failing kind per run (A-146) is enforced
+  at the single point where the whole chain is visible: the renderer's
+  startup resolution. v2 entity references (model/skin/icon/sounds) that
+  are not readable at manifest load are recorded as deferred `PackNote`s
+  and folded into that kind's single line; the chain is lazy — a kind
+  whose model loads never decodes its skin (and a clean walk prints no
+  diagnostic at all). v1's whole-entry skip and every terrain miss keep
+  their direct one-line prints (pinned behavior; one reference can never
+  double). Notes for kinds the renderer does not know — and everything in
+  a headless run, where nothing renders — print nothing: no headless
+  evidence line ever depended on an entity diagnostic.
+- **A-160 (A-018, M12 phase 3 — two model-pipeline presentation choices).**
+  The model pipeline's backface cull stays off, matching the entity pass:
+  exporter winding conventions vary, and a wrongly-culled model is worse
+  than a backface the depth buffer eats. And the model shader's specular
+  is a single mid setting rather than the box pass's metal/mason split —
+  a model is one mixed-material object, and material-class heuristics do
+  not generalize to authored meshes.
