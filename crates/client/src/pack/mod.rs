@@ -113,6 +113,30 @@ pub struct AssetPack {
     pub terrain: BTreeMap<String, AssetEntry>,
     /// The pack's root directory (canonicalized).
     pub root: PathBuf,
+    /// Per-reference resolution failures (a declared file that was not
+    /// readable at manifest load), recorded per kind for the renderer's
+    /// startup resolution — never printed here (A-146/A-154: exactly one
+    /// diagnostic line per failing kind per run, emitted where the whole
+    /// fallback chain is visible, naming the tier it landed on). A v1
+    /// entry's whole-entry skip and every terrain miss keep their own
+    /// direct one-line prints instead (v1's pinned behavior; a terrain
+    /// class has exactly one reference, so it can never double).
+    pub notes: Vec<PackNote>,
+}
+
+/// One recorded resolution failure for an entity kind: which reference
+/// (`model`, `skin`, `icon`, `sound 'cue'`) and the manifest path as the
+/// author wrote it. Consumed by the renderer's chain resolution, which
+/// folds every note for a kind into that kind's single diagnostic line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // read by resolve_presentation/notes_for and their tests
+pub struct PackNote {
+    /// The entity kind the failed reference belongs to.
+    pub kind: String,
+    /// What the reference was ("model", "skin", "icon", "sound 'cue'").
+    pub what: String,
+    /// The manifest path as written (relative, author-facing).
+    pub path: String,
 }
 
 /// One declared asset path: the path as written in the manifest and its
@@ -252,6 +276,60 @@ type ParsedManifest = (
     BTreeMap<String, AssetEntry>,
 );
 
+/// Which tier a kind's presentation landed on after the fallback chain
+/// walked (ADR-0101 §5: model → skin → placeholder).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // the tier name is read by the diagnostic formatter and tests
+pub enum PresentationTier {
+    /// The `.glb` loaded, converted, and uploaded — the model pass draws it.
+    Model,
+    /// The model was absent or failed; the PNG skin decoded and uploaded —
+    /// the skinned box draws.
+    Skin,
+    /// Nothing above loaded — the placeholder silhouette draws.
+    Placeholder,
+}
+
+impl PresentationTier {
+    /// The tier's name as the one diagnostic line states it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Skin => "PNG skin",
+            Self::Placeholder => "placeholder silhouette",
+        }
+    }
+}
+
+/// The chain's decision for one kind: the tier that renders plus every
+/// failure that walked it there. The renderer turns a non-empty `failures`
+/// into exactly one diagnostic line (A-146: one line per failing kind per
+/// run, naming the tier it landed on) — [`presentation_diagnostic`] builds
+/// that line, so its shape is test-provable in-suite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentationResolution {
+    /// The tier the kind renders with.
+    pub tier: PresentationTier,
+    /// Every failure the walk passed, in walk order (pack notes first, then
+    /// the model probe, then the skin probe), each a self-contained phrase.
+    pub failures: Vec<String>,
+}
+
+/// Formats one kind's single diagnostic line (A-146): `None` when the chain
+/// never failed — a clean load says nothing here (the positive evidence
+/// lines carry it). Pure, so the line's shape is pinned by tests instead of
+/// by grepping a run.
+pub fn presentation_diagnostic(kind: &str, resolution: &PresentationResolution) -> Option<String> {
+    if resolution.failures.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "pandemonium pack: entity '{kind}' — {}; rendering the {} tier",
+        resolution.failures.join("; "),
+        resolution.tier.as_str()
+    ))
+}
+
 impl AssetPack {
     /// The schema version this loader accepts.
     #[allow(dead_code)] // used by callers that report the pack's schema version
@@ -287,10 +365,11 @@ impl AssetPack {
             .canonicalize()
             .map_err(|e| PackError::Io(pack_root.to_path_buf(), e))?;
 
+        let mut notes = Vec::new();
         let (pack_id, schema_version, entities, terrain) = if probe.schema_version == 1 {
-            Self::load_v1(&text, &manifest_path, &canonical_root)?
+            Self::load_v1(&text, &manifest_path, &canonical_root, &mut notes)?
         } else {
-            Self::load_v2(&text, &manifest_path, &canonical_root)?
+            Self::load_v2(&text, &manifest_path, &canonical_root, &mut notes)?
         };
 
         Ok(Some(Self {
@@ -299,13 +378,19 @@ impl AssetPack {
             entities,
             terrain,
             root: canonical_root,
+            notes,
         }))
     }
 
     /// Parses a schema-1 manifest: string entity entries, forward-migrated
     /// into the typed v2 shape (`.png` → skin, `.glb`/`.gltf` → model,
     /// defaults applied — FD-10's rule; ADR-0001's map-schema precedent).
-    fn load_v1(text: &str, manifest_path: &Path, root: &Path) -> Result<ParsedManifest, PackError> {
+    fn load_v1(
+        text: &str,
+        manifest_path: &Path,
+        root: &Path,
+        notes: &mut Vec<PackNote>,
+    ) -> Result<ParsedManifest, PackError> {
         let raw: RawManifestV1 = ron::from_str(text)
             .map_err(|e| PackError::Parse(manifest_path.to_path_buf(), e.to_string()))?;
 
@@ -319,8 +404,10 @@ impl AssetPack {
             };
             // A v1 entry is one path: a missing file skips the whole entry
             // (v1's own behavior, preserved — the placeholder is the
-            // fallback tier).
-            if let Some(reference) = Self::resolve_ref(root, &context, asset)? {
+            // fallback tier) with v1's own direct line.
+            if let Some(reference) =
+                Self::resolve_ref(root, &context, asset, notes, /* defer: */ false)?
+            {
                 let (model, skin) = match Self::extension_of(asset) {
                     Some("png") => (None, Some(reference.clone())),
                     Some("glb") | Some("gltf") => (Some(reference.clone()), None),
@@ -341,22 +428,30 @@ impl AssetPack {
             }
         }
 
-        let terrain = Self::load_terrain(root, &raw.terrain)?;
+        let terrain = Self::load_terrain(root, &raw.terrain, notes)?;
         Ok((raw.pack_id, raw.schema_version, entities, terrain))
     }
 
     /// Parses a schema-2 manifest: typed entity entries, terrain unchanged
     /// from v1.
-    fn load_v2(text: &str, manifest_path: &Path, root: &Path) -> Result<ParsedManifest, PackError> {
+    fn load_v2(
+        text: &str,
+        manifest_path: &Path,
+        root: &Path,
+        notes: &mut Vec<PackNote>,
+    ) -> Result<ParsedManifest, PackError> {
         let raw: RawManifestV2 = ron::from_str(text)
             .map_err(|e| PackError::Parse(manifest_path.to_path_buf(), e.to_string()))?;
 
         let mut entities = BTreeMap::new();
         for (kind_id, entry) in &raw.entities {
-            entities.insert(kind_id.clone(), Self::build_v2_entry(root, kind_id, entry)?);
+            entities.insert(
+                kind_id.clone(),
+                Self::build_v2_entry(root, kind_id, entry, notes)?,
+            );
         }
 
-        let terrain = Self::load_terrain(root, &raw.terrain)?;
+        let terrain = Self::load_terrain(root, &raw.terrain, notes)?;
         Ok((raw.pack_id, raw.schema_version, entities, terrain))
     }
 
@@ -365,6 +460,7 @@ impl AssetPack {
     fn load_terrain(
         root: &Path,
         raw_terrain: &BTreeMap<String, String>,
+        notes: &mut Vec<PackNote>,
     ) -> Result<BTreeMap<String, AssetEntry>, PackError> {
         let mut terrain = BTreeMap::new();
         for (class, asset) in raw_terrain {
@@ -374,7 +470,9 @@ impl AssetPack {
                 scope: "terrain",
                 key: class,
             };
-            if let Some(reference) = Self::resolve_ref(root, &context, asset)? {
+            if let Some(reference) =
+                Self::resolve_ref(root, &context, asset, notes, /* defer: */ false)?
+            {
                 terrain.insert(
                     class.clone(),
                     AssetEntry::with_primary(asset.clone(), reference.resolved.clone(), None, None),
@@ -385,13 +483,14 @@ impl AssetPack {
     }
 
     /// Builds one v2 entity entry: every declared reference resolved
-    /// (missing files skip that reference with a diagnostic — the tier
+    /// (missing files skip that reference with a recorded note — the tier
     /// walks), ranges validated (out-of-range is a precise fatal error),
     /// icon and sounds schema-validated but not consumed.
     fn build_v2_entry(
         root: &Path,
         kind_id: &str,
         raw: &RawEntityEntry,
+        notes: &mut Vec<PackNote>,
     ) -> Result<AssetEntry, PackError> {
         let model = match &raw.model {
             Some(path) => Self::resolve_ref(
@@ -403,6 +502,8 @@ impl AssetPack {
                     key: kind_id,
                 },
                 path,
+                notes,
+                /* defer: */ true,
             )?,
             None => None,
         };
@@ -416,6 +517,8 @@ impl AssetPack {
                     key: kind_id,
                 },
                 path,
+                notes,
+                /* defer: */ true,
             )?,
             None => None,
         };
@@ -436,6 +539,8 @@ impl AssetPack {
                         key: kind_id,
                     },
                     path,
+                    notes,
+                    /* defer: */ true,
                 )?
             }
             None => None,
@@ -458,6 +563,8 @@ impl AssetPack {
                     key: kind_id,
                 },
                 path,
+                notes,
+                /* defer: */ true,
             )? {
                 sounds.insert(cue.clone(), reference);
             }
@@ -503,11 +610,19 @@ impl AssetPack {
     /// traversal (fatal), resolves relative to the pack root, canonicalizes
     /// (which resolves symlinks), and confirms the result stays inside the
     /// pack root. A missing or unreadable file is non-fatal — `Ok(None)`
-    /// with one diagnostic, so the entry's fallback tier is used.
+    /// with one diagnostic, so the entry's fallback tier is used. The
+    /// diagnostic's shape depends on `defer`: a deferred reference (v2
+    /// entity fields) records a [`PackNote`] for the renderer's startup
+    /// resolution — the A-146 one-line-per-kind pass folds it into that
+    /// kind's single line — while a direct reference (v1 entity paths,
+    /// terrain classes) prints v1's own line immediately, exactly as it
+    /// always has (a kind with one reference can never double).
     fn resolve_ref(
         root: &Path,
         context: &RefContext,
         asset: &str,
+        notes: &mut Vec<PackNote>,
+        defer: bool,
     ) -> Result<Option<AssetRef>, PackError> {
         // Reject absolute paths on any platform.
         if Path::new(asset).is_absolute() {
@@ -543,13 +658,21 @@ impl AssetPack {
                 }))
             }
             Err(_) => {
-                eprintln!(
-                    "pandemonium pack: {what} not readable for {scope} '{key}': {asset} \
-                     (placeholder rendering used)",
-                    what = context.what,
-                    scope = context.scope,
-                    key = context.key
-                );
+                if defer {
+                    notes.push(PackNote {
+                        kind: context.key.to_string(),
+                        what: context.what.to_string(),
+                        path: asset.to_string(),
+                    });
+                } else {
+                    eprintln!(
+                        "pandemonium pack: {what} not readable for {scope} '{key}': {asset} \
+                         (placeholder rendering used)",
+                        what = context.what,
+                        scope = context.scope,
+                        key = context.key
+                    );
+                }
                 Ok(None)
             }
         }
@@ -587,6 +710,64 @@ impl AssetPack {
             return Some(AssetKind::Texture);
         }
         None
+    }
+
+    /// The recorded resolution failures for one kind, as the chain's
+    /// failure phrases ("model 'path' is not readable") — the renderer
+    /// prefixes these with its own load outcomes before formatting the
+    /// kind's single diagnostic line.
+    fn notes_for(&self, kind: &str) -> Vec<String> {
+        self.notes
+            .iter()
+            .filter(|note| note.kind == kind)
+            .map(|note| format!("{} '{}' is not readable", note.what, note.path))
+            .collect()
+    }
+
+    /// Resolves one kind's presentation tier from the pack's declared
+    /// references, the recorded per-reference notes, and the two renderable
+    /// probes' outcomes — the fallback chain (ADR-0101 §5: model → skin →
+    /// placeholder) as a pure function, so the ladder and the one-line
+    /// discipline are test-provable without a GPU.
+    ///
+    /// * `model_outcome`: `None` when the entry declares no model reference
+    ///   *or* the reference's file was not readable at manifest load (the
+    ///   recorded note already names it); `Some(Ok(()))` when the renderer
+    ///   loaded the `.glb`; `Some(Err(reason))` when the load failed.
+    /// * `skin_outcome`: the same shape for the skin — and `None` (not
+    ///   probed) whenever the model tier already won, which is exactly the
+    ///   laziness the chain promises: a kind that renders its model never
+    ///   decodes its skin.
+    pub fn resolve_presentation(
+        &self,
+        kind: &str,
+        model_outcome: Option<Result<(), String>>,
+        skin_outcome: Option<Result<(), String>>,
+    ) -> PresentationResolution {
+        let mut failures = self.notes_for(kind);
+        let tier = match model_outcome {
+            Some(Ok(())) => PresentationTier::Model,
+            Some(Err(reason)) => {
+                failures.push(reason);
+                match skin_outcome {
+                    Some(Ok(())) => PresentationTier::Skin,
+                    Some(Err(reason)) => {
+                        failures.push(reason);
+                        PresentationTier::Placeholder
+                    }
+                    None => PresentationTier::Placeholder,
+                }
+            }
+            None => match skin_outcome {
+                Some(Ok(())) => PresentationTier::Skin,
+                Some(Err(reason)) => {
+                    failures.push(reason);
+                    PresentationTier::Placeholder
+                }
+                None => PresentationTier::Placeholder,
+            },
+        };
+        PresentationResolution { tier, failures }
     }
 }
 
@@ -1486,5 +1667,247 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("creating temp dir");
         dir
+    }
+
+    // ------------------------------------------------------------------
+    // M12 phase 4 — the fallback chain and the one-diagnostic guarantee
+    // (A-016 §12, ADR-0101 §5, the A-146 pin, A-017 P3's unification).
+    // The probes' outcomes are the renderer's; these tests exercise the
+    // chain rule and the line shape against real on-disk fixtures, and the
+    // live --frames 900 grep (tests/xvfb/a018) proves the same guarantee
+    // end to end.
+    // ------------------------------------------------------------------
+
+    /// A real 1x1 PNG (a skin fixture the file-resolution pass accepts).
+    fn tiny_png() -> Vec<u8> {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 255, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encoding a 1x1 PNG");
+        png
+    }
+
+    const CORRUPT_GLB: &[u8] = b"definitely not a glTF binary container";
+
+    #[test]
+    fn a_corrupt_model_with_a_valid_skin_lands_on_the_skin_tier() {
+        // The file exists (so the manifest resolves it — no note), but the
+        // renderer's probe fails it: the chain walks to the skin, which
+        // loads — and the ONE diagnostic names the tier it landed on.
+        let pack = pack_with(
+            r#"(
+                pack_id: "chain",
+                schema_version: 2,
+                entities: {
+                    "rifleman": (
+                        model: Some("models/rifleman.glb"),
+                        skin: Some("textures/rifleman.png"),
+                    ),
+                },
+            )"#,
+            &[
+                ("models/rifleman.glb", CORRUPT_GLB),
+                ("textures/rifleman.png", tiny_png().as_slice()),
+            ],
+        )
+        .expect("the pack loads");
+        let model_probe = Some(Err(
+            "model 'models/rifleman.glb' could not be loaded (not a GLB container (no glTF magic) \
+             — model entries are glTF 2.0 binary only (ADR-0101 §1))"
+                .to_string(),
+        ));
+        let resolution = pack.resolve_presentation("rifleman", model_probe, Some(Ok(())));
+        assert_eq!(resolution.tier, PresentationTier::Skin);
+        assert_eq!(resolution.failures.len(), 1, "one failure, one line");
+        let line = presentation_diagnostic("rifleman", &resolution).expect("the failing kind logs");
+        assert_eq!(
+            line,
+            "pandemonium pack: entity 'rifleman' — model 'models/rifleman.glb' could not be \
+             loaded (not a GLB container (no glTF magic) — model entries are glTF 2.0 binary only \
+             (ADR-0101 §1)); rendering the PNG skin tier"
+        );
+        // Exactly one line: the diagnostic is a single string with no
+        // embedded newlines (the A-146 pin's shape, assertable here).
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn a_corrupt_model_without_a_skin_lands_on_the_placeholder() {
+        let pack = pack_with(
+            r#"(
+                pack_id: "chain",
+                schema_version: 2,
+                entities: {
+                    "ore_node": ( model: Some("models/ore_node.glb"), ),
+                },
+            )"#,
+            &[("models/ore_node.glb", CORRUPT_GLB)],
+        )
+        .expect("the pack loads");
+        let resolution = pack.resolve_presentation(
+            "ore_node",
+            Some(Err(
+                "model 'models/ore_node.glb' could not be loaded (truncated)".to_string(),
+            )),
+            None,
+        );
+        assert_eq!(resolution.tier, PresentationTier::Placeholder);
+        let line = presentation_diagnostic("ore_node", &resolution).expect("the failing kind logs");
+        assert!(
+            line.ends_with("rendering the placeholder silhouette tier"),
+            "the one line names the tier it landed on: {line}"
+        );
+    }
+
+    #[test]
+    fn a_missing_model_file_is_a_note_and_still_one_line() {
+        // The manifest declares a model whose file does not exist: the pack
+        // layer records the note (deferred — nothing printed at load), the
+        // entry keeps its skin, and the renderer's single line folds the
+        // note in while naming the skin tier.
+        let pack = pack_with(
+            r#"(
+                pack_id: "chain",
+                schema_version: 2,
+                entities: {
+                    "rifleman": (
+                        model: Some("models/missing.glb"),
+                        skin: Some("textures/rifleman.png"),
+                    ),
+                },
+            )"#,
+            &[("textures/rifleman.png", tiny_png().as_slice())],
+        )
+        .expect("the pack loads");
+        let entry = pack.asset_for("rifleman").expect("the entry survives");
+        assert!(entry.model.is_none(), "the missing reference was skipped");
+        assert!(entry.skin.is_some(), "the skin survived");
+        assert_eq!(
+            pack.notes,
+            vec![PackNote {
+                kind: "rifleman".to_string(),
+                what: "model".to_string(),
+                path: "models/missing.glb".to_string(),
+            }],
+            "the miss is recorded, deferred, never printed at load"
+        );
+        // The renderer never probed a model (no reference to probe) — the
+        // note alone walks the chain to the skin.
+        let resolution = pack.resolve_presentation("rifleman", None, Some(Ok(())));
+        assert_eq!(resolution.tier, PresentationTier::Skin);
+        let line = presentation_diagnostic("rifleman", &resolution).expect("the failing kind logs");
+        assert!(
+            line.contains("model 'models/missing.glb' is not readable")
+                && line.ends_with("rendering the PNG skin tier"),
+            "one line carries the note and the tier: {line}"
+        );
+    }
+
+    #[test]
+    fn both_tiers_failing_still_logs_exactly_one_line() {
+        // The A-154 interim state's double print (model and skin each
+        // missing/failing) is the exact case the A-146 pass unifies: two
+        // failures, ONE line, naming the placeholder tier.
+        let pack = pack_with(
+            r#"(
+                pack_id: "chain",
+                schema_version: 2,
+                entities: {
+                    "rifleman": (
+                        model: Some("models/rifleman.glb"),
+                        skin: Some("textures/rifleman.png"),
+                    ),
+                },
+            )"#,
+            &[
+                ("models/rifleman.glb", CORRUPT_GLB),
+                ("textures/rifleman.png", tiny_png().as_slice()),
+            ],
+        )
+        .expect("the pack loads");
+        let resolution = pack.resolve_presentation(
+            "rifleman",
+            Some(Err(
+                "model 'models/rifleman.glb' could not be loaded (corrupt)".to_string(),
+            )),
+            Some(Err(
+                "skin 'textures/rifleman.png' could not be loaded (bad PNG)".to_string(),
+            )),
+        );
+        assert_eq!(resolution.tier, PresentationTier::Placeholder);
+        assert_eq!(resolution.failures.len(), 2, "both failures recorded");
+        let line = presentation_diagnostic("rifleman", &resolution).expect("the failing kind logs");
+        assert_eq!(
+            line,
+            "pandemonium pack: entity 'rifleman' — model 'models/rifleman.glb' could not be \
+             loaded (corrupt); skin 'textures/rifleman.png' could not be loaded (bad PNG); \
+             rendering the placeholder silhouette tier",
+            "one line, both reasons, the tier it landed on"
+        );
+    }
+
+    #[test]
+    fn a_clean_model_never_probes_the_skin_and_logs_nothing() {
+        // The chain's laziness, pinned at the rule level: the model won, the
+        // skin was never decoded (outcome None — not probed), and a clean
+        // walk prints no diagnostic at all.
+        let pack = pack_with(
+            r#"(
+                pack_id: "chain",
+                schema_version: 2,
+                entities: {
+                    "rifleman": (
+                        model: Some("models/rifleman.glb"),
+                        skin: Some("textures/rifleman.png"),
+                    ),
+                },
+            )"#,
+            &[
+                ("models/rifleman.glb", b"glTF-payload-bytes".as_slice()),
+                ("textures/rifleman.png", tiny_png().as_slice()),
+            ],
+        )
+        .expect("the pack loads");
+        let resolution = pack.resolve_presentation("rifleman", Some(Ok(())), None);
+        assert_eq!(resolution.tier, PresentationTier::Model);
+        assert!(resolution.failures.is_empty());
+        assert!(
+            presentation_diagnostic("rifleman", &resolution).is_none(),
+            "a clean load says nothing here — the evidence line carries it"
+        );
+    }
+
+    #[test]
+    fn icon_and_sound_misses_ride_the_same_single_line() {
+        // Non-renderable references fail into the same one-line-per-kind
+        // discipline (A-017 P3's unification covers every per-reference
+        // diagnostic): the model tier still wins, and the misses ride its
+        // line.
+        let pack = pack_with(
+            r#"(
+                pack_id: "chain",
+                schema_version: 2,
+                entities: {
+                    "rifleman": (
+                        model: Some("models/rifleman.glb"),
+                        icon: Some("icons/rifleman.png"),
+                        sounds: { "SelectionClick": "audio/rifleman/select.ogg" },
+                    ),
+                },
+            )"#,
+            &[("models/rifleman.glb", b"glTF-payload-bytes".as_slice())],
+        )
+        .expect("the pack loads");
+        assert_eq!(pack.notes.len(), 2, "the icon and the sound miss");
+        let resolution = pack.resolve_presentation("rifleman", Some(Ok(())), None);
+        assert_eq!(resolution.tier, PresentationTier::Model);
+        let line = presentation_diagnostic("rifleman", &resolution).expect("the failing kind logs");
+        assert!(
+            line.contains("icon 'icons/rifleman.png' is not readable")
+                && line
+                    .contains("sound 'SelectionClick' 'audio/rifleman/select.ogg' is not readable")
+                && line.ends_with("rendering the model tier"),
+            "one line, every miss, the tier it landed on: {line}"
+        );
     }
 }

@@ -631,14 +631,18 @@ struct UploadedModel {
 }
 
 /// What [`WgpuRenderer::build_model_pass`] hands the constructor: the whole
-/// model pass in one value, so the constructor's footprint on this state is
-/// one call and five field moves.
+/// model pass plus the skin tier's slot table in one value, so the
+/// constructor's footprint on this state is one call and a few field moves.
 struct ModelPassGpu {
     pipeline: wgpu::RenderPipeline,
     instance_buf: wgpu::Buffer,
     capacity: u64,
     models: Vec<Option<UploadedModel>>,
     kind_renders_model: Vec<bool>,
+    /// Per-kind skin slot (the skin tier's outcome; 0 = the placeholder
+    /// skin, the placeholder tier) — the field the pre-model constructor's
+    /// skin loop used to fill.
+    kind_skin_slots: Vec<u32>,
 }
 
 /// Decodes a GLB-embedded PNG (a model material's albedo bytes, straight
@@ -695,18 +699,42 @@ struct ModelPassInputs<'a> {
     format: wgpu::TextureFormat,
 }
 
+/// One kind's model probe outcome: the loaded data, the converted
+/// primitives, and every material's decoded texture (aligned by primitive,
+/// `None` for factor materials) when the model won. The probe is total —
+/// by the time it returns `Ok`, nothing between here and the GPU upload can
+/// fail, so a tier that wins always uploads whole (A-146: the tier decision
+/// and the upload happen in one walk, exactly once per run).
+type ModelProbe = Option<
+    Result<
+        (
+            model::ModelData,
+            Vec<model::GpuPrimitive>,
+            Vec<Option<texture::DecodedTexture>>,
+        ),
+        String,
+    >,
+>;
+
 impl WgpuRenderer {
-    /// Builds the model pass (M12 phase 3, ADR-0101): the pipeline over the
-    /// entity pass's own `[camera, skin]` layout, the shared instance
-    /// buffer, and one uploaded model per kind whose pack entry carries a
-    /// loadable `.glb`. Runs exactly once per renderer — every file read,
-    /// GLB parse, meters-to-tiles conversion, GPU upload, and bind group is
-    /// born here and never again (A-146: the frame path resolves and logs
-    /// nothing). A kind whose model cannot be read or parsed keeps the box
-    /// path (skin or placeholder, whichever its entry provides) with one
-    /// diagnostic line — the A-017 §12 phase 4 brief unifies these into the
-    /// full fallback chain.
-    fn build_model_pass(inputs: ModelPassInputs<'_>) -> ModelPassGpu {
+    /// Builds the model pass and resolves every kind's presentation tier
+    /// (M12 phases 3-4, ADR-0101 §§3-5): the pipeline over the entity pass's
+    /// own `[camera, skin]` layout, the shared instance buffer, and — per
+    /// kind, in one walk — the fallback chain model → skin → placeholder.
+    /// Runs exactly once per renderer: every file read, GLB parse,
+    /// meters-to-tiles conversion, PNG decode, GPU upload, and bind group
+    /// is born here and never again, and the chain is lazy — a kind that
+    /// renders its model never decodes its skin (A-146: the frame path
+    /// resolves and logs nothing; the tier decision never re-runs).
+    ///
+    /// Diagnostics (the A-146 pin): a kind whose walk passed any failure —
+    /// a pack-recorded missing file, a model that would not load, a skin
+    /// that would not decode — prints exactly ONE line naming the tier it
+    /// landed on; a clean load prints its positive evidence line; a kind
+    /// with nothing declared prints nothing. The chain rule itself is
+    /// [`AssetPack::resolve_presentation`] in the pack module, pure and
+    /// unit-pinned; this function owns the probes and the uploads.
+    fn build_model_pass(inputs: ModelPassInputs<'_>) -> (ModelPassGpu, Vec<texture::EntitySkin>) {
         let ModelPassInputs {
             device,
             queue,
@@ -816,77 +844,120 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
         let mut models: Vec<Option<UploadedModel>> = kind_names.iter().map(|_| None).collect();
+        let mut kind_skin_slots: Vec<u32> = kind_names.iter().map(|_| 0).collect();
+        // The skins this walk uploads (the caller extends its library with
+        // them after the borrow on the placeholder ends; slot 0 is always
+        // the placeholder, so the first new skin is slot 1).
+        let mut new_skins: Vec<texture::EntitySkin> = Vec::new();
         for (index, kind) in kind_names.iter().enumerate() {
-            let Some(entry) = pack.and_then(|pack| pack.asset_for(kind)) else {
-                continue; // no pack, or the kind is unmapped — the box path
+            let Some(pack) = pack else {
+                break; // no pack at all — every kind keeps the placeholder
             };
-            let Some(model_ref) = &entry.model else {
-                continue; // no model reference — the box path
+            let Some(entry) = pack.asset_for(kind) else {
+                continue; // an unmapped kind — the box path (v1 skips print at load)
             };
-            let fallback_tier = if entry.skin.is_some() {
-                "PNG skin"
+            // Tier 1 — the model probe: read, parse, convert. The outcome
+            // (and the converted data, when it won) is kept for the upload
+            // below; the placement comes from the manifest's typed fields
+            // (A-155 — never the v1 `asset` primary).
+            let model_probe: ModelProbe = entry.model.as_ref().map(|model_ref| {
+                std::fs::read(&model_ref.resolved)
+                    .map_err(|error| {
+                        format!("model '{}' could not be read ({error})", model_ref.path)
+                    })
+                    .and_then(|bytes| {
+                        model::load(&bytes).map_err(|error| {
+                            format!("model '{}' could not be loaded ({error})", model_ref.path)
+                        })
+                    })
+                    .and_then(|data| {
+                        let placement = ModelPlacement {
+                            scale: entry.scale,
+                            rotation_deg: entry.rotation_deg,
+                            ground_offset: entry.ground_offset,
+                        };
+                        let primitives = model::gpu_primitives(
+                            &data,
+                            &placement,
+                            METERS_PER_TILE,
+                            bake_gltf_to_entity,
+                        );
+                        // A material whose embedded PNG cannot decode fails
+                        // the whole model (a half-textured model is worse
+                        // than the clean fallback tier) — decoded HERE, in
+                        // the probe, so the chain routes to a lower tier
+                        // before anything uploads.
+                        let mut textures = Vec::with_capacity(primitives.len());
+                        for (primitive_index, gpu) in primitives.iter().enumerate() {
+                            let decoded = match &gpu.texture {
+                                Some(png_bytes) => {
+                                    Some(decode_embedded_png(png_bytes).map_err(|error| {
+                                        format!(
+                                            "model '{}' could not be loaded (material \
+                                             {primitive_index}: {error})",
+                                            model_ref.path
+                                        )
+                                    })?)
+                                }
+                                None => None,
+                            };
+                            textures.push(decoded);
+                        }
+                        Ok((data, primitives, textures))
+                    })
+            });
+            // Tier 2 — the skin probe, lazy: only when the model tier did
+            // not win (a kind that renders its model never decodes its
+            // skin). The skin reference is the typed field (A-155).
+            let model_won = matches!(model_probe, Some(Ok(_)));
+            let skin_probe = if model_won {
+                None
             } else {
-                "placeholder silhouette"
-            };
-            let loaded = std::fs::read(&model_ref.resolved)
-                .map_err(|error| {
-                    format!(
-                        "model {} could not be read ({error}); using the {fallback_tier}",
-                        model_ref.resolved.display()
-                    )
-                })
-                .and_then(|bytes| {
-                    model::load(&bytes).map_err(|error| {
-                        format!(
-                            "model {} could not be loaded ({error}); using the {fallback_tier}",
-                            model_ref.resolved.display()
-                        )
+                entry.skin.as_ref().map(|skin_ref| {
+                    texture::decode_png(&skin_ref.resolved).map_err(|error| {
+                        format!("skin '{}' could not be loaded ({error})", skin_ref.path)
                     })
                 })
-                .and_then(|data| {
-                    let placement = ModelPlacement {
-                        scale: entry.scale,
-                        rotation_deg: entry.rotation_deg,
-                        ground_offset: entry.ground_offset,
+            };
+            // The chain rule, pure and unit-pinned in the pack module: tier
+            // + every failure the walk passed (pack notes first, then the
+            // model probe, then the skin probe).
+            let resolution = pack.resolve_presentation(
+                kind,
+                model_probe
+                    .as_ref()
+                    .map(|result| result.as_ref().map(|_| ()).map_err(Clone::clone)),
+                skin_probe
+                    .as_ref()
+                    .map(|result| result.as_ref().map(|_| ()).map_err(Clone::clone)),
+            );
+            // The upload follows the decision, still inside this one walk —
+            // and cannot fail: the probe decoded every texture already.
+            match resolution.tier {
+                crate::pack::PresentationTier::Model => {
+                    let Some(Ok((data, primitives, textures))) = model_probe else {
+                        // Unreachable by the chain rule (Model only when the
+                        // probe won) — guard anyway: never index past.
+                        continue;
                     };
-                    let primitives = model::gpu_primitives(
-                        &data,
-                        &placement,
-                        METERS_PER_TILE,
-                        bake_gltf_to_entity,
-                    );
-                    // One uploaded primitive per mesh primitive; a material
-                    // whose embedded PNG cannot decode fails the whole model
-                    // (a half-textured model is worse than the clean
-                    // fallback tier).
+                    // One uploaded primitive per mesh primitive.
                     let mut uploaded = Vec::with_capacity(primitives.len());
                     for (primitive_index, gpu) in primitives.iter().enumerate() {
                         let label = format!("{kind}#{primitive_index}");
-                        let bind_group;
-                        let skin = match &gpu.texture {
-                            Some(png_bytes) => {
-                                let decoded = decode_embedded_png(png_bytes).map_err(|error| {
-                                    format!(
-                                        "model {} could not be loaded (material {primitive_index}: \
-                                         {error}); using the {fallback_tier}",
-                                        model_ref.resolved.display()
-                                    )
-                                })?;
+                        let (skin, bind_group) = match &textures[primitive_index] {
+                            Some(decoded) => {
                                 let skin = texture::upload_skin(
                                     device,
                                     queue,
                                     skin_layout,
                                     skin_sampler,
-                                    &decoded,
+                                    decoded,
                                     &label,
                                 );
-                                bind_group = skin.bind_group.clone();
-                                Some(skin)
+                                let bind_group = skin.bind_group.clone();
+                                (Some(skin), bind_group)
                             }
-                            None => {
-                                bind_group = placeholder_skin.bind_group.clone();
-                                None
-                            }
+                            None => (None, placeholder_skin.bind_group.clone()),
                         };
                         let vertex_buf =
                             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -911,10 +982,10 @@ impl WgpuRenderer {
                             bind_group,
                         });
                     }
-                    // The evidence line the Xvfb machine pass greps — the
-                    // loader's per-file metadata (ignored animation blocks,
-                    // duplicated team_color materials) rides the same line
-                    // so a load still says exactly one thing (A-146).
+                    // The positive evidence line the Xvfb machine pass greps
+                    // — the loader's per-file metadata (ignored animation
+                    // blocks, duplicated team_color materials) rides the
+                    // same line so a load says exactly one thing (A-146).
                     let triangles: usize = primitives
                         .iter()
                         .map(|gpu| {
@@ -940,26 +1011,61 @@ impl WgpuRenderer {
                         "pandemonium client — entity model '{kind}' loaded ({} primitives, \
                          {triangles} triangles{extras}, from {})",
                         uploaded.len(),
-                        model_ref.resolved.display()
+                        entry
+                            .model
+                            .as_ref()
+                            .expect("the model tier implies a ref")
+                            .path
                     );
-                    Ok(UploadedModel {
+                    models[index] = Some(UploadedModel {
                         label: kind.clone(),
                         primitives: uploaded,
-                    })
-                });
-            match loaded {
-                Ok(uploaded) => models[index] = Some(uploaded),
-                Err(reason) => eprintln!("pandemonium pack: entity '{kind}' — {reason}"),
+                    });
+                }
+                crate::pack::PresentationTier::Skin => {
+                    let Some(Ok(decoded)) = skin_probe else {
+                        continue; // the chain rule guarantees this arm's probe won
+                    };
+                    println!(
+                        "pandemonium client — entity skin '{kind}' loaded ({}x{} PNG from {})",
+                        decoded.width,
+                        decoded.height,
+                        entry
+                            .skin
+                            .as_ref()
+                            .expect("the skin tier implies a ref")
+                            .path
+                    );
+                    kind_skin_slots[index] = (1 + new_skins.len()) as u32;
+                    new_skins.push(texture::upload_skin(
+                        device,
+                        queue,
+                        skin_layout,
+                        skin_sampler,
+                        &decoded,
+                        kind,
+                    ));
+                }
+                crate::pack::PresentationTier::Placeholder => {}
+            }
+            // The A-146 pin, one line per failing kind naming the tier it
+            // landed on (pure formatter, unit-pinned in the pack module).
+            if let Some(line) = crate::pack::presentation_diagnostic(kind, &resolution) {
+                eprintln!("{line}");
             }
         }
         let kind_renders_model: Vec<bool> = models.iter().map(Option::is_some).collect();
-        ModelPassGpu {
-            pipeline,
-            instance_buf,
-            capacity,
-            models,
-            kind_renders_model,
-        }
+        (
+            ModelPassGpu {
+                pipeline,
+                instance_buf,
+                capacity,
+                models,
+                kind_renders_model,
+                kind_skin_slots,
+            },
+            new_skins,
+        )
     }
 }
 
