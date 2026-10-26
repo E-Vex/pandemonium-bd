@@ -100,13 +100,29 @@ placeholder rendering (colored boxes, synthesized audio).
 
 ### Manifest format (`manifest.ron` at the pack root)
 
+The current schema is **2** (M12, ADR-0101 §4); **v1 manifests keep loading
+unchanged** and migrate forward at load — a `.png` path becomes the kind's
+`skin`, a `.glb`/`.gltf` path becomes its `model`, every other field takes
+its default (`crates/client/src/pack/mod.rs`, `build_v2_entry` over the
+migrated shape). The official `tactical_field` pack is still schema 1 — its
+release smoke line (`asset pack 'tactical_field' (schema 1) loaded`,
+`.github/workflows/release.yml`) stays true until that pack itself bumps.
+
+A v2 manifest (the shape of ADR-0101 §4's example, which parses verbatim
+against the M12 loader):
+
 ```ron
 (
     pack_id: "default",
-    schema_version: 1,
+    schema_version: 2,
     entities: {
-        "rifleman": "textures/units/rifleman.png",
-        "command_center": "models/buildings/command_center.glb",
+        "rifleman": (
+            model: Some("models/units/rifleman.glb"),      // optional
+            skin:  Some("textures/units/rifleman.png"),    // optional
+            scale: 1.0,            // optional, default 1.0, 0.05..=10.0
+            rotation_deg: 0.0,     // optional, default 0.0, -360.0..=360.0
+            ground_offset: 0.0,    // optional, meters, default 0.0
+        ),
     },
     terrain: {
         "grass": "textures/terrain/grass.png",
@@ -115,15 +131,21 @@ placeholder rendering (colored boxes, synthesized audio).
 )
 ```
 
-- `pack_id` (string) and `schema_version` (must be `1`) are required.
-- `entities` maps an entity kind id (e.g. `"rifleman"`) to a relative asset
-  path. The kind id must match the `id` field in `content/entities/<id>.ron`.
-  A `.png` entry is loaded and rendered as the entity's skin (see "PNG
-  texture rendering" below); a `.glb`/`.gltf` entry is accepted by the
-  manifest but still renders as the placeholder silhouette.
-- `terrain` maps a terrain class id to a relative asset path. Terrain
-  textures are not yet consumed by the renderer — the entries are
-  validated and kept for the terrain-texture follow-up.
+- `pack_id` (string) and `schema_version` (1 or 2) are required; a
+  `schema_version` above 2 is the precise `UnsupportedVersion` error
+  before any field is read.
+- `entities` keys are entity kind ids — they must match the `id` field in
+  `content/entities/<id>.ron`. A v2 entry's fields are all optional:
+  `model` (a `.glb` path — the model tier) and `skin` (a `.png` path —
+  the skin tier) are the two renderable references; `icon` (`.png`-only)
+  and `sounds` (cue name → audio path, cue names checked against the
+  engine's cue vocabulary) are **validated but not consumed in M12**; and
+  `scale`/`rotation_deg`/`ground_offset` are the per-pack placement fixes
+  the model upload bakes in (see "The model tier (M12)" below). A kind
+  that declares neither a model nor a skin renders the placeholder.
+- `terrain` maps a terrain class id to a relative asset path. Entries are
+  validated; their consumption is the terrain pass's single whole-map
+  tint (see "Terrain textures" under "Current limitations").
 - All paths are relative to the pack root directory.
 - Unknown manifest fields are rejected (strict mode).
 
@@ -138,9 +160,15 @@ All declared asset paths are validated before use:
 - Unsupported schema versions are rejected.
 - Malformed RON is rejected.
 
-Non-fatal issues (a referenced asset file missing, or an unsupported file
-format) do not abort the pack: that entry is skipped with a diagnostic, and
-the existing placeholder rendering is used for that kind.
+Non-fatal issues (a referenced asset file missing at manifest load) do not
+abort the pack. A v2 entity reference that cannot be read records a
+deferred note (`PackNote`) that the renderer's startup resolution folds
+into that kind's single diagnostic line; a v1 entity path or a terrain
+class keeps its own direct one-line print, exactly as it always printed
+it. The kind then renders on the best tier the fallback chain allows —
+model, skin, or placeholder (see "Fallback behavior" below); a file the
+renderer cannot parse (a non-GLB "model", an undecodable PNG) fails the
+same way, one tier down, never a crash.
 
 ### Supported asset formats
 
@@ -148,16 +176,20 @@ The pack system recognizes these extensions:
 
 | Extension | Kind | Renderer support |
 |---|---|---|
-| `.png` | Texture | **Loaded and rendered** — entity kinds get their PNG as the box silhouette's skin (see "PNG texture rendering"). Terrain-class PNGs are not yet sampled. |
-| `.glb`, `.gltf` | Model | Not yet — placeholder used |
+| `.png` | Texture | **Loaded and rendered** — the kind's skin tier: the PNG wraps the box silhouette (see "PNG texture rendering"). Terrain-class PNGs are consumed as the terrain pass's single whole-map tint (see "Current limitations") — per-class sampling is still not implemented. |
+| `.glb` | Model | **Loaded and rendered** — the kind's model tier: the static mesh draws in place of the boxes (see "The model tier (M12)"). |
+| `.gltf` | Model (recognized) | Recognized by the pack system (a v1 `.gltf` entry migrates to a `model` reference) but refused at load — model entries are glTF 2.0 binary only (ADR-0101 §1). One diagnostic, and the fallback chain walks. |
 
 Other extensions are not recognized by `AssetPack::kind_of()` and fall back to
-placeholders. The renderer draws instanced box silhouettes; model files
-cannot be consumed yet. See "Current limitations" below.
+placeholders. Which tier draws a kind — model, skinned box, or placeholder
+silhouette — is the fallback chain's decision; see "Fallback behavior" below.
 
-### PNG texture rendering (implemented)
+### PNG texture rendering (implemented — the skin tier)
 
-An `entities` entry pointing at a `.png` is genuinely loaded and rendered:
+An `entities` entry with a `skin` (a `.png`; every v1 `.png` path migrates
+to one) is genuinely loaded and rendered — as the *middle* tier of the
+fallback chain: a kind whose model loads never decodes its skin, and a
+kind whose model failed falls back to it:
 
 1. At startup — once, never per frame — the renderer resolves the kind's
    pack entry, decodes the PNG to RGBA8, and uploads it as one sRGB GPU
@@ -184,21 +216,77 @@ Limits on PNG files (checked before anything large is read or decoded):
 - A kind may map to one PNG; sharing one file between kinds is fine (each
   kind gets its own GPU copy).
 
+### The model tier (M12)
+
+An `entities` entry with a `model` (a `.glb`) is genuinely loaded and
+rendered as a **static mesh**:
+
+1. At startup — once, never per frame — the loader (`render/model.rs`)
+   parses the file under the ART_SPEC subset: one self-contained `.glb`
+   (a single embedded BIN buffer, embedded PNG images — any external
+   `uri` is refused), `TRIANGLES` primitives with `POSITION` required
+   (`NORMAL`/`TEXCOORD_0` optional — flat normals are computed per
+   triangle when absent), `OPAQUE` alpha only, and the 32 MiB pre-parse
+   cap (`MAX_GLB_BYTES`) checked before a single byte is parsed. Every
+   rejection is a precise `ModelLoadError`, never a panic.
+2. Animation data is counted and ignored — `animations`, `skins`, and
+   morph targets render as nothing (ADR-0101 §2); the load line carries
+   one `N ignored animation blocks` note when the file carried any.
+3. Node-hierarchy transforms bake into the vertices at load; the
+   manifest's `scale`/`rotation_deg`/`ground_offset` bake once at GPU
+   upload (meters divided by `METERS_PER_TILE = 3.0`, the one named
+   constant in `render/entities/mod.rs`); the fixed glTF-to-entity
+   orientation seam `(x, y, z) → (−z, y, x)` with the correct-handed yaw
+   is pinned by direction-pinned tests (ADR-0101 §6, assumption A-156).
+4. A material named exactly `team_color` (the first wins when duplicated)
+   multiplies the owning player's color — the skin path's team-tint
+   discipline carried over. Other materials render their embedded PNG or
+   plain `baseColorFactor`; embedded PNGs decode under the same guards as
+   skin files (the 2048×2048 per-side cap is checked on the header before
+   any pixel decodes — `decode_embedded_png` in `render/mod.rs`).
+5. Each kind's model draws instanced, per-primitive per-kind, from the
+   same fog-filtered snapshot the box silhouettes use (ADR-0200 §4's
+   invariant), and prints the positive evidence line the machine passes
+   grep: `entity model '<kind>' loaded (N primitives, M triangles, from
+   <path>)`.
+
+The look itself — scale against the terrain, rotation feel — is the
+owner's visual call (Standing Orders §8); the machine proves the load,
+the draws, and the facing math.
+
 ### Fallback behavior
 
 The game continues to launch and run when:
 
-- No custom pack exists (placeholder rendering).
+- No custom pack exists (placeholder rendering for every kind).
 - The manifest is missing or malformed (placeholder rendering + diagnostic).
-- A manifest references an asset that does not exist (that entry skipped,
-  placeholder used + diagnostic).
 - An entity kind has no asset mapping (placeholder used).
-- A referenced asset format is not supported (that entry skipped,
-  placeholder used + diagnostic).
-- A `.glb`/`.gltf` is declared where a texture is needed (placeholder used).
-- A PNG fails to decode, is larger than the limits above, or is rejected by
-  the GPU (placeholder used for that kind + diagnostic; every other kind's
-  textures still render).
+
+Within a kind, the presentation is decided once at startup by the fallback
+chain **model → skin → placeholder** (ADR-0101 §5;
+`AssetPack::resolve_presentation` in `crates/client/src/pack/mod.rs`, pure
+and unit-pinned over on-disk fixtures): the model tier when the `.glb`
+loads, else the PNG-skinned box when the kind declares a skin and it
+decodes, else the placeholder silhouette. The walk is lazy — a kind whose
+model wins never decodes its skin — and a bad model never crashes the
+client; it lands one tier down.
+
+- A v1 entity path that does not exist skips the whole entry with its own
+  direct one-line print (v1's pinned behavior; a kind with one reference
+  can never double).
+- A v2 reference that cannot be read (model, skin, icon, sound) records a
+  deferred note folded into the kind's single line at the renderer's
+  startup resolution; a terrain class keeps its direct one-line print.
+- A PNG fails to decode, is larger than the limits above, or is rejected
+  by the GPU: the kind falls to the next tier down — the placeholder when
+  no model stands above it (every other kind's assets still render).
+- **One diagnostic per failing kind per run** (the A-146 pin): every
+  failure the walk passed folds into a single line naming the tier the
+  kind landed on — `pandemonium pack: entity '<kind>' — <failures>;
+  rendering the <tier> tier` (`presentation_diagnostic` in
+  `pack/mod.rs`) — printed once at startup, never per frame. The positive
+  side carries its own evidence lines (`entity model '<kind>' loaded …`,
+  `entity skin '<kind>' loaded …`).
 
 A missing or invalid custom pack never makes the simulation unusable.
 
@@ -215,9 +303,27 @@ A missing or invalid custom pack never makes the simulation unusable.
    hashable and shareable between peers.
 3. The client resolves kind → asset at startup through the pack manifest
    (`AssetPack::asset_for()`, exposed on the renderer as
-   `WgpuRenderer::asset_for()`) and loads loadable PNGs into the renderer's
-   skin library. The sim draws nothing, so improving or replacing art never
-   changes match results.
+   `WgpuRenderer::asset_for()`) and walks each kind through the fallback
+   chain: a declared `.glb` uploads as the kind's model, otherwise a
+   declared `.png` uploads into the renderer's skin library, otherwise
+   the placeholder draws. The sim draws nothing, so improving or
+   replacing art never changes match results.
+
+For a real-model trial without touching the official pack,
+`scripts/make-pilot-pack.sh` builds a **schema-2 pilot pack outside the
+repository** (default `/tmp/pandemonium-pilot-pack`, `PILOT_OUT` to move
+it) from the assets repo's three staged D-002 `.glb` models — `rifleman`
+and `barracks` with their official skins as the fallback tier, `ore_node`
+model-only so the placeholder silhouette is its third tier — plus every
+official skin the pack ships (eight; `ore_node` has none) and the four
+terrain classes, all read-only: the official pack is never modified and
+stays schema 1. A kinds filter builds a one-model variant
+(`make-pilot-pack.sh rifleman`). Point the client at it:
+
+```bash
+scripts/make-pilot-pack.sh
+cargo run -p pandemonium-client -- --pack /tmp/pandemonium-pilot-pack
+```
 
 A minimal example — put `rifleman.png` (any PNG up to 2048×2048) into
 `crates/client/assets/packs/default/textures/units/`, then:
@@ -248,34 +354,60 @@ That matches plan FD-4 and acceptance A3/A10: new content is data, not code.
 
 ## Current limitations
 
-The renderer (wgpu) renders entities as instanced box silhouettes
-(keyed by kind id through `silhouette::named()` with a capability-shape
-fallback). Entity **PNG textures are loaded and rendered** (see "PNG texture
-rendering" above). Still not implemented:
+The renderer (wgpu) draws each entity kind on whichever tier the fallback
+chain gives it: the static mesh when a model loads, the instanced box
+silhouettes otherwise (keyed by kind id through `silhouette::named()` with
+a capability-shape fallback), wearing the kind's PNG skin when one
+uploaded (see "PNG texture rendering" above). Still not implemented:
 
-- **Models**: `.glb`/`.gltf` entries are validated by the pack system but no
-  mesh loading, skeletal animation, or PBR material system exists — those
-  kinds keep the placeholder silhouette. No GLB loading is coming in the
-  current milestone sequence.
-- **Terrain textures**: terrain-class PNG entries are validated but the
-  terrain pass does not sample them yet.
-- **Mipmapping**: skins upload a single mip level, so very small on-screen
-  entities sample without mip filtering.
+- **Skeletal animation**: models are static meshes — `animations`,
+  `skins`, and morph targets in a `.glb` are counted and ignored (one
+  load-time note; ADR-0101 §2). Any motion beyond the entity's yaw and
+  placement is a future ADR's business.
+- **PBR materials and `.gltf` files**: one albedo per material (an
+  embedded PNG or a plain `baseColorFactor`), `OPAQUE` alpha only, and
+  the container must be a self-contained `.glb` — a `.gltf` is refused
+  at load and the chain walks (see "Supported asset formats").
+- **Per-terrain-class textures**: the terrain pass samples **one** PNG
+  from the pack — the first terrain-class entry in class-id order (or
+  the first entity entry when the manifest declares no terrain), mapped
+  over the whole map as a multiply tint (`load_pack_texture` in
+  `render/pipeline/mod.rs`, bound at the terrain pipeline's group 1; a
+  1×1 white fallback keeps the no-pack look unchanged). Each class
+  wearing its own texture where it is authored — per-class sampling
+  through `terrain_asset_for()` — is still not implemented, and the
+  procedural material branches remain the terrain's visual authority.
+- **Icons and sounds**: the manifest's `icon` and `sounds` fields are
+  schema-validated (`.png`-only icons; cue names against the engine's
+  vocabulary) but consumed by nothing in M12 — they ride the manifest
+  for the follow-up briefs that consume them.
+- **Mipmapping**: skins (and the whole-map terrain tint) upload a single
+  mip level, so very small on-screen entities sample without mip
+  filtering.
 
 The asset pack system provides:
 
-- The manifest schema and loader (`crates/client/src/pack/`).
+- The manifest schemas (v1 with its forward migration, and v2) and the
+  loader (`crates/client/src/pack/`).
 - Path validation and security (absolute paths, traversal, pack-root escape).
 - Asset resolution by kind id (`AssetPack::asset_for()`, exposed on the
   renderer as `WgpuRenderer::asset_for()`).
-- PNG decode + GPU upload for entity skins (`crates/client/src/render/texture.rs`),
-  with per-kind fallback to placeholders.
-- Graceful fallback to placeholders when a pack is absent or unusable.
+- The per-kind fallback chain (model → skin → placeholder) under the
+  one-diagnostic-per-kind rule (`resolve_presentation` +
+  `presentation_diagnostic` in `pack/mod.rs`).
+- GLB loading as static meshes (`crates/client/src/render/model.rs`, the
+  ART_SPEC subset) with GPU upload through the model pass
+  (`render/mod.rs::build_model_pass`).
+- PNG decode + GPU upload for entity skins (`crates/client/src/render/texture.rs`).
+- Graceful fallback to placeholders when a pack is absent or unusable,
+  and a pilot-pack builder for real-model trials
+  (`scripts/make-pilot-pack.sh`).
 
-The smallest logical follow-up task is the terrain pass sampling its
-already-validated terrain-class PNGs through the same skin plumbing
-(`terrain_asset_for()` exists; the terrain shader needs its own bind group),
-keeping the procedural terrain as the fallback.
+The smallest logical follow-up task is the terrain pass sampling each
+terrain class's own already-validated PNG through the same skin plumbing
+(`terrain_asset_for()` exists; the single whole-map tint described above
+is the current iteration), keeping the procedural terrain as the
+fallback.
 
 ## CI
 
