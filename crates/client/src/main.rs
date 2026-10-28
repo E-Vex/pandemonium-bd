@@ -14,6 +14,7 @@ mod app;
 mod config;
 mod cutscene;
 mod feedback;
+mod gallery;
 mod pack;
 use pack::AssetPack;
 #[cfg(test)]
@@ -245,6 +246,17 @@ fn main() -> anyhow::Result<()> {
         pack,
     )?;
     app.frames_budget = frames_budget_arg(&args);
+    // A-020: `--gallery` replaces the whole menu path with the presentation
+    // gallery — one entity of every kind on flat ground, the same render
+    // passes, the stats line, and the pack the `--pack` resolution loaded.
+    if gallery_requested_from_args(&args) {
+        let count = crate::app::kind_names(&app.bundle).len();
+        println!(
+            "pandemonium client — gallery mode (--gallery): {count} kinds; \
+             [Left/Right] kind, [Up/Down] zoom, [T] team, [Esc] quit"
+        );
+        app.gallery = Some(crate::gallery::Gallery::new(&app.bundle));
+    }
     event_loop
         .run_app(&mut app)
         .map_err(|error| anyhow::anyhow!(error))?;
@@ -444,6 +456,15 @@ fn version_requested_from_args(args: &[String]) -> bool {
 /// smoke pass — no display probing, no window, no event loop.
 fn headless_requested_from_args(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--headless")
+}
+
+/// Parses the A-020 model gallery flag: `--gallery` opens the presentation
+/// inspection mode (one entity of every kind on a flat ground, the stats
+/// line, and the tier the loaded pack resolved) instead of the menu. It
+/// composes with `--pack <dir>` — the pack that loads is the pack the
+/// gallery shows. Presentation-only: no match is ever constructed.
+fn gallery_requested_from_args(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--gallery")
 }
 
 impl ApplicationHandler for App {
@@ -936,6 +957,24 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let pressed = event.state == ElementState::Pressed;
+                // A-020: the gallery owns the whole keyboard while it is
+                // open — Left/Right/Up/Down/T are its controls, Esc quits,
+                // releases clear the held set exactly like the other modes
+                // that own input (a resumed match never pans on a ghost).
+                if self.gallery.is_some() {
+                    if pressed {
+                        if let PhysicalKey::Code(code) = event.physical_key {
+                            if let Some(gallery) = &mut self.gallery {
+                                if gallery.handle_key(code) == crate::gallery::GalleryAction::Quit {
+                                    event_loop.exit();
+                                }
+                            }
+                        }
+                    } else {
+                        self.keys.clear();
+                    }
+                    return;
+                }
                 // A-011 (ADR-0201 §5 (iii)): an active cutscene owns the
                 // keyboard — any key, Esc included, ends the scene and
                 // unpauses (the mission-start pan is six seconds; nothing
@@ -1275,6 +1314,15 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // A-020: the gallery needs no held-key camera and no edge scroll —
+        // it re-focuses the camera itself every frame. Keep the redraw
+        // pump alive and return before the world-input block runs.
+        if self.gallery.is_some() {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            return;
+        }
         // M9.1: camera motion from held keys and the screen edge, scaled by
         // the real frame delta (frame-rate independent — the old fixed
         // per-frame speed made pan speed a property of the monitor).

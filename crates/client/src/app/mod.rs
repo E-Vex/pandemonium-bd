@@ -225,6 +225,11 @@ pub(crate) struct App {
     pub(crate) resource_names: Vec<String>,
     /// Whether the §11.6 debug overlay is visible (F10).
     pub(crate) debug_overlay: bool,
+    /// A-020's model gallery (`--gallery`): while Some, the gallery owns the
+    /// keyboard and every drawn frame — no match, no menu, no simulation
+    /// time; the renderer draws a synthetic one-of-every-kind snapshot
+    /// through the game's own passes (see `gallery.rs`).
+    pub(crate) gallery: Option<crate::gallery::Gallery>,
     /// Verification affordance: exit after this many presented frames.
     pub(crate) frames_budget: Option<u64>,
     /// How many frames have been presented (the `--frames` counter).
@@ -421,6 +426,7 @@ impl App {
             matches_started: 0,
             resource_names,
             debug_overlay: false,
+            gallery: None,
             frames_budget: None,
             frames_presented: 0,
             commands_submitted: 0,
@@ -1450,6 +1456,15 @@ impl App {
     pub(crate) fn draw(&mut self) {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
+        // A-020: the gallery owns the frame when it is open — no host to
+        // advance, no menu to build; the same render passes with a
+        // synthetic snapshot (see `gallery::render_frame`).
+        if let Some(gallery) = &mut self.gallery {
+            if let Some(renderer) = &mut self.renderer {
+                crate::gallery::render_frame(gallery, renderer, &mut self.camera);
+            }
+            return;
+        }
         // A-011 (ADR-0201 §5): an active cutscene drives the camera over the
         // frozen live world (the host is paused, so `advance` below steps
         // nothing); a scene that ran its duration ends and unpauses through

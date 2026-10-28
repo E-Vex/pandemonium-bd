@@ -263,6 +263,22 @@ pub struct WgpuRenderer {
     start: std::time::Instant,
 }
 
+/// One kind's presentation as the gallery (A-020) reports it: the tier
+/// the fallback chain resolved at startup, the triangles the tier draws,
+/// and the drawn size in meters — the tier's own geometry's world-space
+/// bounding box (the model's baked mesh bounds for the model tier; the
+/// silhouette's box extents for the skin and placeholder tiers — the skin
+/// paints the same boxes the placeholder draws).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KindPresentation {
+    /// The tier the chain landed on for this kind.
+    pub tier: crate::pack::PresentationTier,
+    /// The triangles the tier's geometry carries (a box part is 12).
+    pub triangles: u32,
+    /// The drawn size (x, y, z extent) in meters.
+    pub drawn_meters: [f32; 3],
+}
+
 impl WgpuRenderer {
     /// The glyph atlas (layout math for the caller; the texture stays here).
     pub fn atlas(&self) -> &TextAtlas {
@@ -278,6 +294,64 @@ impl WgpuRenderer {
     #[allow(dead_code)] // the terrain-texture follow-up consumes it; kept tested
     pub fn asset_for(&self, kind_id: &str) -> Option<&AssetEntry> {
         self.pack.as_ref().and_then(|pack| pack.asset_for(kind_id))
+    }
+
+    /// The gallery's per-kind stats (A-020): which tier the chain resolved
+    /// this kind to at startup, how many triangles that tier draws, and the
+    /// drawn size in meters. `None` for a kind id outside the content's
+    /// table. Pure lookup over the constructor's own state — no GPU work,
+    /// safe to call every frame.
+    pub fn presentation_of(&self, kind: pandemonium_sim_api::KindId) -> Option<KindPresentation> {
+        let index = usize::try_from(kind.0).ok()?;
+        let model = self.kind_models.get(index)?;
+        if let Some(model) = model {
+            return Some(KindPresentation {
+                tier: crate::pack::PresentationTier::Model,
+                triangles: model.triangles,
+                drawn_meters: model.drawn_meters,
+            });
+        }
+        // The box tiers: the silhouette's parts are the drawn geometry —
+        // 12 triangles per box part, and the drawn size is the composed
+        // extents (the skin paints the placeholder's own boxes).
+        let shape = self.kind_specs.get(index)?;
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for part in &shape.parts {
+            for axis in 0..3 {
+                // A box part's bottom sits at its offset's y (the instance
+                // shader scales ±0.5 corners); x/z center on the offset.
+                let (a, b) = if axis == 1 {
+                    (part.offset[1], part.offset[1] + part.scale[1])
+                } else {
+                    (
+                        part.offset[axis] - part.scale[axis] / 2.0,
+                        part.offset[axis] + part.scale[axis] / 2.0,
+                    )
+                };
+                lo[axis] = lo[axis].min(a);
+                hi[axis] = hi[axis].max(b);
+            }
+        }
+        let triangles = (shape.parts.len() as u32).saturating_mul(12);
+        let drawn_meters = [
+            (hi[0] - lo[0]) * METERS_PER_TILE,
+            (hi[1] - lo[1]) * METERS_PER_TILE,
+            (hi[2] - lo[2]) * METERS_PER_TILE,
+        ];
+        let tier = if self
+            .kind_skin_slots
+            .get(index)
+            .is_some_and(|slot| *slot > 0)
+        {
+            crate::pack::PresentationTier::Skin
+        } else {
+            crate::pack::PresentationTier::Placeholder
+        };
+        Some(KindPresentation {
+            tier,
+            triangles,
+            drawn_meters,
+        })
     }
 
     /// Replaces the map-shaped GPU data when a match starts on a different
@@ -623,11 +697,20 @@ struct UploadedModelPrimitive {
 }
 
 /// One kind's uploaded model: every primitive converted, uploaded, and
-/// bound once at construction — the frame pass only rebinds them.
+/// bound once at construction — the frame pass only rebinds them. The
+/// gallery's per-kind stats (A-020) ride along: the triangle count and the
+/// drawn size in meters, both computed once here from the same converted
+/// vertices the GPU received.
 struct UploadedModel {
     #[allow(dead_code)] // GPU debugging labels; not read on the CPU
     label: String,
     primitives: Vec<UploadedModelPrimitive>,
+    /// The model's triangles — what the loaded evidence line prints and
+    /// the gallery shows.
+    triangles: u32,
+    /// The drawn size (x, y, z extent) in meters: the baked tile-space
+    /// vertex bounds times [`METERS_PER_TILE`].
+    drawn_meters: [f32; 3],
 }
 
 /// What [`WgpuRenderer::build_model_pass`] hands the constructor: the whole
@@ -994,6 +1077,25 @@ impl WgpuRenderer {
                                 .map_or(gpu.vertices.len() / 3, |i| i.len() / 3)
                         })
                         .sum();
+                    // The gallery's drawn size (A-020): the extent of the
+                    // baked vertices — after scale, rotation, ground offset,
+                    // the meters-to-tiles division, and the basis bake — so
+                    // it is exactly the size the frame pass draws, in
+                    // meters. Computed once per kind here, never per frame.
+                    let mut bounds = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for gpu in &primitives {
+                        for vertex in &gpu.vertices {
+                            for axis in 0..3 {
+                                bounds.0[axis] = bounds.0[axis].min(vertex.position[axis]);
+                                bounds.1[axis] = bounds.1[axis].max(vertex.position[axis]);
+                            }
+                        }
+                    }
+                    let drawn_meters = [
+                        (bounds.1[0] - bounds.0[0]) * METERS_PER_TILE,
+                        (bounds.1[1] - bounds.0[1]) * METERS_PER_TILE,
+                        (bounds.1[2] - bounds.0[2]) * METERS_PER_TILE,
+                    ];
                     let mut extras = String::new();
                     if data.ignored_animation_data > 0 {
                         extras.push_str(&format!(
@@ -1020,6 +1122,8 @@ impl WgpuRenderer {
                     models[index] = Some(UploadedModel {
                         label: kind.clone(),
                         primitives: uploaded,
+                        triangles: triangles as u32,
+                        drawn_meters,
                     });
                 }
                 crate::pack::PresentationTier::Skin => {
