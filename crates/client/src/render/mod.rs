@@ -1462,6 +1462,225 @@ mod tests {
         }
     }
 
+    /// A-020's root cause was a shader that compiled, validated, and then
+    /// rasterized nothing: the model pass's vertex entry point declared
+    /// `@builtin(position)` in its output struct and never wrote it, so the
+    /// zero-initialized `var out` shipped clip (0,0,0,0) for every vertex
+    /// and every triangle degenerated onto the clip-space origin — silently,
+    /// on every backend, for every model kind (the owner's "ore node
+    /// invisible" and "rifleman invisible" reports; the A-018 "visible"
+    /// evidence lines only proved the models LOADED). naga accepts an
+    /// unwritten builtin, so this scan is the guard: any embedded shader
+    /// whose vertex entry point builds its result through `var out: <Type>`
+    /// must write every member that type declares before `return out;`.
+    #[test]
+    fn every_shader_output_member_is_written() {
+        for (name, source) in [("entity", ENTITY_SHADER_SRC), ("model", MODEL_SHADER_SRC)] {
+            let Some(vertex_body) = source
+                .split("@vertex fn")
+                .nth(1)
+                .and_then(|rest| rest.split("@fragment").next())
+            else {
+                panic!("{name} shader lost its vertex entry point");
+            };
+            for var_line in vertex_body.lines().filter(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with("var out:")
+            }) {
+                let struct_name = var_line
+                    .trim()
+                    .trim_start_matches("var out:")
+                    .trim_end_matches(';')
+                    .trim();
+                let Some(struct_decl) = source.split("struct ").find_map(|piece| {
+                    piece.starts_with(struct_name).then(|| {
+                        &piece[struct_name.len()..piece.find('}').expect("the struct closes")]
+                    })
+                }) else {
+                    panic!("{name} shader: `var out: {struct_name}` names no struct");
+                };
+                for member in struct_decl
+                    .trim_start_matches('{')
+                    .split(',')
+                    .map(|part| part.trim())
+                    .filter(|part| !part.is_empty())
+                {
+                    let member_name = member
+                        .split(':')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    // Annotations (`@builtin(position) clip: vec4<f32>`) ride
+                    // the part; the member is the last identifier before ':'.
+                    let member_name = member_name
+                        .rsplit(|c: char| c.is_whitespace() || c == ')')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    assert!(
+                        !member_name.is_empty(),
+                        "{name} shader: a {struct_name} member could not be named from \
+                         `{member}`"
+                    );
+                    assert!(
+                        vertex_body.contains(&format!("out.{member_name}")),
+                        "{name} shader: vs_main never writes {struct_name}::{member_name} — an \
+                         unwritten `@builtin(position)` is exactly the A-020 bug (a zero clip \
+                         for every vertex, and the pass silently draws nothing)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A-020 brief cause (b): the render tables (`kind_specs`,
+    /// `kind_renders_model`, `kind_skin_slots` — all built from
+    /// [`crate::app::kind_names`]) index by the SIMULATION's KindId, while
+    /// the pack keys by the content's kind NAME. `kind_names` is the whole
+    /// bridge, and nothing else pinned it against the real content's ids —
+    /// the exact seam the brief told this task to test with real content.
+    /// Pinned here end to end: (1) the map's ore nodes are declared by name
+    /// and spawn under KindIds that `kind_names` names back to "ore_node"
+    /// (the owner's invisible-ore case, through the real loader); (2) every
+    /// spawned KindId names a real entity kind through the bridge; (3) a
+    /// schema-2 pack's declared model kinds each resolve to a real slot,
+    /// and a pack kind outside the content never does.
+    #[test]
+    fn every_pack_model_kind_lands_in_its_own_table_slot() {
+        let tree = pandemonium_content::ContentTree::load_dir(crate::content_path())
+            .expect("the real content tree loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .expect("the content tree lists maps")
+                    .id
+                    .clone(),
+            )
+            .expect("the default map bundles");
+        let names = crate::app::kind_names(&bundle);
+        let world = bundle.world();
+
+        // (1) The ore-node pin, name -> KindId -> name through the real
+        // loader: the map declares its nodes by string, the world carries
+        // them as KindIds, and the renderer's own name table must land on
+        // the same kind.
+        let ore_index = bundle
+            .entities
+            .iter()
+            .position(|def| def.id == "ore_node")
+            .expect("the real content defines ore_node");
+        let declared: Vec<_> = bundle
+            .map
+            .ore_nodes
+            .iter()
+            .filter(|node| node.kind == "ore_node")
+            .collect();
+        let spawned: Vec<_> = world
+            .initial_spawns
+            .iter()
+            .filter(|spawn| spawn.kind.0 as usize == ore_index)
+            .collect();
+        assert!(!declared.is_empty(), "the real map declares ore_node nodes");
+        assert_eq!(
+            declared.len(),
+            spawned.len(),
+            "the map's ore_node strings and the world's ore-node KindIds disagree — the \
+             name/KindId bridge is misaligned"
+        );
+        assert_eq!(names[ore_index], "ore_node");
+
+        // (2) Every KindId the world actually spawns names a real kind
+        // through the bridge (a slot outside the table, or a name that is
+        // not the spawned kind, is the same silent-swap failure).
+        for spawn in &world.initial_spawns {
+            let Some(name) = names.get(spawn.kind.0 as usize) else {
+                panic!("a spawned KindId {} indexes past kind_names", spawn.kind.0);
+            };
+            assert!(
+                bundle.entities.iter().any(|def| &def.id == name),
+                "the bridge names '{name}' for a spawned KindId that is not that kind"
+            );
+        }
+
+        // (3) The pack half, against a schema-2 fixture pack: every model
+        // kind the pack declares must resolve to a table slot (the same
+        // index `build_model_pass` walks and `kind_renders_model` is built
+        // from), and a pack kind the content does not define must never
+        // find one — it is the box path's "unmapped kind", never a swap.
+        let dir =
+            std::env::temp_dir().join(format!("pandemonium-a020-alignment-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("models/units"))
+            .and_then(|_| std::fs::create_dir_all(dir.join("models/buildings")))
+            .and_then(|_| std::fs::create_dir_all(dir.join("models/nodes")))
+            .expect("the fixture pack dirs create");
+        for file in [
+            "models/units/rifleman.glb",
+            "models/buildings/barracks.glb",
+            "models/nodes/ore_node.glb",
+            "models/units/nowhere.glb",
+        ] {
+            std::fs::write(
+                dir.join(file),
+                b"glb bytes: the pack load only resolves paths",
+            )
+            .expect("the fixture model file writes");
+        }
+        std::fs::write(
+            dir.join("manifest.ron"),
+            r#"(
+    pack_id: "a020_alignment_fixture",
+    schema_version: 2,
+    entities: {
+        "rifleman": ( model: Some("models/units/rifleman.glb") ),
+        "barracks": ( model: Some("models/buildings/barracks.glb") ),
+        "ore_node": ( model: Some("models/nodes/ore_node.glb") ),
+        "not_a_content_kind": ( model: Some("models/units/nowhere.glb") ),
+    },
+    terrain: {},
+)"#,
+        )
+        .expect("the fixture manifest writes");
+        let pack = crate::pack::AssetPack::load(&dir)
+            .expect("the fixture pack parses")
+            .expect("the fixture pack loads");
+        let _ = std::fs::remove_dir_all(&dir);
+        for kind in ["rifleman", "barracks", "ore_node"] {
+            let index = names
+                .iter()
+                .position(|name| name == kind)
+                .unwrap_or_else(|| panic!("the pack model kind '{kind}' has no kind_names slot"));
+            let entry = pack
+                .asset_for(kind)
+                .unwrap_or_else(|| panic!("the pack kind '{kind}' did not resolve"));
+            assert!(
+                entry.model.is_some(),
+                "the pack model for '{kind}' did not survive the load"
+            );
+            // The slot the renderer will mark true is the name table's own
+            // index — the same index the world-spawn pin above proves is
+            // the simulation's KindId for the kind.
+            assert_eq!(names[index], kind);
+            assert!(
+                bundle
+                    .entities
+                    .iter()
+                    .position(|def| def.id == kind)
+                    .expect("the pack kind is a real content kind")
+                    == index,
+                "kind_names' slot for '{kind}' is not its content position — the tables would \
+                 index another kind's tier"
+            );
+        }
+        assert!(
+            names.iter().all(|name| name != "not_a_content_kind"),
+            "a pack kind outside the content must never find a table slot"
+        );
+    }
+
     /// A-002 Part 1(a): adapter enumeration is the deepest wgpu call that
     /// does not need a window, and it runs ONLY behind the hardware gate.
     /// Headless CI (the usual case) sees the skip line; under
