@@ -1462,6 +1462,78 @@ mod tests {
         }
     }
 
+    /// A-020's root cause was a shader that compiled, validated, and then
+    /// rasterized nothing: the model pass's vertex entry point declared
+    /// `@builtin(position)` in its output struct and never wrote it, so the
+    /// zero-initialized `var out` shipped clip (0,0,0,0) for every vertex
+    /// and every triangle degenerated onto the clip-space origin — silently,
+    /// on every backend, for every model kind (the owner's "ore node
+    /// invisible" and "rifleman invisible" reports; the A-018 "visible"
+    /// evidence lines only proved the models LOADED). naga accepts an
+    /// unwritten builtin, so this scan is the guard: any embedded shader
+    /// whose vertex entry point builds its result through `var out: <Type>`
+    /// must write every member that type declares before `return out;`.
+    #[test]
+    fn every_shader_output_member_is_written() {
+        for (name, source) in [("entity", ENTITY_SHADER_SRC), ("model", MODEL_SHADER_SRC)] {
+            let Some(vertex_body) = source
+                .split("@vertex fn")
+                .nth(1)
+                .and_then(|rest| rest.split("@fragment").next())
+            else {
+                panic!("{name} shader lost its vertex entry point");
+            };
+            for var_line in vertex_body.lines().filter(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with("var out:")
+            }) {
+                let struct_name = var_line
+                    .trim()
+                    .trim_start_matches("var out:")
+                    .trim_end_matches(';')
+                    .trim();
+                let Some(struct_decl) = source.split("struct ").find_map(|piece| {
+                    piece.starts_with(struct_name).then(|| {
+                        &piece[struct_name.len()..piece.find('}').expect("the struct closes")]
+                    })
+                }) else {
+                    panic!("{name} shader: `var out: {struct_name}` names no struct");
+                };
+                for member in struct_decl
+                    .trim_start_matches('{')
+                    .split(',')
+                    .map(|part| part.trim())
+                    .filter(|part| !part.is_empty())
+                {
+                    let member_name = member
+                        .split(':')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    // Annotations (`@builtin(position) clip: vec4<f32>`) ride
+                    // the part; the member is the last identifier before ':'.
+                    let member_name = member_name
+                        .rsplit(|c: char| c.is_whitespace() || c == ')')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    assert!(
+                        !member_name.is_empty(),
+                        "{name} shader: a {struct_name} member could not be named from \
+                         `{member}`"
+                    );
+                    assert!(
+                        vertex_body.contains(&format!("out.{member_name}")),
+                        "{name} shader: vs_main never writes {struct_name}::{member_name} — an \
+                         unwritten `@builtin(position)` is exactly the A-020 bug (a zero clip \
+                         for every vertex, and the pass silently draws nothing)"
+                    );
+                }
+            }
+        }
+    }
+
     /// A-002 Part 1(a): adapter enumeration is the deepest wgpu call that
     /// does not need a window, and it runs ONLY behind the hardware gate.
     /// Headless CI (the usual case) sees the skip line; under

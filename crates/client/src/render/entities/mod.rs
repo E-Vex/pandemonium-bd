@@ -279,6 +279,16 @@ struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>
     out.normal = n;
     out.team_tint = base_color.a;
     out.uv = uv;
+    // The one write A-018 phase 3 forgot — and with it the whole pass: a
+    // `var out: VsOut` zero-fills every member, so an unwritten
+    // `@builtin(position)` ships clip (0,0,0,0) for every vertex, every
+    // triangle degenerates onto the clip-space origin, and the model pass
+    // rasterizes nothing at all — silently, for every kind, on every
+    // backend (the owner's A-020 report: the ore node shows only its
+    // shadow blob, the rifleman only its team ring). The regression test
+    // (`every_shader_output_member_is_written`) now refuses any embedded
+    // shader whose vertex entry point leaves a declared output unwritten.
+    out.clip = camera.view_projection * vec4<f32>(world, 1.0);
     return out;
 }
 
