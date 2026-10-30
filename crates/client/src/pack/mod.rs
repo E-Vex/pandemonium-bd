@@ -624,8 +624,15 @@ impl AssetPack {
         notes: &mut Vec<PackNote>,
         defer: bool,
     ) -> Result<Option<AssetRef>, PackError> {
-        // Reject absolute paths on any platform.
-        if Path::new(asset).is_absolute() {
+        // Reject absolute paths on every platform (B-022): `Path::is_absolute`
+        // answers for the host OS only — a Unix root like "/etc/passwd" is
+        // *relative* under Windows path grammar (no drive or UNC prefix), so
+        // the old literal check let a Unix-absolute manifest load on Windows,
+        // where `root.join` re-anchored it to the drive root and the missing
+        // file silently skipped the entry (the red Windows CI leg). A pack
+        // manifest is portable data: it must mean the same thing on every OS
+        // it loads on, so the rejection is spelled for all platforms at once.
+        if Self::path_is_absolute_anywhere(asset) {
             return Err(PackError::AbsolutePath {
                 field: context.field.to_string(),
                 path: asset.to_string(),
@@ -676,6 +683,27 @@ impl AssetPack {
                 Ok(None)
             }
         }
+    }
+
+    /// True when the declared path is absolute or anchored on ANY platform:
+    /// a Unix root (`/etc/passwd`), a Windows drive (`C:\`, `C:/`, and the
+    /// drive-relative `C:foo`, which Windows resolves against the drive's
+    /// current directory — never the pack root), a drive-less Windows root
+    /// (`\Windows`), and every UNC or verbatim prefix (`\\server`,
+    /// `\\?\C:\` — both start with the backslash root). The portable-pack
+    /// law (B-022): a manifest is refused when it is absolute on *some*
+    /// platform the file may load on, not merely on the host's own reading
+    /// of `Path::is_absolute`. The one deliberate strictness: a file whose
+    /// name starts `c:` is unopenable on Windows regardless, so refusing it
+    /// everywhere keeps packs portable (the report records the trade).
+    fn path_is_absolute_anywhere(asset: &str) -> bool {
+        let bytes = asset.as_bytes();
+        // A drive specification: `<ASCII letter>:` in the first two bytes.
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return true;
+        }
+        // Any root: Unix `/…`, Windows `\…` (UNC and verbatim included).
+        asset.starts_with('/') || asset.starts_with('\\')
     }
 
     /// The extension of a declared path, lowercased by comparison only
@@ -1526,6 +1554,89 @@ mod tests {
         );
         let err = AssetPack::load(&dir).expect_err("absolute v2 model");
         assert!(matches!(err, PackError::AbsolutePath { .. }), "got {err:?}");
+    }
+
+    /// B-022: the Windows half of the absolute-path law. `/etc/passwd` is
+    /// *relative* under Windows path grammar, so the old
+    /// `Path::is_absolute` check let every Windows-shaped root through on
+    /// the Windows CI legs (the pack loaded, the entity silently
+    /// placeholdered). Every shape a Windows author could spell — and the
+    /// Unix root the original test pinned — must be refused on EVERY
+    /// platform: a pack manifest is portable data, and `{:?}`-escaped RON
+    /// literals reproduce each path exactly as an author would write it.
+    #[test]
+    fn windows_shaped_absolute_paths_are_rejected_everywhere() {
+        let shapes = [
+            "/etc/passwd",
+            "\\Windows\\System32\\cmd.exe",
+            "C:\\Windows\\System32\\cmd.exe",
+            "c:/windows/system32/cmd.exe",
+            "C:relative\\drive\\anchored",
+            "\\\\server\\share\\model.glb",
+            "\\\\?\\C:\\pandemonium\\model.glb",
+        ];
+        for path in shapes {
+            // v1 entity paths.
+            let dir = tempfile_dir();
+            write_manifest(
+                &dir,
+                &format!(
+                    r#"( pack_id: "x", schema_version: 1, entities: {{ "rifleman": {path:?} }} )"#
+                ),
+            );
+            let err = AssetPack::load(&dir)
+                .expect_err(&format!("v1 absolute path {path:?} should error"));
+            assert!(
+                matches!(err, PackError::AbsolutePath { .. }),
+                "v1 {path:?}: got {err:?}"
+            );
+            // v2 model fields get the identical refusal.
+            let dir = tempfile_dir();
+            write_manifest(
+                &dir,
+                &format!(
+                    r#"( pack_id: "x", schema_version: 2, entities: {{ "rifleman": ( model: Some({path:?}) ) }} )"#
+                ),
+            );
+            let err = AssetPack::load(&dir)
+                .expect_err(&format!("v2 absolute model {path:?} should error"));
+            assert!(
+                matches!(err, PackError::AbsolutePath { .. }),
+                "v2 {path:?}: got {err:?}"
+            );
+            // Terrain classes share the same choke point.
+            let dir = tempfile_dir();
+            write_manifest(
+                &dir,
+                &format!(
+                    r#"( pack_id: "x", schema_version: 1, terrain: {{ "grass": {path:?} }} )"#
+                ),
+            );
+            let err = AssetPack::load(&dir)
+                .expect_err(&format!("terrain absolute path {path:?} should error"));
+            assert!(
+                matches!(err, PackError::AbsolutePath { .. }),
+                "terrain {path:?}: got {err:?}"
+            );
+        }
+        // A drive-letter name on a case-sensitive filesystem (`c:x.png` is
+        // a legal Unix filename) is refused everywhere by the same law —
+        // the portability trade B-022's report records.
+        let dir = tempfile_dir();
+        write_manifest(
+            &dir,
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "c:colon.glb" } )"#,
+        );
+        let err = AssetPack::load(&dir).expect_err("drive-letter-relative should error");
+        assert!(matches!(err, PackError::AbsolutePath { .. }), "got {err:?}");
+        // Relative paths that merely CONTAIN a colon later in the name are
+        // still fine — the drive check reads the first two bytes only.
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "models/ra-tor.glb" } )"#,
+            &[("models/ra-tor.glb", b"fake-glb")],
+        )
+        .expect("pack exists");
+        assert!(pack.asset_for("rifleman").is_some());
     }
 
     #[test]
