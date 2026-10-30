@@ -408,7 +408,7 @@ impl AssetPack {
             if let Some(reference) =
                 Self::resolve_ref(root, &context, asset, notes, /* defer: */ false)?
             {
-                let (model, skin) = match Self::extension_of(asset) {
+                let (model, skin) = match Self::extension_of(asset).as_deref() {
                     Some("png") => (None, Some(reference.clone())),
                     Some("glb") | Some("gltf") => (Some(reference.clone()), None),
                     // Any other extension keeps the v1 behavior exactly:
@@ -524,7 +524,7 @@ impl AssetPack {
         };
         let icon = match &raw.icon {
             Some(path) => {
-                if Self::extension_of(path) != Some(ICON_EXTENSION) {
+                if Self::extension_of(path).as_deref() != Some(ICON_EXTENSION) {
                     return Err(PackError::IconNotPng {
                         kind: kind_id.to_string(),
                         path: path.clone(),
@@ -706,12 +706,18 @@ impl AssetPack {
         asset.starts_with('/') || asset.starts_with('\\')
     }
 
-    /// The extension of a declared path, lowercased by comparison only
+    /// The extension of a declared path, lowercased for comparison only
     /// (`"PNG"` matches `"png"` — extensions are case-insensitive in
-    /// practice; the pack system has always compared them literally, and
-    /// this keeps that behavior for the new fields).
-    fn extension_of(path: &str) -> Option<&str> {
-        Path::new(path).extension().and_then(|e| e.to_str())
+    /// practice; B-022 made the code honor what this comment claimed from
+    /// the start: an uppercase `.PNG` icon was the fatal `IconNotPng` and
+    /// an uppercase `.GLB`/`.PNG` skin silently placeholdered on every
+    /// platform). Lowercased for COMPARISON only — the file on disk is
+    /// opened by the path exactly as the author wrote it.
+    fn extension_of(path: &str) -> Option<String> {
+        Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
     }
 
     /// Looks up an entity kind's asset entry.
@@ -730,11 +736,14 @@ impl AssetPack {
     /// renderer).
     #[allow(dead_code)] // consumed by the renderer follow-up
     pub fn kind_of(path: &Path) -> Option<AssetKind> {
-        let ext = path.extension()?.to_str()?;
-        if MODEL_EXTENSIONS.contains(&ext) {
+        // The same lowercased comparison as `extension_of` (B-022): the
+        // resolved path's extension decides the tier, and "Rifleman.GLB" is
+        // a model on a case-insensitive filesystem.
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        if MODEL_EXTENSIONS.contains(&ext.as_str()) {
             return Some(AssetKind::Model);
         }
-        if TEXTURE_EXTENSIONS.contains(&ext) {
+        if TEXTURE_EXTENSIONS.contains(&ext.as_str()) {
             return Some(AssetKind::Texture);
         }
         None
@@ -1637,6 +1646,69 @@ mod tests {
         )
         .expect("pack exists");
         assert!(pack.asset_for("rifleman").is_some());
+    }
+
+    /// B-022: extensions match case-insensitively — the loader's own
+    /// documented contract, which the code never honored. An uppercase
+    /// `.PNG` icon used to be the fatal `IconNotPng`, and an uppercase
+    /// v1 `.PNG`/`.GLB` silently placeholdered instead of migrating to the
+    /// skin/model tier. The file on disk is still opened by the author's
+    /// exact spelling; only the comparison lowercases.
+    #[test]
+    fn extensions_match_case_insensitively() {
+        // v1 uppercase skin: `Some("png")` must match "PNG".
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "textures/Rifleman.PNG" } )"#,
+            &[("textures/Rifleman.PNG", b"fake-png")],
+        )
+        .expect("pack exists");
+        let entry = pack.asset_for("rifleman").expect("entry present");
+        assert!(entry.skin.is_some(), "uppercase .PNG is a skin");
+        assert!(entry.model.is_none());
+        assert_eq!(
+            AssetPack::kind_of(entry.resolved.as_path()),
+            Some(AssetKind::Texture),
+            "kind_of reads the uppercase extension as a texture"
+        );
+        // v1 uppercase model: `Some("glb")` must match "GLB".
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "models/Rifleman.GLB" } )"#,
+            &[("models/Rifleman.GLB", b"fake-glb")],
+        )
+        .expect("pack exists");
+        let entry = pack.asset_for("rifleman").expect("entry present");
+        assert!(entry.model.is_some(), "uppercase .GLB is a model");
+        assert!(entry.skin.is_none());
+        assert_eq!(
+            AssetPack::kind_of(entry.resolved.as_path()),
+            Some(AssetKind::Model),
+            "kind_of reads the uppercase extension as a model"
+        );
+        // v2 uppercase icon: accepted (it used to be the fatal IconNotPng).
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 2, entities: { "rifleman": ( icon: Some("icons/Rifleman.PNG") ) } )"#,
+            &[("icons/Rifleman.PNG", b"fake-png")],
+        )
+        .expect("pack exists");
+        let entry = pack.asset_for("rifleman").expect("entry present");
+        assert!(entry.icon.is_some(), "uppercase .PNG icon loads");
+        // The lowercase spellings keep their pinned behavior.
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "models/rifleman.glb" } )"#,
+            &[("models/rifleman.glb", b"fake-glb")],
+        )
+        .expect("pack exists");
+        assert!(pack.asset_for("rifleman").unwrap().model.is_some());
+        // kind_of on paths directly, both spellings.
+        assert_eq!(
+            AssetPack::kind_of(Path::new("anywhere/M.GLB")),
+            Some(AssetKind::Model)
+        );
+        assert_eq!(
+            AssetPack::kind_of(Path::new("anywhere/T.PNG")),
+            Some(AssetKind::Texture)
+        );
+        assert_eq!(AssetPack::kind_of(Path::new("anywhere/X.PSD")), None);
     }
 
     #[test]
