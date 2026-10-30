@@ -184,7 +184,8 @@ pub struct AssetEntry {
     /// Yaw about the origin in degrees (default 0.0, range -360.0..=360.0).
     pub rotation_deg: f32,
     /// Vertical lift in meters (default 0.0; no range is defined —
-    /// A-144/ART_SPEC §8 state none, so none is enforced).
+    /// A-144/ART_SPEC §8 state none — but the loader rejects non-finite
+    /// values, B-022).
     pub ground_offset: f32,
 }
 
@@ -587,8 +588,21 @@ impl AssetPack {
                 allowed: "-360.0..=360.0",
             });
         }
-        // `ground_offset` carries no range (none is defined — A-144).
+        // `ground_offset` carries no range (none is defined — A-144), but
+        // it must be a finite NUMBER: RON parses `NaN`/`inf` into f32, and a
+        // non-finite lift poisons every vertex of the model pass while the
+        // loader reports success — an invisible kind behind a positive
+        // evidence line (B-022). The same treatment `scale`'s range check
+        // already gives a NaN scale.
         let ground_offset = raw.ground_offset;
+        if !ground_offset.is_finite() {
+            return Err(PackError::ValueOutOfRange {
+                kind: kind_id.to_string(),
+                field: "ground_offset",
+                found: ground_offset,
+                allowed: "any finite value",
+            });
+        }
         // The primary renderable asset: the skin when declared, else the
         // model; an icon/sounds-only kind carries neither and renders the
         // placeholder.
@@ -1250,6 +1264,24 @@ mod tests {
         // ground_offset carries no range by design (A-144 defines none).
         let pack = pack_with(&entry("1.0", "0.0", "1e6"), &[]).expect("pack exists");
         assert_eq!(pack.asset_for("x").unwrap().ground_offset, 1e6);
+        // ...but it must be a finite number (B-022): RON parses NaN/inf,
+        // and a non-finite lift makes every vertex of the model pass
+        // invisible while the loader reports success.
+        for offset in ["NaN", "inf", "-inf"] {
+            let dir = tempfile_dir();
+            write_manifest(&dir, &entry("1.0", "0.0", offset));
+            let err = AssetPack::load(&dir).expect_err(&format!("{offset} is not a ground_offset"));
+            assert!(
+                matches!(
+                    err,
+                    PackError::ValueOutOfRange {
+                        field: "ground_offset",
+                        ..
+                    }
+                ),
+                "{offset}: got {err:?}"
+            );
+        }
     }
 
     /// Unknown fields are rejected in v2 (strict mode preserved).
