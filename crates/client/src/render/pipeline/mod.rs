@@ -7,7 +7,7 @@
 use super::entities::ENTITY_SHADER_SRC;
 use super::minimap::{cube_vertices, CubeVertex, MinimapVertex, MINIMAP_SHADER_SRC};
 use super::overlay::{quad_vertices, ring_vertices, DecalInstance, DECAL_SHADER_SRC};
-use super::texture::{upload_skin, DecodedTexture};
+use super::texture::{decode_png, upload_skin, DecodedTexture};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -1143,11 +1143,19 @@ impl WgpuRenderer {
             .next()
             .cloned()
             .or_else(|| pack.entities.values().next().cloned())?;
-        // Load the PNG file.
-        let img = image::open(&entry.resolved).ok()?;
-        let rgba = img.to_rgba8();
-        let (width, height) = rgba.dimensions();
-        let data = rgba.as_raw();
+        // Load the PNG through the guarded decoder (B-022): this path feeds
+        // user-authored pack art straight into create_texture, and a PNG
+        // with a side past the device's texture limit (8192 under the
+        // default limits — well past the 2048 the renderer's own guard
+        // allows everywhere else) is a wgpu validation panic at startup,
+        // while every other asset failure degrades to a fallback tier.
+        // decode_png runs the documented bomb-proof guard chain (file size,
+        // header dimensions, then decode) and any failure here folds into
+        // the same None -> white-fallback tier the missing-manifest path
+        // takes. The upload itself is unchanged.
+        let decoded = decode_png(&entry.resolved).ok()?;
+        let (width, height) = (decoded.width, decoded.height);
+        let data = decoded.rgba.as_slice();
         let texture_size = wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
@@ -1248,5 +1256,44 @@ impl WgpuRenderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = Self::make_depth_view(&self.device, width, height);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// B-022: `load_pack_texture` feeds user-authored pack art into
+    /// `create_texture`, so it must decode through the guarded
+    /// `texture::decode_png` — never `image::open` directly. The guards
+    /// (file size, then header dimensions before any pixel is decoded) are
+    /// pinned by texture.rs's own suite; what this test pins is the ROUTING,
+    /// in the same source-scanning style the render module's draw-state
+    /// tests use, because the function itself needs a live GPU device no
+    /// CPU-side test can conjure. A regression to the unguarded path (a PNG
+    /// with a side past the device limit panics wgpu validation at startup,
+    /// instead of degrading to the white fallback) turns this red.
+    #[test]
+    fn load_pack_texture_decodes_through_the_guarded_decoder() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/render/pipeline/mod.rs"
+        ))
+        .expect("the pipeline module sits at src/render/pipeline/mod.rs");
+        // Scan only the shipping code — everything before this test module,
+        // comments stripped, so a commented-out call cannot satisfy the law.
+        let cut = source.find("#[cfg(test)]").expect("a test module exists");
+        let code = source[..cut]
+            .lines()
+            .map(|line| &line[..line.find("//").unwrap_or(line.len())])
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains("decode_png(&entry.resolved)"),
+            "load_pack_texture must decode pack art through texture::decode_png"
+        );
+        assert!(
+            !code.contains("image::open"),
+            "load_pack_texture must not call image::open directly — that path \
+             bypasses the MAX_TEXTURE_DIMENSION/MAX_TEXTURE_FILE_BYTES guards"
+        );
     }
 }

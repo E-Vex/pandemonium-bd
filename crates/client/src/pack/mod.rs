@@ -184,7 +184,8 @@ pub struct AssetEntry {
     /// Yaw about the origin in degrees (default 0.0, range -360.0..=360.0).
     pub rotation_deg: f32,
     /// Vertical lift in meters (default 0.0; no range is defined —
-    /// A-144/ART_SPEC §8 state none, so none is enforced).
+    /// A-144/ART_SPEC §8 state none — but the loader rejects non-finite
+    /// values, B-022).
     pub ground_offset: f32,
 }
 
@@ -408,7 +409,7 @@ impl AssetPack {
             if let Some(reference) =
                 Self::resolve_ref(root, &context, asset, notes, /* defer: */ false)?
             {
-                let (model, skin) = match Self::extension_of(asset) {
+                let (model, skin) = match Self::extension_of(asset).as_deref() {
                     Some("png") => (None, Some(reference.clone())),
                     Some("glb") | Some("gltf") => (Some(reference.clone()), None),
                     // Any other extension keeps the v1 behavior exactly:
@@ -524,7 +525,7 @@ impl AssetPack {
         };
         let icon = match &raw.icon {
             Some(path) => {
-                if Self::extension_of(path) != Some(ICON_EXTENSION) {
+                if Self::extension_of(path).as_deref() != Some(ICON_EXTENSION) {
                     return Err(PackError::IconNotPng {
                         kind: kind_id.to_string(),
                         path: path.clone(),
@@ -587,8 +588,21 @@ impl AssetPack {
                 allowed: "-360.0..=360.0",
             });
         }
-        // `ground_offset` carries no range (none is defined — A-144).
+        // `ground_offset` carries no range (none is defined — A-144), but
+        // it must be a finite NUMBER: RON parses `NaN`/`inf` into f32, and a
+        // non-finite lift poisons every vertex of the model pass while the
+        // loader reports success — an invisible kind behind a positive
+        // evidence line (B-022). The same treatment `scale`'s range check
+        // already gives a NaN scale.
         let ground_offset = raw.ground_offset;
+        if !ground_offset.is_finite() {
+            return Err(PackError::ValueOutOfRange {
+                kind: kind_id.to_string(),
+                field: "ground_offset",
+                found: ground_offset,
+                allowed: "any finite value",
+            });
+        }
         // The primary renderable asset: the skin when declared, else the
         // model; an icon/sounds-only kind carries neither and renders the
         // placeholder.
@@ -624,8 +638,15 @@ impl AssetPack {
         notes: &mut Vec<PackNote>,
         defer: bool,
     ) -> Result<Option<AssetRef>, PackError> {
-        // Reject absolute paths on any platform.
-        if Path::new(asset).is_absolute() {
+        // Reject absolute paths on every platform (B-022): `Path::is_absolute`
+        // answers for the host OS only — a Unix root like "/etc/passwd" is
+        // *relative* under Windows path grammar (no drive or UNC prefix), so
+        // the old literal check let a Unix-absolute manifest load on Windows,
+        // where `root.join` re-anchored it to the drive root and the missing
+        // file silently skipped the entry (the red Windows CI leg). A pack
+        // manifest is portable data: it must mean the same thing on every OS
+        // it loads on, so the rejection is spelled for all platforms at once.
+        if Self::path_is_absolute_anywhere(asset) {
             return Err(PackError::AbsolutePath {
                 field: context.field.to_string(),
                 path: asset.to_string(),
@@ -678,12 +699,39 @@ impl AssetPack {
         }
     }
 
-    /// The extension of a declared path, lowercased by comparison only
+    /// True when the declared path is absolute or anchored on ANY platform:
+    /// a Unix root (`/etc/passwd`), a Windows drive (`C:\`, `C:/`, and the
+    /// drive-relative `C:foo`, which Windows resolves against the drive's
+    /// current directory — never the pack root), a drive-less Windows root
+    /// (`\Windows`), and every UNC or verbatim prefix (`\\server`,
+    /// `\\?\C:\` — both start with the backslash root). The portable-pack
+    /// law (B-022): a manifest is refused when it is absolute on *some*
+    /// platform the file may load on, not merely on the host's own reading
+    /// of `Path::is_absolute`. The one deliberate strictness: a file whose
+    /// name starts `c:` is unopenable on Windows regardless, so refusing it
+    /// everywhere keeps packs portable (the report records the trade).
+    fn path_is_absolute_anywhere(asset: &str) -> bool {
+        let bytes = asset.as_bytes();
+        // A drive specification: `<ASCII letter>:` in the first two bytes.
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return true;
+        }
+        // Any root: Unix `/…`, Windows `\…` (UNC and verbatim included).
+        asset.starts_with('/') || asset.starts_with('\\')
+    }
+
+    /// The extension of a declared path, lowercased for comparison only
     /// (`"PNG"` matches `"png"` — extensions are case-insensitive in
-    /// practice; the pack system has always compared them literally, and
-    /// this keeps that behavior for the new fields).
-    fn extension_of(path: &str) -> Option<&str> {
-        Path::new(path).extension().and_then(|e| e.to_str())
+    /// practice; B-022 made the code honor what this comment claimed from
+    /// the start: an uppercase `.PNG` icon was the fatal `IconNotPng` and
+    /// an uppercase `.GLB`/`.PNG` skin silently placeholdered on every
+    /// platform). Lowercased for COMPARISON only — the file on disk is
+    /// opened by the path exactly as the author wrote it.
+    fn extension_of(path: &str) -> Option<String> {
+        Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
     }
 
     /// Looks up an entity kind's asset entry.
@@ -702,11 +750,14 @@ impl AssetPack {
     /// renderer).
     #[allow(dead_code)] // consumed by the renderer follow-up
     pub fn kind_of(path: &Path) -> Option<AssetKind> {
-        let ext = path.extension()?.to_str()?;
-        if MODEL_EXTENSIONS.contains(&ext) {
+        // The same lowercased comparison as `extension_of` (B-022): the
+        // resolved path's extension decides the tier, and "Rifleman.GLB" is
+        // a model on a case-insensitive filesystem.
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        if MODEL_EXTENSIONS.contains(&ext.as_str()) {
             return Some(AssetKind::Model);
         }
-        if TEXTURE_EXTENSIONS.contains(&ext) {
+        if TEXTURE_EXTENSIONS.contains(&ext.as_str()) {
             return Some(AssetKind::Texture);
         }
         None
@@ -1213,6 +1264,24 @@ mod tests {
         // ground_offset carries no range by design (A-144 defines none).
         let pack = pack_with(&entry("1.0", "0.0", "1e6"), &[]).expect("pack exists");
         assert_eq!(pack.asset_for("x").unwrap().ground_offset, 1e6);
+        // ...but it must be a finite number (B-022): RON parses NaN/inf,
+        // and a non-finite lift makes every vertex of the model pass
+        // invisible while the loader reports success.
+        for offset in ["NaN", "inf", "-inf"] {
+            let dir = tempfile_dir();
+            write_manifest(&dir, &entry("1.0", "0.0", offset));
+            let err = AssetPack::load(&dir).expect_err(&format!("{offset} is not a ground_offset"));
+            assert!(
+                matches!(
+                    err,
+                    PackError::ValueOutOfRange {
+                        field: "ground_offset",
+                        ..
+                    }
+                ),
+                "{offset}: got {err:?}"
+            );
+        }
     }
 
     /// Unknown fields are rejected in v2 (strict mode preserved).
@@ -1526,6 +1595,152 @@ mod tests {
         );
         let err = AssetPack::load(&dir).expect_err("absolute v2 model");
         assert!(matches!(err, PackError::AbsolutePath { .. }), "got {err:?}");
+    }
+
+    /// B-022: the Windows half of the absolute-path law. `/etc/passwd` is
+    /// *relative* under Windows path grammar, so the old
+    /// `Path::is_absolute` check let every Windows-shaped root through on
+    /// the Windows CI legs (the pack loaded, the entity silently
+    /// placeholdered). Every shape a Windows author could spell — and the
+    /// Unix root the original test pinned — must be refused on EVERY
+    /// platform: a pack manifest is portable data, and `{:?}`-escaped RON
+    /// literals reproduce each path exactly as an author would write it.
+    #[test]
+    fn windows_shaped_absolute_paths_are_rejected_everywhere() {
+        let shapes = [
+            "/etc/passwd",
+            "\\Windows\\System32\\cmd.exe",
+            "C:\\Windows\\System32\\cmd.exe",
+            "c:/windows/system32/cmd.exe",
+            "C:relative\\drive\\anchored",
+            "\\\\server\\share\\model.glb",
+            "\\\\?\\C:\\pandemonium\\model.glb",
+        ];
+        for path in shapes {
+            // v1 entity paths.
+            let dir = tempfile_dir();
+            write_manifest(
+                &dir,
+                &format!(
+                    r#"( pack_id: "x", schema_version: 1, entities: {{ "rifleman": {path:?} }} )"#
+                ),
+            );
+            let err = AssetPack::load(&dir)
+                .expect_err(&format!("v1 absolute path {path:?} should error"));
+            assert!(
+                matches!(err, PackError::AbsolutePath { .. }),
+                "v1 {path:?}: got {err:?}"
+            );
+            // v2 model fields get the identical refusal.
+            let dir = tempfile_dir();
+            write_manifest(
+                &dir,
+                &format!(
+                    r#"( pack_id: "x", schema_version: 2, entities: {{ "rifleman": ( model: Some({path:?}) ) }} )"#
+                ),
+            );
+            let err = AssetPack::load(&dir)
+                .expect_err(&format!("v2 absolute model {path:?} should error"));
+            assert!(
+                matches!(err, PackError::AbsolutePath { .. }),
+                "v2 {path:?}: got {err:?}"
+            );
+            // Terrain classes share the same choke point.
+            let dir = tempfile_dir();
+            write_manifest(
+                &dir,
+                &format!(
+                    r#"( pack_id: "x", schema_version: 1, terrain: {{ "grass": {path:?} }} )"#
+                ),
+            );
+            let err = AssetPack::load(&dir)
+                .expect_err(&format!("terrain absolute path {path:?} should error"));
+            assert!(
+                matches!(err, PackError::AbsolutePath { .. }),
+                "terrain {path:?}: got {err:?}"
+            );
+        }
+        // A drive-letter name on a case-sensitive filesystem (`c:x.png` is
+        // a legal Unix filename) is refused everywhere by the same law —
+        // the portability trade B-022's report records.
+        let dir = tempfile_dir();
+        write_manifest(
+            &dir,
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "c:colon.glb" } )"#,
+        );
+        let err = AssetPack::load(&dir).expect_err("drive-letter-relative should error");
+        assert!(matches!(err, PackError::AbsolutePath { .. }), "got {err:?}");
+        // Relative paths that merely CONTAIN a colon later in the name are
+        // still fine — the drive check reads the first two bytes only.
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "models/ra-tor.glb" } )"#,
+            &[("models/ra-tor.glb", b"fake-glb")],
+        )
+        .expect("pack exists");
+        assert!(pack.asset_for("rifleman").is_some());
+    }
+
+    /// B-022: extensions match case-insensitively — the loader's own
+    /// documented contract, which the code never honored. An uppercase
+    /// `.PNG` icon used to be the fatal `IconNotPng`, and an uppercase
+    /// v1 `.PNG`/`.GLB` silently placeholdered instead of migrating to the
+    /// skin/model tier. The file on disk is still opened by the author's
+    /// exact spelling; only the comparison lowercases.
+    #[test]
+    fn extensions_match_case_insensitively() {
+        // v1 uppercase skin: `Some("png")` must match "PNG".
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "textures/Rifleman.PNG" } )"#,
+            &[("textures/Rifleman.PNG", b"fake-png")],
+        )
+        .expect("pack exists");
+        let entry = pack.asset_for("rifleman").expect("entry present");
+        assert!(entry.skin.is_some(), "uppercase .PNG is a skin");
+        assert!(entry.model.is_none());
+        assert_eq!(
+            AssetPack::kind_of(entry.resolved.as_path()),
+            Some(AssetKind::Texture),
+            "kind_of reads the uppercase extension as a texture"
+        );
+        // v1 uppercase model: `Some("glb")` must match "GLB".
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "models/Rifleman.GLB" } )"#,
+            &[("models/Rifleman.GLB", b"fake-glb")],
+        )
+        .expect("pack exists");
+        let entry = pack.asset_for("rifleman").expect("entry present");
+        assert!(entry.model.is_some(), "uppercase .GLB is a model");
+        assert!(entry.skin.is_none());
+        assert_eq!(
+            AssetPack::kind_of(entry.resolved.as_path()),
+            Some(AssetKind::Model),
+            "kind_of reads the uppercase extension as a model"
+        );
+        // v2 uppercase icon: accepted (it used to be the fatal IconNotPng).
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 2, entities: { "rifleman": ( icon: Some("icons/Rifleman.PNG") ) } )"#,
+            &[("icons/Rifleman.PNG", b"fake-png")],
+        )
+        .expect("pack exists");
+        let entry = pack.asset_for("rifleman").expect("entry present");
+        assert!(entry.icon.is_some(), "uppercase .PNG icon loads");
+        // The lowercase spellings keep their pinned behavior.
+        let pack = pack_with(
+            r#"( pack_id: "x", schema_version: 1, entities: { "rifleman": "models/rifleman.glb" } )"#,
+            &[("models/rifleman.glb", b"fake-glb")],
+        )
+        .expect("pack exists");
+        assert!(pack.asset_for("rifleman").unwrap().model.is_some());
+        // kind_of on paths directly, both spellings.
+        assert_eq!(
+            AssetPack::kind_of(Path::new("anywhere/M.GLB")),
+            Some(AssetKind::Model)
+        );
+        assert_eq!(
+            AssetPack::kind_of(Path::new("anywhere/T.PNG")),
+            Some(AssetKind::Texture)
+        );
+        assert_eq!(AssetPack::kind_of(Path::new("anywhere/X.PSD")), None);
     }
 
     #[test]
