@@ -860,6 +860,13 @@ fn convert_objective(
             // radius is the empty disk. The bounds, whole-map-coverage and
             // tick-0 starting-entity gates are tree-level (they need the
             // mission's map and faction; see ContentTree::load).
+            //
+            // B-023 adds the file-level magnitude gates — the
+            // never-loadable-anywhere envelope, derived from the largest
+            // accepted map dimension (an authoring sanity cap, not a trade:
+            // every threshold below is exactly the point past which no
+            // loadable map can hold the shape). The per-map bounds stay
+            // tree-level, where the error can name the real map.
             let area = match params.area {
                 RawAreaSpec::Rect(rect) => {
                     if rect.w == 0 || rect.h == 0 {
@@ -873,6 +880,23 @@ fn convert_objective(
                                 mission,
                                 rect.w,
                                 rect.h
+                            ),
+                        });
+                    }
+                    if rect.w > validate::MAX_MAP_DIMENSION || rect.h > validate::MAX_MAP_DIMENSION
+                    {
+                        return Err(ContentError::Parse {
+                            file: file.to_string(),
+                            detail: format!(
+                                "objective {} of mission '{}' reaches a rect with \
+                                 w {} x h {} (both must be at most {} — the largest \
+                                 accepted map dimension; a bigger rect can never lie \
+                                 inside any loadable map)",
+                                index + 1,
+                                mission,
+                                rect.w,
+                                rect.h,
+                                validate::MAX_MAP_DIMENSION
                             ),
                         });
                     }
@@ -893,6 +917,47 @@ fn convert_objective(
                                 index + 1,
                                 mission,
                                 circle.radius
+                            ),
+                        });
+                    }
+                    // A disk that fits a map needs `radius <= min(W, H) / 2`
+                    // and a center strictly inside the map's milli-tile
+                    // extent (a loadable circle has `radius <= cx <=
+                    // W_milli - radius`, so `0 < cx < W_milli`).
+                    let max_edge_milli = validate::MAX_MAP_DIMENSION as i64 * 1000;
+                    if circle.radius as i64 > max_edge_milli / 2 {
+                        return Err(ContentError::Parse {
+                            file: file.to_string(),
+                            detail: format!(
+                                "objective {} of mission '{}' reaches a circle with \
+                                 radius {} milli-tiles (at most {} fits the largest \
+                                 accepted map's half-extent — a bigger disk can never \
+                                 lie inside any loadable map)",
+                                index + 1,
+                                mission,
+                                circle.radius,
+                                max_edge_milli / 2
+                            ),
+                        });
+                    }
+                    if circle.cx as i64 <= 0
+                        || circle.cx as i64 >= max_edge_milli
+                        || circle.cy as i64 <= 0
+                        || circle.cy as i64 >= max_edge_milli
+                    {
+                        return Err(ContentError::Parse {
+                            file: file.to_string(),
+                            detail: format!(
+                                "objective {} of mission '{}' reaches a circle centered \
+                                 at ({},{}) milli-tiles (both components must be \
+                                 strictly inside 0..{} — the largest accepted map's \
+                                 extent; a center outside it can never hold a loadable \
+                                 disk)",
+                                index + 1,
+                                mission,
+                                circle.cx,
+                                circle.cy,
+                                max_edge_milli
                             ),
                         });
                     }
@@ -1355,6 +1420,71 @@ mod tests {
                 err.to_string().contains(needle),
                 "area {area} must be a loud error, got: {err}"
             );
+        }
+    }
+
+    #[test]
+    fn absurd_reach_area_magnitudes_are_rejected_at_file_level() {
+        // B-023: the never-loadable-anywhere envelope. The per-map bounds
+        // (tree level, i64-total since B-018) keep the precise map-named
+        // errors; the file level refuses what no loadable map could ever
+        // hold, derived from the largest accepted map dimension (4096
+        // tiles — the rect extent cap, the disk half-extent cap of
+        // 2_048_000 milli-tiles, and the milli-tile center envelope).
+        for (area, needle) in [
+            (
+                "Rect(( x: 24, y: 24, w: 4097, h: 4 ))",
+                "both must be at most 4096",
+            ),
+            (
+                "Rect(( x: 24, y: 24, w: 8, h: 4294967295 ))",
+                "both must be at most 4096",
+            ),
+            (
+                "Circle(( cx: 32000, cy: 32000, radius: 2048001 ))",
+                "at most 2048000 fits the largest",
+            ),
+            (
+                "Circle(( cx: 4096000, cy: 32000, radius: 500 ))",
+                "strictly inside 0..4096000",
+            ),
+            (
+                "Circle(( cx: 0, cy: 32000, radius: 500 ))",
+                "strictly inside 0..4096000",
+            ),
+            (
+                "Circle(( cx: -500000, cy: 32000, radius: 500 ))",
+                "strictly inside 0..4096000",
+            ),
+        ] {
+            let bad = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"ReachArea\",\n            parameters: ReachArea(( area: {area} )),\n            optional: true,"
+                ),
+            );
+            let err = parse(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains(needle),
+                "area {area} must be a loud error naming the envelope, got: {err}"
+            );
+        }
+
+        // The envelope's edges still parse: a 4096-wide rect and a radius of
+        // exactly the half-extent are loadable shapes for a maximal map —
+        // the per-map tree gate decides against the real map (B-018's
+        // bounds tests own that side).
+        for area in [
+            "Rect(( x: 24, y: 24, w: 4096, h: 4 ))",
+            "Circle(( cx: 32000, cy: 32000, radius: 2048000 ))",
+        ] {
+            let good = MISSION.replace(
+                "kind: \"BuildTrain\",\n            parameters: BuildTrain(( kind: \"worker\", count: 4 )),\n            optional: true,",
+                &format!(
+                    "kind: \"ReachArea\",\n            parameters: ReachArea(( area: {area} )),\n            optional: true,"
+                ),
+            );
+            parse(&good).unwrap_or_else(|e| panic!("area {area} must parse: {e}"));
         }
     }
 
