@@ -18,7 +18,13 @@ use crate::error::ContentError;
 
 /// The largest map dimension accepted (a sanity cap for authoring mistakes; the
 /// Alpha map is 64×64 — plan §10.5). Recorded as an assumption.
-const MAX_MAP_DIMENSION: u32 = 4096;
+///
+/// B-023 derives the integer magnitude caps from this one constant: footprints
+/// and reach-area extents beyond it can never fit on any loadable map, and
+/// starting-force offsets of this magnitude or more can never land inside one
+/// (anchors are `0..dimension-1`), so those file-level rejections are precise
+/// rather than trades.
+pub(crate) const MAX_MAP_DIMENSION: u32 = 4096;
 
 /// The neutral player sentinel may not own a start position.
 const NEUTRAL_PLAYER: u8 = u8::MAX;
@@ -213,6 +219,28 @@ pub(crate) fn validate_entity(
                         "both dimensions must be at least 1 tile",
                     ));
                 }
+                // B-023: a footprint wider or taller than the largest accepted
+                // map can never be placed on any loadable map (placement
+                // requires `anchor + extent <= dimension` with `anchor >= 0`),
+                // so refusing the magnitude is precise, not a trade. Before
+                // this gate a `Footprint(( w: 4294967295, h: 1 ))` passed every
+                // check through `w as i32 == -1` and reached the sim's
+                // footprint claim with a ~34 GiB tile allocation (B-022's
+                // finding 3); a `w` near `i32::MAX` overflowed the validator's
+                // own far-edge sum in debug.
+                for (field, value) in [("Footprint.w", *w), ("Footprint.h", *h)] {
+                    if value > MAX_MAP_DIMENSION {
+                        return Err(stat(
+                            field,
+                            value as i64,
+                            &format!(
+                                "must be at most {MAX_MAP_DIMENSION} tiles (the largest \
+                                 accepted map dimension — a bigger footprint can never \
+                                 be placed on any loadable map)"
+                            ),
+                        ));
+                    }
+                }
             }
             CapabilityDef::Storage { resources } => {
                 for resource in resources {
@@ -377,6 +405,31 @@ pub(crate) fn validate_faction(
                     "starting force '{}' is a resource node — nodes are placed by maps, \
                      not by starting forces (plan §10.5)",
                     force.entity
+                ),
+            });
+        }
+        // B-023: a start anchor is always inside its map (`0..dimension`), so
+        // an offset of `MAX_MAP_DIMENSION` or more in either direction can
+        // never land inside any loadable map — the magnitude rejection is
+        // precise. The bound also keeps every `anchor + offset` sum far from
+        // i32 overflow, so the placement and world-seam math stays total
+        // (before it, `i32::MAX` offsets overflowed the validator in debug
+        // and wrapped in release — B-022's finding 3).
+        let cap = MAX_MAP_DIMENSION as i32;
+        if force.offset.0 <= -cap
+            || force.offset.0 >= cap
+            || force.offset.1 <= -cap
+            || force.offset.1 >= cap
+        {
+            return Err(ContentError::InvalidFaction {
+                file: file.to_string(),
+                faction: faction.id.clone(),
+                detail: format!(
+                    "starting force '{}' has offset ({},{}): every component must be \
+                     strictly inside -{cap}..{cap} — no map start can ever bring a bigger \
+                     offset into bounds (the largest accepted map is {MAX_MAP_DIMENSION} \
+                     tiles)",
+                    force.entity, force.offset.0, force.offset.1
                 ),
             });
         }
