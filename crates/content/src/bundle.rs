@@ -1216,10 +1216,15 @@ impl ContentBundle {
 
 /// The center of a `w`x`h` footprint whose top-left tile is `(x, y)`, in
 /// fixed-point tile units. Units are 1x1 (tile centers); structures sit at their
-/// footprint center.
+/// footprint center. B-023: the milli-tile product runs in i64 and clamps into
+/// `from_milli`'s `i32` domain, so the seam stays total over every caller
+/// input (validated content is always far inside the clamp).
 fn tile_center(x: i32, y: i32, w: u32, h: u32) -> Vec2Fx {
-    let cx = (x * 2 + w as i32) * 500; // (x + w/2) in milli-tiles
-    let cy = (y * 2 + h as i32) * 500;
+    let milli = |tiles: i32, extent: u32| -> i32 {
+        ((tiles as i64 * 2 + extent as i64) * 500).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+    };
+    let cx = milli(x, w); // (x + w/2) in milli-tiles
+    let cy = milli(y, h);
     Vec2Fx::new(
         pandemonium_fx::Fx::from_milli(cx),
         pandemonium_fx::Fx::from_milli(cy),

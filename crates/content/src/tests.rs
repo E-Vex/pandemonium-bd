@@ -976,3 +976,50 @@ fn absurd_starting_force_offsets_are_rejected_at_load() {
         "the per-map placement error must keep firing at the edge: {err}"
     );
 }
+
+#[test]
+fn ore_node_boundary_math_is_total_over_absurd_footprints() {
+    // Defense in depth for the i64 far-edge sums: the loader's own gates
+    // refuse these magnitudes now, but the file-level validator is an
+    // internal seam future code may call directly — hand-built defs (which
+    // bypass the loader) must get the precise out-of-bounds rejection,
+    // never a debug overflow panic (`w as i32` near i32::MAX) and never a
+    // silent pass (`w as i32` negative — the u32::MAX shape B-022
+    // reported, which used to return Ok here).
+    let monster = |w: u32| crate::defs::EntityDef {
+        id: "monster".to_string(),
+        display_name: "Monster".to_string(),
+        capabilities: vec![
+            crate::defs::CapabilityDef::Resource {
+                resource: "ore".to_string(),
+                amount: 1500,
+            },
+            crate::defs::CapabilityDef::Footprint { w, h: 1 },
+        ],
+        cost_ore: 0,
+        build_time_ms: 0,
+        build_time_ticks: 0,
+        population: 0,
+        requires: Vec::new(),
+        file: "entities/monster.ron".to_string(),
+    };
+    let tree = ContentTree::load(&factory()).unwrap();
+    let mut map = tree.map("testing").unwrap().clone();
+    for w in [u32::MAX, 2147483647] {
+        // The monster is the map's ONLY ore node (a huge footprint overlaps
+        // every other node, and the overlap rejection is not the pin here —
+        // the far-edge bounds sum is).
+        map.ore_nodes = vec![crate::defs::OreNodeDef {
+            kind: "monster".to_string(),
+            x: 1,
+            y: 1,
+        }];
+        let entities = [monster(w)];
+        let err =
+            crate::validate::validate_map_file("maps/testing.ron", &map, &entities).unwrap_err();
+        assert!(
+            err.to_string().contains("extends outside the 16x16 map"),
+            "w = {w} must be the precise rejection, got: {err}"
+        );
+    }
+}

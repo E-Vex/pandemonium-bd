@@ -552,11 +552,14 @@ pub(crate) fn validate_map_file(
             )));
         }
         let (w, h) = node_def.footprint().expect("footprint checked above");
-        if node.x < 0
-            || node.y < 0
-            || node.x + w as i32 > map.width as i32
-            || node.y + h as i32 > map.height as i32
-        {
+        // B-023: the far-edge sums run in i64 — mixing `u32` footprints and
+        // `i32` tiles in plain i32 wraps both ways (a `w as i32` past
+        // `i32::MAX` goes negative and the check silently passes; a sum past
+        // `i32::MAX` overflows in debug). Total over every `u32`/`i32` pair,
+        // independent of the file-level magnitude gates above.
+        let far_x = node.x as i64 + w as i64;
+        let far_y = node.y as i64 + h as i64;
+        if node.x < 0 || node.y < 0 || far_x > map.width as i64 || far_y > map.height as i64 {
             return Err(invalid(format!(
                 "ore_nodes[{index}] ('{}') at ({},{}) with footprint {w}x{h} extends \
                  outside the {}x{} map",
@@ -569,8 +572,13 @@ pub(crate) fn validate_map_file(
                 .find(|entity| entity.id == later.kind)
                 .and_then(|entity| entity.footprint())
                 .unwrap_or((1, 1));
-            let overlap_x = node.x < later.x + lw as i32 && later.x < node.x + w as i32;
-            let overlap_y = node.y < later.y + lh as i32 && later.y < node.y + h as i32;
+            // B-023: the interval overlap runs in i64 for the same reason as
+            // the bounds check above — plain-i32 sums of `i32` tiles and
+            // `u32` extents wrap on absurd magnitudes.
+            let overlap_x = (node.x as i64) < later.x as i64 + lw as i64
+                && (later.x as i64) < node.x as i64 + w as i64;
+            let overlap_y = (node.y as i64) < later.y as i64 + lh as i64
+                && (later.y as i64) < node.y as i64 + h as i64;
             if overlap_x && overlap_y {
                 return Err(invalid(format!(
                     "ore_nodes[{index}] at ({},{}) overlaps another ore node at ({},{})",
