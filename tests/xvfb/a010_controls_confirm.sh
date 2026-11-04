@@ -249,11 +249,14 @@ CHECKS = [
     ("c0", "environment gate: the windowed client presents 60 frames at the main menu",
      [], ["--frames", "60"],
      {"smoke": True, "frames": 60, "screen": "main menu", "session": "no match this run"}),
+    # B-026: the repo content carries the pilot campaign, so the main
+    # menu's row 1 is the Campaign row and Controls sits at row 3 (the
+    # campaign-present layout — Down x3 from the New Match focus).
     ("c1", "main menu -> Controls: the screen is entered",
-     [K("Down"), K("Down"), K("Enter"), CLOSE], [],
+     [K("Down"), K("Down"), K("Down"), K("Enter"), CLOSE], [],
      {"screen": "controls screen", "matches": 0}),
     ("c2", "Controls -> Back returns to the main menu",
-     [K("Down"), K("Down"), K("Enter"), K("Enter"), CLOSE], [],
+     [K("Down"), K("Down"), K("Down"), K("Enter"), K("Enter"), CLOSE], [],
      {"screen": "main menu", "matches": 0}),
     ("c3", "live match -> pause -> Controls: the screen is entered over the paused match",
      MATCH_PREFIX + PAUSE_TO_CONTROLS + [CLOSE], [],

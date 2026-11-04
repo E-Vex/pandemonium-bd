@@ -1063,6 +1063,39 @@ impl App {
         }
     }
 
+    /// B-026 (ADR-0201 §6): records the live mission as completed and
+    /// persists — the victory half of the progress. The upsert's change
+    /// signal skips the disk write when the record already said completed
+    /// (winning an already-completed mission again is a replay, not a
+    /// state change); a previously skipped mission upgrades to completed
+    /// (the ADR's "a skipped mission stays replayable" — winning it
+    /// counts). The evidence line names the mission and the fate of the
+    /// write, the settings-save discipline.
+    pub(crate) fn on_mission_victory(&mut self) {
+        let Some(index) = self.mission_index else {
+            return; // a plain match: nothing to record
+        };
+        let Some(def) = self.tree.missions.get(index) else {
+            return; // defensive — mission_index is only ever set from a valid index
+        };
+        let id = def.id.clone();
+        if !self
+            .progress
+            .record(&id, crate::progress::MissionRecord::Completed)
+        {
+            return; // already completed — a replay, no write
+        }
+        println!(
+            "pandemonium client — campaign progress: '{}' completed{}",
+            def.display_name,
+            match &self.progress_path {
+                Some(path) => format!(" (saved: {})", path.display()),
+                None => " (persistence disabled)".to_string(),
+            }
+        );
+        self.persist_progress();
+    }
+
     /// Adjusts one settings row and applies it live (PLAN-M10.2 §3.4): the
     /// edge-scroll flag flips immediately (DEBT-014's repayment — the flag
     /// has been wired since Phase 1), the zoom limits re-clamp the camera
@@ -1563,6 +1596,18 @@ impl App {
                     "pandemonium client — match ended, {winner} wins (tick {}, seed {})",
                     outcome.ended_tick, self.setup.seed
                 );
+                // B-026 (ADR-0201 §6): a mission match the player won
+                // records the mission as completed in the campaign
+                // progress and persists it (the record is what unlocks
+                // the next chapter and the challenges). A defeat or a
+                // mutual destruction records nothing — the mission stays
+                // there until won or explicitly skipped; a resign flows
+                // through the match rules as a defeat. Fires exactly once
+                // per match: the promotion below leaves InMatch, so the
+                // block cannot run again for the same host.
+                if outcome.winner == HUMAN {
+                    self.on_mission_victory();
+                }
             }
             self.screen = self.screen.promote_to_end();
         }
@@ -1980,19 +2025,39 @@ impl App {
                 .iter()
                 .map(|(text, state)| (text.as_str(), state.as_str()))
                 .collect();
+            // B-026: the mission sublines, composed before the headline
+            // borrow — a victory names the completed mission; a defeat
+            // (or a mission-less match) falls back to the standing text.
+            let mission_name = self
+                .mission_hud
+                .as_ref()
+                .map(|mission| mission.display_name.clone())
+                .unwrap_or_default();
+            let mission_complete = self
+                .mission_hud
+                .as_ref()
+                .map(|mission| format!("Mission complete: {}", mission.display_name));
             let headline = outcome.as_ref().map(|outcome| {
                 let head = match outcome.winner {
                     HUMAN => "VICTORY",
                     AI => "DEFEAT",
                     _ => "MUTUAL DESTRUCTION",
                 };
-                let sub = match &self.mission_hud {
-                    Some(mission) => mission.display_name.as_str(),
-                    None => match outcome.winner {
-                        HUMAN => "You eliminated the enemy.",
-                        AI => "Your base was destroyed.",
-                        _ => "Both sides were eliminated.",
-                    },
+                // B-026: a mission victory's subline names the completed
+                // mission — the end screen distinguishes completed from
+                // skipped exactly as the progress file does (the skip paths
+                // never reach an end screen: the campaign-screen skip drops
+                // no match, the pause-menu skip leaves for the menu). A
+                // defeat keeps the mission's name; a mission-less match
+                // keeps its standing sublines.
+                let sub = match outcome.winner {
+                    HUMAN => mission_complete
+                        .as_deref()
+                        .unwrap_or("You eliminated the enemy."),
+                    AI if !mission_name.is_empty() => mission_name.as_str(),
+                    AI => "Your base was destroyed.",
+                    _ if !mission_name.is_empty() => mission_name.as_str(),
+                    _ => "Both sides were eliminated.",
                 };
                 (head, sub)
             });

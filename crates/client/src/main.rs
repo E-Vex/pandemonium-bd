@@ -3249,6 +3249,89 @@ mod campaign_wiring {
         assert_eq!(app.screen.button_count(&ctx), 6);
         assert_eq!(app.screen.button_at(6, &ctx), None);
     }
+    #[test]
+    fn a_mission_victory_records_and_unlocks_the_campaign() {
+        // The victory hook the end-screen promotion calls (winner == HUMAN
+        // on a mission match): the mission records completed, the progress
+        // persists through the path, and a fresh campaign snapshot resolves
+        // the unlock (chapter 2 available, the challenge unlocked).
+        let dir = std::env::temp_dir();
+        let path = dir.join("pandemonium-b026-mission-victory.cfg");
+        let _ = std::fs::remove_file(&path);
+        let mut app = app();
+        app.progress_path = Some(path.clone());
+        app.begin_mission(0, 7);
+        app.on_mission_victory();
+        assert_eq!(
+            app.progress.record_for("crossroads_01"),
+            Some(MissionRecord::Completed)
+        );
+        let text = std::fs::read_to_string(&path).expect("the progress file landed");
+        assert!(text.contains("crossroads_01=completed"), "{text}");
+        // The unlock resolves from the recorded state.
+        app.screen.screen = Screen::MainMenu;
+        app.apply_effect_core(Effect::OpenCampaign);
+        let Screen::Campaign(fields) = &app.screen.screen else {
+            panic!("the campaign screen opened");
+        };
+        assert_eq!(fields.status(0), CampaignStatus::Completed);
+        assert_eq!(fields.status(1), CampaignStatus::Available);
+        assert_eq!(
+            fields.status(3),
+            CampaignStatus::Available,
+            "the challenge unlocked with the chapter's completion"
+        );
+        // Tidy.
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_plain_match_victory_records_nothing() {
+        // The hook is mission-scoped: a mission-less match (mission_index
+        // None) leaves the progress untouched.
+        let mut app = app();
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        app.on_mission_victory();
+        assert_eq!(app.progress, CampaignProgress::default());
+    }
+
+    #[test]
+    fn a_victory_upgrades_a_skip_and_an_already_completed_replay_writes_nothing() {
+        // The upsert laws at the app seam: winning a previously skipped
+        // mission upgrades the record to completed (the ADR's replayable
+        // skip); winning an already completed one is a replay — no state
+        // change, no disk write.
+        let dir = std::env::temp_dir();
+        let skipped_path = dir.join("pandemonium-b026-upgrade-skip.cfg");
+        let replay_path = dir.join("pandemonium-b026-replay-nowrite.cfg");
+        let _ = std::fs::remove_file(&skipped_path);
+        let _ = std::fs::remove_file(&replay_path);
+
+        let mut app = app();
+        app.progress_path = Some(skipped_path.clone());
+        app.begin_mission(0, 7);
+        app.progress.record("crossroads_01", MissionRecord::Skipped);
+        app.on_mission_victory();
+        assert_eq!(
+            app.progress.record_for("crossroads_01"),
+            Some(MissionRecord::Completed),
+            "the skip upgraded to completed"
+        );
+        let text = std::fs::read_to_string(&skipped_path).expect("the upgrade landed");
+        assert!(text.contains("crossroads_01=completed"), "{text}");
+
+        // A replay of the completed mission: no write at all (the change
+        // signal is false — the file never appears).
+        app.progress_path = Some(replay_path.clone());
+        app.on_mission_victory();
+        assert!(
+            !replay_path.exists(),
+            "an already-completed replay writes nothing"
+        );
+        // Tidy.
+        let _ = std::fs::remove_file(&skipped_path);
+        let _ = std::fs::remove_file(&replay_path);
+    }
 }
 
 #[cfg(test)]
