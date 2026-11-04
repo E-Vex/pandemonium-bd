@@ -1,0 +1,37 @@
+// Campaign chapter 3 (B-025): the supply run. The mission player funds a
+// quota — 500 ore gathered, cumulative (B-018's delivery-attribution
+// semantics: every trip's ten ore counts, spending does not) — while the
+// scripted Alpha plays on. The amount sits above the 200 starting balance
+// (the tree-level gate's AUD-003 law), so the objective demands real
+// harvesting.
+//
+// The optional build/train objective is the chapter's second read: grow
+// the workforce to ten while the quota is being met. "N exist" counts
+// current ownership including the starting four, and 10 > 4, so the goal
+// demands production (AUD-003's lesson, the same shape chapter 1's
+// optional objective uses).
+(
+    schema_version: 1,
+    id: "crossroads_03",
+    display_name: "Supply Run",
+    map: "crossroads_64",
+    faction: "legion",
+    rules: "alpha",
+    objectives: [
+        // Gather 500 ore, cumulative — deliveries count, spending does
+        // not. The balance semantics (a standing balance of 500) is the
+        // harder variant; the campaign chapter takes the forgiving one.
+        (
+            kind: "Gather",
+            parameters: Gather(( amount: 500, semantics: "Cumulative" )),
+            optional: false,
+        ),
+        // Grow to ten workers — optional, feeds the end screen and the
+        // progress record, never the match outcome.
+        (
+            kind: "BuildTrain",
+            parameters: BuildTrain(( kind: "worker", count: 10 )),
+            optional: true,
+        ),
+    ],
+)

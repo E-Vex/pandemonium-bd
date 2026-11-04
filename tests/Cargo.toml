@@ -73,3 +73,7 @@ path = "mission_phase1.rs"
 [[test]]
 name = "mission_ai"
 path = "mission_ai.rs"
+
+[[test]]
+name = "mission_campaign"
+path = "mission_campaign.rs"

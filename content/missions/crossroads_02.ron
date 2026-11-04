@@ -1,0 +1,42 @@
+// Campaign chapter 2 (B-025): hold the line. The mission player survives
+// 3600 ticks (two minutes of game time) against the scripted Alpha's waves
+// — B-017's survive kind carrying the chapter, with B-015's explored fog
+// preset so the battlefield starts revealed (the fog preset changes the
+// filter's initial state only — derived, unhashed, FD-8; the per-tick
+// vision pass marks live sight on top exactly as always).
+//
+// The optional protect objective (B-017) is fail-only state for the end
+// screen: it never completes, never gates — if the command center falls
+// while the survivors hold on, the mission can still be won, and the
+// record shows the base was lost doing it. Victory is reachable through
+// the required survive objective alone (the loader's victory-reachability
+// gate), so the protect flag is optional, not required.
+//
+// The Alpha opponent runs its own default pacing — feel tuning is the
+// owner's (the playtest instruments, STANDING_ORDERS §8), not content
+// this brief presumes.
+(
+    schema_version: 1,
+    id: "crossroads_02",
+    display_name: "Hold the Line",
+    map: "crossroads_64",
+    faction: "legion",
+    rules: "alpha",
+    fog_preset: Some("Explored"),
+    objectives: [
+        // Survive the window — 3600 ticks is twenty times the loader's
+        // 300-tick floor: real play, not a vacuous tick count.
+        (
+            kind: "Survive",
+            parameters: Survive(( ticks: 3600 )),
+            optional: false,
+        ),
+        // Keep the command center alive — optional, fail-only: the end
+        // screen's honesty line, never the match outcome.
+        (
+            kind: "Protect",
+            parameters: Protect(( kind: "command_center" )),
+            optional: true,
+        ),
+    ],
+)

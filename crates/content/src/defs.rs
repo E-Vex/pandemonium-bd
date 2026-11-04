@@ -715,3 +715,39 @@ pub struct MissionDef {
     /// indices (ADR-0201 §2).
     pub objectives: Vec<ObjectiveDef>,
 }
+
+/// A challenge entry (B-025, ADR-0201 §6): a challenge mission surfaced
+/// beside the campaign, unlocked by the completion of the chapter mission
+/// it extends.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ChallengeEntry {
+    /// The challenge mission's id (validated to exist in the tree).
+    pub mission: String,
+    /// The chapter mission's id whose completion unlocks the challenge
+    /// (validated to exist and to be one of the campaign's chapters).
+    pub extends: String,
+}
+
+/// A campaign (B-025, ADR-0201 §6): the chapter mission ids in play order
+/// plus the challenge entries. The campaign is play-order metadata over
+/// missions that exist in the same tree — the simulation never sees it (it
+/// reaches nothing below the client), and it carries no hash: the replay
+/// identity is the mission id (ADR-0201 §7), and the campaign progress is
+/// per-user state beside it, never content.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CampaignDef {
+    /// Stable campaign id.
+    pub id: String,
+    /// Human-facing name (ASCII — the embedded font constraint, ADR-0201 §5).
+    pub display_name: String,
+    /// The campaign schema version the file declared (forward-only, FD-10).
+    pub schema_version: u32,
+    /// The chapter mission ids **in play order** (validated to exist in the
+    /// tree). Authored order, deliberately unsorted — the play order is the
+    /// data the unlock rule reads (chapter N+1 unlocks when chapter N is
+    /// completed or skipped, ADR-0201 §6).
+    pub chapters: Vec<String>,
+    /// The challenge entries (empty is legal), each validated to name a
+    /// tree mission and to extend one of this campaign's chapters.
+    pub challenges: Vec<ChallengeEntry>,
+}
