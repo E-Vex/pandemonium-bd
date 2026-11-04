@@ -215,7 +215,14 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::ReplayVerify { file, content } => {
-            let content = resolve_content_dir(&content)?;
+            // B-022 finding 7: the record decodes BEFORE any content
+            // directory resolves — a mission-less demo-world record carries
+            // the demo's own identity and verifies on a stripped install
+            // (the binary and a demo replay, no content/ anywhere in the
+            // search); the search itself runs lazily, only for the records
+            // that need it (a content-world record, or a mission-bearing
+            // one). A content record with no directory to find still fails
+            // with the search's own error, naming every path it tried.
             let bytes = std::fs::read(&file)
                 .with_context(|| format!("reading replay {}", file.display()))?;
             let replay = pandemonium_replay::ReplayFile::decode(&bytes)
@@ -227,7 +234,8 @@ fn main() -> anyhow::Result<()> {
             // the exact match the recording ran; a mission-less record
             // keeps the identity-based resolution (demo world or content
             // directory) with an empty mission set, exactly as before.
-            let (world, missions) = resolve_replay_verification(&content, &replay)?;
+            let (world, missions) =
+                resolve_replay_verification(&replay, || resolve_content_dir(&content))?;
             match verify_replay(&world, &replay, &missions)? {
                 Verification::Passed {
                     checkpoints,
@@ -368,5 +376,46 @@ mod content_resolution_tests {
                 "{named} must pass through"
             );
         }
+    }
+
+    #[test]
+    fn replay_verify_resolves_its_content_directory_lazily() {
+        // B-022 finding 7's wiring, in the repo's established source-scan
+        // style (the search's failure shape is environment-shaped — no
+        // cargo-test binary can shed the compiled-in dev path — while the
+        // deferral law itself is pinned pure over the resolver seam in
+        // verify.rs's tests): the ReplayVerify arm must hand the search to
+        // resolve_replay_verification as a LAZY closure, so the demo-record
+        // branch runs before any directory is demanded. A regression to
+        // the eager form (`let content = resolve_content_dir(&content)?`
+        // ahead of the decode) is exactly what turns this red.
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("the tools crate sits at <manifest>/src/main.rs");
+        // Scan only the shipping code — everything before this test module,
+        // comments stripped, so a commented-out call cannot satisfy the law.
+        let cut = source.find("#[cfg(test)]").expect("a test module exists");
+        let code = source[..cut]
+            .lines()
+            .map(|line| &line[..line.find("//").unwrap_or(line.len())])
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains("resolve_replay_verification(&replay, || resolve_content_dir(&content))"),
+            "replay-verify must resolve its content directory lazily — the demo-record \
+             branch (B-022 finding 7) runs before the search"
+        );
+        // And the arm itself owns no eager resolution of its own: the only
+        // resolve_content_dir call in the ReplayVerify arm is the closure.
+        let arm_start = code.find("Command::ReplayVerify").expect("the arm exists");
+        let arm_end = code[arm_start..]
+            .find("Command::ContentValidate")
+            .map(|offset| arm_start + offset)
+            .unwrap_or(code.len());
+        let arm = &code[arm_start..arm_end];
+        assert_eq!(
+            arm.matches("resolve_content_dir").count(),
+            1,
+            "the ReplayVerify arm resolves content exactly once — inside the lazy closure"
+        );
     }
 }

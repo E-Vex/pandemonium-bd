@@ -1301,6 +1301,31 @@ confirms or rejects it.
   hand-built fixtures (out of content's declared model — proposed, not
   implemented, in the B-023 report §9).
 
+- **A-209 (B-024, tools cleanup).** The CLI range caps closing B-022's
+  finding 6 read "precise, not trade" off the project's own documented
+  acceptance vocabulary — the same law A-208 applied to content
+  magnitudes, applied to tool invocations: every cap refuses exactly the
+  values no documented use exercises, and nothing else. `--scale` is
+  1..=10 (plan §15's tier ladder defines the 1x and 10x rows, and the
+  proving ground's authored 1000-per-side forces saturate at 10 — every
+  value above truncates to the identical world while only the
+  preallocation grows); `bench --ticks` is 1..=36000 (plan §13 A7 calls
+  a match stuck past 20 minutes of game time — 36 000 ticks at 30 Hz,
+  the soak's own default budget — so a longer bench measures a match the
+  project's own vocabulary calls stuck); `diff-check --matches` is
+  1..=1000 (A7's sweep top — a larger sweep is the nightly's sharding,
+  never one process's digest list). Zero is refused everywhere (a bench
+  that samples nothing, a sweep that checks nothing), where `bench
+  --scale 0` and `diff-check --scale 0` previously aliased silently to
+  scale 1 (`scaled_world`'s `scale.max(1)`) — the silent mapping is the
+  trade, recorded here for the owner (A-015/B-015's loud-error house law
+  is the reading's authority). Raising any cap is a
+  brief that re-derives its constant, never a value that drifts through;
+  the `--ticks` budgets of `headless`, `soak`, and `diff-check` carry no
+  validators because none of them preallocates from the count (they run
+  long, they do not abort — a different failure shape, out of finding
+  6's scope).
+
 - **A-131 (A-013, PLAN-M11 §2 "kept, not reversed").** The right-drag
   grab-scroll stays as the one camera deviation the card owns: Zero Hour's
   right-drag is a velocity "rapid scroll", while Pandemonium's is M10.2's

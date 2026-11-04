@@ -48,6 +48,20 @@ use pandemonium_sim_api::{
 /// Forces per side at `--scale 1` (so `--scale 10` = the plan §15 10x tier).
 const FORCES_PER_SCALE: usize = 100;
 
+/// The plan §15 tier ladder's top, and the CLI's `--scale` ceiling (B-022
+/// finding 6). Two facts pin the value: plan §15 defines exactly two tiers
+/// (`--scale 1` the Alpha-size row, `--scale 10` the 10x row), and the
+/// proving ground's authored forces — 1000 per side, `swarm.ron`'s
+/// 10x-sized roster — saturate at 10 (`scaled_world` truncates to
+/// `100 * scale` per side with `take`, so every value above 10 selects the
+/// whole authored list and adds no entity; only the preallocation
+/// `Vec::with_capacity(2 * per_side + …)` kept growing — the capacity
+/// overflow B-022 reported at `--scale 4294967295`). The scale ladder is
+/// a tools-authored scenario decision (this module's docs); raising the
+/// ceiling is a brief that re-sizes the proving ground's roster, never a
+/// value that drifts through.
+pub(crate) const MAX_SCALE: u32 = 10;
+
 /// The second command wave's tick (5 s of game time at 30 t/s): workers
 /// re-gather the nearest live node, riflemen re-target the enemy base.
 pub(crate) const SECOND_WAVE_TICK: Tick = 150;

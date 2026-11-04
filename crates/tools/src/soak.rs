@@ -88,9 +88,17 @@ pub struct SoakReport {
     /// How many matches ran (== SoakCli::matches, unless a fatal load
     /// error aborted early).
     pub matches: u32,
-    /// How many resolved with a winner (player 0 or player 1).
+    /// The driven start players, in the map's start order (B-022 finding
+    /// 5): index `i` of `wins` is this list's `i`-th player, and the
+    /// report's lines name these ids — a map whose starts are players 2
+    /// and 3 reports its wins under 2 and 3, not as mutual destruction.
+    /// Empty only on a hand-built report that never ran a sweep.
+    pub players: Vec<PlayerId>,
+    /// How many resolved with a winner (one of the driven start players).
     pub resolved: u32,
-    /// How many ended in mutual destruction (no winner).
+    /// How many ended in mutual destruction (no winner: `NEUTRAL`, or an
+    /// id outside the driven starts — unreachable from a real match, where
+    /// stage 10 only crowns a setup player or NEUTRAL).
     pub mutual_destruction: u32,
     /// How many ran the tick budget without resolving (A7's "stuck" signal).
     pub unresolved: u32,
@@ -101,7 +109,8 @@ pub struct SoakReport {
     /// a `panic:` prefix so the report distinguishes a runtime panic or A12
     /// violation from a load-stage anyhow error.
     pub crashes: Vec<(u64, String)>,
-    /// Per-player wins (index 0 = player 0, etc.).
+    /// Per-player wins (index `i` = the map's `i`-th start's player —
+    /// `players` above names them).
     pub wins: Vec<u32>,
     /// End tick of each resolved match (the tick MatchEnded fired).
     pub end_ticks: Vec<u32>,
@@ -183,9 +192,19 @@ impl SoakReport {
 pub fn run_soak(cli: &SoakCli) -> Result<SoakReport> {
     let bundle = ContentBundle::load_dir(&cli.content)
         .with_context(|| format!("loading content from {}", cli.content.display()))?;
-    let starts = bundle.map.starts.len();
+    // The driven slots are the map's start players, in start order (B-022
+    // finding 5): the report keys its win telemetry on these — the repo's
+    // content starts players 0 and 1 today, but a map that starts 2 and 3
+    // reports its decisive wins under those ids instead of filing every
+    // one of them as mutual destruction.
+    let players: Vec<PlayerId> = bundle
+        .map
+        .starts
+        .iter()
+        .map(|start| PlayerId(start.player))
+        .collect();
     let ticks = cli.ticks;
-    Ok(sweep_matches(cli, starts, |seed| {
+    Ok(sweep_matches(cli, &players, |seed| {
         run_ai_match(&bundle, seed, ticks, Slot::Ai, Slot::Ai)
     }))
 }
@@ -193,14 +212,16 @@ pub fn run_soak(cli: &SoakCli) -> Result<SoakReport> {
 /// The sweep loop behind [`run_soak`], over an injectable per-seed match
 /// driver (the seam the crash-isolation tests use): every driver call is
 /// panic-isolated, a panic or error is recorded with its seed, and the
-/// loop continues to the next match.
-fn sweep_matches<F>(cli: &SoakCli, starts: usize, driver: F) -> SoakReport
+/// loop continues to the next match. `players` are the driven start
+/// players — the report's win columns and labels key on them.
+fn sweep_matches<F>(cli: &SoakCli, players: &[PlayerId], driver: F) -> SoakReport
 where
     F: Fn(u64) -> Result<AiMatch>,
 {
     let mut report = SoakReport {
         matches: cli.matches,
-        wins: vec![0; starts],
+        players: players.to_vec(),
+        wins: vec![0; players.len()],
         ..SoakReport::default()
     };
     let start = Instant::now();
@@ -220,13 +241,13 @@ where
                         .unwrap_or(0),
                 );
                 report.total_ticks = report.total_ticks.saturating_add(end_tick);
-                record_outcome(&mut report, &match_result.summary, end_tick);
+                record_outcome(&mut report, &match_result.summary, end_tick, players);
                 if cli.verbose {
                     println!(
                         "  match {:>4} (seed {:>4}): {} (tick {}, {} commands)",
                         index,
                         seed,
-                        outcome_label(&match_result.summary),
+                        outcome_label(&match_result.summary, players),
                         end_tick,
                         match_result.summary.commands
                     );
@@ -280,36 +301,49 @@ fn panic_reason(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Records one match's outcome into the report.
-fn record_outcome(report: &mut SoakReport, summary: &MatchSummary, end_tick: u32) {
+/// Records one match's outcome into the report. The winner is matched
+/// against the driven start players (B-022 finding 5): a decisive win
+/// for ANY start player — 0/1 on the repo's content, 2/3 on a map that
+/// starts them — lands in that player's wins column. `NEUTRAL` (mutual
+/// destruction) and any id outside the starts (not reachable from a real
+/// match: stage 10 crowns a setup player or NEUTRAL, never a third id)
+/// keep the no-winner arm.
+fn record_outcome(
+    report: &mut SoakReport,
+    summary: &MatchSummary,
+    end_tick: u32,
+    players: &[PlayerId],
+) {
     match summary.winner {
-        Some(PlayerId(0)) => {
-            report.resolved += 1;
-            report.wins[0] += 1;
-            report.end_ticks.push(end_tick);
-        }
-        Some(PlayerId(1)) => {
-            report.resolved += 1;
-            report.wins[1] += 1;
-            report.end_ticks.push(end_tick);
-        }
-        Some(_) => {
-            report.mutual_destruction += 1;
-            report.end_ticks.push(end_tick);
-        }
+        Some(winner) => match players.iter().position(|player| *player == winner) {
+            Some(index) => {
+                report.resolved += 1;
+                report.wins[index] += 1;
+                report.end_ticks.push(end_tick);
+            }
+            None => {
+                report.mutual_destruction += 1;
+                report.end_ticks.push(end_tick);
+            }
+        },
         None => {
             report.unresolved += 1;
         }
     }
 }
 
-/// The one-line label for a match's outcome (verbose mode).
-fn outcome_label(summary: &MatchSummary) -> &'static str {
+/// The one-line label for a match's outcome (verbose mode), naming the
+/// winner's real player id.
+fn outcome_label(summary: &MatchSummary, players: &[PlayerId]) -> String {
     match summary.winner {
-        Some(PlayerId(0)) => "player 0 wins",
-        Some(PlayerId(1)) => "player 1 wins",
-        Some(_) => "mutual destruction",
-        None => "unresolved",
+        Some(winner) => {
+            if players.contains(&winner) {
+                format!("player {} wins", winner.0)
+            } else {
+                "mutual destruction".to_string()
+            }
+        }
+        None => "unresolved".to_string(),
     }
 }
 
@@ -337,12 +371,26 @@ fn crash_lines(report: &SoakReport) -> Vec<String> {
 pub fn print_report(report: &SoakReport) {
     println!("pandemonium soak — sequential AI-vs-AI run");
     println!("  matches:        {}", report.matches);
-    println!(
-        "  resolved:       {} (player 0: {}, player 1: {})",
-        report.resolved,
-        report.wins.first().copied().unwrap_or(0),
-        report.wins.get(1).copied().unwrap_or(0),
-    );
+    if report.players.is_empty() {
+        // A hand-built report that never ran a sweep: the plain count,
+        // with no per-player breakdown to invent.
+        println!("  resolved:       {}", report.resolved);
+    } else {
+        let per_player = report
+            .players
+            .iter()
+            .enumerate()
+            .map(|(index, player)| {
+                format!(
+                    "player {}: {}",
+                    player.0,
+                    report.wins.get(index).copied().unwrap_or(0)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  resolved:       {} ({})", report.resolved, per_player);
+    }
     println!("  mutual destruct:{}", report.mutual_destruction);
     println!(
         "  unresolved:     {} (ran the tick budget; A7 stuck signal)",
@@ -392,15 +440,17 @@ mod tests {
 
     #[test]
     fn record_outcome_counts_wins_losses_and_unresolved() {
+        let players = [PlayerId(0), PlayerId(1)];
         let mut report = SoakReport {
             matches: 4,
+            players: players.to_vec(),
             wins: vec![0, 0],
             ..SoakReport::default()
         };
-        record_outcome(&mut report, &summary(Some(PlayerId(0))), 5000);
-        record_outcome(&mut report, &summary(Some(PlayerId(1))), 7000);
-        record_outcome(&mut report, &summary(Some(PlayerId(99))), 9000);
-        record_outcome(&mut report, &summary(None), 18_000);
+        record_outcome(&mut report, &summary(Some(PlayerId(0))), 5000, &players);
+        record_outcome(&mut report, &summary(Some(PlayerId(1))), 7000, &players);
+        record_outcome(&mut report, &summary(Some(PlayerId(99))), 9000, &players);
+        record_outcome(&mut report, &summary(None), 18_000, &players);
         assert_eq!(report.resolved, 2);
         assert_eq!(report.wins, vec![1, 1]);
         assert_eq!(report.mutual_destruction, 1);
@@ -409,6 +459,69 @@ mod tests {
         assert_eq!(report.end_ticks, vec![5000, 7000, 9000]);
         assert_eq!(report.max_end_tick(), 9000);
         assert!((report.avg_end_tick() - 7000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn non_zero_one_start_players_report_decisive_wins_as_wins() {
+        // B-022 finding 5's regression: the counters and the label
+        // hardcoded slots 0/1, so a map whose starts are players 2 and 3
+        // filed every decisive win as "mutual destruction" (the Some(_)
+        // fallback). Keyed on the map's start players, player 2's win
+        // lands in wins[0], player 3's in wins[1], and the label names
+        // the real id — through both record_outcome and the sweep seam.
+        let players = [PlayerId(2), PlayerId(3)];
+        let mut report = SoakReport {
+            matches: 2,
+            players: players.to_vec(),
+            wins: vec![0; players.len()],
+            ..SoakReport::default()
+        };
+        record_outcome(&mut report, &summary(Some(PlayerId(2))), 5000, &players);
+        record_outcome(&mut report, &summary(Some(PlayerId(3))), 7000, &players);
+        assert_eq!(report.resolved, 2, "both decisive wins resolved");
+        assert_eq!(report.wins, vec![1, 1]);
+        assert_eq!(
+            report.mutual_destruction, 0,
+            "a decisive win for a start player is not mutual destruction"
+        );
+        assert_eq!(report.end_ticks, vec![5000, 7000]);
+        assert_eq!(
+            outcome_label(&summary(Some(PlayerId(2))), &players),
+            "player 2 wins"
+        );
+        assert_eq!(
+            outcome_label(&summary(Some(PlayerId(3))), &players),
+            "player 3 wins"
+        );
+        // NEUTRAL keeps its arm under any start players.
+        record_outcome(
+            &mut report,
+            &summary(Some(PlayerId::NEUTRAL)),
+            9000,
+            &players,
+        );
+        assert_eq!(report.mutual_destruction, 1);
+        assert_eq!(
+            outcome_label(&summary(Some(PlayerId::NEUTRAL)), &players),
+            "mutual destruction"
+        );
+        // The sweep seam end-to-end: the report carries the players, and
+        // the win columns key on them (seeds 100/101 alternate winners).
+        let sweep = sweep_matches(&sweep_cli(2), &players, |seed| {
+            Ok(canned_match(
+                [PlayerId(2), PlayerId(3)],
+                if seed % 2 == 0 {
+                    PlayerId(2)
+                } else {
+                    PlayerId(3)
+                },
+                1234,
+            ))
+        });
+        assert_eq!(sweep.players, players.to_vec());
+        assert_eq!(sweep.resolved, 2);
+        assert_eq!(sweep.wins, vec![1, 1]);
+        assert_eq!(sweep.mutual_destruction, 0);
     }
 
     #[test]
@@ -474,13 +587,24 @@ mod tests {
 
     #[test]
     fn outcome_label_covers_all_branches() {
-        assert_eq!(outcome_label(&summary(Some(PlayerId(0)))), "player 0 wins");
-        assert_eq!(outcome_label(&summary(Some(PlayerId(1)))), "player 1 wins");
+        let players = [PlayerId(0), PlayerId(1)];
         assert_eq!(
-            outcome_label(&summary(Some(PlayerId(99)))),
+            outcome_label(&summary(Some(PlayerId(0))), &players),
+            "player 0 wins"
+        );
+        assert_eq!(
+            outcome_label(&summary(Some(PlayerId(1))), &players),
+            "player 1 wins"
+        );
+        assert_eq!(
+            outcome_label(&summary(Some(PlayerId(99))), &players),
             "mutual destruction"
         );
-        assert_eq!(outcome_label(&summary(None)), "unresolved");
+        assert_eq!(
+            outcome_label(&summary(Some(PlayerId::NEUTRAL)), &players),
+            "mutual destruction"
+        );
+        assert_eq!(outcome_label(&summary(None), &players), "unresolved");
     }
 
     // --- Panic isolation (the A7 crash telemetry) --------------------------
@@ -494,7 +618,7 @@ mod tests {
     // debugging evidence; the reason string is the report's.
 
     /// A minimal well-formed match result for the sweep seam's tests.
-    fn canned_match(winner: PlayerId, ended_tick: u32) -> AiMatch {
+    fn canned_match(players: [PlayerId; 2], winner: PlayerId, ended_tick: u32) -> AiMatch {
         AiMatch {
             replay: ReplayFile {
                 format_version: FORMAT_VERSION,
@@ -502,16 +626,13 @@ mod tests {
                 map_id: 0,
                 mission_id: None,
                 seed: 0,
-                player_setup: vec![
-                    PlayerSetup {
-                        player: PlayerId(0),
+                player_setup: players
+                    .iter()
+                    .map(|player| PlayerSetup {
+                        player: *player,
                         controller: ControllerKind::Ai,
-                    },
-                    PlayerSetup {
-                        player: PlayerId(1),
-                        controller: ControllerKind::Ai,
-                    },
-                ],
+                    })
+                    .collect(),
                 commands: vec![],
                 checkpoints: vec![Checkpoint { tick: 0, hash: 0 }],
                 final_hash: 0,
@@ -592,11 +713,11 @@ mod tests {
         // propagated out of the sweep and aborted the run (the report and
         // both surviving matches' telemetry were lost). Isolated, it is one
         // crashed match attributed to its seed, and the sweep finishes.
-        let report = sweep_matches(&sweep_cli(3), 2, |seed| {
+        let report = sweep_matches(&sweep_cli(3), &[PlayerId(0), PlayerId(1)], |seed| {
             if seed == 101 {
                 panic!("the invariant broke in match 1");
             }
-            Ok(canned_match(PlayerId(0), 4321))
+            Ok(canned_match([PlayerId(0), PlayerId(1)], PlayerId(0), 4321))
         });
         assert_eq!(report.matches, 3);
         assert_eq!(report.crashed, 1, "the panic is counted: {report:?}");
@@ -615,11 +736,11 @@ mod tests {
     fn an_erroring_match_is_counted_with_its_chain() {
         // The pre-isolation Err arm (load-stage anyhow failures) keeps its
         // exact semantics: counted, attributed, sweep continues.
-        let report = sweep_matches(&sweep_cli(2), 2, |seed| {
+        let report = sweep_matches(&sweep_cli(2), &[PlayerId(0), PlayerId(1)], |seed| {
             if seed == 100 {
                 anyhow::bail!("the host refused to advance");
             }
-            Ok(canned_match(PlayerId(1), 999))
+            Ok(canned_match([PlayerId(0), PlayerId(1)], PlayerId(1), 999))
         });
         assert_eq!(report.crashed, 1);
         assert_eq!(

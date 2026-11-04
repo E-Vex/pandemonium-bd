@@ -16,7 +16,7 @@
 //! (objectives are derived, unhashed state), and structurally sound the day
 //! Phase 2 restrictions make the mission observable in state.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use pandemonium_content::ContentTree;
@@ -165,6 +165,15 @@ pub fn verify_replay(
 /// Resolves what a replay verifies against (AUD-002): the world and the
 /// loaded content's mission set.
 ///
+/// The content directory is resolved LAZILY, through `resolve_content`
+/// (B-022 finding 7): a **mission-less demo-world record** — the identity
+/// pair [`is_demo_record`] checks — takes the in-code demo world and an
+/// empty mission set without consulting the resolver at all, so a
+/// stripped install (the binary and a demo replay, no `content/`
+/// anywhere in the caller's search) verifies a demo record instead of
+/// failing the search before decoding. Every other record resolves its
+/// content directory first and continues exactly as before:
+///
 /// A mission-less record keeps the identity-based
 /// [`resolve_replay_world`](crate::ai_match::resolve_replay_world)
 /// resolution and an empty mission set — the historical path, unchanged.
@@ -179,14 +188,18 @@ pub fn verify_replay(
 /// resolution, so the membership check inside [`verify_replay`] is what
 /// refuses it — before a single tick is spent.
 pub fn resolve_replay_verification(
-    content_path: &Path,
     replay: &ReplayFile,
+    resolve_content: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<(TrivialWorld, Vec<LoadedMission>)> {
+    if replay.mission_id.is_none() && crate::ai_match::is_demo_record(replay) {
+        return Ok((crate::demo::demo_world(), Vec::new()));
+    }
+    let content_path = resolve_content()?;
     if replay.mission_id.is_none() {
-        let world = crate::ai_match::resolve_replay_world(content_path, replay)?;
+        let world = crate::ai_match::resolve_replay_world(&content_path, replay)?;
         return Ok((world, Vec::new()));
     }
-    let tree = ContentTree::load_dir(content_path)
+    let tree = ContentTree::load_dir(&content_path)
         .with_context(|| format!("loading content at {}", content_path.display()))?;
     let mut missions = Vec::with_capacity(tree.missions.len());
     for def in &tree.missions {
@@ -216,7 +229,7 @@ pub fn resolve_replay_verification(
             .bundle_for_mission(&def.id)
             .with_context(|| format!("bundling mission '{}' map '{}'", def.id, def.map))?
             .world(),
-        None => crate::ai_match::resolve_replay_world(content_path, replay)?,
+        None => crate::ai_match::resolve_replay_world(&content_path, replay)?,
     };
     Ok((world, missions))
 }
@@ -436,14 +449,18 @@ mod tests {
         };
 
         // Mission-less: the identity-based resolution, no missions.
+        let content = repo_content();
         let (plain_world, plain_missions) =
-            resolve_replay_verification(&content, &record_for(None)).expect("resolves");
+            resolve_replay_verification(&record_for(None), || Ok(content.clone()))
+                .expect("resolves");
         assert!(plain_missions.is_empty());
         assert_eq!(plain_world.content_hash(), world.content_hash());
 
         // Mission-bearing: the named mission's map bundle + the loaded set.
+        let content = repo_content();
         let (mission_world, missions) =
-            resolve_replay_verification(&content, &record_for(Some(mission_id))).expect("resolves");
+            resolve_replay_verification(&record_for(Some(mission_id)), || Ok(content.clone()))
+                .expect("resolves");
         assert_eq!(missions.len(), 1, "the tree loads exactly one mission");
         assert_eq!(missions[0].id, mission_id);
         // The mission player is the mission's map's first start (player 0
@@ -457,11 +474,100 @@ mod tests {
 
         // An id the loaded set excludes: the mission-less world resolution
         // (verify_replay's third comparison is what refuses the record).
+        let content = repo_content();
         let (foreign_world, foreign_missions) =
-            resolve_replay_verification(&content, &record_for(Some(0x004d_4953_0bad_c0de)))
-                .expect("resolves");
+            resolve_replay_verification(&record_for(Some(0x004d_4953_0bad_c0de)), || {
+                Ok(content.clone())
+            })
+            .expect("resolves");
         assert!(!foreign_missions.is_empty());
         assert_eq!(foreign_world.content_hash(), world.content_hash());
+    }
+
+    #[test]
+    fn a_demo_record_verifies_with_no_content_directory_at_all() {
+        // B-022 finding 7: the stripped-install shape — a demo record and
+        // no content directory anywhere. The resolver closure is the
+        // search that would fail (main's "content directory not found");
+        // a demo record must verify without ever consulting it, and the
+        // historical path through the closure (the search succeeds)
+        // stays green beside it.
+        let replay = record_replay(7, 60);
+        let (world, missions) = resolve_replay_verification(&replay, || {
+            Err(anyhow::anyhow!(
+                "content directory not found. Searched:\n  /nowhere/content"
+            ))
+        })
+        .expect("a demo record needs no content directory");
+        assert!(missions.is_empty());
+        assert_eq!(world.content_hash(), replay.content_hash);
+        assert_eq!(world.map_id, replay.map_id);
+        // The same record through a succeeding search: identical answer
+        // (the demo path never depended on the directory).
+        let content = repo_content();
+        let (again, missions) =
+            resolve_replay_verification(&replay, || Ok(content.clone())).expect("resolves");
+        assert!(missions.is_empty());
+        assert_eq!(again.content_hash(), replay.content_hash);
+    }
+
+    #[test]
+    fn a_content_record_still_demands_its_content_directory() {
+        // The deferral's complementary law: the demo path is exactly the
+        // deferral — a content-world record (and a mission-bearing one)
+        // still resolves its content directory first, and a failed search
+        // fails the verification with the search's own error.
+        let tree = ContentTree::load_dir(&repo_content()).expect("the repo content loads");
+        let bundle = tree.bundle("crossroads_64").expect("the map bundles");
+        let world = bundle.world();
+        let setup = MatchSetup {
+            seed: 3,
+            players: vec![
+                PlayerSetup {
+                    player: PlayerId(0),
+                    controller: ControllerKind::Human,
+                },
+                PlayerSetup {
+                    player: PlayerId(1),
+                    controller: ControllerKind::Ai,
+                },
+            ],
+        };
+        let run = run_command_log(&world, &setup, &[], 30);
+        let checkpoints: Vec<Checkpoint> = run
+            .checkpoints
+            .iter()
+            .map(|&(tick, hash)| Checkpoint { tick, hash })
+            .collect();
+        let replay = ReplayFile {
+            format_version: FORMAT_VERSION,
+            content_hash: world.content_hash(),
+            map_id: world.map_id,
+            mission_id: None,
+            seed: setup.seed,
+            player_setup: setup.players.clone(),
+            commands: Vec::new(),
+            checkpoints,
+            final_hash: run.final_hash,
+        };
+        // Through the repo's content: resolves (the historical path).
+        let content = repo_content();
+        let (resolved, missions) = resolve_replay_verification(&replay, || Ok(content.clone()))
+            .expect("a content record resolves against its content");
+        assert!(missions.is_empty());
+        assert_eq!(resolved.content_hash(), replay.content_hash);
+        // With no directory to find: the search's error surfaces — the
+        // demo identity check did not swallow the content record too.
+        let err = resolve_replay_verification(&replay, || {
+            Err(anyhow::anyhow!(
+                "content directory not found. Searched:\n  /nowhere/content"
+            ))
+        })
+        .expect_err("a content record without content is an error");
+        assert!(
+            err.to_string().contains("content directory not found"),
+            "got: {err:#}"
+        );
     }
 
     #[test]

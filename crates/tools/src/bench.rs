@@ -27,13 +27,29 @@ use pandemonium_content::ContentBundle;
 use pandemonium_engine::{alpha_controller, MatchHost};
 use pandemonium_sim_api::{ControllerKind, MatchSetup, PlayerId, PlayerSetup};
 
+/// The bench tick-budget ceiling (B-022 finding 6): plan §13 A7 calls a
+/// match "stuck" past 20 minutes of game time — 36 000 ticks at 30 Hz,
+/// the soak's own default budget — so a bench past this line measures a
+/// match the project's own acceptance vocabulary calls stuck, and before
+/// the validator existed the raw count reached `Vec::with_capacity` and
+/// died on a capacity-overflow panic instead of a usage error
+/// (`--ticks 4294967295`). The nightly's throughput reference (10 000)
+/// and every documented budget sit far inside the edge.
+const MAX_TICKS: u32 = 36_000;
+
 /// The bench subcommand's CLI shape.
 #[derive(Args, Clone, Debug)]
 pub struct BenchCli {
     /// How many ticks to sample. 1000 gives a stable p99 without taking
     /// minutes; 10_000 is the headless-throughput reference (plan §15's
-    /// "1000 ticks/s" target).
-    #[arg(long, default_value_t = 1_000)]
+    /// "1000 ticks/s" target). Range 1..=36000: A7's 20-minute stuck
+    /// bound (see MAX_TICKS) — a longer bench is a stuck match by the
+    /// project's own definition.
+    #[arg(
+        long,
+        default_value_t = 1_000,
+        value_parser = clap::value_parser!(u32).range(1..=MAX_TICKS as i64)
+    )]
     pub ticks: u32,
     /// The content directory to load.
     #[arg(long, default_value = "content")]
@@ -54,9 +70,14 @@ pub struct BenchCli {
     /// `content_scale/` (a sibling of `--content`), forces truncated to
     /// `100 * N` per side. `--scale 1` is the Alpha-size tier (~220
     /// entities), `--scale 10` the 10x tier (~2020 entities, plan §15's
-    /// 10x row). Prints per-tick aggregates, the eleven-stage profile,
-    /// the memory row, and the real-map pathfinding row.
-    #[arg(long)]
+    /// 10x row and the ladder's top — the proving ground's authored
+    /// forces saturate there; see scale::MAX_SCALE). Prints per-tick
+    /// aggregates, the eleven-stage profile, the memory row, and the
+    /// real-map pathfinding row.
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(u32).range(1..=crate::scale::MAX_SCALE as i64)
+    )]
     pub scale: Option<u32>,
 }
 
@@ -257,6 +278,52 @@ pub fn print_report(report: &BenchReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn absurd_budgets_are_usage_errors_not_capacity_panics() {
+        // B-022 finding 6: `bench --ticks 4294967295` and `bench --scale
+        // 4294967295` used to reach `Vec::with_capacity` with the raw
+        // counts (bench.rs's sample buffer, scale.rs's kept-spawn buffer)
+        // and die on a capacity-overflow panic — an abort, not an error.
+        // The clap range validators turn the same invocations into usage
+        // errors before any allocation, and the edges of every documented
+        // use still parse.
+        #[derive(Parser)]
+        struct BenchOnly {
+            #[command(flatten)]
+            bench: BenchCli,
+        }
+        let parse = |args: &[&str]| BenchOnly::try_parse_from(args).map(|parsed| parsed.bench);
+        // The shapes B-022 reported: refused, with the range in the error.
+        let err = parse(&["bench", "--ticks", "4294967295"]).unwrap_err();
+        assert!(err.to_string().contains("not in 1..=36000"), "got: {err}");
+        let err = parse(&["bench", "--scale", "4294967295"]).unwrap_err();
+        assert!(err.to_string().contains("not in 1..=10"), "got: {err}");
+        // The degenerate and just-past-edge shapes: refused at both ends.
+        for refused in [
+            &["bench", "--ticks", "0"][..],
+            &["bench", "--ticks", "36001"][..],
+            &["bench", "--scale", "0"][..],
+            &["bench", "--scale", "11"][..],
+        ] {
+            assert!(parse(refused).is_err(), "{refused:?} must be a usage error");
+        }
+        // Every edge the documented vocabulary uses: accepted, defaults
+        // included (the default must clear its own validator).
+        let cli = parse(&["bench"]).expect("the defaults parse");
+        assert_eq!(cli.ticks, 1_000);
+        assert_eq!(cli.scale, None);
+        let cli = parse(&["bench", "--ticks", "1", "--scale", "1"]).expect("the floors parse");
+        assert_eq!((cli.ticks, cli.scale), (1, Some(1)));
+        let cli =
+            parse(&["bench", "--ticks", "36000", "--scale", "10"]).expect("the ceilings parse");
+        assert_eq!((cli.ticks, cli.scale), (36_000, Some(10)));
+        // The nightly's own invocation shape stays green.
+        let cli =
+            parse(&["bench", "--ticks", "10000", "--content", "content"]).expect("nightly parses");
+        assert_eq!(cli.ticks, 10_000);
+    }
 
     #[test]
     fn aggregates_handle_a_constant_load() {
