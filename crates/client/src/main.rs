@@ -27,6 +27,8 @@ mod report;
 mod screens;
 mod silhouette;
 mod sound;
+#[cfg(test)]
+mod testutil;
 mod text;
 mod ui;
 
