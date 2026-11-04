@@ -461,12 +461,23 @@ mod tests {
         let (mission_world, missions) =
             resolve_replay_verification(&record_for(Some(mission_id)), || Ok(content.clone()))
                 .expect("resolves");
-        assert_eq!(missions.len(), 1, "the tree loads exactly one mission");
-        assert_eq!(missions[0].id, mission_id);
+        // The resolver loads the tree's whole mission set (the named one
+        // resolves through it), so the count tracks the tree — one mission
+        // before B-025, four since (the pilot campaign's two chapters, the
+        // challenge, and the Phase 1 mission).
+        assert_eq!(
+            missions.len(),
+            tree.missions.len(),
+            "the loaded set is the tree's whole mission set"
+        );
+        let named = missions
+            .iter()
+            .find(|mission| mission.id == mission_id)
+            .expect("the named mission's record is in the loaded set");
         // The mission player is the mission's map's first start (player 0
         // on crossroads_64 — the client's begin_mission law).
-        assert_eq!(missions[0].objectives.player, PlayerId(0));
-        assert_eq!(missions[0].objectives.objectives.len(), 2);
+        assert_eq!(named.objectives.player, PlayerId(0));
+        assert_eq!(named.objectives.objectives.len(), 2);
         // The world is the mission's own map's bundle (identical bytes on
         // this one-map tree; the law is what a multi-map tree exercises).
         assert_eq!(mission_world.content_hash(), world.content_hash());
