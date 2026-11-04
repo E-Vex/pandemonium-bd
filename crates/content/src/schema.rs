@@ -686,3 +686,46 @@ pub(crate) struct RawGatherParams {
     /// spellings are loud parse errors, never silently mapped.
     pub semantics: String,
 }
+
+/// `schema_version` supported by this build for campaign files (B-025,
+/// ADR-0201 §6/§9 Phase 3: the campaign schema is versioned and forward-only
+/// like every other kind, FD-10).
+pub(crate) const CAMPAIGN_SCHEMA_VERSION: u32 = 1;
+
+/// A campaign file (B-025, ADR-0201 §6): the chapter mission ids **in play
+/// order** plus the challenge entries. The campaign is play-order metadata
+/// over missions that exist in the same tree — it adds no simulation shape
+/// of its own, so it rides outside every hash exactly as the mission class
+/// does (ADR-0201 §7's identity law; the replay carries the mission id, not
+/// the campaign's).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawCampaign {
+    /// File schema version.
+    pub schema_version: u32,
+    /// Stable campaign id (must equal the file name stem).
+    pub id: String,
+    /// Human-facing name (ASCII only — the embedded font constraint,
+    /// ADR-0201 §5).
+    pub display_name: String,
+    /// The chapter mission ids in play order. Order is the data: this is
+    /// the one deliberately unsorted collection in the tree (play order is
+    /// what unlocks are computed from). At least one chapter.
+    pub chapters: Vec<String>,
+    /// The challenge entries (optional — a campaign may have none).
+    #[serde(default)]
+    pub challenges: Vec<RawChallenge>,
+}
+
+/// A challenge entry (B-025, ADR-0201 §6): a challenge mission surfaced
+/// beside the campaign that unlocks when the chapter mission it extends is
+/// **completed** (a skipped chapter unlocks the next chapter, never the
+/// challenges hanging off it).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawChallenge {
+    /// The challenge mission's id (a mission in the same tree).
+    pub mission: String,
+    /// The chapter mission's id whose completion unlocks the challenge.
+    pub extends: String,
+}

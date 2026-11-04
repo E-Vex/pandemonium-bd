@@ -58,6 +58,11 @@ pub struct SourceMap {
     /// Mission files (any count; zero is legal — the mission-less default,
     /// ADR-0201 §3).
     pub missions: Vec<Source>,
+    /// Campaign files (zero or one; zero is legal — the campaign-less
+    /// default, ADR-0201 §6: the campaign is a menu peer, and a tree
+    /// without one simply has no Campaign row). More than one is a loud
+    /// error at tree assembly — "the campaign" is singular by design.
+    pub campaign: Vec<Source>,
 }
 
 impl SourceMap {
@@ -67,7 +72,7 @@ impl SourceMap {
     }
 
     /// Reads a content tree from disk:
-    /// `root/{rules,entities,factions,maps,missions}/*.ron`.
+    /// `root/{rules,entities,factions,maps,missions,campaign}/*.ron`.
     ///
     /// Files are sorted by name within each category (deterministic load order),
     /// non-`.ron` files are ignored, and subdirectories are refused loudly — a
@@ -81,6 +86,7 @@ impl SourceMap {
             factions: read_category(root, "factions")?,
             maps: read_category(root, "maps")?,
             missions: read_category_optional(root, "missions")?,
+            campaign: read_category_optional(root, "campaign")?,
         })
     }
 
@@ -117,6 +123,15 @@ impl SourceMap {
     pub fn mission(mut self, name: &str, text: &str) -> Self {
         self.missions.retain(|source| source.name != name);
         self.missions.push(Source::new(name, text));
+        self
+    }
+
+    /// Adds (or replaces) a campaign file. Tree assembly refuses a second
+    /// distinct campaign file (the campaign is singular, ADR-0201 §6);
+    /// replacing by name serves the tests' derive-and-mutate pattern.
+    pub fn campaign(mut self, name: &str, text: &str) -> Self {
+        self.campaign.retain(|source| source.name != name);
+        self.campaign.push(Source::new(name, text));
         self
     }
 }
@@ -726,6 +741,117 @@ pub(crate) fn parse_mission(
         rules_overrides,
         ai_settings,
         objectives,
+    })
+}
+
+/// Parses and validates one campaign file (B-025, ADR-0201 §6): the version
+/// gate, the strict parse, the id/stem check, the ASCII display-name rule
+/// (the embedded font constraint, ADR-0201 §5), and the file-level shape
+/// gates — at least one chapter, no duplicate mission anywhere in the file,
+/// no challenge extending a non-chapter. The mission-reference resolution
+/// (every named id exists in the tree) is tree-level, needing the whole
+/// mission set — see `ContentTree::load`.
+pub(crate) fn parse_campaign(source: &Source) -> Result<defs::CampaignDef, ContentError> {
+    let file = display_path("campaign", source);
+    let found = version::read_version(&file, &source.text)?;
+    version::check_version(&file, found, schema::CAMPAIGN_SCHEMA_VERSION)?;
+    let raw: schema::RawCampaign =
+        ron::from_str(&source.text).map_err(|error| ContentError::Parse {
+            file: file.clone(),
+            detail: error.to_string(),
+        })?;
+    version::confirm_declared_version(&file, raw.schema_version, found)?;
+    if raw.id != source.stem() {
+        return Err(ContentError::IdMismatch {
+            file,
+            declared: raw.id,
+            stem: source.stem().to_string(),
+        });
+    }
+    if raw.display_name.is_empty() || !raw.display_name.is_ascii() {
+        return Err(ContentError::Parse {
+            file: file.clone(),
+            detail: format!(
+                "display_name must be non-empty ASCII (the embedded font renders \
+                 printable ASCII only — ADR-0201 §5), found '{}'",
+                raw.display_name
+            ),
+        });
+    }
+    // A campaign with no chapters has nothing to play and nothing to
+    // unlock — the Campaign row it feeds would be inert. Loud error, the
+    // never-a-silent-skip discipline (a removed-chapters file should fail
+    // validation, not ship an empty screen).
+    if raw.chapters.is_empty() {
+        return Err(ContentError::Parse {
+            file: file.clone(),
+            detail: format!(
+                "campaign '{}' lists no chapters — a campaign must carry at \
+                 least one chapter mission id in play order",
+                raw.id
+            ),
+        });
+    }
+    // A mission may appear at most once across the whole file: twice a
+    // chapter would make the play order ambiguous (which completion
+    // unlocks chapter N+1?), and a mission that is both a chapter and a
+    // challenge would surface the same mission twice on one screen.
+    let mut seen: Vec<&str> = Vec::with_capacity(raw.chapters.len());
+    for chapter in &raw.chapters {
+        if seen.contains(&chapter.as_str()) {
+            return Err(ContentError::Parse {
+                file: file.clone(),
+                detail: format!(
+                    "campaign '{}' lists mission '{}' more than once in its \
+                     chapters — the play order must be unambiguous",
+                    raw.id, chapter
+                ),
+            });
+        }
+        seen.push(chapter);
+    }
+    for challenge in &raw.challenges {
+        if seen.contains(&challenge.mission.as_str()) {
+            return Err(ContentError::Parse {
+                file: file.clone(),
+                detail: format!(
+                    "campaign '{}' lists mission '{}' both as a chapter (or an \
+                     earlier challenge) and as the challenge entry '{}' — a \
+                     mission may appear at most once per campaign",
+                    raw.id, challenge.mission, challenge.mission
+                ),
+            });
+        }
+        if !raw.chapters.contains(&challenge.extends) {
+            return Err(ContentError::Parse {
+                file: file.clone(),
+                detail: format!(
+                    "campaign '{}' challenge '{}' extends '{}' which is not one \
+                     of its chapters — a challenge hangs off a chapter's \
+                     completion (ADR-0201 §6)",
+                    raw.id, challenge.mission, challenge.extends
+                ),
+            });
+        }
+        seen.push(&challenge.mission);
+    }
+    // Challenges may not extend other challenges (the extends target must
+    // be a chapter, checked above) and may not name the same mission as
+    // each other (the seen check covers both since every challenge's
+    // mission joins `seen`).
+    Ok(defs::CampaignDef {
+        id: raw.id,
+        display_name: raw.display_name,
+        schema_version: raw.schema_version,
+        chapters: raw.chapters,
+        challenges: raw
+            .challenges
+            .into_iter()
+            .map(|challenge| defs::ChallengeEntry {
+                mission: challenge.mission,
+                extends: challenge.extends,
+            })
+            .collect(),
     })
 }
 
@@ -1997,5 +2123,172 @@ mod tests {
             parse(&solo).is_ok(),
             "a solo min_wave is the engine's check"
         );
+    }
+}
+
+/// B-025's campaign-file tests (ADR-0201 §6): the strict parse, the loud
+/// rejections, and the shape gates. The in-memory shape mirrors the mission
+/// tests above; these live here (not in `tests.rs`) so the campaign surface
+/// is tested in the file that owns its parsing.
+#[cfg(test)]
+mod campaign_tests {
+    use super::*;
+    use crate::Source;
+
+    const CAMPAIGN: &str = r#"
+(
+    schema_version: 1,
+    id: "alpha_campaign",
+    display_name: "Alpha Campaign",
+    chapters: ["crossroads_01", "crossroads_02", "crossroads_03"],
+    challenges: [
+        ( mission: "crossroads_01_challenge", extends: "crossroads_01" ),
+    ],
+)
+"#;
+
+    fn parse(text: &str) -> Result<defs::CampaignDef, ContentError> {
+        parse_campaign(&Source::new("alpha_campaign.ron", text))
+    }
+
+    #[test]
+    fn a_campaign_parses_into_its_canonical_form() {
+        let def = parse(CAMPAIGN).expect("the factory campaign parses");
+        assert_eq!(def.id, "alpha_campaign");
+        assert_eq!(def.display_name, "Alpha Campaign");
+        assert_eq!(def.schema_version, 1);
+        // Play order is authored order — deliberately unsorted.
+        assert_eq!(
+            def.chapters,
+            vec!["crossroads_01", "crossroads_02", "crossroads_03"]
+        );
+        assert_eq!(def.challenges.len(), 1);
+        assert_eq!(def.challenges[0].mission, "crossroads_01_challenge");
+        assert_eq!(def.challenges[0].extends, "crossroads_01");
+    }
+
+    #[test]
+    fn a_campaign_without_challenges_parses_empty() {
+        let def = parse(
+            r#"
+(
+    schema_version: 1,
+    id: "alpha_campaign",
+    display_name: "Alpha Campaign",
+    chapters: ["crossroads_01"],
+)
+"#,
+        )
+        .expect("a challenge-less campaign parses");
+        assert!(def.challenges.is_empty());
+    }
+
+    #[test]
+    fn a_campaign_with_no_chapters_is_rejected() {
+        let err = parse(
+            r#"
+(
+    schema_version: 1,
+    id: "alpha_campaign",
+    display_name: "Alpha Campaign",
+    chapters: [],
+)
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("lists no chapters"), "got: {err}");
+    }
+
+    #[test]
+    fn a_duplicate_chapter_is_rejected() {
+        let err = parse(&CAMPAIGN.replace(
+            "chapters: [\"crossroads_01\", \"crossroads_02\", \"crossroads_03\"]",
+            "chapters: [\"crossroads_01\", \"crossroads_01\"]",
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("more than once in its chapters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_challenge_extending_a_non_chapter_is_rejected() {
+        let err =
+            parse(&CAMPAIGN.replace("extends: \"crossroads_01\"", "extends: \"crossroads_99\""))
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("which is not one of its chapters"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_mission_that_is_both_chapter_and_challenge_is_rejected() {
+        let err = parse(&CAMPAIGN.replace(
+            "( mission: \"crossroads_01_challenge\", extends: \"crossroads_01\" )",
+            "( mission: \"crossroads_02\", extends: \"crossroads_01\" )",
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("at most once per campaign"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn two_challenges_naming_one_mission_are_rejected() {
+        let err = parse(
+            r#"
+(
+    schema_version: 1,
+    id: "alpha_campaign",
+    display_name: "Alpha Campaign",
+    chapters: ["crossroads_01"],
+    challenges: [
+        ( mission: "crossroads_01_a", extends: "crossroads_01" ),
+        ( mission: "crossroads_01_a", extends: "crossroads_01" ),
+    ],
+)
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("at most once per campaign"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn the_campaign_id_must_equal_the_file_stem() {
+        let err = parse_campaign(&Source::new("other_name.ron", CAMPAIGN)).unwrap_err();
+        assert!(
+            err.to_string().contains("declared id") || err.to_string().contains("file name"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_ascii_display_name_is_rejected() {
+        let err = parse(&CAMPAIGN.replace(
+            "display_name: \"Alpha Campaign\"",
+            "display_name: \"Kampagne\u{e4}\"",
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("non-empty ASCII"), "got: {err}");
+    }
+
+    #[test]
+    fn an_unknown_field_is_rejected_strictly() {
+        let err =
+            parse(&CAMPAIGN.replace("    chapters:", "    subtitle: \"nope\",\n    chapters:"))
+                .unwrap_err();
+        assert!(err.to_string().contains("Unexpected field"), "got: {err}");
+    }
+
+    #[test]
+    fn a_newer_schema_version_is_rejected_precisely() {
+        let err = parse(&CAMPAIGN.replace("schema_version: 1,", "schema_version: 2,")).unwrap_err();
+        assert!(err.to_string().contains("is not loadable"), "got: {err}");
     }
 }

@@ -38,6 +38,20 @@ const CONTENT_ENCODING_VERSION: u32 = 1;
 /// full-bundle hash by construction — different first block).
 const MAP_ID_DOMAIN: u32 = 0x004D_4150;
 
+/// The loaded missions' ids, comma-separated — the "loaded missions:" list
+/// the campaign reference errors name (an unknown-reference error always
+/// says what WAS loaded; the mission-error strings do the same).
+fn mission_id_list(missions: &[defs::MissionDef]) -> String {
+    if missions.is_empty() {
+        return "none".to_string();
+    }
+    missions
+        .iter()
+        .map(|mission| mission.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Domain-separation tag for mission ids (ADR-0201 §7): the `MAP_ID_DOMAIN`
 /// pattern with its own domain word, so a mission id can never collide with
 /// a map id or a full-bundle hash by construction — the domain word is hashed
@@ -61,6 +75,13 @@ pub struct ContentTree {
     /// Every mission, sorted by id (ADR-0201 §3) — empty when the tree carries
     /// no missions (the mission-less default).
     pub missions: Vec<defs::MissionDef>,
+    /// The campaign (B-025, ADR-0201 §6) — `None` when the tree carries no
+    /// campaign file (the campaign-less default: the client shows no
+    /// Campaign row, every other surface unchanged). Exactly one campaign
+    /// file is the supported shape; two are a loud error at assembly. The
+    /// campaign never enters any hash (ADR-0201 §7): it is play-order
+    /// metadata over missions that exist here.
+    pub campaign: Option<defs::CampaignDef>,
 }
 
 impl ContentTree {
@@ -527,18 +548,96 @@ impl ContentTree {
             }
         }
 
+        // Campaign: zero or one (zero is legal — the campaign-less default,
+        // ADR-0201 §6's "the campaign is a menu peer, never a gate": a tree
+        // without one simply has no Campaign row). Two distinct files are a
+        // loud error — "the campaign" is singular by design, and silently
+        // picking one would make the load order identity-bearing. The
+        // chapters keep authored order (play order is the data); the
+        // mission references resolve against the mission set assembled
+        // above (the closed reference set, the missions' own law).
+        let campaign = match sources.campaign.len() {
+            0 => None,
+            1 => {
+                let campaign = loader::parse_campaign(&sources.campaign[0])?;
+                for chapter in &campaign.chapters {
+                    if !missions.iter().any(|mission| mission.id == *chapter) {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "campaign '{}' chapter references unknown mission '{}' \
+                                 (loaded missions: {})",
+                                campaign.id,
+                                chapter,
+                                mission_id_list(&missions),
+                            ),
+                        });
+                    }
+                }
+                for challenge in &campaign.challenges {
+                    if !missions
+                        .iter()
+                        .any(|mission| mission.id == challenge.mission)
+                    {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "campaign '{}' challenge references unknown mission '{}' \
+                                 (loaded missions: {})",
+                                campaign.id,
+                                challenge.mission,
+                                mission_id_list(&missions),
+                            ),
+                        });
+                    }
+                    // The extends side is chapter-membership (a file-level
+                    // gate in parse_campaign); the tree level re-checks the
+                    // reference against the resolved chapter list so the
+                    // error names the loaded campaign, not the raw file.
+                    if !campaign.chapters.contains(&challenge.extends) {
+                        return Err(ContentError::Bundle {
+                            detail: format!(
+                                "campaign '{}' challenge '{}' extends '{}' which is not \
+                                 one of its chapters (ADR-0201 §6: a challenge unlocks \
+                                 on a chapter's completion)",
+                                campaign.id, challenge.mission, challenge.extends,
+                            ),
+                        });
+                    }
+                }
+                Some(campaign)
+            }
+            count => {
+                return Err(ContentError::Bundle {
+                    detail: format!(
+                        "expected at most one campaign file, found {count} — the campaign \
+                         is singular (ADR-0201 §6); merge the files or drop the extras",
+                    ),
+                });
+            }
+        };
+
         Ok(Self {
             rules,
             entities,
             factions,
             maps,
             missions,
+            campaign,
         })
     }
 
     /// Loads and validates a content directory.
     pub fn load_dir(root: &Path) -> Result<Self, ContentError> {
         Self::load(&SourceMap::from_dir(root)?)
+    }
+
+    /// The mission whose id is `id`, with its index into `missions` (B-025:
+    /// the campaign screen resolves chapter/challenge ids to the tree
+    /// indexes the StartMission effect carries).
+    pub fn mission_by_id(&self, id: &str) -> Option<(usize, &defs::MissionDef)> {
+        self.missions
+            .iter()
+            .enumerate()
+            .find(|(_, mission)| mission.id == id)
     }
 
     /// Looks up an entity by id.
@@ -3412,5 +3511,147 @@ mod tests {
                 first_attack_delay: Some(1800),
             }
         );
+    }
+
+    // ------------------------------------------------------------------
+    // B-025's campaign tree-assembly tests (ADR-0201 §6): the singular-file
+    // law, the closed reference set over missions, and the identity
+    // property — the campaign adds no bytes to any encoder, so the content
+    // hash and map id cannot move (the mission category's own
+    // golden-preservation proof, one level up).
+    // ------------------------------------------------------------------
+
+    const CAMPAIGN: &str = r#"
+    (
+    schema_version: 1,
+    id: "alpha_campaign",
+    display_name: "Alpha Campaign",
+    chapters: ["testing_02", "testing_01"],
+    challenges: [
+        ( mission: "testing_challenge", extends: "testing_01" ),
+    ],
+    )
+    "#;
+
+    #[test]
+    fn a_campaign_loads_with_its_authored_play_order() {
+        let tree = ContentTree::load(
+            &factory()
+                .mission("testing_01.ron", MISSION)
+                .mission(
+                    "testing_02.ron",
+                    &MISSION.replace("testing_01", "testing_02"),
+                )
+                .mission(
+                    "testing_challenge.ron",
+                    &MISSION.replace("testing_01", "testing_challenge"),
+                )
+                .campaign("alpha_campaign.ron", CAMPAIGN),
+        )
+        .expect("the factory with a campaign loads");
+        let campaign = tree.campaign.as_ref().expect("the campaign is present");
+        // Authored order, NOT sorted-by-id order — the play order is the
+        // data the client's unlock rule reads (ADR-0201 §6).
+        assert_eq!(campaign.chapters, vec!["testing_02", "testing_01"]);
+        assert_eq!(campaign.challenges.len(), 1);
+        assert_eq!(campaign.challenges[0].extends, "testing_01");
+        // The id -> (index, def) seam the campaign screen resolves through.
+        let (index, mission) = tree
+            .mission_by_id("testing_challenge")
+            .expect("the challenge mission resolves");
+        assert_eq!(mission.id, "testing_challenge");
+        assert_eq!(tree.missions[index].id, "testing_challenge");
+    }
+
+    #[test]
+    fn a_tree_without_a_campaign_carries_none() {
+        let tree = ContentTree::load(&factory()).expect("the factory loads");
+        assert!(tree.campaign.is_none(), "no campaign file, no campaign");
+    }
+
+    #[test]
+    fn a_campaign_chapter_referencing_an_unknown_mission_is_rejected() {
+        let err = ContentTree::load(
+            &factory()
+                .mission("testing_01.ron", MISSION)
+                .campaign("alpha_campaign.ron", CAMPAIGN),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown mission 'testing_02'")
+                && err.to_string().contains("loaded missions: testing_01"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_challenge_referencing_an_unknown_mission_is_rejected() {
+        let partial = ContentTree::load(
+            &factory()
+                .mission("testing_01.ron", MISSION)
+                .mission(
+                    "testing_02.ron",
+                    &MISSION.replace("testing_01", "testing_02"),
+                )
+                .campaign("alpha_campaign.ron", CAMPAIGN),
+        )
+        .unwrap_err();
+        assert!(
+            partial
+                .to_string()
+                .contains("unknown mission 'testing_challenge'"),
+            "got: {partial}"
+        );
+    }
+
+    #[test]
+    fn two_campaign_files_are_rejected_as_singular() {
+        let err = ContentTree::load(
+            &factory()
+                .mission("testing_01.ron", MISSION)
+                .campaign("alpha_campaign.ron", CAMPAIGN)
+                .campaign(
+                    "beta_campaign.ron",
+                    &CAMPAIGN.replace("alpha_campaign", "beta_campaign"),
+                ),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("at most one campaign file"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn the_campaign_category_appends_nothing_to_the_identity_encoders() {
+        // The mission tests' golden-preservation proof, one level up: the
+        // same factory with and without a campaign (and with different
+        // campaigns) hashes identically — the campaign never rides the
+        // content hash or the map id (ADR-0201 §7's "not hashed, ever" row
+        // covers the play-order file by extension: it is user-facing
+        // ordering, not simulation shape).
+        let plain =
+            ContentTree::load(&factory().mission("testing_01.ron", MISSION)).expect("plain loads");
+        let bundled = plain.bundle("testing").expect("plain bundle");
+        let with_campaign =
+            ContentTree::load(&factory().mission("testing_01.ron", MISSION).campaign(
+                "alpha_campaign.ron",
+                r#"
+(
+    schema_version: 1,
+    id: "alpha_campaign",
+    display_name: "Alpha Campaign",
+    chapters: ["testing_01"],
+)
+"#,
+            ))
+            .expect("campaign loads");
+        let campaign_bundle = with_campaign.bundle("testing").expect("campaign bundle");
+        assert_eq!(
+            bundled.content_hash(),
+            campaign_bundle.content_hash(),
+            "the content hash ignores the campaign category"
+        );
+        assert_eq!(bundled.map_id(), campaign_bundle.map_id());
     }
 }
