@@ -47,7 +47,9 @@ use crate::random_seed;
 use crate::render;
 use crate::render::WgpuRenderer;
 use crate::report;
-use crate::screens::{AppState, Effect, KeyContext, MatchMode, NavKey, Screen};
+use crate::screens::{
+    AppState, CampaignEntry, CampaignState, Effect, KeyContext, MatchMode, NavKey, Screen,
+};
 use crate::silhouette;
 use crate::sound;
 use crate::ui;
@@ -70,6 +72,18 @@ pub(crate) struct App {
     /// defaults when the config file is missing or malformed — the settings
     /// screen edits this live copy and saves it on Done.
     pub(crate) settings: config::Settings,
+    /// B-026 (ADR-0201 §6): the campaign progress — per-user state recording
+    /// which campaign missions were completed or skipped, loaded at startup
+    /// beside `settings.cfg` and persisted by the victory/skip paths. Never
+    /// content: it rides outside every hash and never reaches the sim.
+    pub(crate) progress: crate::progress::CampaignProgress,
+    /// B-026: where the progress persists — the machine's config directory
+    /// (beside `settings.cfg`), or `None` when the machine has none (A-109:
+    /// persistence silently disabled, never a panic). A field, not a live
+    /// `progress::progress_path()` call, so tests can point it at a temp
+    /// file (or disable it) without touching the process env — the same
+    /// discipline `record_path` follows.
+    pub(crate) progress_path: Option<PathBuf>,
     /// The loaded client-side asset pack (presentation-only, local to this
     /// client). `None` when no pack exists or it cannot be used — the
     /// renderer falls back to placeholders. Never enters the simulation.
@@ -323,12 +337,18 @@ pub(crate) struct PlacementState {
 }
 
 impl App {
+    /// Eight startup inputs (the B-026 progress joined settings, audio and
+    /// the pack as constructor-passed user state — the same scoped allow
+    /// `sim::command` carries; grouping them into a config struct would
+    /// hide which of them the tests vary independently).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         tree: ContentTree,
         default_bundle: ContentBundle,
         seed_prefill: Option<u64>,
         record_path: Option<PathBuf>,
         settings: config::Settings,
+        progress: crate::progress::CampaignProgress,
         audio: sound::Sound,
         pack: Option<AssetPack>,
     ) -> anyhow::Result<Self> {
@@ -368,6 +388,11 @@ impl App {
             screen: AppState::at_main_menu(),
             seed_prefill,
             settings,
+            progress,
+            // The per-user progress file, beside settings.cfg (ADR-0201
+            // §6). Tests overwrite this with a temp path (or None) before
+            // driving the persisting paths — the record_path discipline.
+            progress_path: crate::progress::progress_path(),
             pack,
             bundle: default_bundle,
             host: None,
@@ -948,6 +973,42 @@ impl App {
                 mission_index,
                 seed,
             } => self.begin_mission(mission_index, seed),
+            // B-026 (ADR-0201 §6/§9 Phase 3): the Campaign row — build the
+            // campaign screen's snapshot from the content seam + the
+            // per-user progress and enter it fresh (focus 0; the machine
+            // could not set the screen itself because it never touches the
+            // content tree). Unreachable campaign-less: the row exists only
+            // when the context carries a campaign (B-025's law).
+            Effect::OpenCampaign => {
+                if let Some(state) = campaign_state(&self.tree, &self.progress) {
+                    self.screen.screen = Screen::Campaign(state);
+                    self.screen.focus = 0;
+                }
+            }
+            // B-026 (ADR-0201 §6's second skip): record the mission as
+            // skipped and persist. The campaign-screen origin has no live
+            // match (the machine already updated its snapshot); the
+            // pause-menu origin leaves one behind — the successor screen
+            // is the main menu and the host drops on the way out, exactly
+            // the DropMatch discipline.
+            Effect::SkipMission { mission_index } => {
+                let id = self
+                    .tree
+                    .missions
+                    .get(mission_index)
+                    .map(|def| def.id.clone());
+                if let Some(id) = id {
+                    if self
+                        .progress
+                        .record(&id, crate::progress::MissionRecord::Skipped)
+                    {
+                        self.persist_progress();
+                    }
+                }
+                if self.host.is_some() {
+                    self.drop_match();
+                }
+            }
             Effect::RestartMatch => self.restart_match(),
             Effect::DropMatch => self.drop_match(),
             // PLAN-M11 §2 phase 5: Resign — the vocabulary's last unsent
@@ -986,6 +1047,19 @@ impl App {
                 println!("pandemonium client — settings save failed: {error}");
             }
             None => {} // persistence disabled (no config dir) — A-109
+        }
+    }
+
+    /// Persists the campaign progress (B-026) — `save_settings`'s best-effort
+    /// discipline verbatim: the run keeps the in-memory records even when
+    /// the write fails, and a machine with no config directory never
+    /// persists (A-109). Called only when a record actually changed.
+    pub(crate) fn persist_progress(&mut self) {
+        let Some(path) = self.progress_path.clone() else {
+            return; // persistence disabled (no config dir) — A-109
+        };
+        if let Err(error) = self.progress.save_to(&path) {
+            println!("pandemonium client — campaign progress save failed: {error}");
         }
     }
 
@@ -1252,7 +1326,8 @@ impl App {
             .iter()
             .position(|button| button.contains(mx as f32, my as f32))
         {
-            self.screen.focus_index(index);
+            let ctx = self.menu_ctx();
+            self.screen.focus_index(index, &ctx);
         }
     }
 
@@ -1366,6 +1441,12 @@ impl App {
             seed_prefill: self.seed_prefill,
             map_count: self.tree.maps.len(),
             mission_count: self.tree.missions.len(),
+            // B-026: the campaign's presence (the main menu's Campaign row)
+            // and the live mission (the pause menu's Skip Mission row) —
+            // both straight from the app's own fields, so the machine's row
+            // list and the renderer's cannot disagree.
+            has_campaign: self.tree.campaign.is_some(),
+            live_mission: self.mission_index,
         }
     }
 
@@ -1407,6 +1488,10 @@ impl App {
             settings: &self.settings,
             maps: &maps,
             missions: &missions,
+            // B-026: the campaign row / skip row facts — the same app
+            // fields the machine's KeyContext reads.
+            has_campaign: self.tree.campaign.is_some(),
+            live_mission: self.mission_index.is_some(),
             end_lines: None, // no host behind a menu-only frame
             backdrop: [0.02, 0.03, 0.05, 0.94],
             info_lines,
@@ -1927,6 +2012,10 @@ impl App {
                 settings: &self.settings,
                 maps: &maps,
                 missions: &missions,
+                // B-026: the campaign row / skip row facts — the same app
+                // fields the machine's KeyContext reads.
+                has_campaign: self.tree.campaign.is_some(),
+                live_mission: self.mission_index.is_some(),
                 end_lines: headline,
                 backdrop: [0.0, 0.0, 0.0, 0.30],
                 info_lines,
@@ -2370,4 +2459,60 @@ pub(crate) fn kind_shapes(bundle: &ContentBundle) -> Vec<render::KindShape> {
             })
         })
         .collect()
+}
+
+/// Builds the campaign screen's state from the content seam and the
+/// per-user progress (B-026, ADR-0201 §6/§9 Phase 3): the chapters in
+/// authored play order, then the challenges beside them — each entry
+/// carrying the mission's tree index (what `Effect::StartMission`
+/// resolves), its display name, the challenge's chapter (as an entry
+/// index, the `extends` the unlock rule reads), and the progress record.
+/// `None` when the tree carries no campaign (the OpenCampaign effect is
+/// unreachable there — the Campaign row does not exist).
+///
+/// Pure over `(tree, progress)`: the machine's unlock rule derives every
+/// status from the records this snapshot carries, so the screen needs no
+/// refresh while it is open (progress only changes through the match
+/// paths, which sit outside the screen) and a fresh open rebuilds it.
+pub(crate) fn campaign_state(
+    tree: &ContentTree,
+    progress: &crate::progress::CampaignProgress,
+) -> Option<CampaignState> {
+    let campaign = tree.campaign.as_ref()?;
+    let mut entries = Vec::with_capacity(campaign.chapters.len() + campaign.challenges.len());
+    for chapter_id in &campaign.chapters {
+        // The loader validated every chapter id against the tree, so the
+        // resolution cannot fail on loaded content; `?` keeps this total
+        // for hand-built trees all the same.
+        let (mission_index, def) = tree.mission_by_id(chapter_id)?;
+        entries.push(CampaignEntry {
+            mission_index,
+            name: def.display_name.clone(),
+            challenge: false,
+            extends: None,
+            record: progress.record_for(&def.id),
+        });
+    }
+    for challenge in &campaign.challenges {
+        let (mission_index, def) = tree.mission_by_id(&challenge.mission)?;
+        // Chapters are the leading entries, so the chapter's position in
+        // the campaign's own list is its entry index.
+        let extends = campaign
+            .chapters
+            .iter()
+            .position(|chapter| chapter == &challenge.extends)?;
+        entries.push(CampaignEntry {
+            mission_index,
+            name: def.display_name.clone(),
+            challenge: true,
+            extends: Some(extends),
+            record: progress.record_for(&def.id),
+        });
+    }
+    Some(CampaignState {
+        campaign_name: campaign.display_name.clone(),
+        seed_text: String::new(),
+        selection: 0,
+        entries,
+    })
 }

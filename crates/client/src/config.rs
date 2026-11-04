@@ -284,19 +284,6 @@ pub fn config_path_from(
     config_dir_from(appdata, home, xdg_config_home).map(|dir| dir.join("settings.cfg"))
 }
 
-/// The config directory on this machine, from `std::env` (the thin wrapper
-/// over [`config_dir_from`]; B-026: the campaign progress file resolves
-/// beside `settings.cfg` through this one env-reading path). `None` means
-/// "run on defaults, persistence disabled" — a read or write attempt is
-/// skipped, not an error the loop ever sees.
-pub fn config_dir() -> Option<PathBuf> {
-    config_dir_from(
-        std::env::var_os("APPDATA").map(PathBuf::from),
-        std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
-    )
-}
-
 /// The config file path on this machine, from `std::env` (the thin wrapper
 /// over [`config_path_from`]). `None` means "run on defaults, persistence
 /// disabled" — a read or write attempt is skipped, not an error the loop

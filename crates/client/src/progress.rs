@@ -171,11 +171,15 @@ impl CampaignProgress {
 }
 
 /// The progress file's path on this machine (the `std::env` wrapper over
-/// [`CampaignProgress::path_from`], through the config module's own
-/// directory wrapper — one env-reading path, shared with `settings.cfg`).
+/// [`CampaignProgress::path_from`] — the settings module's `config_path`
+/// pattern, env read once in the wrapper, resolution pure and tested).
 /// `None` = persistence disabled.
 pub fn progress_path() -> Option<PathBuf> {
-    config::config_dir().map(|dir| dir.join(PROGRESS_FILE))
+    CampaignProgress::path_from(
+        std::env::var_os("APPDATA").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+    )
 }
 
 /// Loads the progress from the machine's config directory when it exists

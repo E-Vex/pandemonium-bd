@@ -962,6 +962,17 @@ pub struct MenuInput<'a> {
     /// (ADR-0201 Phase 1): the mission picker's Mission field reads the
     /// selected mission's display name from here.
     pub missions: &'a [(String, String)],
+    /// B-026: whether the loaded tree carries a campaign — the main menu's
+    /// Campaign row exists exactly when this is true (B-025's law: the
+    /// campaign-less client shows no Campaign row). The app derives it
+    /// from the same field the machine's `KeyContext.has_campaign` reads,
+    /// so the drawn row list and the machine's button list cannot
+    /// disagree.
+    pub has_campaign: bool,
+    /// B-026: whether the pause menu sits over a live mission match — the
+    /// Skip Mission row (row 6) exists exactly then (`KeyContext.live_mission`
+    /// is the machine's side of the same fact).
+    pub live_mission: bool,
     /// The end screen's headline/subline when the screen is the end screen.
     pub end_lines: Option<(&'a str, &'a str)>,
     /// The dimming backdrop's strength over a live match (menus without a
@@ -1005,13 +1016,32 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
         }
     };
     match &input.screen.screen {
-        Screen::MainMenu => vec![
-            row(0, ButtonId::NewMatch, "New Match", String::new()),
-            row(1, ButtonId::Settings, "Settings", String::new()),
+        Screen::MainMenu => {
+            // B-026 (ADR-0201 §6): the Campaign row slots in after New
+            // Match when the tree carries a campaign (B-025's law: no
+            // campaign, no row) — the rows below shift by one only in the
+            // campaign-present layout, which the repo content always is.
+            let mut rows = vec![row(0, ButtonId::NewMatch, "New Match", String::new())];
+            if input.has_campaign {
+                rows.push(row(1, ButtonId::Campaign, "Campaign", String::new()));
+            }
+            let offset = usize::from(input.has_campaign);
+            rows.push(row(
+                1 + offset,
+                ButtonId::Settings,
+                "Settings",
+                String::new(),
+            ));
             // A-009 task 1: the Controls row opens the new screen.
-            row(2, ButtonId::Controls, "Controls", String::new()),
-            row(3, ButtonId::Quit, "Quit", String::new()),
-        ],
+            rows.push(row(
+                2 + offset,
+                ButtonId::Controls,
+                "Controls",
+                String::new(),
+            ));
+            rows.push(row(3 + offset, ButtonId::Quit, "Quit", String::new()));
+            rows
+        }
         Screen::NewMatch(fields) => {
             let seed = if fields.seed_text.is_empty() {
                 "random".to_string()
@@ -1078,6 +1108,33 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
                 row(3, ButtonId::Back, "Back", String::new()),
             ]
         }
+        Screen::PauseMenu => {
+            // B-026: the Skip Mission row rides after Quit to Menu (row 6)
+            // so every existing pause-menu index — the Xvfb scripts' focus
+            // arithmetic counts from them — keeps its meaning. Shown only
+            // over a mission match (the machine's row 6 has the same
+            // guard on `KeyContext.live_mission`).
+            let mut rows = vec![
+                row(0, ButtonId::Resume, "Resume", String::new()),
+                row(1, ButtonId::Settings, "Settings", String::new()),
+                // A-009 task 1: the Controls row on the pause menu.
+                row(2, ButtonId::Controls, "Controls", String::new()),
+                row(3, ButtonId::PauseRestart, "Restart", String::new()),
+                // PLAN-M11 §2 phase 5: the Resign row (confirm-gated like
+                // Restart and Quit to Menu).
+                row(4, ButtonId::PauseResign, "Resign", String::new()),
+                row(5, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
+            ];
+            if input.live_mission {
+                rows.push(row(
+                    6,
+                    ButtonId::PauseSkipMission,
+                    "Skip Mission",
+                    String::new(),
+                ));
+            }
+            rows
+        }
         Screen::Settings { .. } => {
             let labels = [
                 "Edge scroll",
@@ -1104,17 +1161,35 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
             rows.push(row(8, ButtonId::Done, "Done (save)", String::new()));
             rows
         }
-        Screen::PauseMenu => vec![
-            row(0, ButtonId::Resume, "Resume", String::new()),
-            row(1, ButtonId::Settings, "Settings", String::new()),
-            // A-009 task 1: the Controls row on the pause menu.
-            row(2, ButtonId::Controls, "Controls", String::new()),
-            row(3, ButtonId::PauseRestart, "Restart", String::new()),
-            // PLAN-M11 §2 phase 5: the Resign row (confirm-gated like
-            // Restart and Quit to Menu).
-            row(4, ButtonId::PauseResign, "Resign", String::new()),
-            row(5, ButtonId::QuitToMenu, "Quit to Menu", String::new()),
-        ],
+        // B-026 (ADR-0201 §6/§9 Phase 3): the campaign screen — the mission
+        // field cycles the campaign's entries (the selected entry's name,
+        // its challenge marker, and its status tag), the seed mirrors the
+        // picker's, Start plays the selected mission, Skip records it as
+        // skipped, Back returns to the main menu.
+        Screen::Campaign(fields) => {
+            let seed = if fields.seed_text.is_empty() {
+                "random".to_string()
+            } else {
+                fields.seed_text.clone()
+            };
+            vec![
+                row(
+                    0,
+                    ButtonId::CampaignMission,
+                    "Mission",
+                    campaign_mission_value(fields),
+                ),
+                row(
+                    1,
+                    ButtonId::CampaignSeed,
+                    "Seed",
+                    format!("{seed} [Enter: random]"),
+                ),
+                row(2, ButtonId::CampaignStart, "Start", String::new()),
+                row(3, ButtonId::CampaignSkip, "Skip", String::new()),
+                row(4, ButtonId::Back, "Back", String::new()),
+            ]
+        }
         Screen::EndScreen => vec![
             row(0, ButtonId::Rematch, "Rematch", String::new()),
             row(1, ButtonId::ToMenu, "Main Menu", String::new()),
@@ -1144,6 +1219,29 @@ fn row(index: usize, id: crate::screens::ButtonId, label: &str, value: String) -
     }
 }
 
+/// The campaign screen's mission-field value (B-026): the selected entry's
+/// name, its challenge marker, and its status tag — with the cycling
+/// field's angle brackets when there is more than one entry to cycle (the
+/// map/mission fields' law). Pure over the snapshot, so the value format
+/// is pinned by its own test beside the machine's status laws.
+fn campaign_mission_value(fields: &crate::screens::CampaignState) -> String {
+    let count = fields.entry_count();
+    let selection = fields.selection.min(count.saturating_sub(1));
+    fields
+        .entries
+        .get(selection)
+        .map(|entry| {
+            let challenge = if entry.challenge { " (challenge)" } else { "" };
+            let tag = fields.status(selection).tag();
+            if count > 1 {
+                format!("< {}{challenge} [{tag}] >", entry.name)
+            } else {
+                format!("{}{challenge} [{tag}]", entry.name)
+            }
+        })
+        .unwrap_or_else(|| "?".to_string())
+}
+
 /// `ON`/`OFF` for a settings row's bool.
 fn on_off(on: bool) -> String {
     if on { "ON" } else { "OFF" }.to_string()
@@ -1152,6 +1250,13 @@ fn on_off(on: bool) -> String {
 /// The settings row hint (shown under the settings screen's panel): mouse
 /// and keyboard both adjust, Done saves, Esc leaves without saving.
 const SETTINGS_HINT: &str = "click / left-right: adjust    Enter: toggle or Done    Esc: no save";
+
+/// The campaign screen's hint (shown under its panel, B-026): the skip
+/// affordance's law in one line — what Start does, what Skip does (unlock
+/// the next mission — the campaign's own gate, nothing else's), and Esc's
+/// way out (ASCII — the embedded font subset).
+const CAMPAIGN_HINT: &str =
+    "left-right: choose    Start: play    Skip: unlock the next    Esc: back";
 
 /// Builds the active screen's menu: the dim backdrop, the panel, the title,
 /// and the rows (label left, value right, focus ring on the focused row).
@@ -1163,6 +1268,8 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         settings: _,
         maps: _,
         missions: _,
+        has_campaign: _,
+        live_mission: _,
         end_lines,
         backdrop,
         info_lines,
@@ -1196,6 +1303,12 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         (crate::screens::Screen::NewMatch(_), _) => ("NEW MATCH".to_string(), None),
         // A-011: the mission picker's title.
         (crate::screens::Screen::MissionPicker(_), _) => ("MISSIONS".to_string(), None),
+        // B-026: the campaign screen's title is the campaign's own display
+        // name (uppercased — the panel titles shout; the display name is
+        // validated ASCII by the content gates).
+        (crate::screens::Screen::Campaign(fields), _) => {
+            (fields.campaign_name.to_uppercase(), None)
+        }
         (crate::screens::Screen::Settings { .. }, _) => ("SETTINGS".to_string(), None),
         (crate::screens::Screen::PauseMenu, _) => ("PAUSED".to_string(), None),
         // A-009 task 1: the Controls screen's title.
@@ -1234,7 +1347,14 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         _ => ("PANDEMONIUM".to_string(), None),
     };
 
-    let hint = matches!(screen.screen, crate::screens::Screen::Settings { .. });
+    let hint = match screen.screen {
+        crate::screens::Screen::Settings { .. } => Some(SETTINGS_HINT),
+        // B-026: the campaign screen's hint — the skip affordance's law in
+        // one line (skip unlocks the next mission; the campaign itself
+        // gates nothing else).
+        crate::screens::Screen::Campaign { .. } => Some(CAMPAIGN_HINT),
+        _ => None,
+    };
     // A-009 task 4: the version footer draws on the main menu and the
     // pause menu only (per the brief). Other screens pass an empty
     // string and draw nothing.
@@ -1253,7 +1373,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         panel_h += info_lines.len() as f32 * (line_height + INFO_GAP) + ROW_GAP;
     }
     panel_h += rows.len() as f32 * (ROW_H + ROW_GAP);
-    if hint {
+    if hint.is_some() {
         panel_h += line_height + PAD; // the hint line
     }
     // A-009 task 4: the version footer adds one line + a small pad.
@@ -1374,10 +1494,10 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         cursor_y += ROW_H + ROW_GAP;
     }
 
-    if hint {
-        let hint_w = atlas.measure(SETTINGS_HINT);
+    if let Some(hint_text) = hint {
+        let hint_w = atlas.measure(hint_text);
         quads.extend(atlas.layout(
-            SETTINGS_HINT,
+            hint_text,
             panel_x + (panel_w - hint_w) * 0.5,
             cursor_y + PAD + atlas.ascent,
             [0.55, 0.6, 0.68, 0.9],
@@ -1792,6 +1912,10 @@ mod tests {
             maps: MAPS.get_or_init(|| vec![("crossroads".to_string(), "Crossroads".to_string())]),
             missions: MISSIONS
                 .get_or_init(|| vec![("crossroads_01".to_string(), "Crossroads".to_string())]),
+            // B-026: the default fixture is campaign-less (the existing
+            // pins' layout); the campaign row's own test opts in.
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1835,14 +1959,26 @@ mod tests {
                 settings: &crate::config::Settings::default(),
                 maps: &[("crossroads".to_string(), "Crossroads".to_string())],
                 missions: &[],
+                has_campaign: false,
+                live_mission: false,
                 end_lines: Some(("VICTORY", "You eliminated the enemy.")),
                 backdrop: [0.0, 0.0, 0.0, 0.5],
                 info_lines: &[],
                 version: "",
             };
             let built = build_menu(input);
-            let expected: Vec<crate::screens::ButtonId> = (0..state.button_count())
-                .map(|index| state.button_at(index).expect("every index resolves"))
+            // B-026: the machine's row list is context-dependent; the
+            // campaign-less default matches this suite's fixtures.
+            let ctx = crate::screens::KeyContext {
+                random_seed: 1234,
+                seed_prefill: None,
+                map_count: 1,
+                mission_count: 1,
+                has_campaign: false,
+                live_mission: None,
+            };
+            let expected: Vec<crate::screens::ButtonId> = (0..state.button_count(&ctx))
+                .map(|index| state.button_at(index, &ctx).expect("every index resolves"))
                 .collect();
             let got: Vec<crate::screens::ButtonId> =
                 built.buttons.iter().map(|button| button.id).collect();
@@ -1865,6 +2001,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1940,6 +2078,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1952,6 +2092,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1974,6 +2116,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1986,6 +2130,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2012,6 +2158,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2024,6 +2172,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2383,6 +2533,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: Some(("VICTORY", "Crossroads")),
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[
@@ -2398,6 +2550,8 @@ mod tests {
             settings: &crate::config::Settings::default(),
             maps: &[],
             missions: &[],
+            has_campaign: false,
+            live_mission: false,
             end_lines: Some(("VICTORY", "You eliminated the enemy.")),
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2407,5 +2561,139 @@ mod tests {
             with_objectives.quads.len() > without_objectives.quads.len(),
             "the mission end screen draws the objective rows"
         );
+    }
+    // ---- B-026: the campaign surfaces (ADR-0201 §6/§9 Phase 3) ----------
+
+    #[test]
+    fn the_main_menu_renders_the_campaign_row_only_when_present() {
+        // B-025's law on the render side: a campaign-carrying tree adds the
+        // Campaign row at index 1 (Settings/Controls/Quit shift down); the
+        // campaign-less layout is exactly the four rows it always was.
+        let menu = crate::screens::AppState::at_main_menu();
+        let with = MenuInput {
+            has_campaign: true,
+            ..menu_input(&menu)
+        };
+        let built = build_menu(with);
+        let ids: Vec<crate::screens::ButtonId> =
+            built.buttons.iter().map(|button| button.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::screens::ButtonId::NewMatch,
+                crate::screens::ButtonId::Campaign,
+                crate::screens::ButtonId::Settings,
+                crate::screens::ButtonId::Controls,
+                crate::screens::ButtonId::Quit,
+            ]
+        );
+        // Campaign-less: today's rows, unchanged.
+        let without = menu_input(&menu);
+        let built = build_menu(without);
+        let ids: Vec<crate::screens::ButtonId> =
+            built.buttons.iter().map(|button| button.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::screens::ButtonId::NewMatch,
+                crate::screens::ButtonId::Settings,
+                crate::screens::ButtonId::Controls,
+                crate::screens::ButtonId::Quit,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_campaign_screen_renders_its_rows_with_status_tags() {
+        // The mission field carries the selected entry's name, its
+        // challenge marker, and its status tag; the rows are Mission /
+        // Seed / Start / Skip / Back (the machine's order).
+        let entry = |mission_index: usize, name: &str, challenge: bool, extends: Option<usize>| {
+            crate::screens::CampaignEntry {
+                mission_index,
+                name: name.to_string(),
+                challenge,
+                extends,
+                record: None,
+            }
+        };
+        let mut fields = crate::screens::CampaignState {
+            campaign_name: "Alpha Campaign".to_string(),
+            seed_text: String::new(),
+            selection: 0,
+            entries: vec![
+                entry(0, "Crossroads", false, None),
+                entry(1, "Worker Rush", true, Some(0)),
+            ],
+        };
+        let state = crate::screens::AppState {
+            screen: crate::screens::Screen::Campaign(fields.clone()),
+            focus: 0,
+        };
+        let built = build_menu(menu_input(&state));
+        let ids: Vec<crate::screens::ButtonId> =
+            built.buttons.iter().map(|button| button.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::screens::ButtonId::CampaignMission,
+                crate::screens::ButtonId::CampaignSeed,
+                crate::screens::ButtonId::CampaignStart,
+                crate::screens::ButtonId::CampaignSkip,
+                crate::screens::ButtonId::Back,
+            ]
+        );
+        // The mission field's value is the pure helper's format — the
+        // name, the challenge marker, the status tag, the cycling
+        // brackets; a completed chapter shows its record.
+        assert_eq!(
+            campaign_mission_value(&fields),
+            "< Crossroads [AVAILABLE] >"
+        );
+        fields.selection = 1;
+        assert_eq!(
+            campaign_mission_value(&fields),
+            "< Worker Rush (challenge) [LOCKED] >"
+        );
+        fields.entries[0].record = Some(crate::progress::MissionRecord::Completed);
+        fields.selection = 0;
+        assert_eq!(
+            campaign_mission_value(&fields),
+            "< Crossroads [COMPLETED] >"
+        );
+        // A single-entry campaign drops the cycling brackets.
+        fields.entries.truncate(1);
+        assert_eq!(campaign_mission_value(&fields), "Crossroads [COMPLETED]");
+    }
+
+    #[test]
+    fn the_pause_menu_renders_the_skip_mission_row_only_over_a_mission() {
+        // Row 6 after Quit to Menu; the plain match's pause menu keeps its
+        // six rows (the Xvfb focus arithmetic counts from them).
+        let pause = crate::screens::AppState {
+            screen: crate::screens::Screen::PauseMenu,
+            focus: 0,
+        };
+        let with = MenuInput {
+            live_mission: true,
+            ..menu_input(&pause)
+        };
+        let built = build_menu(with);
+        let ids: Vec<crate::screens::ButtonId> =
+            built.buttons.iter().map(|button| button.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::screens::ButtonId::Resume,
+                crate::screens::ButtonId::Settings,
+                crate::screens::ButtonId::Controls,
+                crate::screens::ButtonId::PauseRestart,
+                crate::screens::ButtonId::PauseResign,
+                crate::screens::ButtonId::QuitToMenu,
+                crate::screens::ButtonId::PauseSkipMission,
+            ]
+        );
+        let built = build_menu(menu_input(&pause));
+        assert_eq!(built.buttons.len(), 6, "no live mission, no row");
     }
 }
