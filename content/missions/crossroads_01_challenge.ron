@@ -1,0 +1,36 @@
+// The campaign's challenge beside chapter 1 (B-025, ADR-0201 §6): the
+// same battlefield and content as "Crossroads", reframed as a pure
+// production race — grow to twelve workers while the scripted Alpha
+// harasses. Unlocks on completing "Crossroads" (the campaign file's
+// extends reference).
+//
+// The count law (AUD-003): BuildTrain counts current ownership including
+// the starting force, so the target must exceed the Legion's starting
+// four — twelve demands eight trained workers under fire. The optional
+// destroy objective is the aggressive alternative line for the end
+// screen: it never gates (the mission is won by the workforce, not the
+// kill), but a player who overruns the enemy while racing gets the
+// credit line.
+(
+    schema_version: 1,
+    id: "crossroads_01_challenge",
+    display_name: "Worker Rush",
+    map: "crossroads_64",
+    faction: "legion",
+    rules: "alpha",
+    objectives: [
+        // The race: twelve workers exist. The challenge's whole shape.
+        (
+            kind: "BuildTrain",
+            parameters: BuildTrain(( kind: "worker", count: 12 )),
+            optional: false,
+        ),
+        // Overrun the enemy command center — optional: the flourish, not
+        // the win condition.
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: Some("command_center") )),
+            optional: true,
+        ),
+    ],
+)

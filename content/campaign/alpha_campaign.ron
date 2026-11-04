@@ -1,0 +1,31 @@
+// The pilot campaign (B-025, ADR-0201 §6/§9 Phase 3): three chapters in
+// play order plus one challenge. The campaign file is play-order metadata
+// over missions that exist in the same tree — it never enters any hash
+// (ADR-0201 §7), and the client reads it to build the Campaign screen:
+// chapter N+1 unlocks when chapter N is completed or skipped; the
+// challenge unlocks on its chapter's completion.
+//
+// The id and display_name are working names — the campaign's premise and
+// tone are the owner's open decisions (ADR-0201 §10), and a rename changes
+// nothing hashed. All missions run the unchanged Legion content on
+// crossroads_64 (the one authored battlefield); escalation comes from the
+// objective sets, not from new content.
+(
+    schema_version: 1,
+    id: "alpha_campaign",
+    display_name: "Alpha Campaign",
+    chapters: [
+        // Chapter 1 — the Phase 1 vertical slice mission, as authored.
+        "crossroads_01",
+        // Chapter 2 — hold a fixed position under pressure (B-017's
+        // survive kind, the map revealed through B-015's explored fog).
+        "crossroads_02",
+        // Chapter 3 — the economy exam: fund a quota from the field.
+        "crossroads_03",
+    ],
+    challenges: [
+        // The challenge beside chapter 1: the same battlefield, a pure
+        // production race — unlock on completing "Crossroads".
+        ( mission: "crossroads_01_challenge", extends: "crossroads_01" ),
+    ],
+)
