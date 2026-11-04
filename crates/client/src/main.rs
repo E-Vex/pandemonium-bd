@@ -20,6 +20,11 @@ use pack::AssetPack;
 mod hw;
 mod input;
 use input::event::set_key;
+// B-026: the campaign progress module — consumed by the app wiring commit
+// on this same branch (App::new loads it; the victory/skip paths persist
+// it). The temporary allow mirrors SETTING_KEYS's own pre-consumer commit.
+#[allow(dead_code)]
+mod progress;
 
 mod render;
 mod report;

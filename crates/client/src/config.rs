@@ -218,20 +218,23 @@ pub fn adjust_setting(settings: Settings, row: usize, dir: i32) -> Settings {
     next
 }
 
-/// The config file's path from the platform's env values (pure — the thin
-/// wrapper [`config_path`] reads `std::env`). Resolution order:
+/// The user config directory from the platform's env values (pure — the
+/// thin wrapper [`config_dir`] reads `std::env`; B-026 extracted it from
+/// [`config_path_from`] so the campaign progress file can live *beside*
+/// `settings.cfg` on the same per-OS resolution, ADR-0201 §6's "the
+/// per-user config folder beside settings.cfg"). Resolution order:
 ///
-/// - Windows: `%APPDATA%\pandemonium\settings.cfg`
-/// - macOS: `$HOME/Library/Application Support/pandemonium/settings.cfg`
-/// - Linux/BSD: `$XDG_CONFIG_HOME/pandemonium/settings.cfg`, else
-///   `$HOME/.config/pandemonium/settings.cfg`
+/// - Windows: `%APPDATA%\pandemonium\`
+/// - macOS: `$HOME/Library/Application Support/pandemonium/`
+/// - Linux/BSD: `$XDG_CONFIG_HOME/pandemonium/`, else
+///   `$HOME/.config/pandemonium/`
 ///
 /// No HOME and no APPDATA at all (CI, containers): `None` — the caller
 /// runs on in-memory defaults with persistence silently disabled, never a
 /// panic (A-109). The signature is uniform on every platform (the unused
 /// arms are ignored per-OS) so the resolution logic itself is testable
 /// anywhere.
-pub fn config_path_from(
+pub fn config_dir_from(
     appdata: Option<PathBuf>,
     home: Option<PathBuf>,
     xdg_config_home: Option<PathBuf>,
@@ -244,7 +247,7 @@ pub fn config_path_from(
     #[cfg(target_os = "windows")]
     {
         let _ = (home, xdg_config_home);
-        appdata.map(|base| base.join("pandemonium").join("settings.cfg"))
+        appdata.map(|base| base.join("pandemonium"))
     }
     #[cfg(target_os = "macos")]
     {
@@ -253,19 +256,14 @@ pub fn config_path_from(
             base.join("Library")
                 .join("Application Support")
                 .join("pandemonium")
-                .join("settings.cfg")
         })
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = appdata;
         match xdg_config_home {
-            Some(base) => Some(base.join("pandemonium").join("settings.cfg")),
-            None => home.map(|base| {
-                base.join(".config")
-                    .join("pandemonium")
-                    .join("settings.cfg")
-            }),
+            Some(base) => Some(base.join("pandemonium")),
+            None => home.map(|base| base.join(".config").join("pandemonium")),
         }
     }
     #[cfg(not(any(unix, windows)))]
@@ -273,6 +271,30 @@ pub fn config_path_from(
         let _ = (appdata, home, xdg_config_home);
         None // unknown platform: run on defaults, persistence disabled
     }
+}
+
+/// The config file's path from the platform's env values (pure — the thin
+/// wrapper [`config_path`] reads `std::env`): the config directory with
+/// `settings.cfg` appended.
+pub fn config_path_from(
+    appdata: Option<PathBuf>,
+    home: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    config_dir_from(appdata, home, xdg_config_home).map(|dir| dir.join("settings.cfg"))
+}
+
+/// The config directory on this machine, from `std::env` (the thin wrapper
+/// over [`config_dir_from`]; B-026: the campaign progress file resolves
+/// beside `settings.cfg` through this one env-reading path). `None` means
+/// "run on defaults, persistence disabled" — a read or write attempt is
+/// skipped, not an error the loop ever sees.
+pub fn config_dir() -> Option<PathBuf> {
+    config_dir_from(
+        std::env::var_os("APPDATA").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+    )
 }
 
 /// The config file path on this machine, from `std::env` (the thin wrapper
@@ -479,6 +501,16 @@ mod tests {
         assert_eq!(config_path_from(None, None, None), None);
         // An empty XDG_CONFIG_HOME is unset for our purposes (XDG spec).
         assert_eq!(config_path_from(None, None, Some(PathBuf::new())), None);
+        // B-026: the directory seam the campaign progress file shares —
+        // the same resolution, without the settings file name (the path
+        // assertions above already pin dir + "settings.cfg" implicitly;
+        // this pins the dir itself, which progress.rs appends its own
+        // file name to).
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(
+            config_dir_from(None, Some(Path::new("/home/tester").to_path_buf()), None),
+            Some(Path::new("/home/tester/.config/pandemonium").to_path_buf())
+        );
     }
 
     #[test]
