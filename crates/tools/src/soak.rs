@@ -337,7 +337,7 @@ fn record_outcome(
 fn outcome_label(summary: &MatchSummary, players: &[PlayerId]) -> String {
     match summary.winner {
         Some(winner) => {
-            if players.iter().any(|player| *player == winner) {
+            if players.contains(&winner) {
                 format!("player {} wins", winner.0)
             } else {
                 "mutual destruction".to_string()

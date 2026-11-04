@@ -227,13 +227,26 @@ pub fn run_ai_match(
     })
 }
 
+/// Does this record replay the demo world (B-022 finding 7's pure law)?
+/// The demo carries its own identity — content hash and map id — so a
+/// record with this pair re-simulates over the in-code demo world and
+/// needs nothing from disk. [`resolve_replay_world`]'s first branch is
+/// this predicate, and `replay-verify` consults it BEFORE the
+/// content-directory search so a stripped install (the binary and a demo
+/// replay, no `content/` anywhere in the search) verifies a demo record
+/// instead of failing the search.
+pub fn is_demo_record(replay: &ReplayFile) -> bool {
+    let demo = crate::demo::demo_world();
+    replay.content_hash == demo.content_hash() && replay.map_id == demo.map_id
+}
+
 /// Resolves the world a replay was recorded over: the demo world or the
 /// content directory, matched by content identity (the replay verifier's
 /// first line — a replay from different content must fail before a single
 /// tick is spent).
 pub fn resolve_replay_world(content_path: &Path, replay: &ReplayFile) -> Result<TrivialWorld> {
     let demo = crate::demo::demo_world();
-    if replay.content_hash == demo.content_hash() && replay.map_id == demo.map_id {
+    if is_demo_record(replay) {
         return Ok(demo);
     }
     if content_path.is_dir() {
@@ -317,6 +330,24 @@ mod tests {
         let world =
             resolve_replay_world(&repo_content(), &replay).expect("the demo replay resolves");
         assert_eq!(world.content_hash(), replay.content_hash);
+    }
+
+    #[test]
+    fn the_demo_identity_law_separates_demo_from_content_records() {
+        // B-022 finding 7's pure half: the demo-record predicate is exactly
+        // the identity pair (content hash + map id) — a demo record answers
+        // true, a content-world record false, whatever directory sits
+        // beside the binary. (The deferral law itself — a demo record never
+        // consults the content search — is pinned in verify.rs's tests over
+        // the resolver seam.)
+        let demo_replay = crate::demo::record_replay(7, 90);
+        assert!(is_demo_record(&demo_replay));
+        let bundle = ContentBundle::load_dir(&repo_content()).expect("repo content loads");
+        let world = bundle.world();
+        let mut content_replay = demo_replay.clone();
+        content_replay.content_hash = world.content_hash();
+        content_replay.map_id = world.map_id;
+        assert!(!is_demo_record(&content_replay));
     }
 
     #[test]
