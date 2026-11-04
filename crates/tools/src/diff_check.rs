@@ -32,14 +32,31 @@ use pandemonium_sim::Sim;
 use pandemonium_sim_api::{Command, Tick};
 
 use crate::ai_match::{run_ai_match, Slot};
-use crate::scale::{kinds_of, scaled_world, scenario_commands, scripted_setup, SECOND_WAVE_TICK};
+use crate::scale::{
+    kinds_of, scaled_world, scenario_commands, scripted_setup, MAX_SCALE, SECOND_WAVE_TICK,
+};
+
+/// The differential sweep's match-count ceiling (B-022 finding 6): A7's
+/// 1000-match sweep is the largest the project's acceptance vocabulary
+/// defines, and the nightly already shards exactly that size (ten legs of
+/// 100) — a sweep past the line goes through sharding, not one process's
+/// `Vec::with_capacity(matches)` digest list (the capacity overflow B-022
+/// reported at the u32 extremes). BRIEF B-006's differential floor (200)
+/// and every recorded baseline sit inside the edge.
+const MAX_MATCHES: u32 = 1_000;
 
 /// The diff-check subcommand's CLI shape.
 #[derive(Args, Clone, Debug)]
 pub struct DiffCheckCli {
     /// How many seeded matches to run. BRIEF B-006's differential floor is
-    /// 200; smaller values are fine for smoke checks.
-    #[arg(long, default_value_t = 200)]
+    /// 200; smaller values are fine for smoke checks. Range 1..=1000: A7's
+    /// sweep top (see MAX_MATCHES) — a larger sweep is the nightly's
+    /// sharding, never one process's digest list.
+    #[arg(
+        long,
+        default_value_t = 200,
+        value_parser = clap::value_parser!(u32).range(1..=MAX_MATCHES as i64)
+    )]
     pub matches: u32,
     /// The seed of the first match; subsequent matches use seed_base + i.
     #[arg(long, default_value_t = 0)]
@@ -52,8 +69,13 @@ pub struct DiffCheckCli {
     pub ticks: u32,
     /// Run the proving-ground scale scenario (B-002 Part 3) instead of the
     /// AI-vs-AI match: `--scale 1` the Alpha-size tier, `--scale 10` the
-    /// plan §15 10x tier. Loads `content_scale` (a sibling of --content).
-    #[arg(long)]
+    /// plan §15 10x tier and the ladder's top (the authored forces
+    /// saturate there; see scale::MAX_SCALE). Loads `content_scale` (a
+    /// sibling of --content).
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(u32).range(1..=MAX_SCALE as i64)
+    )]
     pub scale: Option<u32>,
     /// The content directory to load (AI matches); the scale tier loads
     /// `content_scale` next to it.
@@ -197,6 +219,43 @@ pub fn print_report(digests: &[SeedDigest]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn absurd_match_counts_are_usage_errors_not_capacity_panics() {
+        // B-022 finding 6's class, swept to this crate: `diff-check
+        // --matches 4294967295` preallocated the digest list with the raw
+        // count (both tiers' `Vec::with_capacity(cli.matches)`) and died
+        // on a capacity-overflow panic; `--scale` feeds the same
+        // scaled_world preallocation bench's does. The range validators
+        // turn both into usage errors, and every documented shape (the
+        // 200 floor, the 1000 sweep top, the tier ladder) still parses.
+        #[derive(Parser)]
+        struct DiffCheckOnly {
+            #[command(flatten)]
+            diff_check: DiffCheckCli,
+        }
+        let parse =
+            |args: &[&str]| DiffCheckOnly::try_parse_from(args).map(|parsed| parsed.diff_check);
+        let err = parse(&["diff-check", "--matches", "4294967295"]).unwrap_err();
+        assert!(err.to_string().contains("not in 1..=1000"), "got: {err}");
+        let err = parse(&["diff-check", "--scale", "4294967295"]).unwrap_err();
+        assert!(err.to_string().contains("not in 1..=10"), "got: {err}");
+        for refused in [
+            &["diff-check", "--matches", "0"][..],
+            &["diff-check", "--matches", "1001"][..],
+            &["diff-check", "--scale", "0"][..],
+            &["diff-check", "--scale", "11"][..],
+        ] {
+            assert!(parse(refused).is_err(), "{refused:?} must be a usage error");
+        }
+        let cli = parse(&["diff-check"]).expect("the defaults parse");
+        assert_eq!((cli.matches, cli.scale), (200, None));
+        let cli = parse(&["diff-check", "--matches", "1", "--scale", "1"]).expect("floors parse");
+        assert_eq!((cli.matches, cli.scale), (1, Some(1)));
+        let cli = parse(&["diff-check", "--matches", "1000", "--scale", "10"]).expect("tops parse");
+        assert_eq!((cli.matches, cli.scale), (1_000, Some(10)));
+    }
 
     /// The digest is a pure function of the trail: same trail, same value;
     /// any single checkpoint change moves it.
