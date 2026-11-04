@@ -1279,6 +1279,28 @@ confirms or rejects it.
   inventory is recorded truthfully in ci.yml's comment and AI-Handoff §2's
   baseline table).
 
+- **A-208 (B-023, content validation hardening).** The integer magnitude
+  caps closing B-022's finding 3 read "precise, not trade" off the existing
+  authoring sanity cap `MAX_MAP_DIMENSION` (4096, itself recorded as an
+  assumption at M2): every new file-level gate refuses exactly the
+  never-loadable-anywhere set derived from it — footprint dimensions beyond
+  4096 (placement requires `anchor + extent <= dimension` with `anchor >=
+  0`), starting-force offsets with magnitude ≥ 4096 (anchors are
+  `0..dimension-1`, so `4095` is possibly-legal and stays the placement
+  validator's to reject), reach-rect extents beyond 4096, circle radii
+  beyond the largest map's half-extent (2_048_000 milli-tiles), and circle
+  centers outside `0..4_096_000` milli-tiles. Anything at or inside those
+  edges still loads and dies per-map against the real map with the
+  pre-existing precise errors — the per-map bounds and overlap checks are
+  untouched (they now run their sums in i64, a totality fix with no
+  behavior change for in-range content). The world seam's `tile_center`
+  widens to i64 with a monotone clamp (identical values for every
+  validated input). Read against plan §10.5's validator contract and
+  B-022's "precise loader errors" standard; the sim-side
+  `FootprintDef::tiles` pre-allocation stays reachable only through
+  hand-built fixtures (out of content's declared model — proposed, not
+  implemented, in the B-023 report §9).
+
 - **A-131 (A-013, PLAN-M11 §2 "kept, not reversed").** The right-drag
   grab-scroll stays as the one camera deviation the card owns: Zero Hour's
   right-drag is a velocity "rapid scroll", while Pandemonium's is M10.2's

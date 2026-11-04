@@ -858,3 +858,168 @@ fn cost_requires_the_priced_resource_in_the_registry() {
         "expected a cost.ore resource rejection, got: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// B-023 — integer magnitude gates (B-022's finding 3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn oversized_footprints_are_rejected_at_load() {
+    // Before B-023 a `Footprint(( w: 4294967295, h: 1 ))` passed every
+    // check through `w as i32 == -1` and reached the sim's footprint claim
+    // with a ~34 GiB tile allocation; a `w` near `i32::MAX` overflowed the
+    // validator's own far-edge sum in debug. The file-level gate now refuses
+    // any dimension beyond the largest accepted map, naming field and value.
+    for (footprint, field, value) in [
+        (
+            "Footprint(( w: 4294967295, h: 1 ))",
+            "Footprint.w",
+            4294967295i64,
+        ),
+        (
+            "Footprint(( w: 2147483647, h: 1 ))",
+            "Footprint.w",
+            2147483647,
+        ),
+        (
+            "Footprint(( w: 1, h: 4294967295 ))",
+            "Footprint.h",
+            4294967295,
+        ),
+        ("Footprint(( w: 4097, h: 1 ))", "Footprint.w", 4097),
+    ] {
+        let node = ORE_NODE.replace("Footprint(( w: 2, h: 2 ))", footprint);
+        let err = ContentTree::load(&factory().entity("ore_node.ron", &node)).unwrap_err();
+        match &err {
+            ContentError::InvalidStat {
+                field: reported_field,
+                value: reported_value,
+                ..
+            } => {
+                assert_eq!(reported_field, field, "field naming for {footprint}: {err}");
+                assert_eq!(
+                    *reported_value, value,
+                    "value reporting for {footprint}: {err}"
+                );
+            }
+            other => panic!("expected InvalidStat for {footprint}, got {other:?}"),
+        }
+        assert!(
+            err.to_string()
+                .contains("can never be placed on any loadable map"),
+            "message should state the law for {footprint}: {err}"
+        );
+    }
+
+    // The gate does not over-reject: 4096 is the cap itself (a maximal map
+    // could hold it), and an entity the factory never places is not
+    // placement-checked at all.
+    let wall = ORE_NODE
+        .replace("id: \"ore_node\"", "id: \"wall\"")
+        .replace("Footprint(( w: 2, h: 2 ))", "Footprint(( w: 4096, h: 1 ))")
+        .replace(
+            "Resource(( resource: \"ore\", amount: 1500 )),\n        ",
+            "",
+        );
+    ContentTree::load(&factory().entity("wall.ron", &wall))
+        .expect("a cap-sized footprint on an unplaced entity loads");
+
+    // A footprint that merely does not fit THIS map is the placement
+    // validator's precise per-map rejection, unchanged by the gate.
+    let node = ORE_NODE.replace("Footprint(( w: 2, h: 2 ))", "Footprint(( w: 17, h: 1 ))");
+    let err = ContentTree::load(&factory().entity("ore_node.ron", &node)).unwrap_err();
+    assert!(
+        err.to_string().contains("extends outside the 16x16 map"),
+        "per-map precision stays with placement: {err}"
+    );
+}
+
+#[test]
+fn absurd_starting_force_offsets_are_rejected_at_load() {
+    // |offset| >= the largest accepted map dimension can never land a force
+    // inside any loadable map (anchors are 0..dimension-1), so the
+    // file-level gate is precise. Before it, `anchor + offset` in plain i32
+    // overflowed the placement validator in debug and wrapped in release.
+    for offset in [
+        "x: 2147483647, y: 0",
+        "x: -2147483648, y: 0",
+        "x: 4096, y: 0",
+        "x: -4096, y: 0",
+        "x: 0, y: 4096",
+        "x: 0, y: -4096",
+    ] {
+        let bad = FACTION.replace(
+            "( entity: \"base\", offset: ( x: 0, y: 0 ) )",
+            &format!("( entity: \"base\", offset: ( {offset} ) )"),
+        );
+        let err = ContentTree::load(&factory().faction("testers.ron", &bad)).unwrap_err();
+        assert!(
+            matches!(err, ContentError::InvalidFaction { .. }),
+            "expected InvalidFaction for ({offset}), got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("no map start can ever bring"),
+            "message should state the law for ({offset}): {err}"
+        );
+    }
+
+    // The boundary is exact: 4095 is possibly-legal (a 4096-wide map could
+    // hold it), so the per-map placement check owns the rejection — here
+    // with the precise 16x16 out-of-bounds error, never an overflow.
+    let edge = FACTION.replace(
+        "( entity: \"base\", offset: ( x: 0, y: 0 ) )",
+        "( entity: \"base\", offset: ( x: 4095, y: 0 ) )",
+    );
+    let err = ContentTree::load(&factory().faction("testers.ron", &edge)).unwrap_err();
+    assert!(
+        err.to_string().contains("extends outside the 16x16 map"),
+        "the per-map placement error must keep firing at the edge: {err}"
+    );
+}
+
+#[test]
+fn ore_node_boundary_math_is_total_over_absurd_footprints() {
+    // Defense in depth for the i64 far-edge sums: the loader's own gates
+    // refuse these magnitudes now, but the file-level validator is an
+    // internal seam future code may call directly — hand-built defs (which
+    // bypass the loader) must get the precise out-of-bounds rejection,
+    // never a debug overflow panic (`w as i32` near i32::MAX) and never a
+    // silent pass (`w as i32` negative — the u32::MAX shape B-022
+    // reported, which used to return Ok here).
+    let monster = |w: u32| crate::defs::EntityDef {
+        id: "monster".to_string(),
+        display_name: "Monster".to_string(),
+        capabilities: vec![
+            crate::defs::CapabilityDef::Resource {
+                resource: "ore".to_string(),
+                amount: 1500,
+            },
+            crate::defs::CapabilityDef::Footprint { w, h: 1 },
+        ],
+        cost_ore: 0,
+        build_time_ms: 0,
+        build_time_ticks: 0,
+        population: 0,
+        requires: Vec::new(),
+        file: "entities/monster.ron".to_string(),
+    };
+    let tree = ContentTree::load(&factory()).unwrap();
+    let mut map = tree.map("testing").unwrap().clone();
+    for w in [u32::MAX, 2147483647] {
+        // The monster is the map's ONLY ore node (a huge footprint overlaps
+        // every other node, and the overlap rejection is not the pin here —
+        // the far-edge bounds sum is).
+        map.ore_nodes = vec![crate::defs::OreNodeDef {
+            kind: "monster".to_string(),
+            x: 1,
+            y: 1,
+        }];
+        let entities = [monster(w)];
+        let err =
+            crate::validate::validate_map_file("maps/testing.ron", &map, &entities).unwrap_err();
+        assert!(
+            err.to_string().contains("extends outside the 16x16 map"),
+            "w = {w} must be the precise rejection, got: {err}"
+        );
+    }
+}

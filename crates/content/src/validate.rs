@@ -18,7 +18,13 @@ use crate::error::ContentError;
 
 /// The largest map dimension accepted (a sanity cap for authoring mistakes; the
 /// Alpha map is 64×64 — plan §10.5). Recorded as an assumption.
-const MAX_MAP_DIMENSION: u32 = 4096;
+///
+/// B-023 derives the integer magnitude caps from this one constant: footprints
+/// and reach-area extents beyond it can never fit on any loadable map, and
+/// starting-force offsets of this magnitude or more can never land inside one
+/// (anchors are `0..dimension-1`), so those file-level rejections are precise
+/// rather than trades.
+pub(crate) const MAX_MAP_DIMENSION: u32 = 4096;
 
 /// The neutral player sentinel may not own a start position.
 const NEUTRAL_PLAYER: u8 = u8::MAX;
@@ -213,6 +219,28 @@ pub(crate) fn validate_entity(
                         "both dimensions must be at least 1 tile",
                     ));
                 }
+                // B-023: a footprint wider or taller than the largest accepted
+                // map can never be placed on any loadable map (placement
+                // requires `anchor + extent <= dimension` with `anchor >= 0`),
+                // so refusing the magnitude is precise, not a trade. Before
+                // this gate a `Footprint(( w: 4294967295, h: 1 ))` passed every
+                // check through `w as i32 == -1` and reached the sim's
+                // footprint claim with a ~34 GiB tile allocation (B-022's
+                // finding 3); a `w` near `i32::MAX` overflowed the validator's
+                // own far-edge sum in debug.
+                for (field, value) in [("Footprint.w", *w), ("Footprint.h", *h)] {
+                    if value > MAX_MAP_DIMENSION {
+                        return Err(stat(
+                            field,
+                            value as i64,
+                            &format!(
+                                "must be at most {MAX_MAP_DIMENSION} tiles (the largest \
+                                 accepted map dimension — a bigger footprint can never \
+                                 be placed on any loadable map)"
+                            ),
+                        ));
+                    }
+                }
             }
             CapabilityDef::Storage { resources } => {
                 for resource in resources {
@@ -380,6 +408,31 @@ pub(crate) fn validate_faction(
                 ),
             });
         }
+        // B-023: a start anchor is always inside its map (`0..dimension`), so
+        // an offset of `MAX_MAP_DIMENSION` or more in either direction can
+        // never land inside any loadable map — the magnitude rejection is
+        // precise. The bound also keeps every `anchor + offset` sum far from
+        // i32 overflow, so the placement and world-seam math stays total
+        // (before it, `i32::MAX` offsets overflowed the validator in debug
+        // and wrapped in release — B-022's finding 3).
+        let cap = MAX_MAP_DIMENSION as i32;
+        if force.offset.0 <= -cap
+            || force.offset.0 >= cap
+            || force.offset.1 <= -cap
+            || force.offset.1 >= cap
+        {
+            return Err(ContentError::InvalidFaction {
+                file: file.to_string(),
+                faction: faction.id.clone(),
+                detail: format!(
+                    "starting force '{}' has offset ({},{}): every component must be \
+                     strictly inside -{cap}..{cap} — no map start can ever bring a bigger \
+                     offset into bounds (the largest accepted map is {MAX_MAP_DIMENSION} \
+                     tiles)",
+                    force.entity, force.offset.0, force.offset.1
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -499,11 +552,14 @@ pub(crate) fn validate_map_file(
             )));
         }
         let (w, h) = node_def.footprint().expect("footprint checked above");
-        if node.x < 0
-            || node.y < 0
-            || node.x + w as i32 > map.width as i32
-            || node.y + h as i32 > map.height as i32
-        {
+        // B-023: the far-edge sums run in i64 — mixing `u32` footprints and
+        // `i32` tiles in plain i32 wraps both ways (a `w as i32` past
+        // `i32::MAX` goes negative and the check silently passes; a sum past
+        // `i32::MAX` overflows in debug). Total over every `u32`/`i32` pair,
+        // independent of the file-level magnitude gates above.
+        let far_x = node.x as i64 + w as i64;
+        let far_y = node.y as i64 + h as i64;
+        if node.x < 0 || node.y < 0 || far_x > map.width as i64 || far_y > map.height as i64 {
             return Err(invalid(format!(
                 "ore_nodes[{index}] ('{}') at ({},{}) with footprint {w}x{h} extends \
                  outside the {}x{} map",
@@ -516,8 +572,13 @@ pub(crate) fn validate_map_file(
                 .find(|entity| entity.id == later.kind)
                 .and_then(|entity| entity.footprint())
                 .unwrap_or((1, 1));
-            let overlap_x = node.x < later.x + lw as i32 && later.x < node.x + w as i32;
-            let overlap_y = node.y < later.y + lh as i32 && later.y < node.y + h as i32;
+            // B-023: the interval overlap runs in i64 for the same reason as
+            // the bounds check above — plain-i32 sums of `i32` tiles and
+            // `u32` extents wrap on absurd magnitudes.
+            let overlap_x = (node.x as i64) < later.x as i64 + lw as i64
+                && (later.x as i64) < node.x as i64 + w as i64;
+            let overlap_y = (node.y as i64) < later.y as i64 + lh as i64
+                && (later.y as i64) < node.y as i64 + h as i64;
             if overlap_x && overlap_y {
                 return Err(invalid(format!(
                     "ore_nodes[{index}] at ({},{}) overlaps another ore node at ({},{})",
