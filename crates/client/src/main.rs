@@ -20,12 +20,15 @@ use pack::AssetPack;
 mod hw;
 mod input;
 use input::event::set_key;
+mod progress;
 
 mod render;
 mod report;
 mod screens;
 mod silhouette;
 mod sound;
+#[cfg(test)]
+mod testutil;
 mod text;
 mod ui;
 
@@ -235,12 +238,18 @@ fn main() -> anyhow::Result<()> {
     // STATUS_ACCESS_VIOLATION the CI legs have shown since run #38).
     let settings = config::load();
     let audio = sound::Sound::new(settings.master_volume, settings.muted);
+    // B-026 (ADR-0201 §6): the campaign progress loads exactly like the
+    // settings — once, here, beside settings.cfg — and the App consumes it
+    // (the victory/skip paths persist it). A missing or malformed file is
+    // the empty progress, never an error.
+    let progress = progress::load();
     let mut app = App::new(
         tree,
         default_bundle,
         seed_flag,
         record_path,
         settings,
+        progress,
         audio,
         pack,
     )?;
@@ -1530,6 +1539,7 @@ mod audio_wiring {
             Some(7),
             None,
             config::Settings::default(),
+            crate::progress::CampaignProgress::default(),
             // The forced null arm: what the no-device constructor yields, so
             // the oracle counter exists whatever this machine can hear.
             sound::Sound::without_device(1.0, false),
@@ -1611,14 +1621,24 @@ mod audio_wiring {
         // A-121: every row activation — Enter, click, or the end screen's
         // R — funnels through one core that cues the UI click. Pinned here
         // at the core (menu_activate); the input paths route through it.
+        // B-026: the repo content carries the pilot campaign, so the main
+        // menu's row 1 is the Campaign row and Settings sits at row 2 —
+        // the walk counts from the campaign-present layout.
         let mut app = app();
         let (next, effect) = app.menu_activate(1, &app.menu_ctx());
+        assert!(matches!(next.screen, Screen::MainMenu));
+        assert_eq!(effect, Effect::OpenCampaign);
+        let (next, effect) = app.menu_activate(2, &app.menu_ctx());
         assert!(matches!(next.screen, Screen::Settings { .. }));
         assert_eq!(effect, Effect::None);
+        // The pre-limiter counter (the sharp-edges law: the null arm counts
+        // POST-limiter, and two activations in one test sit inside the
+        // 80 ms window — the second cue is limited by design, not dropped
+        // by the wiring).
         assert_eq!(
-            app.audio.null_client_cues(),
-            1,
-            "the activation reached the sink"
+            app.audio.client_cues(),
+            2,
+            "both activations reached the sink"
         );
     }
 }
@@ -1731,6 +1751,7 @@ mod zh_selection {
             Some(7),
             None,
             config::Settings::default(),
+            crate::progress::CampaignProgress::default(),
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2081,6 +2102,7 @@ mod zh_modes {
             Some(7),
             None,
             config::Settings::default(),
+            crate::progress::CampaignProgress::default(),
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2367,6 +2389,7 @@ mod zh_camera {
             Some(7),
             None,
             config::Settings::default(),
+            crate::progress::CampaignProgress::default(),
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2544,6 +2567,7 @@ mod zh_interface {
             Some(7),
             None,
             config::Settings::default(),
+            crate::progress::CampaignProgress::default(),
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2655,6 +2679,7 @@ mod mission_wiring {
             Some(7),
             None,
             config::Settings::default(),
+            crate::progress::CampaignProgress::default(),
             sound::Sound::without_device(1.0, false),
             None, // no asset pack in unit tests — placeholder rendering
         )
@@ -2668,6 +2693,8 @@ mod mission_wiring {
             seed_prefill: None,
             map_count: 1,
             mission_count: 1,
+            has_campaign: false,
+            live_mission: None,
         }
     }
 
@@ -2798,7 +2825,7 @@ mod mission_wiring {
         let (new_match, _) = state.activate_index(0, &ctx()); // New Match
         let (picker, _) = new_match.activate_index(5, &ctx()); // Missions
         let mut seed_row = picker.clone();
-        seed_row.focus_index(1);
+        seed_row.focus_index(1, &ctx());
         let (typed, _) = seed_row.on_key(NavKey::Digit('7'), &ctx());
         let (next, effect) = typed.activate_index(2, &ctx()); // Start
         assert!(matches!(next.screen, Screen::InMatch));
@@ -2884,6 +2911,7 @@ mod mission_wiring {
             Some(42),
             Some(mission_path.clone()),
             config::Settings::default(),
+            crate::progress::CampaignProgress::default(),
             sound::Sound::without_device(1.0, false),
             None, // no asset pack in unit tests — placeholder rendering
         )
@@ -2944,6 +2972,367 @@ mod mission_wiring {
         // Tidy: the recordings live in the session temp dir only.
         let _ = std::fs::remove_file(&mission_path);
         let _ = std::fs::remove_file(&plain_path);
+    }
+}
+
+#[cfg(test)]
+mod campaign_wiring {
+    //! B-026 (ADR-0201 §6/§9 Phase 3): the campaign client wiring pins —
+    //! the Campaign row opens a screen built from the ContentTree::campaign
+    //! seam + the per-user progress, Start plays the selected chapter
+    //! through the exact mission path the picker built, Skip records and
+    //! persists, and the pause menu's Skip Mission rung drops the live
+    //! mission on the way out. The oracle is the App itself over the repo
+    //! content (which carries B-025's pilot campaign), the A-002
+    //! null-audio-arm pattern.
+
+    use super::*;
+    use crate::progress::{CampaignProgress, MissionRecord};
+    use crate::screens::{CampaignStatus, Screen};
+
+    /// An app over the repo content with the null audio arm. The campaign
+    /// progress starts empty and persistence is DISABLED by default (a
+    /// test must never write the machine's real progress file — the
+    /// persisting tests point the path at a temp file first).
+    fn app() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        let mut app = App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            CampaignProgress::default(),
+            sound::Sound::without_device(1.0, false),
+            None, // no asset pack in unit tests — placeholder rendering
+        )
+        .expect("the app constructs");
+        app.progress_path = None;
+        app
+    }
+
+    #[test]
+    fn the_repo_content_carries_the_pilot_campaign() {
+        // The wiring below resolves through the tree's campaign; this pins
+        // what it finds (B-025's pilot: three chapters in play order plus
+        // one challenge extending chapter 1).
+        let app = app();
+        let campaign = app.tree.campaign.as_ref().expect("the campaign loads");
+        assert_eq!(campaign.id, "alpha_campaign");
+        assert_eq!(campaign.display_name, "Alpha Campaign");
+        assert_eq!(
+            campaign.chapters,
+            vec!["crossroads_01", "crossroads_02", "crossroads_03"]
+        );
+        assert_eq!(campaign.challenges.len(), 1);
+        assert_eq!(campaign.challenges[0].mission, "crossroads_01_challenge");
+        assert_eq!(campaign.challenges[0].extends, "crossroads_01");
+        // The context the machine reads: the Campaign row exists.
+        assert!(app.menu_ctx().has_campaign);
+    }
+
+    #[test]
+    fn open_campaign_builds_the_screen_from_the_content_seam() {
+        // The app-built snapshot: the chapters in authored play order, the
+        // challenge beside them, each entry carrying the tree mission index
+        // StartMission resolves (mission_by_id's seam), and the fresh
+        // progress's unlock state — the first chapter available, everything
+        // else locked.
+        let mut app = app();
+        app.apply_effect_core(Effect::OpenCampaign);
+        let Screen::Campaign(fields) = &app.screen.screen else {
+            panic!("the campaign screen opened");
+        };
+        assert_eq!(fields.campaign_name, "Alpha Campaign");
+        assert_eq!(fields.entry_count(), 4);
+        let names: Vec<&str> = fields.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Crossroads", "Hold the Line", "Supply Run", "Worker Rush"]
+        );
+        // The tree indices are what mission_by_id resolves for the
+        // campaign's own ids (not list positions).
+        for (entry, id) in fields.entries.iter().zip([
+            "crossroads_01",
+            "crossroads_02",
+            "crossroads_03",
+            "crossroads_01_challenge",
+        ]) {
+            let (index, def) = app.tree.mission_by_id(id).expect("resolves");
+            assert_eq!(entry.mission_index, index, "{}", def.id);
+        }
+        // The challenge extends chapter 0 (entry 0).
+        assert!(!fields.entries[0].challenge);
+        assert!(fields.entries[3].challenge);
+        assert_eq!(fields.entries[3].extends, Some(0));
+        // The fresh progress: chapter 0 available, the rest locked.
+        assert_eq!(fields.status(0), CampaignStatus::Available);
+        assert_eq!(fields.status(1), CampaignStatus::Locked);
+        assert_eq!(fields.status(2), CampaignStatus::Locked);
+        assert_eq!(fields.status(3), CampaignStatus::Locked);
+        assert_eq!(app.screen.focus, 0, "the screen opens focused on row 0");
+        assert_eq!(app.screen.name(), "campaign screen");
+    }
+
+    #[test]
+    fn a_progress_file_builds_its_records_into_the_snapshot() {
+        // The per-user state is an input to the screen, not just an output:
+        // a completed chapter 1 unlocks chapter 2 and the challenge, a
+        // skipped chapter 2 leaves the last chapter gated on it.
+        let mut progress = CampaignProgress::default();
+        progress.record("crossroads_01", MissionRecord::Completed);
+        progress.record("crossroads_02", MissionRecord::Skipped);
+        let mut app = app();
+        app.progress = progress;
+        app.apply_effect_core(Effect::OpenCampaign);
+        let Screen::Campaign(fields) = &app.screen.screen else {
+            panic!("the campaign screen opened");
+        };
+        assert_eq!(fields.status(0), CampaignStatus::Completed);
+        assert_eq!(fields.status(1), CampaignStatus::Skipped);
+        assert_eq!(fields.status(2), CampaignStatus::Available);
+        assert_eq!(
+            fields.status(3),
+            CampaignStatus::Available,
+            "the challenge unlocked with chapter 1's completion"
+        );
+        // Everything is startable (records unlock replays).
+        for index in 0..4 {
+            assert!(fields.startable(index), "entry {index}");
+        }
+    }
+
+    #[test]
+    fn the_campaign_start_plays_the_selected_chapter_through_the_mission_path() {
+        // The full drive: the Campaign row (machine) -> the effect (app
+        // builds the screen) -> Start (machine) -> begin_mission (app) —
+        // the same host, HUD and cutscene the picker's Start builds.
+        let mut app = app();
+        // One pinned context for the whole drive (menu_ctx draws a fresh
+        // random seed per call; the machine consumed this one's).
+        let ctx = app.menu_ctx();
+        let (next, effect) = app.screen.activate_index(1, &ctx);
+        assert_eq!(effect, Effect::OpenCampaign);
+        app.screen = next;
+        app.apply_effect_core(effect);
+        assert!(matches!(app.screen.screen, Screen::Campaign(_)));
+        // Start (row 2) on the selected first chapter: the seed field
+        // starts empty (random — the campaign screen has no parent seed
+        // field to prefill), so Start uses the context's fresh seed.
+        let (next, effect) = app.screen.activate_index(2, &ctx);
+        assert_eq!(
+            effect,
+            Effect::StartMission {
+                mission_index: 0,
+                seed: ctx.random_seed,
+            }
+        );
+        app.screen = next;
+        app.apply_effect_core(effect);
+        assert!(matches!(app.screen.screen, Screen::InMatch));
+        assert_eq!(app.mission_index, Some(0));
+        assert_eq!(
+            app.mission_hud.as_ref().expect("the tracker").display_name,
+            "Crossroads"
+        );
+        assert!(
+            app.cutscene.is_some(),
+            "the chapter opens its mission-start cutscene"
+        );
+    }
+
+    #[test]
+    fn a_campaign_skip_records_persists_and_unlocks_the_next_chapter() {
+        // The campaign screen's Skip: the machine updates its snapshot, the
+        // app records + persists through the progress path (a temp file —
+        // never the machine's real one), and a fresh snapshot resolves the
+        // unlock from the persisted state.
+        let dir = std::env::temp_dir();
+        let path = dir.join("pandemonium-b026-campaign-skip.cfg");
+        let _ = std::fs::remove_file(&path);
+        let mut app = app();
+        app.progress_path = Some(path.clone());
+        app.apply_effect_core(Effect::OpenCampaign);
+        // Skip (row 3) on the selected first chapter.
+        let ctx = app.menu_ctx();
+        let (next, effect) = app.screen.activate_index(3, &ctx);
+        assert_eq!(effect, Effect::SkipMission { mission_index: 0 });
+        app.screen = next;
+        app.apply_effect_core(effect);
+        // The app recorded the skip...
+        assert_eq!(
+            app.progress.record_for("crossroads_01"),
+            Some(MissionRecord::Skipped)
+        );
+        // ...the file landed beside nothing, in the format...
+        let text = std::fs::read_to_string(&path).expect("the progress file landed");
+        assert!(text.contains("crossroads_01=skipped"), "{text}");
+        // ...the machine's snapshot updated (the visible row tag)...
+        let Screen::Campaign(fields) = &app.screen.screen else {
+            panic!("the campaign screen stays");
+        };
+        assert_eq!(fields.status(0), CampaignStatus::Skipped);
+        assert_eq!(fields.status(1), CampaignStatus::Available);
+        // ...and a fresh snapshot (a re-open) resolves the same unlock
+        // from the persisted state.
+        app.screen.screen = Screen::MainMenu;
+        app.apply_effect_core(Effect::OpenCampaign);
+        let Screen::Campaign(fields) = &app.screen.screen else {
+            panic!("the campaign screen re-opened");
+        };
+        assert_eq!(fields.status(0), CampaignStatus::Skipped);
+        assert_eq!(fields.status(1), CampaignStatus::Available);
+        // Tidy: the file lives in the session temp dir only.
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_pause_menu_skip_drops_the_mission_and_records_it() {
+        // The pause-menu rung, driven end to end: pause over a live
+        // mission -> row 6 (the context carries the live mission) -> the
+        // confirm rung -> Proceed leaves for the menu, the host drops, the
+        // mission state clears, and the skip is recorded.
+        let mut app = app();
+        app.begin_mission(0, 7);
+        app.cutscene_input(); // unpause so the match is live
+        let (pause, effect) = app.screen.open_pause();
+        app.screen = pause;
+        app.apply_effect_core(effect);
+        assert!(matches!(app.screen.screen, Screen::PauseMenu));
+        let ctx = app.menu_ctx();
+        assert_eq!(ctx.live_mission, Some(0), "the row exists over the mission");
+        // Row 6 opens the confirm rung; Proceed runs it.
+        let (confirm, _) = app.screen.activate_index(6, &ctx);
+        assert!(matches!(
+            confirm.screen,
+            Screen::Confirm {
+                action: crate::screens::ConfirmAction::SkipMission { mission_index: 0 }
+            }
+        ));
+        app.screen = confirm;
+        let (next, effect) = app.screen.activate_index(1, &ctx);
+        assert!(matches!(next.screen, Screen::MainMenu));
+        app.screen = next;
+        app.apply_effect_core(effect);
+        // The match is gone and the mission state cleared (DropMatch's
+        // discipline), and the skip is recorded in the progress.
+        assert!(app.host.is_none());
+        assert_eq!(app.mission_index, None);
+        assert!(app.mission_hud.is_none());
+        assert!(app.cutscene.is_none());
+        assert_eq!(
+            app.progress.record_for("crossroads_01"),
+            Some(MissionRecord::Skipped)
+        );
+    }
+
+    #[test]
+    fn a_plain_matchs_pause_menu_keeps_six_rows() {
+        // The Skip Mission row exists only over a mission: a plain match's
+        // pause menu is exactly the six rows it was (the Xvfb scripts'
+        // focus arithmetic).
+        let mut app = app();
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        let (pause, effect) = app.screen.open_pause();
+        app.screen = pause;
+        app.apply_effect_core(effect);
+        let ctx = app.menu_ctx();
+        assert_eq!(ctx.live_mission, None);
+        assert_eq!(app.screen.button_count(&ctx), 6);
+        assert_eq!(app.screen.button_at(6, &ctx), None);
+    }
+    #[test]
+    fn a_mission_victory_records_and_unlocks_the_campaign() {
+        // The victory hook the end-screen promotion calls (winner == HUMAN
+        // on a mission match): the mission records completed, the progress
+        // persists through the path, and a fresh campaign snapshot resolves
+        // the unlock (chapter 2 available, the challenge unlocked).
+        let dir = std::env::temp_dir();
+        let path = dir.join("pandemonium-b026-mission-victory.cfg");
+        let _ = std::fs::remove_file(&path);
+        let mut app = app();
+        app.progress_path = Some(path.clone());
+        app.begin_mission(0, 7);
+        app.on_mission_victory();
+        assert_eq!(
+            app.progress.record_for("crossroads_01"),
+            Some(MissionRecord::Completed)
+        );
+        let text = std::fs::read_to_string(&path).expect("the progress file landed");
+        assert!(text.contains("crossroads_01=completed"), "{text}");
+        // The unlock resolves from the recorded state.
+        app.screen.screen = Screen::MainMenu;
+        app.apply_effect_core(Effect::OpenCampaign);
+        let Screen::Campaign(fields) = &app.screen.screen else {
+            panic!("the campaign screen opened");
+        };
+        assert_eq!(fields.status(0), CampaignStatus::Completed);
+        assert_eq!(fields.status(1), CampaignStatus::Available);
+        assert_eq!(
+            fields.status(3),
+            CampaignStatus::Available,
+            "the challenge unlocked with the chapter's completion"
+        );
+        // Tidy.
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_plain_match_victory_records_nothing() {
+        // The hook is mission-scoped: a mission-less match (mission_index
+        // None) leaves the progress untouched.
+        let mut app = app();
+        app.begin_match(MatchMode::PlayerVsAi, 7, 0);
+        app.on_mission_victory();
+        assert_eq!(app.progress, CampaignProgress::default());
+    }
+
+    #[test]
+    fn a_victory_upgrades_a_skip_and_an_already_completed_replay_writes_nothing() {
+        // The upsert laws at the app seam: winning a previously skipped
+        // mission upgrades the record to completed (the ADR's replayable
+        // skip); winning an already completed one is a replay — no state
+        // change, no disk write.
+        let dir = std::env::temp_dir();
+        let skipped_path = dir.join("pandemonium-b026-upgrade-skip.cfg");
+        let replay_path = dir.join("pandemonium-b026-replay-nowrite.cfg");
+        let _ = std::fs::remove_file(&skipped_path);
+        let _ = std::fs::remove_file(&replay_path);
+
+        let mut app = app();
+        app.progress_path = Some(skipped_path.clone());
+        app.begin_mission(0, 7);
+        app.progress.record("crossroads_01", MissionRecord::Skipped);
+        app.on_mission_victory();
+        assert_eq!(
+            app.progress.record_for("crossroads_01"),
+            Some(MissionRecord::Completed),
+            "the skip upgraded to completed"
+        );
+        let text = std::fs::read_to_string(&skipped_path).expect("the upgrade landed");
+        assert!(text.contains("crossroads_01=completed"), "{text}");
+
+        // A replay of the completed mission: no write at all (the change
+        // signal is false — the file never appears).
+        app.progress_path = Some(replay_path.clone());
+        app.on_mission_victory();
+        assert!(
+            !replay_path.exists(),
+            "an already-completed replay writes nothing"
+        );
+        // Tidy.
+        let _ = std::fs::remove_file(&skipped_path);
+        let _ = std::fs::remove_file(&replay_path);
     }
 }
 

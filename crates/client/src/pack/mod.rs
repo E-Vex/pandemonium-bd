@@ -1872,16 +1872,12 @@ mod tests {
         assert_eq!(AssetPack::kind_of(Path::new("")), None);
     }
 
+    /// The suite's temp dirs route through the shared collision-free
+    /// helper: the timestamp-only names this used could collide on
+    /// Windows' coarse clock, and two parallel tests then loaded each
+    /// other's manifests (B-026's CI catch — the pack manifest race).
     fn tempfile_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pandemonium-pack-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("creating temp dir");
-        dir
+        crate::testutil::temp_dir("pandemonium-pack-test")
     }
 
     // ------------------------------------------------------------------

@@ -1326,6 +1326,56 @@ confirms or rejects it.
   long, they do not abort — a different failure shape, out of finding
   6's scope).
 
+- **A-210 (B-026, ADR-0201 §6).** The campaign progress file's *name* is
+  `campaign_progress.cfg` in the per-user config directory. The ADR names
+  the folder ("beside `settings.cfg`", the same per-OS resolution
+  `config.rs` owns) and the format ("one line per mission,
+  `<mission-id>=completed|skipped`, per-key salvage, unknown ids
+  ignored"), never the file name — this one is self-describing and
+  matches the settings suffix. The resolution is shared through
+  `config_dir_from` (extracted from `config_path_from`; `settings.cfg`'s
+  own path is byte-for-byte unchanged, pinned by the existing config
+  tests).
+
+- **A-211 (B-026, ADR-0201 §6).** Challenge missions unlock on their
+  chapter's **completion** only — a skip does not unlock the challenge
+  beside it. The ADR's unlock sentence distinguishes the two gates
+  ("mission N+1 unlocks when N is completed or skipped; challenge
+  missions unlock per their campaign entry's completion of the mission
+  they extend"), and B-025's own campaign file comment says the same
+  ("the challenge unlocks on completing 'Crossroads'"). Consequence: a
+  player who skips chapter 1 reaches chapter 2 but not Worker Rush until
+  they go back and win chapter 1. The alternative reading (skip unlocks
+  challenges too) would make the challenge gate identical to the chapter
+  gate and leave the ADR's two-clause sentence with nothing to
+  distinguish; recorded here for the owner either way.
+
+- **A-212 (B-026, ADR-0201 §6).** The pause menu's Skip Mission lands on
+  the main menu (not the campaign screen) — the same successor Quit to
+  Menu takes, with the host dropped (DropMatch's discipline); the
+  campaign screen is one OpenCampaign away. Confirm-gated like every
+  match-discarding row (A-009's law), and existing only over a mission
+  match (`KeyContext.live_mission`; a plain match's pause menu keeps its
+  six rows so the Xvfb focus arithmetic holds).
+
+- **A-213 (B-026, ADR-0201 §6).** Victory recording is scoped to mission
+  matches the *player* won (`outcome.winner == HUMAN`, the mission
+  player's slot): a defeat, a mutual destruction, or a resignation (which
+  the match rules resolve as a defeat) records nothing — the mission
+  stays until won or explicitly skipped. Replays are idempotent (the
+  record's change signal skips the disk write), and a skip upgrades to
+  completed on a later victory (the ADR's "a skipped mission stays
+  replayable" — winning it counts).
+
+- **A-214 (B-026, ADR-0201 §6).** An entry carrying its own record is
+  always startable from the campaign screen (the record unlocks a
+  replay), so a stale or hand-edited progress file degrades to
+  "replayable", never to a soft-lock. Skip is correspondingly inert on
+  completed entries (nothing forward to unlock) and locked ones (nothing
+  to unlock at all); the campaign screen's seed field starts empty
+  (random at Start — the screen has no parent seed field to prefill, the
+  New Match screen's `--seed` prefill law does not reach it).
+
 - **A-131 (A-013, PLAN-M11 §2 "kept, not reversed").** The right-drag
   grab-scroll stays as the one camera deviation the card owns: Zero Hour's
   right-drag is a velocity "rapid scroll", while Pandemonium's is M10.2's

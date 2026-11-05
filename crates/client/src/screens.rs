@@ -180,6 +180,185 @@ impl MissionPickerState {
     }
 }
 
+/// One campaign entry's recorded fate, as the campaign screen resolves it
+/// (B-026, ADR-0201 §6): the two records are distinct (the progress file
+/// distinguishes them), and the two derived states are the unlock rule's
+/// output — `Locked` is a display-and-start gate **inside the campaign
+/// screen only** (the campaign is a menu peer, never a gate: the plain
+/// mission picker and every advanced mode stay exactly as reachable as
+/// they were).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignStatus {
+    /// The unlock rule does not reach this entry yet — shown locked, not
+    /// startable from the campaign screen.
+    Locked,
+    /// No record, and the unlock rule reaches it — startable.
+    Available,
+    /// The mission was won.
+    Completed,
+    /// The mission was skipped (replayable; a later victory upgrades the
+    /// record to completed).
+    Skipped,
+}
+
+impl CampaignStatus {
+    /// The row's status tag on the campaign screen (ASCII — the embedded
+    /// font constraint).
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Locked => "LOCKED",
+            Self::Available => "AVAILABLE",
+            Self::Completed => "COMPLETED",
+            Self::Skipped => "SKIPPED",
+        }
+    }
+}
+
+/// One entry of the campaign screen (B-026, ADR-0201 §6): a chapter
+/// mission in play order, or a challenge mission surfacing beside the
+/// campaign. The snapshot is app-built from
+/// `(ContentTree::campaign, CampaignProgress)` when the screen opens —
+/// the machine owns the navigation and the skip bookkeeping over it, the
+/// app owns the build (the machine never touches the content tree).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignEntry {
+    /// The mission's index into the tree's mission list — what
+    /// `Effect::StartMission` carries.
+    pub mission_index: usize,
+    /// The mission's display name (ASCII).
+    pub name: String,
+    /// A challenge entry (surfaced beside the chapters; unlocks on its
+    /// chapter's *completion*, A-211).
+    pub challenge: bool,
+    /// A challenge's chapter, as an entry index into this list (chapters
+    /// occupy the leading entries in play order, so a chapter's own entry
+    /// index is its position — `None` for chapters).
+    pub extends: Option<usize>,
+    /// The mission's progress record, if any.
+    pub record: Option<crate::progress::MissionRecord>,
+}
+
+/// The campaign screen's fields (B-026, ADR-0201 §6/§9 Phase 3): the
+/// campaign's entries in play order (chapters first, then the challenges
+/// beside them), the selected entry, and the seed field mirroring the
+/// mission picker's. The unlock rule is a method, not stored state:
+/// chapter N+1 unlocks when chapter N is completed **or skipped**; a
+/// challenge unlocks when its chapter is **completed** (skip unlocks the
+/// next chapter, never the challenge beside it — A-211); an entry with
+/// its own record is always startable (a skipped mission stays
+/// replayable, and a stale file can never soft-lock a replay).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignState {
+    /// The campaign's display name (the screen's title).
+    pub campaign_name: String,
+    /// The seed field's text — digits only, edited in place (the mission
+    /// picker's law verbatim).
+    pub seed_text: String,
+    /// The selected entry's index into `entries`.
+    pub selection: usize,
+    /// The campaign's entries: the chapters in play order, then the
+    /// challenges. Never empty (the content gates guarantee at least one
+    /// chapter when a campaign file loaded at all).
+    pub entries: Vec<CampaignEntry>,
+}
+
+impl CampaignState {
+    /// The seed Start will use: the parsed field, else the context's fresh
+    /// random seed (the New Match screen's law, verbatim).
+    pub fn seed_value(&self, random_seed: u64) -> u64 {
+        self.seed_text.parse::<u64>().unwrap_or(random_seed)
+    }
+
+    /// How many entries the campaign lists (drives the wrap).
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Cycles the selection (the map picker's wrap law: a one-entry
+    /// campaign cycles to itself).
+    pub fn cycle_selection(&mut self, dir: i32) {
+        let count = self.entries.len();
+        if count <= 1 {
+            return;
+        }
+        if dir.is_positive() {
+            self.selection = (self.selection + 1) % count;
+        } else {
+            self.selection = (self.selection + count - 1) % count;
+        }
+    }
+
+    /// Resolves an entry's status — the unlock rule over the snapshot's
+    /// records (derived, recomputed on every read, never stored):
+    ///
+    /// - an entry with a record shows it (completed/skipped — and is
+    ///   startable: the record itself unlocks a replay, so a stale or
+    ///   partial progress file degrades to "replayable", never to a
+    ///   soft-lock);
+    /// - a chapter without a record is available iff it is the first or
+    ///   its predecessor is completed-or-skipped;
+    /// - a challenge without a record is available iff the chapter it
+    ///   extends is completed (a skip does not unlock challenges, A-211).
+    pub fn status(&self, index: usize) -> CampaignStatus {
+        let Some(entry) = self.entries.get(index) else {
+            return CampaignStatus::Locked;
+        };
+        match entry.record {
+            Some(record) => match record {
+                crate::progress::MissionRecord::Completed => CampaignStatus::Completed,
+                crate::progress::MissionRecord::Skipped => CampaignStatus::Skipped,
+            },
+            None => {
+                let unlocked = if entry.challenge {
+                    let extends = entry.extends.unwrap_or(usize::MAX);
+                    matches!(
+                        self.entries.get(extends).map(|chapter| chapter.record),
+                        Some(Some(crate::progress::MissionRecord::Completed))
+                    )
+                } else {
+                    // Chapters are the leading entries in play order:
+                    // index 0 is the first, and index N's predecessor is
+                    // entry N-1 — a chapter, by construction.
+                    index == 0
+                        || matches!(
+                            self.entries.get(index - 1).map(|prev| prev.record),
+                            Some(Some(
+                                crate::progress::MissionRecord::Completed
+                                    | crate::progress::MissionRecord::Skipped
+                            ))
+                        )
+                };
+                if unlocked {
+                    CampaignStatus::Available
+                } else {
+                    CampaignStatus::Locked
+                }
+            }
+        }
+    }
+
+    /// Whether the entry at `index` may be started from the campaign
+    /// screen (locked entries are the unlock rule's only gate — and the
+    /// gate lives here, never outside this screen).
+    pub fn startable(&self, index: usize) -> bool {
+        !matches!(self.status(index), CampaignStatus::Locked)
+    }
+
+    /// Records a skip in the snapshot and reports whether the state
+    /// changed — the machine's half of the Skip affordance (the app's
+    /// half persists the same fact; both run on the same activation).
+    /// Only an available entry can be skipped: a locked entry has nothing
+    /// to unlock, a completed one nothing forward to unlock, and a
+    /// skipped one is already skipped.
+    pub fn skip(&mut self, index: usize) -> bool {
+        if !matches!(self.status(index), CampaignStatus::Available) {
+            return false;
+        }
+        self.entries[index].record = Some(crate::progress::MissionRecord::Skipped);
+        true
+    }
+}
+
 /// Where the Settings screen returns to when it closes (the plan's diagram
 /// has settings reachable from both the main menu and the pause menu).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,6 +383,17 @@ pub enum ConfirmAction {
     /// closes without touching the sim) and the match flows to the
     /// existing end screen.
     Resign,
+    /// B-026 (ADR-0201 §6, the second skip): skip the live mission —
+    /// record it as *skipped* (distinct from completed) in the campaign
+    /// progress, unlock the next entry, and leave the match for the main
+    /// menu. The pause menu's Skip Mission row opens this rung (a
+    /// match-discarding action is confirm-gated like Restart, Resign and
+    /// Quit to Menu); `mission_index` is the live mission's tree index
+    /// the row captured from the context.
+    SkipMission {
+        /// The live mission's index into the tree's mission list.
+        mission_index: usize,
+    },
 }
 
 /// The window focus / minimize signals the pure auto-pause decision reads
@@ -280,6 +470,14 @@ pub enum Screen {
     /// the selected mission's display name); Start resolves to a mission
     /// match.
     MissionPicker(MissionPickerState),
+    /// The campaign screen (B-026, ADR-0201 §6/§9 Phase 3): the campaign's
+    /// chapters in play order with the challenges beside them, the
+    /// unlock/skip semantics, and Start/Skip on the selected entry. A
+    /// menu peer of the main menu, never a gate. The state is an
+    /// app-built snapshot — `Effect::OpenCampaign` builds it from
+    /// `(ContentTree::campaign, CampaignProgress)`; the machine owns the
+    /// navigation and the skip bookkeeping over the snapshot.
+    Campaign(CampaignState),
     /// The eight settings rows + Done. The *values* live in the app's
     /// [`crate::config::Settings`]; the machine only navigates.
     Settings {
@@ -361,6 +559,24 @@ pub enum Effect {
         /// The seed the match will run (parsed field or fresh random).
         seed: u64,
     },
+    /// Open the campaign screen (B-026, ADR-0201 §6/§9 Phase 3): the app
+    /// builds the `Screen::Campaign` snapshot from
+    /// `(ContentTree::campaign, CampaignProgress)` — the machine cannot
+    /// (it never touches the content tree) — and enters the screen with
+    /// focus on its first row. Emitted by the main menu's Campaign row,
+    /// which exists only when the context says the tree carries a
+    /// campaign (B-025's law: no campaign, no row).
+    OpenCampaign,
+    /// Record a mission as *skipped* in the campaign progress and persist
+    /// it (B-026, ADR-0201 §6's second skip — distinct from completed).
+    /// Emitted from the campaign screen's Skip row (no live match: the
+    /// machine already updated its snapshot) and from the pause menu's
+    /// confirm-gated Skip Mission rung (a live mission: the app drops the
+    /// host on the way out — the successor screen is the main menu).
+    SkipMission {
+        /// The mission's index into the tree's mission list.
+        mission_index: usize,
+    },
 }
 
 /// The machine's view of one input event (winit keys map here — the pure
@@ -403,6 +619,20 @@ pub struct KeyContext {
     /// picker's wrap; zero = the tree carries no missions and the Missions
     /// row stays inert).
     pub mission_count: usize,
+    /// B-026 (ADR-0201 §6): whether the loaded content tree carries a
+    /// campaign file. The main menu's Campaign row exists exactly when
+    /// this is true — B-025's law: "the campaign-less default: the client
+    /// shows no Campaign row". The row slots in after New Match, so the
+    /// rows below it shift by one only when a campaign is present (the
+    /// a010 Xvfb walk counts from the campaign-present layout).
+    pub has_campaign: bool,
+    /// B-026: the live match's mission, as a tree index, when the menu is
+    /// open over a mission match (`None` on the menu, over a plain match,
+    /// and after the mission state clears). The pause menu's Skip Mission
+    /// row (ADR-0201 §6's second skip, confirm-gated) exists exactly when
+    /// this is `Some` — appended as row 6 so every existing pause-menu
+    /// index (the Xvfb scripts' focus arithmetic) keeps its meaning.
+    pub live_mission: Option<usize>,
 }
 
 /// One focusable row's identity — the shared vocabulary between the
@@ -437,6 +667,28 @@ pub enum ButtonId {
     MissionSeed,
     /// Mission picker screen: start the mission match.
     MissionStart,
+    /// Main menu (B-026, ADR-0201 §6): open the campaign screen — row 1,
+    /// between New Match and Settings, and only when the tree carries a
+    /// campaign (the context's `has_campaign`; B-025's law: the
+    /// campaign-less client shows no Campaign row at all).
+    Campaign,
+    /// Campaign screen (B-026): the mission field (cycles the campaign's
+    /// entries, showing the selected entry's name and status tag).
+    CampaignMission,
+    /// Campaign screen: the seed field (the mission picker's law).
+    CampaignSeed,
+    /// Campaign screen: start the selected entry's mission match (inert
+    /// on a locked entry — the unlock rule's only gate).
+    CampaignStart,
+    /// Campaign screen: record the selected entry as skipped (ADR-0201
+    /// §6's individually-skippable law; inert unless the entry is
+    /// available — a locked entry has nothing to unlock, a completed one
+    /// nothing forward).
+    CampaignSkip,
+    /// Pause menu (B-026): skip the live mission — row 6, only over a
+    /// mission match (the context's `live_mission`), confirm-gated like
+    /// every match-discarding row.
+    PauseSkipMission,
     /// Settings screen: one settings row (by index).
     Setting(usize),
     /// Settings screen: save and return.
@@ -491,6 +743,7 @@ impl AppState {
             Screen::MainMenu => "main menu",
             Screen::NewMatch(_) => "new match screen",
             Screen::MissionPicker(_) => "mission picker screen",
+            Screen::Campaign(_) => "campaign screen",
             Screen::Settings { .. } => "settings screen",
             Screen::InMatch => "match",
             Screen::PauseMenu => "pause menu",
@@ -500,18 +753,32 @@ impl AppState {
         }
     }
 
-    /// The focused row's identity.
-    pub fn focused_button(&self) -> Option<ButtonId> {
-        self.button_at(self.focus)
+    /// The focused row's identity. B-026: the row list is
+    /// context-dependent (the main menu's Campaign row exists only when
+    /// the tree carries a campaign; the pause menu's Skip Mission row only
+    /// over a live mission), so the machine resolves rows against the same
+    /// [`KeyContext`] the transitions read — the renderer's row list and
+    /// this one derive from the same app fields and cannot disagree.
+    pub fn focused_button(&self, ctx: &KeyContext) -> Option<ButtonId> {
+        self.button_at(self.focus, ctx)
     }
 
-    /// The row identity at a focus index (None when out of range).
-    pub fn button_at(&self, index: usize) -> Option<ButtonId> {
+    /// The row identity at a focus index (None when out of range — or
+    /// when the context does not carry the row that would live there).
+    pub fn button_at(&self, index: usize, ctx: &KeyContext) -> Option<ButtonId> {
         Some(match (&self.screen, index) {
             (Screen::MainMenu, 0) => ButtonId::NewMatch,
-            (Screen::MainMenu, 1) => ButtonId::Settings,
-            (Screen::MainMenu, 2) => ButtonId::Controls,
-            (Screen::MainMenu, 3) => ButtonId::Quit,
+            // B-026: the Campaign row slots in at index 1 when the tree
+            // carries a campaign (B-025's law: no campaign, no row) — the
+            // rows below shift by one only in the campaign-present
+            // layout, which the repo content always is.
+            (Screen::MainMenu, 1) if ctx.has_campaign => ButtonId::Campaign,
+            (Screen::MainMenu, index) => match (!ctx.has_campaign, index) {
+                (true, 1) | (false, 2) => ButtonId::Settings,
+                (true, 2) | (false, 3) => ButtonId::Controls,
+                (true, 3) | (false, 4) => ButtonId::Quit,
+                _ => return None,
+            },
             (Screen::NewMatch(_), 0) => ButtonId::Mode,
             (Screen::NewMatch(_), 1) => ButtonId::Seed,
             (Screen::NewMatch(_), 2) => ButtonId::Map,
@@ -526,6 +793,13 @@ impl AppState {
             (Screen::MissionPicker(_), 1) => ButtonId::MissionSeed,
             (Screen::MissionPicker(_), 2) => ButtonId::MissionStart,
             (Screen::MissionPicker(_), 3) => ButtonId::Back,
+            // B-026 (ADR-0201 §6): the campaign screen's rows — the
+            // mission field, the seed, Start, Skip, Back.
+            (Screen::Campaign(_), 0) => ButtonId::CampaignMission,
+            (Screen::Campaign(_), 1) => ButtonId::CampaignSeed,
+            (Screen::Campaign(_), 2) => ButtonId::CampaignStart,
+            (Screen::Campaign(_), 3) => ButtonId::CampaignSkip,
+            (Screen::Campaign(_), 4) => ButtonId::Back,
             (Screen::Settings { .. }, index) => {
                 const SETTINGS_ROWS: usize = 8; // the eight keys + Done
                 if index < SETTINGS_ROWS {
@@ -543,6 +817,10 @@ impl AppState {
             (Screen::PauseMenu, 3) => ButtonId::PauseRestart,
             (Screen::PauseMenu, 4) => ButtonId::PauseResign,
             (Screen::PauseMenu, 5) => ButtonId::QuitToMenu,
+            // B-026: the Skip Mission rung — row 6, only over a mission
+            // match (rows 0-5 keep their indices in both layouts; the
+            // Xvfb scripts' focus arithmetic counts from there).
+            (Screen::PauseMenu, 6) if ctx.live_mission.is_some() => ButtonId::PauseSkipMission,
             (Screen::EndScreen, 0) => ButtonId::Rematch,
             (Screen::EndScreen, 1) => ButtonId::ToMenu,
             (Screen::Controls { .. }, 0) => ButtonId::Back,
@@ -555,15 +833,18 @@ impl AppState {
         })
     }
 
-    /// How many focusable rows the current screen has.
-    pub fn button_count(&self) -> usize {
+    /// How many focusable rows the current screen has (context-dependent:
+    /// the Campaign and Skip Mission rows exist only when the context
+    /// carries them — B-026).
+    pub fn button_count(&self, ctx: &KeyContext) -> usize {
         match self.screen {
-            Screen::MainMenu => 4,
+            Screen::MainMenu => 4 + usize::from(ctx.has_campaign),
             Screen::NewMatch(_) => 6, // Mode/Seed/Map/Start/Back/Missions
             Screen::MissionPicker(_) => 4, // Mission/Seed/Start/Back
+            Screen::Campaign(_) => 5, // Mission/Seed/Start/Skip/Back
             Screen::Settings { .. } => 9, // 8 settings rows + Done
             Screen::InMatch => 0,
-            Screen::PauseMenu => 6,
+            Screen::PauseMenu => 6 + usize::from(ctx.live_mission.is_some()),
             Screen::EndScreen => 2,
             Screen::Controls { .. } => 1, // Back
             Screen::Confirm { .. } => 2,  // Cancel + Confirm
@@ -572,8 +853,8 @@ impl AppState {
 
     /// Moves focus to an index, clamped into the screen's range (mouse
     /// hover uses this; a stale index cannot escape).
-    pub fn focus_index(&mut self, index: usize) {
-        let count = self.button_count();
+    pub fn focus_index(&mut self, index: usize, ctx: &KeyContext) {
+        let count = self.button_count(ctx);
         if count > 0 {
             self.focus = index.min(count - 1);
         } else {
@@ -582,16 +863,16 @@ impl AppState {
     }
 
     /// Focus down one row (wraps — A-110).
-    pub fn focus_next(&mut self) {
-        let count = self.button_count();
+    pub fn focus_next(&mut self, ctx: &KeyContext) {
+        let count = self.button_count(ctx);
         if count > 0 {
             self.focus = (self.focus + 1) % count;
         }
     }
 
     /// Focus up one row (wraps — A-110).
-    pub fn focus_prev(&mut self) {
-        let count = self.button_count();
+    pub fn focus_prev(&mut self, ctx: &KeyContext) {
+        let count = self.button_count(ctx);
         if count > 0 {
             self.focus = (self.focus + count - 1) % count;
         }
@@ -613,6 +894,12 @@ impl AppState {
             // opened from, restoring its fields unchanged.
             Screen::MissionPicker(ref fields) => {
                 next.screen = Screen::NewMatch(fields.new_match.clone());
+                (next, Effect::None)
+            }
+            // B-026: the campaign screen backs out to the main menu (the
+            // screen the Campaign row opened it from).
+            Screen::Campaign(_) => {
+                next.screen = Screen::MainMenu;
                 (next, Effect::None)
             }
             Screen::Settings { return_to } => {
@@ -653,7 +940,7 @@ impl AppState {
     /// click — the same core). Returns the successor state and the effect
     /// to execute.
     pub fn activate_index(&self, index: usize, ctx: &KeyContext) -> (AppState, Effect) {
-        let Some(id) = self.button_at(index) else {
+        let Some(id) = self.button_at(index, ctx) else {
             return (self.clone(), Effect::None);
         };
         let mut next = self.clone();
@@ -713,6 +1000,15 @@ impl AppState {
                 (next, Effect::None)
             }
             ButtonId::Quit => (next, Effect::QuitApp),
+            // B-026 (ADR-0201 §6/§9 Phase 3): the Campaign row opens the
+            // campaign screen through the effect vocabulary — the machine
+            // cannot build the screen's snapshot (it never touches the
+            // content tree), so the app layer builds `Screen::Campaign`
+            // from `(ContentTree::campaign, CampaignProgress)` on
+            // `Effect::OpenCampaign` and enters it with focus 0. The row
+            // only resolves when the context carries a campaign, so the
+            // effect never fires campaign-less.
+            ButtonId::Campaign => (next, Effect::OpenCampaign),
             ButtonId::Mode => {
                 if let Screen::NewMatch(fields) = &mut next.screen {
                     fields.mode = fields.mode.cycle(1);
@@ -796,6 +1092,64 @@ impl AppState {
                 next.screen = Screen::InMatch;
                 (next, effect)
             }
+            // B-026: the campaign screen's Mission field cycles the
+            // campaign's entries (a click advances one, same as every
+            // cycling field).
+            ButtonId::CampaignMission => {
+                if let Screen::Campaign(fields) = &mut next.screen {
+                    fields.cycle_selection(1);
+                }
+                (next, Effect::None)
+            }
+            // B-026: the campaign screen's seed field randomizes on
+            // Enter/click, the New Match screen's Seed law verbatim.
+            ButtonId::CampaignSeed => {
+                if let Screen::Campaign(fields) = &mut next.screen {
+                    fields.seed_text = ctx.random_seed.to_string();
+                }
+                (next, Effect::None)
+            }
+            // B-026: Start resolves to the selected entry's mission match
+            // through the existing `Effect::StartMission` — a campaign
+            // chapter or an unlocked challenge plays the exact mission
+            // path the picker built (cutscene, HUD, replay identity). A
+            // locked entry is inert: the unlock rule's only gate, and the
+            // gate lives nowhere else (the picker stays fully open).
+            ButtonId::CampaignStart => {
+                let Screen::Campaign(fields) = &self.screen else {
+                    return (next, Effect::None);
+                };
+                let selection = fields.selection;
+                if !fields.startable(selection) {
+                    return (next, Effect::None);
+                }
+                let effect = Effect::StartMission {
+                    mission_index: fields.entries[selection].mission_index,
+                    seed: fields.seed_value(ctx.random_seed),
+                };
+                next.screen = Screen::InMatch;
+                (next, effect)
+            }
+            // B-026 (ADR-0201 §6, the individually-skippable law): Skip
+            // records the selected mission as *skipped* — the machine
+            // updates its snapshot (the visible row tag and the unlock
+            // rule read the same records) and the effect carries the tree
+            // index for the app's persist half. Inert unless the entry is
+            // available: a locked entry has nothing to unlock, a completed
+            // one nothing forward, a skipped one is already skipped.
+            ButtonId::CampaignSkip => {
+                let Screen::Campaign(fields) = &mut next.screen else {
+                    return (next, Effect::None);
+                };
+                let selection = fields.selection;
+                if !fields.skip(selection) {
+                    return (next, Effect::None);
+                }
+                let effect = Effect::SkipMission {
+                    mission_index: fields.entries[selection].mission_index,
+                };
+                (next, effect)
+            }
             ButtonId::Back => {
                 // A-009 task 1: when Back is the Controls screen's row, it
                 // returns to where Controls was opened from (the same
@@ -858,6 +1212,20 @@ impl AppState {
                 };
                 (next, Effect::None)
             }
+            // B-026 (ADR-0201 §6, the pause-menu skip): row 6, only over a
+            // mission match — the confirm rung like every match-discarding
+            // action; the row itself only exists when the context carries
+            // a live mission, so the captured index is always Some here
+            // (the defensive no-op keeps the machine total).
+            ButtonId::PauseSkipMission => match ctx.live_mission {
+                Some(mission_index) => {
+                    next.screen = Screen::Confirm {
+                        action: ConfirmAction::SkipMission { mission_index },
+                    };
+                    (next, Effect::None)
+                }
+                None => (next, Effect::None),
+            },
             ButtonId::Rematch => {
                 next.screen = Screen::InMatch;
                 (next, Effect::RestartMatch)
@@ -896,6 +1264,16 @@ impl AppState {
                             next.screen = Screen::InMatch;
                             (next, Effect::Resign)
                         }
+                        // B-026: skipping the live mission leaves for the
+                        // main menu — the app's SkipMission handler drops
+                        // the host on the way out (the campaign screen is
+                        // a fresh OpenCampaign away). The skip is recorded,
+                        // the next entry unlocks, the match is gone: the
+                        // same successor Quit to Menu takes.
+                        ConfirmAction::SkipMission { mission_index } => {
+                            next.screen = Screen::MainMenu;
+                            (next, Effect::SkipMission { mission_index })
+                        }
                     },
                     // Confirm* outside a Confirm screen is unreachable
                     // (the button only resolves inside one); the safe
@@ -919,16 +1297,16 @@ impl AppState {
         let mut next = self.clone();
         match key {
             NavKey::Up => {
-                next.focus_prev();
+                next.focus_prev(ctx);
                 (next, Effect::None)
             }
             NavKey::Down => {
-                next.focus_next();
+                next.focus_next(ctx);
                 (next, Effect::None)
             }
             NavKey::Left | NavKey::Right => {
                 let dir = if matches!(key, NavKey::Right) { 1 } else { -1 };
-                match next.focused_button() {
+                match next.focused_button(ctx) {
                     Some(ButtonId::Mode) => {
                         if let Screen::NewMatch(fields) = &mut next.screen {
                             fields.mode = fields.mode.cycle(dir);
@@ -949,6 +1327,14 @@ impl AppState {
                         }
                         (next, Effect::None)
                     }
+                    // B-026: the campaign screen's Mission field cycles
+                    // Left/Right, the same law.
+                    Some(ButtonId::CampaignMission) => {
+                        if let Screen::Campaign(fields) = &mut next.screen {
+                            fields.cycle_selection(dir);
+                        }
+                        (next, Effect::None)
+                    }
                     Some(ButtonId::Setting(row)) => (
                         next,
                         Effect::AdjustSetting {
@@ -962,21 +1348,28 @@ impl AppState {
             NavKey::Enter => self.activate_focused(ctx),
             NavKey::Escape => self.on_back(),
             NavKey::Backspace => {
-                if matches!(next.focused_button(), Some(ButtonId::Seed)) {
+                if matches!(next.focused_button(ctx), Some(ButtonId::Seed)) {
                     if let Screen::NewMatch(fields) = &mut next.screen {
                         fields.seed_text.pop();
                     }
                 }
                 // A-011: the picker's seed field edits in place, same law.
-                if matches!(next.focused_button(), Some(ButtonId::MissionSeed)) {
+                if matches!(next.focused_button(ctx), Some(ButtonId::MissionSeed)) {
                     if let Screen::MissionPicker(fields) = &mut next.screen {
+                        fields.seed_text.pop();
+                    }
+                }
+                // B-026: the campaign screen's seed field edits in place,
+                // same law.
+                if matches!(next.focused_button(ctx), Some(ButtonId::CampaignSeed)) {
+                    if let Screen::Campaign(fields) = &mut next.screen {
                         fields.seed_text.pop();
                     }
                 }
                 (next, Effect::None)
             }
             NavKey::Digit(d) => {
-                if matches!(next.focused_button(), Some(ButtonId::Seed)) && d.is_ascii_digit() {
+                if matches!(next.focused_button(ctx), Some(ButtonId::Seed)) && d.is_ascii_digit() {
                     if let Screen::NewMatch(fields) = &mut next.screen {
                         if fields.seed_text.len() < 20 {
                             fields.seed_text.push(d);
@@ -984,10 +1377,21 @@ impl AppState {
                     }
                 }
                 // A-011: the picker's seed field types digits, same cap.
-                if matches!(next.focused_button(), Some(ButtonId::MissionSeed))
+                if matches!(next.focused_button(ctx), Some(ButtonId::MissionSeed))
                     && d.is_ascii_digit()
                 {
                     if let Screen::MissionPicker(fields) = &mut next.screen {
+                        if fields.seed_text.len() < 20 {
+                            fields.seed_text.push(d);
+                        }
+                    }
+                }
+                // B-026: the campaign screen's seed field types digits,
+                // same cap.
+                if matches!(next.focused_button(ctx), Some(ButtonId::CampaignSeed))
+                    && d.is_ascii_digit()
+                {
+                    if let Screen::Campaign(fields) = &mut next.screen {
                         if fields.seed_text.len() < 20 {
                             fields.seed_text.push(d);
                         }
@@ -1035,6 +1439,8 @@ mod tests {
             seed_prefill: None,
             map_count: 1,
             mission_count: 1,
+            has_campaign: false,
+            live_mission: None,
         }
     }
 
@@ -1045,6 +1451,8 @@ mod tests {
             seed_prefill: Some(4242),
             map_count: 3,
             mission_count: 1,
+            has_campaign: false,
+            live_mission: None,
         }
     }
 
@@ -1255,9 +1663,9 @@ mod tests {
     #[test]
     fn pause_menu_has_six_rows_and_resign_is_row_four() {
         let pause = at(Screen::PauseMenu);
-        assert_eq!(pause.button_count(), 6);
-        assert_eq!(pause.button_at(4), Some(ButtonId::PauseResign));
-        assert_eq!(pause.button_at(5), Some(ButtonId::QuitToMenu));
+        assert_eq!(pause.button_count(&ctx()), 6);
+        assert_eq!(pause.button_at(4, &ctx()), Some(ButtonId::PauseResign));
+        assert_eq!(pause.button_at(5, &ctx()), Some(ButtonId::QuitToMenu));
     }
 
     #[test]
@@ -1297,9 +1705,9 @@ mod tests {
         let controls = at(Screen::Controls {
             return_to: SettingsReturn::MainMenu,
         });
-        assert_eq!(controls.button_count(), 1);
-        assert_eq!(controls.button_at(0), Some(ButtonId::Back));
-        assert_eq!(controls.button_at(1), None);
+        assert_eq!(controls.button_count(&ctx()), 1);
+        assert_eq!(controls.button_at(0, &ctx()), Some(ButtonId::Back));
+        assert_eq!(controls.button_at(1, &ctx()), None);
     }
 
     #[test]
@@ -1336,7 +1744,7 @@ mod tests {
             return_to: SettingsReturn::MainMenu,
         });
         assert_eq!(controls.focus, 0);
-        assert_eq!(controls.focused_button(), Some(ButtonId::Back));
+        assert_eq!(controls.focused_button(&ctx()), Some(ButtonId::Back));
         let (next, _) = controls.on_key(NavKey::Up, &ctx());
         assert_eq!(next.focus, 0, "Up wraps on a one-row screen");
         let (next, _) = controls.on_key(NavKey::Down, &ctx());
@@ -1374,13 +1782,16 @@ mod tests {
         let restart = at(Screen::Confirm {
             action: ConfirmAction::Restart,
         });
-        assert_eq!(restart.button_count(), 2);
-        assert_eq!(restart.button_at(0), Some(ButtonId::ConfirmCancel));
-        assert_eq!(restart.button_at(1), Some(ButtonId::ConfirmProceed));
-        assert_eq!(restart.button_at(2), None);
+        assert_eq!(restart.button_count(&ctx()), 2);
+        assert_eq!(restart.button_at(0, &ctx()), Some(ButtonId::ConfirmCancel));
+        assert_eq!(restart.button_at(1, &ctx()), Some(ButtonId::ConfirmProceed));
+        assert_eq!(restart.button_at(2, &ctx()), None);
         // Default focus is row 0 (Cancel) — the safer mis-press.
         assert_eq!(restart.focus, 0);
-        assert_eq!(restart.focused_button(), Some(ButtonId::ConfirmCancel));
+        assert_eq!(
+            restart.focused_button(&ctx()),
+            Some(ButtonId::ConfirmCancel)
+        );
     }
 
     #[test]
@@ -1422,7 +1833,7 @@ mod tests {
             action: ConfirmAction::Restart,
         });
         let (next, _) = restart.on_key(NavKey::Down, &ctx()); // row 1
-        assert_eq!(next.focused_button(), Some(ButtonId::ConfirmProceed));
+        assert_eq!(next.focused_button(&ctx()), Some(ButtonId::ConfirmProceed));
         let (next, effect) = next.on_key(NavKey::Enter, &ctx());
         assert_eq!(next.screen, Screen::InMatch);
         assert_eq!(effect, Effect::RestartMatch);
@@ -1434,7 +1845,7 @@ mod tests {
             action: ConfirmAction::QuitToMenu,
         });
         let (next, _) = quit.on_key(NavKey::Down, &ctx()); // row 1
-        assert_eq!(next.focused_button(), Some(ButtonId::ConfirmProceed));
+        assert_eq!(next.focused_button(&ctx()), Some(ButtonId::ConfirmProceed));
         let (next, effect) = next.on_key(NavKey::Enter, &ctx());
         assert_eq!(next.screen, Screen::MainMenu);
         assert_eq!(effect, Effect::DropMatch);
@@ -1493,17 +1904,17 @@ mod tests {
         // A-009 task 1: the main menu now has four rows (NewMatch, Settings,
         // Controls, Quit). The walk visits each before wrapping.
         let mut state = menu();
-        assert_eq!(state.focused_button(), Some(ButtonId::NewMatch));
-        state.focus_next();
-        assert_eq!(state.focused_button(), Some(ButtonId::Settings));
-        state.focus_next();
-        assert_eq!(state.focused_button(), Some(ButtonId::Controls));
-        state.focus_next();
-        assert_eq!(state.focused_button(), Some(ButtonId::Quit));
-        state.focus_next(); // wraps (A-110)
-        assert_eq!(state.focused_button(), Some(ButtonId::NewMatch));
-        state.focus_prev(); // wraps back
-        assert_eq!(state.focused_button(), Some(ButtonId::Quit));
+        assert_eq!(state.focused_button(&ctx()), Some(ButtonId::NewMatch));
+        state.focus_next(&ctx());
+        assert_eq!(state.focused_button(&ctx()), Some(ButtonId::Settings));
+        state.focus_next(&ctx());
+        assert_eq!(state.focused_button(&ctx()), Some(ButtonId::Controls));
+        state.focus_next(&ctx());
+        assert_eq!(state.focused_button(&ctx()), Some(ButtonId::Quit));
+        state.focus_next(&ctx()); // wraps (A-110)
+        assert_eq!(state.focused_button(&ctx()), Some(ButtonId::NewMatch));
+        state.focus_prev(&ctx()); // wraps back
+        assert_eq!(state.focused_button(&ctx()), Some(ButtonId::Quit));
     }
 
     #[test]
@@ -1512,9 +1923,9 @@ mod tests {
         // because the Controls row sits between Settings and Quit.
         let mut state = menu();
         for _ in 0..3 {
-            state.focus_next();
+            state.focus_next(&ctx());
         }
-        assert_eq!(state.focused_button(), Some(ButtonId::Quit));
+        assert_eq!(state.focused_button(&ctx()), Some(ButtonId::Quit));
         // Enter activates the focused row — the Quit row.
         let (_, effect) = state.on_key(NavKey::Enter, &ctx());
         assert_eq!(effect, Effect::QuitApp);
@@ -1529,7 +1940,7 @@ mod tests {
         assert_eq!(next.focus, 0, "the entered screen starts on row 0");
         // Cycling a field on the same screen keeps the focus where it is.
         let mut new_match = new_match_screen(&ctx());
-        new_match.focus_index(0); // Mode
+        new_match.focus_index(0, &ctx()); // Mode
         let (next, _) = new_match.activate_index(0, &ctx());
         assert_eq!(next.focus, 0, "same screen: focus stays on the row");
         assert!(matches!(next.screen, Screen::NewMatch(_)));
@@ -1540,9 +1951,9 @@ mod tests {
         // A-009 task 1: a stale focus index now clamps to row 3 (Quit), not
         // row 2, because the menu grew a fourth row.
         let mut state = menu();
-        state.focus_index(99); // a stale index cannot escape
+        state.focus_index(99, &ctx()); // a stale index cannot escape
         assert_eq!(state.focus, 3);
-        state.focus_index(1);
+        state.focus_index(1, &ctx());
         let (_, effect) = state.activate_index(1, &ctx()); // a click on Settings
         assert!(matches!(effect, Effect::None));
         assert_eq!(state.screen, Screen::MainMenu);
@@ -1558,7 +1969,7 @@ mod tests {
     #[test]
     fn in_match_has_no_focusable_rows_and_world_input_is_live() {
         let state = at(Screen::InMatch);
-        assert_eq!(state.button_count(), 0);
+        assert_eq!(state.button_count(&ctx()), 0);
         assert!(state.takes_world_input());
         // Every menu screen swallows the world's input.
         assert!(!menu().takes_world_input());
@@ -1583,7 +1994,7 @@ mod tests {
         let start = new_match_screen(&ctx());
         let mode_row = {
             let mut s = start.clone();
-            s.focus_index(0);
+            s.focus_index(0, &ctx());
             s
         };
         let (next, _) = mode_row.on_key(NavKey::Right, &ctx());
@@ -1615,7 +2026,7 @@ mod tests {
             ..ctx()
         });
         let mut map_row = start.clone();
-        map_row.focus_index(2);
+        map_row.focus_index(2, &ctx());
         let at_focus = |screen: Screen| AppState { screen, focus: 2 };
         let (next, _) = map_row.on_key(NavKey::Right, &ctx());
         assert!(matches!(
@@ -1642,7 +2053,7 @@ mod tests {
     fn seed_digits_type_backspace_deletes_and_enter_randomizes() {
         let start = new_match_screen(&ctx());
         let mut seed_row = start.clone();
-        seed_row.focus_index(1);
+        seed_row.focus_index(1, &ctx());
         let (mut next, _) = seed_row.on_key(NavKey::Digit('4'), &ctx());
         for d in ['2', '0', '6', '9'] {
             let (n, _) = next.on_key(NavKey::Digit(d), &ctx());
@@ -1680,7 +2091,7 @@ mod tests {
     fn seed_typing_is_capped_and_digits_only_land_when_the_row_is_focused() {
         let start = new_match_screen(&ctx());
         let mut seed_row = start.clone();
-        seed_row.focus_index(1);
+        seed_row.focus_index(1, &ctx());
         let mut next = seed_row.clone();
         for _ in 0..30 {
             let (n, _) = next.on_key(NavKey::Digit('7'), &ctx());
@@ -1689,7 +2100,7 @@ mod tests {
         assert!(matches!(&next.screen, Screen::NewMatch(f) if f.seed_text.len() == 20));
         // A digit with the Mode row focused types nothing.
         let mut mode_row = start.clone();
-        mode_row.focus_index(0);
+        mode_row.focus_index(0, &ctx());
         let (n, _) = mode_row.on_key(NavKey::Digit('7'), &ctx());
         assert!(matches!(&n.screen, Screen::NewMatch(f) if f.seed_text.is_empty()));
     }
@@ -1716,7 +2127,7 @@ mod tests {
         let mut settings = at(Screen::Settings {
             return_to: SettingsReturn::MainMenu,
         });
-        settings.focus_index(2); // zoom_min
+        settings.focus_index(2, &ctx()); // zoom_min
         let (_, effect) = settings.on_key(NavKey::Right, &ctx());
         assert_eq!(effect, Effect::AdjustSetting { row: 2, dir: 1 });
         let (_, effect) = settings.on_key(NavKey::Left, &ctx());
@@ -1727,7 +2138,7 @@ mod tests {
         let mut done = at(Screen::Settings {
             return_to: SettingsReturn::MainMenu,
         });
-        done.focus_index(8);
+        done.focus_index(8, &ctx());
         let (_, effect) = done.on_key(NavKey::Left, &ctx());
         assert_eq!(effect, Effect::None);
     }
@@ -1737,23 +2148,23 @@ mod tests {
         let settings = at(Screen::Settings {
             return_to: SettingsReturn::MainMenu,
         });
-        assert_eq!(settings.button_count(), 9);
+        assert_eq!(settings.button_count(&ctx()), 9);
         for row in 0..8 {
             assert_eq!(
-                settings.button_at(row),
+                settings.button_at(row, &ctx()),
                 Some(ButtonId::Setting(row)),
                 "row {row}"
             );
         }
-        assert_eq!(settings.button_at(8), Some(ButtonId::Done));
-        assert_eq!(settings.button_at(9), None);
+        assert_eq!(settings.button_at(8, &ctx()), Some(ButtonId::Done));
+        assert_eq!(settings.button_at(9, &ctx()), None);
         // Focus walks the whole ladder (keyboard reaches the new row —
         // M10.2 Phase 4's mute row is row 5, between volume and
         // fullscreen).
         let mut walking = settings.clone();
         for expected in 0..9 {
             assert_eq!(walking.focus, expected);
-            walking.focus_next();
+            walking.focus_next(&ctx());
         }
         assert_eq!(walking.focus, 0, "wraps after Done");
     }
@@ -1947,6 +2358,8 @@ mod tests {
             seed_prefill: None,
             map_count: 1,
             mission_count: 3,
+            has_campaign: false,
+            live_mission: None,
         }
     }
 
@@ -1963,9 +2376,9 @@ mod tests {
         // shape every index-driven path (the A-010 Xvfb evidence script
         // included) walks.
         let screen = new_match_screen(&ctx());
-        assert_eq!(screen.button_count(), 6);
-        assert_eq!(screen.button_at(5), Some(ButtonId::Missions));
-        assert_eq!(screen.button_at(6), None);
+        assert_eq!(screen.button_count(&ctx()), 6);
+        assert_eq!(screen.button_at(5, &ctx()), Some(ButtonId::Missions));
+        assert_eq!(screen.button_at(6, &ctx()), None);
         for (index, id) in [
             ButtonId::Mode,
             ButtonId::Seed,
@@ -1977,7 +2390,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert_eq!(screen.button_at(index), Some(id), "row {index}");
+            assert_eq!(screen.button_at(index, &ctx()), Some(id), "row {index}");
         }
     }
 
@@ -2031,7 +2444,7 @@ mod tests {
     #[test]
     fn the_picker_lists_four_rows_in_order() {
         let picker = picker_screen(&ctx_missions());
-        assert_eq!(picker.button_count(), 4);
+        assert_eq!(picker.button_count(&ctx()), 4);
         for (index, id) in [
             ButtonId::Mission,
             ButtonId::MissionSeed,
@@ -2041,9 +2454,9 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert_eq!(picker.button_at(index), Some(id), "row {index}");
+            assert_eq!(picker.button_at(index, &ctx()), Some(id), "row {index}");
         }
-        assert_eq!(picker.button_at(4), None);
+        assert_eq!(picker.button_at(4, &ctx()), None);
         assert_eq!(picker.name(), "mission picker screen");
     }
 
@@ -2051,7 +2464,7 @@ mod tests {
     fn the_mission_row_cycles_and_wraps_by_the_loaded_count() {
         // The map picker's wrap law, verbatim, over the mission list.
         let mut picker = picker_screen(&ctx_missions());
-        picker.focus_index(0); // the Mission row
+        picker.focus_index(0, &ctx()); // the Mission row
         let (next, _) = picker.on_key(NavKey::Right, &ctx_missions());
         assert!(matches!(&next.screen, Screen::MissionPicker(f) if f.mission_index == 1));
         let (next, _) = AppState {
@@ -2090,7 +2503,7 @@ mod tests {
     #[test]
     fn picker_seed_digits_type_backspace_deletes_and_enter_randomizes() {
         let mut picker = picker_screen(&ctx_missions());
-        picker.focus_index(1); // the seed row
+        picker.focus_index(1, &ctx()); // the seed row
         let (mut next, _) = picker.on_key(NavKey::Digit('7'), &ctx_missions());
         for d in ['7', '7'] {
             let (n, _) = next.on_key(NavKey::Digit(d), &ctx_missions());
@@ -2103,7 +2516,7 @@ mod tests {
         assert!(matches!(&next.screen, Screen::MissionPicker(f) if f.seed_text == "1234"));
         // A digit with the Mission row focused types nothing.
         let mut mission_row = picker_screen(&ctx_missions());
-        mission_row.focus_index(0);
+        mission_row.focus_index(0, &ctx());
         let (n, _) = mission_row.on_key(NavKey::Digit('7'), &ctx_missions());
         assert!(matches!(&n.screen, Screen::MissionPicker(f) if f.seed_text.is_empty()));
     }
@@ -2113,7 +2526,7 @@ mod tests {
         // A typed seed rides the effect; an empty field falls back to the
         // context's fresh random seed (the New Match screen's Start law).
         let mut picker = picker_screen(&ctx_missions());
-        picker.focus_index(1);
+        picker.focus_index(1, &ctx());
         let (mut typed, _) = picker.on_key(NavKey::Digit('4'), &ctx_missions());
         for d in ['2', '0', '6', '9'] {
             let (n, _) = typed.on_key(NavKey::Digit(d), &ctx_missions());
@@ -2152,6 +2565,8 @@ mod tests {
             seed_prefill: None,
             map_count: 1,
             mission_count: 0,
+            has_campaign: false,
+            live_mission: None,
         };
         let (next, effect) = new_match_screen(&barren).activate_index(5, &barren);
         assert_eq!(effect, Effect::None);
@@ -2180,5 +2595,301 @@ mod tests {
             matches!(next.screen, Screen::MissionPicker(_)),
             "Start is inert"
         );
+    }
+    // ---- B-026: the campaign screen (ADR-0201 §6/§9 Phase 3) -----------
+
+    /// A context whose tree carries a campaign (the repo content's shape —
+    /// the Campaign row exists on the main menu).
+    fn ctx_campaign() -> KeyContext {
+        KeyContext {
+            random_seed: 1234,
+            seed_prefill: None,
+            map_count: 1,
+            mission_count: 4,
+            has_campaign: true,
+            live_mission: None,
+        }
+    }
+
+    /// The pilot campaign's shape as a machine fixture: three chapters in
+    /// play order plus one challenge extending chapter 0, each entry naming
+    /// its tree mission index (the real campaign's shape — the wiring tests
+    /// pin the app-built version against the real content; this fixture
+    /// pins the machine's laws without touching the content tree).
+    fn campaign_fixture() -> CampaignState {
+        let entry = |mission_index: usize, name: &str, challenge: bool, extends: Option<usize>| {
+            CampaignEntry {
+                mission_index,
+                name: name.to_string(),
+                challenge,
+                extends,
+                record: None,
+            }
+        };
+        CampaignState {
+            campaign_name: "Alpha Campaign".to_string(),
+            seed_text: String::new(),
+            selection: 0,
+            entries: vec![
+                entry(0, "Crossroads", false, None),
+                entry(1, "Hold the Line", false, None),
+                entry(2, "Supply Run", false, None),
+                entry(3, "Worker Rush", true, Some(0)),
+            ],
+        }
+    }
+
+    #[test]
+    fn the_main_menu_gains_a_campaign_row_only_when_the_tree_carries_one() {
+        // B-025's law, made structural: no campaign, no Campaign row (the
+        // campaign-less layout is exactly today's four rows); a campaign
+        // slots the row in at index 1 and shifts the rest down by one.
+        let menu = menu();
+        assert_eq!(menu.button_count(&ctx()), 4);
+        assert_eq!(menu.button_at(1, &ctx()), Some(ButtonId::Settings));
+        assert_eq!(menu.button_count(&ctx_campaign()), 5);
+        assert_eq!(menu.button_at(1, &ctx_campaign()), Some(ButtonId::Campaign));
+        assert_eq!(menu.button_at(2, &ctx_campaign()), Some(ButtonId::Settings));
+        assert_eq!(menu.button_at(3, &ctx_campaign()), Some(ButtonId::Controls));
+        assert_eq!(menu.button_at(4, &ctx_campaign()), Some(ButtonId::Quit));
+        // The campaign-less layout has no row 4; the campaign-present one
+        // has no row 5.
+        assert_eq!(menu.button_at(4, &ctx()), None);
+        assert_eq!(menu.button_at(5, &ctx_campaign()), None);
+    }
+
+    #[test]
+    fn the_campaign_row_opens_the_screen_through_the_open_campaign_effect() {
+        // The machine cannot build the screen's snapshot (it never touches
+        // the content tree), so the row emits the effect and the app builds
+        // `Screen::Campaign` — the state stays on the menu the machine
+        // returned, and the app's interpreter swaps the screen in.
+        let (next, effect) = menu().activate_index(1, &ctx_campaign());
+        assert!(matches!(next.screen, Screen::MainMenu));
+        assert_eq!(effect, Effect::OpenCampaign);
+        // Campaign-less, the row does not exist: row 1 is Settings and no
+        // OpenCampaign can ever fire.
+        let (next, effect) = menu().activate_index(1, &ctx());
+        assert!(matches!(next.screen, Screen::Settings { .. }));
+        assert_eq!(effect, Effect::None);
+    }
+
+    #[test]
+    fn the_unlock_rule_gates_chapters_on_their_predecessor() {
+        // ADR-0201 §6: sequential by default — the first chapter is
+        // available, every later one locked until its predecessor is
+        // completed OR skipped; the challenge beside chapter 0 unlocks on
+        // chapter 0's completion only.
+        let state = campaign_fixture();
+        assert_eq!(state.status(0), CampaignStatus::Available);
+        assert_eq!(state.status(1), CampaignStatus::Locked);
+        assert_eq!(state.status(2), CampaignStatus::Locked);
+        assert_eq!(state.status(3), CampaignStatus::Locked);
+        // Completing chapter 0 unlocks chapter 1 and the challenge...
+        let mut done = campaign_fixture();
+        done.entries[0].record = Some(crate::progress::MissionRecord::Completed);
+        assert_eq!(done.status(1), CampaignStatus::Available);
+        assert_eq!(
+            done.status(3),
+            CampaignStatus::Available,
+            "the challenge unlocks on completion"
+        );
+        // ...but chapter 2 stays locked behind chapter 1.
+        assert_eq!(done.status(2), CampaignStatus::Locked);
+        // A record shows on its own entry.
+        assert_eq!(done.status(0), CampaignStatus::Completed);
+    }
+
+    #[test]
+    fn a_skip_unlocks_the_next_chapter_but_never_the_challenge() {
+        // A-211: the ADR's wording and the campaign file's own comment —
+        // skip is the player's way past a chapter, and the challenge's
+        // gate is its chapter's COMPLETION, not its being passed.
+        let mut state = campaign_fixture();
+        assert!(state.skip(0));
+        assert_eq!(state.status(0), CampaignStatus::Skipped);
+        assert_eq!(state.status(1), CampaignStatus::Available);
+        assert_eq!(state.status(2), CampaignStatus::Locked);
+        assert_eq!(
+            state.status(3),
+            CampaignStatus::Locked,
+            "a skipped chapter does not unlock its challenge"
+        );
+    }
+
+    #[test]
+    fn an_entry_with_its_own_record_is_startable_even_from_a_stale_file() {
+        // The record itself unlocks a replay: a stale or partial progress
+        // file (chapter 2 recorded, chapter 1 not — hand-editing, a
+        // friend's file) degrades to "replayable", never to a soft-lock.
+        let mut state = campaign_fixture();
+        state.entries[2].record = Some(crate::progress::MissionRecord::Skipped);
+        assert_eq!(state.status(2), CampaignStatus::Skipped);
+        assert!(state.startable(2));
+        // And chapter 3 follows chapter 2's record (the chain continues
+        // from what IS recorded).
+        assert_eq!(
+            state.status(3),
+            CampaignStatus::Locked,
+            "the challenge still waits on chapter 0"
+        );
+    }
+
+    #[test]
+    fn skip_is_inert_on_locked_completed_and_already_skipped_entries() {
+        // The affordance exists to unlock forward: a locked entry has
+        // nothing to unlock, a completed one nothing forward, a skipped
+        // one is already skipped.
+        let mut state = campaign_fixture();
+        assert!(!state.skip(1), "locked");
+        state.entries[0].record = Some(crate::progress::MissionRecord::Completed);
+        assert!(!state.skip(0), "completed");
+        state.entries[0].record = Some(crate::progress::MissionRecord::Skipped);
+        assert!(!state.skip(0), "already skipped");
+        // An available one skips.
+        state.entries[1].record = None;
+        state.entries[0].record = Some(crate::progress::MissionRecord::Completed);
+        assert!(state.skip(1));
+    }
+
+    #[test]
+    fn campaign_start_resolves_to_the_selected_mission_and_is_inert_on_locked() {
+        // Start plays the exact mission path the picker built (the effect
+        // carries the entry's tree mission index); a locked entry is the
+        // unlock rule's only gate.
+        let mut state = campaign_fixture();
+        state.selection = 1; // a locked chapter
+        let screen = at(Screen::Campaign(state.clone()));
+        let (next, effect) = screen.activate_index(2, &ctx_campaign());
+        assert_eq!(effect, Effect::None, "locked: Start is inert");
+        assert!(matches!(next.screen, Screen::Campaign(_)));
+        // Select the first chapter (available) and type a seed first
+        // (the seed row is row 1 — the digit lands only when focused).
+        state.selection = 0;
+        let mut screen = at(Screen::Campaign(state));
+        screen.focus_index(1, &ctx_campaign());
+        let (typed, _) = screen.on_key(NavKey::Digit('7'), &ctx_campaign());
+        let (next, effect) = typed.activate_index(2, &ctx_campaign());
+        assert!(matches!(next.screen, Screen::InMatch));
+        assert_eq!(
+            effect,
+            Effect::StartMission {
+                mission_index: 0,
+                seed: 7
+            }
+        );
+    }
+
+    #[test]
+    fn campaign_skip_updates_the_snapshot_and_emits_the_effect() {
+        // The machine's half (the snapshot the row tag and the unlock rule
+        // read) and the effect's half (the tree index the app persists)
+        // run on the same activation.
+        let screen = at(Screen::Campaign(campaign_fixture()));
+        let (next, effect) = screen.activate_index(3, &ctx_campaign());
+        assert_eq!(effect, Effect::SkipMission { mission_index: 0 });
+        let Screen::Campaign(fields) = next.screen else {
+            panic!("the campaign screen stays");
+        };
+        assert_eq!(fields.status(0), CampaignStatus::Skipped);
+        assert_eq!(fields.status(1), CampaignStatus::Available);
+    }
+
+    #[test]
+    fn the_campaign_screen_follows_the_picker_laws() {
+        // Back/Esc return to the main menu; the mission field cycles with
+        // wrap; the seed field edits in place (digits + backspace + the
+        // Enter randomize).
+        let screen = at(Screen::Campaign(campaign_fixture()));
+        let (next, _) = screen.on_key(NavKey::Escape, &ctx_campaign());
+        assert!(matches!(next.screen, Screen::MainMenu));
+        // The Back row (4) does the same.
+        let (next, _) = screen.activate_index(4, &ctx_campaign());
+        assert!(matches!(next.screen, Screen::MainMenu));
+        // The mission field cycles with wrap (4 entries).
+        let (next, _) = screen.on_key(NavKey::Right, &ctx_campaign());
+        let Screen::Campaign(fields) = &next.screen else {
+            panic!("stays on the campaign screen");
+        };
+        assert_eq!(fields.selection, 1);
+        let mut wrapping = at(Screen::Campaign(campaign_fixture()));
+        wrapping.focus_index(0, &ctx_campaign());
+        for _ in 0..4 {
+            let (next, _) = wrapping.on_key(NavKey::Right, &ctx_campaign());
+            wrapping = next;
+        }
+        let Screen::Campaign(fields) = &wrapping.screen else {
+            panic!("stays on the campaign screen");
+        };
+        assert_eq!(fields.selection, 0, "four rights wrap to the first entry");
+        // The seed field: focus row 1, type, backspace.
+        let mut typing = at(Screen::Campaign(campaign_fixture()));
+        typing.focus_index(1, &ctx_campaign());
+        let (next, _) = typing.on_key(NavKey::Digit('4'), &ctx_campaign());
+        let (next, _) = next.on_key(NavKey::Digit('2'), &ctx_campaign());
+        let Screen::Campaign(fields) = &next.screen else {
+            panic!("stays on the campaign screen");
+        };
+        assert_eq!(fields.seed_text, "42");
+        assert_eq!(fields.seed_value(999), 42);
+        let (next, _) = next.on_key(NavKey::Backspace, &ctx_campaign());
+        let Screen::Campaign(fields) = &next.screen else {
+            panic!("stays on the campaign screen");
+        };
+        assert_eq!(fields.seed_text, "4");
+        // Enter on the seed field randomizes from the context.
+        let (next, _) = next.on_key(NavKey::Enter, &ctx_campaign());
+        let Screen::Campaign(fields) = &next.screen else {
+            panic!("stays on the campaign screen");
+        };
+        assert_eq!(fields.seed_text, "1234");
+    }
+
+    #[test]
+    fn the_pause_menu_gains_a_skip_mission_row_only_over_a_mission() {
+        // Row 6, appended after Quit to Menu so rows 0-5 (the Xvfb focus
+        // arithmetic) keep their meaning; a plain match's pause menu is
+        // exactly the six rows it was.
+        let pause = at(Screen::PauseMenu);
+        let ctx_live = KeyContext {
+            live_mission: Some(0),
+            ..ctx_campaign()
+        };
+        assert_eq!(pause.button_count(&ctx_live), 7);
+        assert_eq!(
+            pause.button_at(6, &ctx_live),
+            Some(ButtonId::PauseSkipMission)
+        );
+        assert_eq!(pause.button_count(&ctx()), 6, "no live mission, no row");
+        assert_eq!(pause.button_at(6, &ctx()), None);
+    }
+
+    #[test]
+    fn the_pause_skip_rung_confirms_to_the_menu_with_the_effect() {
+        // A match-discarding action is confirm-gated (A-009's law); the
+        // rung stores the live mission's tree index and Proceed runs it
+        // unchanged — the successor screen is the main menu and the app's
+        // handler drops the host on the way out.
+        let ctx_live = KeyContext {
+            live_mission: Some(2),
+            ..ctx_campaign()
+        };
+        let pause = at(Screen::PauseMenu);
+        let (confirm, effect) = pause.activate_index(6, &ctx_live);
+        assert_eq!(effect, Effect::None);
+        assert_eq!(
+            confirm.screen,
+            Screen::Confirm {
+                action: ConfirmAction::SkipMission { mission_index: 2 }
+            }
+        );
+        // Esc on the rung cancels back to the pause menu (the safe edge).
+        let (back, effect) = confirm.on_key(NavKey::Escape, &ctx_live);
+        assert!(matches!(back.screen, Screen::PauseMenu));
+        assert_eq!(effect, Effect::None);
+        // Proceed leaves for the main menu carrying the skip.
+        let (next, effect) = confirm.activate_index(1, &ctx_live);
+        assert!(matches!(next.screen, Screen::MainMenu));
+        assert_eq!(effect, Effect::SkipMission { mission_index: 2 });
     }
 }

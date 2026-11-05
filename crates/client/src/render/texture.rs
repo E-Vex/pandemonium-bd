@@ -207,14 +207,8 @@ mod tests {
     /// Writes a real PNG (via the `image` encoder, the round-trip partner
     /// of the decoder under test) into a fresh temp dir.
     fn write_png(name: &str, width: u32, height: u32, pixels: &[[u8; 4]]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pandemonium-texture-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("creating temp dir");
+        // The shared collision-free helper (the Windows clock race).
+        let dir = crate::testutil::temp_dir("pandemonium-texture-test");
         let path = dir.join(name);
         let mut image = image::RgbaImage::new(width, height);
         for (index, pixel) in pixels.iter().enumerate() {
@@ -232,14 +226,8 @@ mod tests {
     }
 
     fn write_bytes(name: &str, bytes: &[u8]) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pandemonium-texture-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("creating temp dir");
+        // The shared collision-free helper (the Windows clock race).
+        let dir = crate::testutil::temp_dir("pandemonium-texture-test");
         let path = dir.join(name);
         let mut file = std::fs::File::create(&path).expect("creating file");
         file.write_all(bytes).expect("writing bytes");
@@ -282,14 +270,8 @@ mod tests {
         // A single-channel PNG exercises the color-type normalization:
         // whatever the PNG's own color type, the decoder must hand the
         // upload one RGBA8 buffer.
-        let dir = std::env::temp_dir().join(format!(
-            "pandemonium-texture-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("creating temp dir");
+        // The shared collision-free helper (the Windows clock race).
+        let dir = crate::testutil::temp_dir("pandemonium-texture-test");
         let path = dir.join("gray.png");
         let mut gray = image::GrayImage::new(1, 1);
         gray.put_pixel(0, 0, image::Luma([7]));
