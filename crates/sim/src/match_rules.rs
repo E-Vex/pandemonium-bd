@@ -112,6 +112,22 @@ impl MissionState {
             delivered: 0,
         }
     }
+
+    /// B-027 (ADR-0201 §6/§9 Phase 4): each objective's current resolution
+    /// in outward form, index-aligned with the objective list (`None` =
+    /// pending, `Some` = resolved). The rehosted simulation carries every
+    /// resolution from the recorded prefix (the evaluator ran during the
+    /// re-simulation), so the resumed client seeds its presentation tracker
+    /// from this — an objective that resolved before the save never
+    /// re-fires `Event::ObjectiveState` (the event is monotonic, exactly
+    /// once per objective), so the rebuild reads the authoritative
+    /// bookkeeping instead.
+    pub(crate) fn objective_states(&self) -> Vec<Option<ObjectiveState>> {
+        self.statuses
+            .iter()
+            .map(|status| status.outward())
+            .collect()
+    }
 }
 
 /// One objective's resolution, tracked across ticks. Resolutions are
@@ -127,6 +143,20 @@ enum ObjectiveStatus {
     /// non-optional objective ends the match with the opponent as winner
     /// (the AND-composition's failure path, live since Phase 1).
     Failed,
+}
+
+impl ObjectiveStatus {
+    /// The outward form of this status (B-027): `None` while pending, the
+    /// resolved state once the objective completed or failed — the mapping
+    /// [`crate::Sim::objective_states`] reads out for the resumed
+    /// presentation.
+    fn outward(self) -> Option<ObjectiveState> {
+        match self {
+            Self::Pending => None,
+            Self::Completed => Some(ObjectiveState::Completed),
+            Self::Failed => Some(ObjectiveState::Failed),
+        }
+    }
 }
 
 /// Stage 10 (plan §6.3.10, §9.7): evaluate the match rules.

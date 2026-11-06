@@ -31,9 +31,10 @@
 use std::time::Duration;
 
 use pandemonium_ai::Controller;
-use pandemonium_sim::{MatchOutcome, Sim, TrivialWorld};
+use pandemonium_sim::{rehost_sim, MatchOutcome, Sim, TrivialWorld};
 use pandemonium_sim_api::{
-    Command, Event, MatchSetup, MissionData, PlayerId, PlayerView, Snapshot, Tick, Vec2Fx,
+    Command, Event, MatchSetup, MissionData, ObjectiveState, PlayerId, PlayerView, Snapshot, Tick,
+    Vec2Fx,
 };
 
 use crate::clock::FixedTimestep;
@@ -173,6 +174,62 @@ impl MatchHost {
             paused: false,
             controllers,
             log: Vec::new(),
+        }
+    }
+
+    /// Resumes a mission match from a save (ADR-0201 §6/§9 Phase 4, B-027):
+    /// re-simulates the saved command log from tick 0 through the sim
+    /// crate's rehost driver (the same canonical feed loop
+    /// `run_command_log` uses) and re-hosts from the saved tick — the
+    /// simulation is the one the original match held at `saved_tick`
+    /// (state hash and id watermark identical, A2's re-simulation
+    /// property), the interpolator seeds from the current snapshot, and
+    /// the clock arms fresh. The host's command log starts seeded with the
+    /// recorded commands, so a recording of the resumed match carries the
+    /// complete log — pre-save and post-resume commands alike, in feed
+    /// order — and re-simulates to exactly what was played (still
+    /// replay-recordable).
+    ///
+    /// The ADR's honest caveats, verbatim in force here: the controllers
+    /// restart with fresh bookkeeping (nothing is serialized — the
+    /// continuation diverges from the never-interrupted timeline; never
+    /// asserted equal by any test, §6 caveat iii), and commands that were
+    /// submitted but never fed at save time (paused with `pending`
+    /// non-empty) are inherently absent — the save records the fed log,
+    /// and whatever `pending` held was never part of the match. A peer of
+    /// [`Self::with_mission`], not a refactor of it: the validation, the
+    /// controller sort, and the construction tail are the same law.
+    pub fn resume_with_mission(
+        world: &TrivialWorld,
+        setup: MatchSetup,
+        controllers: Vec<(PlayerId, Box<dyn Controller>)>,
+        mission: MissionData,
+        commands: &[Command],
+        saved_tick: u32,
+    ) -> Self {
+        for (player, _) in &controllers {
+            assert!(
+                setup.players.iter().any(|entry| entry.player == *player),
+                "controller for slot {player:?}, which is not in the match"
+            );
+        }
+        let mut controllers = controllers;
+        controllers.sort_by_key(|(player, _)| *player);
+        assert!(
+            controllers.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "one controller per slot at most"
+        );
+        let sim = rehost_sim(world, &setup, commands, saved_tick, Some(mission));
+        let mut interpolator = Interpolator::new();
+        interpolator.push(sim.snapshot());
+        Self {
+            sim,
+            clock: FixedTimestep::new(pandemonium_sim::TICKS_PER_SECOND),
+            interpolator,
+            pending: Vec::new(),
+            paused: false,
+            controllers,
+            log: commands.to_vec(),
         }
     }
 
@@ -349,6 +406,19 @@ impl MatchHost {
         self.sim.next_entity_id()
     }
 
+    /// B-027 (ADR-0201 §6/§9 Phase 4): each mission objective's current
+    /// resolution in outward form, index-aligned with the mission's
+    /// objective list (`None` = pending, `Some` = resolved); empty when the
+    /// match runs no mission. A read-only pass-through of the sim's own
+    /// bookkeeping (the A-066 pattern): the resumed client seeds its
+    /// presentation tracker from this — an objective that resolved before
+    /// the save never re-fires `Event::ObjectiveState` (the event is
+    /// monotonic, exactly once per objective), so the rebuild reads the
+    /// authoritative statuses instead.
+    pub fn objective_states(&self) -> Vec<Option<ObjectiveState>> {
+        self.sim.objective_states()
+    }
+
     /// Converts a world ground-plane point (from camera picking) back to the
     /// logical-plane fixed-point position commands carry — the boundary
     /// conversion so the simulation never sees a float (ADR-0001 §11.3).
@@ -364,7 +434,8 @@ impl MatchHost {
 mod tests {
     use super::*;
     use pandemonium_sim::{
-        CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
+        run_command_log_with_mission, CapTemplate, KindEconomy, KindTemplate,
+        ResourceDef as SimResourceDef, SpawnDef,
     };
     use pandemonium_sim_api::{
         CommandKind, ControllerKind, EntityId, KindId, MissionObjective, MissionObjectiveKind,
@@ -780,5 +851,104 @@ mod tests {
         ));
         assert!(mission.is_finished());
         assert!(!plain.is_finished());
+    }
+
+    /// B-027 (ADR-0201 §6/§9 Phase 4): a mission with one optional survive
+    /// objective that resolves at tick 1 — the fixture for the resume pins
+    /// (a resolution the rehosted host must still report, since the event
+    /// itself fired during the recorded prefix and never re-fires).
+    fn save_mission() -> MissionData {
+        MissionData {
+            player: PlayerId(0),
+            objectives: vec![MissionObjective {
+                kind: MissionObjectiveKind::Survive,
+                parameters: MissionObjectiveParameters::Survive { ticks: 1 },
+                optional: true,
+            }],
+            fog_preset: pandemonium_sim_api::FogPreset::Default,
+            ai_settings: pandemonium_sim_api::AiSettings::default(),
+        }
+    }
+
+    #[test]
+    fn resume_with_mission_rehosts_at_the_saved_tick() {
+        // The rehost law at the host seam: a resumed host at the saved tick
+        // is the host the original match was there — same state hash, same
+        // id watermark (A2's re-simulation property over the recorded
+        // prefix), and the log starts seeded with the recorded commands.
+        // Not a claim about any continuation from there (the ADR's §6
+        // caveat iii); the pin is the resumed instant itself.
+        let world = world();
+        let setup = setup();
+        let commands = vec![Command::new(
+            PlayerId(0),
+            0,
+            1,
+            CommandKind::Move {
+                units: vec![EntityId(1)],
+                target: Vec2Fx::from_ints(4, 4),
+            },
+        )];
+        let run = run_command_log_with_mission(&world, &setup, &commands, 30, None);
+        let host = MatchHost::resume_with_mission(
+            &world,
+            setup,
+            Vec::new(),
+            save_mission(),
+            &commands,
+            30,
+        );
+        assert_eq!(
+            host.tick(),
+            30,
+            "the host resumes exactly at the saved tick"
+        );
+        assert_eq!(host.state_hash(), run.final_hash);
+        assert_eq!(host.next_entity_id(), run.next_entity_id);
+        assert_eq!(
+            host.log(),
+            commands.as_slice(),
+            "the log starts seeded with the recorded commands"
+        );
+        // The continuation is live: a submitted command feeds the next step
+        // and lands after the seed, so a recording from here carries the
+        // complete log. This pins the mechanics only — never the
+        // continuation's content (caveat iii).
+        let mut host = host;
+        host.submit(Command::new(
+            PlayerId(0),
+            0,
+            2,
+            CommandKind::Stop {
+                units: vec![EntityId(1)],
+            },
+        ));
+        let outcome = host.step_once();
+        assert_eq!(outcome.steps, 1);
+        assert_eq!(host.tick(), 31);
+        assert_eq!(host.log().len(), commands.len() + 1);
+        assert_eq!(&host.log()[..commands.len()], &commands[..]);
+    }
+
+    #[test]
+    fn resume_with_mission_carries_the_resolved_objective_statuses() {
+        // The survive-1 objective resolved at tick 1, before the save: the
+        // resumed host reports it through the objective-status query (the
+        // event itself fired during the recorded prefix and never re-fires
+        // — the presentation half seeds from this query).
+        let world = world();
+        let setup = setup();
+        let host =
+            MatchHost::resume_with_mission(&world, setup, Vec::new(), save_mission(), &[], 30);
+        assert_eq!(host.tick(), 30);
+        assert_eq!(
+            host.objective_states(),
+            vec![Some(ObjectiveState::Completed)],
+            "the optional survive objective resolved during the rehosted prefix"
+        );
+        assert!(
+            !host.is_finished(),
+            "an optional objective never gates the match"
+        );
     }
 }

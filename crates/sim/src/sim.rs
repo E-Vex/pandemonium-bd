@@ -208,6 +208,21 @@ impl Sim {
         self.outcome.is_some()
     }
 
+    /// B-027 (ADR-0201 §6/§9 Phase 4): each mission objective's current
+    /// resolution in outward form, index-aligned with the mission's
+    /// objective list (`None` = pending, `Some` = resolved); empty when the
+    /// match runs no mission. Derived state read outward (the A-066
+    /// pattern, never part of the canonical hash): the resumed client seeds
+    /// its presentation tracker from this, because an objective resolved
+    /// before a save never re-fires `Event::ObjectiveState` (the event is
+    /// monotonic, exactly once per objective).
+    pub fn objective_states(&self) -> Vec<Option<pandemonium_sim_api::ObjectiveState>> {
+        self.mission
+            .as_ref()
+            .map(|mission| mission.objective_states())
+            .unwrap_or_default()
+    }
+
     /// Test-only window into one mover's runtime movement state (the
     /// movement-layer tests inspect paths and counters through this).
     #[cfg(test)]
