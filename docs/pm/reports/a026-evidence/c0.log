@@ -1,0 +1,6 @@
+pandemonium client — no asset pack manifest at /home/z/my-project/pandemonium-bd/crates/client/../../crates/client/assets/packs/default; using placeholder rendering
+pandemonium client — settings: /home/z/my-project/pandemonium-bd/target/a026-evidence/user-config/pandemonium/settings.cfg (absent, defaults the file)
+pandemonium client — audio: no device — null fallback (cues counted, never voiced)
+pandemonium client — windowed smoke: 60 frames presented, at the main menu (no match this run; seed prefill --seed 41008)
+pandemonium client — audio: null fallback (no device), cues fed/voiced/dropped 0/0/0 (0 client-side)
+pandemonium client — exiting at the main menu (0 matches started this run)

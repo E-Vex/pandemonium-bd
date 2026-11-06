@@ -1,0 +1,5 @@
+pandemonium client — no asset pack manifest at /home/z/my-project/pandemonium-bd/crates/client/../../crates/client/assets/packs/default; using placeholder rendering
+pandemonium client — settings: /home/z/my-project/pandemonium-bd/target/a027-evidence/user-config/pandemonium/settings.cfg (absent, defaults the file)
+pandemonium client — audio: no device — null fallback (cues counted, never voiced)
+pandemonium client — mission save: 'Crossroads' at tick 260 (hash 0xe7a3055ca47856e4) saved: /home/z/my-project/pandemonium-bd/target/a027-evidence/user-config/pandemonium/mission_save.pdrp
+pandemonium client — exiting at the main menu (1 match started this run)
