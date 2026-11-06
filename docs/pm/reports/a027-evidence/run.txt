@@ -1,0 +1,73 @@
+A-027 env: userland library tree at /home/z/my-project/pandemonium/userland-libs (pre-existing)
+A-027 environment (2026-11-06T13:55:00Z)
+Xvfb: /usr/bin/Xvfb (2:21.1.16-1.3+deb13u4)
+python: Python 3.12.16, python-xlib: (0, 33)
+XTEST injection: python-xlib xtest_fake_input (libXtst/xdotool not required)
+renderer: WGPU_BACKEND=gl LIBGL_ALWAYS_SOFTWARE=1 (Mesa llvmpipe)
+llvmpipe driver: /usr/lib/x86_64-linux-gnu/dri/swrast_dri.so
+userland tree: /home/z/my-project/pandemonium/userland-libs
+seed: 41008, display: :99, scratch config: /home/z/my-project/pandemonium-bd/target/a027-evidence/user-config
+
+A-027 env: Xvfb running on :99 (pid 18561), screen 1280x800x24, no window manager
+A-027 env: XTEST extension present on :99 (major opcode 132)
+A-027 build: cargo build -p pandemonium-client --release
+
+warning: `pandemonium-sim` (lib) generated 3 warnings
+    Finished `release` profile [optimized] target(s) in 0.12s
+
+A-027 checks begin (evidence in /home/z/my-project/pandemonium-bd/target/a027-evidence)
+[A-027 c0] environment gate: the windowed client presents 60 frames at the main menu
+  [c0] scratch config wiped (fresh state)
+  [c0] drive: 
+  [c0] evidence: pandemonium client — exiting at the main menu (0 matches started this run)
+  [c0] audio arm: null fallback (no device), cues fed/voiced/dropped 0/0/0 (0 client-side)
+  [c0] verdict: PASS
+[A-027 c0] verdict: PASS
+
+[A-027 c1] the Save & Quit rung (row 7) exists over a live mission: Enter opens the confirm screen over the live match
+  [c1] scratch config wiped (fresh state)
+  [c1] drive: Down Enter Down Down Enter [1.5s] Space [8.0s] Escape Down Down Down Down Down Down Down Enter [close]
+  [c1] evidence: pandemonium client — exiting at the confirm screen (tick 261, 0 commands submitted)
+  [c1] verdict: PASS
+[A-027 c1] verdict: PASS
+
+[A-027 c2] the confirm gate's default focus is Cancel: Enter keeps the match (the pause menu, still live)
+  [c2] scratch config wiped (fresh state)
+  [c2] drive: Down Enter Down Down Enter [1.5s] Space [8.0s] Escape Down Down Down Down Down Down Down Enter Enter [close]
+  [c2] evidence: pandemonium client — exiting at the pause menu (tick 260, 0 commands submitted)
+  [c2] verdict: PASS
+[A-027 c2] verdict: PASS
+
+[A-027 c3] the confirmed Save & Quit writes the save (the line names mission, tick, path; the record IS on disk) and lands at the main menu
+  [c3] scratch config wiped (fresh state)
+  [c3] save line: 'Crossroads' at tick 260 (0xe7a3055ca47856e4) -> /home/z/my-project/pandemonium-bd/target/a027-evidence/user-config/pandemonium/mission_save.pdrp
+  [c3] drive: Down Enter Down Down Enter [1.5s] Space [8.0s] Escape Down Down Down Down Down Down Down Enter Down Enter [3.0s] [close]
+  [c3] evidence: pandemonium client — exiting at the main menu (1 match started this run)
+  [c3] verdict: PASS
+[A-027 c3] verdict: PASS
+
+[A-027 c4] the Continue row (row 5) resumes the saved mission: the resumed line names the same mission at the saved tick, the match re-enters unpaused with no cutscene, and the exit tick climbs past the saved point
+  [c4] resumed line: 'Crossroads' at tick 260
+  [c4] drive: Down Down Down Down Down Enter [6.0s] [shot c4-resumed.png] [close]
+  [c4] evidence: pandemonium client — exiting at the match (tick 479, 0 commands submitted)
+  [c4] screenshot: c4-resumed.png — HUD scan {'warm-yellow': 1365, 'objective-green': 0, 'blue-white': 941} (MISSION header warm-yellow, the objective lines blue-white — the resumed match's seeded tracker, top-left block)
+  [c4] verdict: PASS
+[A-027 c4] verdict: PASS
+
+[A-027 c5] the save persists across a resume (A-215): a third session still carries the Continue row and resumes the same saved point again
+  [c5] resumed line: 'Crossroads' at tick 260
+  [c5] drive: Down Down Down Down Down Enter [6.0s] [close]
+  [c5] evidence: pandemonium client — exiting at the match (tick 461, 0 commands submitted)
+  [c5] verdict: PASS
+[A-027 c5] verdict: PASS
+
+[A-027 c6] a save-less main menu has no Continue row (A-219): Down x5 wraps to New Match, Enter opens the new match screen
+  [c6] scratch config wiped (fresh state)
+  [c6] drive: Down Down Down Down Down Enter [close]
+  [c6] evidence: pandemonium client — exiting at the new match screen (0 matches started this run)
+  [c6] verdict: PASS
+[A-027 c6] verdict: PASS
+
+=== A-027 Xvfb+XTEST pass: 7 passed, 0 failed (7 checks run) ===
+
+A-027 RESULT: all checks green. Evidence: /home/z/my-project/pandemonium-bd/target/a027-evidence
