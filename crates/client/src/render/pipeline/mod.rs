@@ -20,15 +20,22 @@ impl WgpuRenderer {
     /// client-side asset pack: its loadable PNG entries become one uploaded
     /// entity skin each (built once here, never per frame), and everything a
     /// kind cannot load — no pack, no entry, a `.glb`, a bad PNG — keeps the
-    /// placeholder silhouette path.
+    /// placeholder silhouette path. `display` is the event loop's owned
+    /// display handle: wgpu 29 moved the display up front to instance
+    /// creation, and GLES presentation requires it (Wayland and the
+    /// Xvfb/GL evidence path included; Vulkan/Metal/DX12 ignore it) —
+    /// winit's `OwnedDisplayHandle` is the documented source.
     pub fn new(
+        display: winit::event_loop::OwnedDisplayHandle,
         window: std::sync::Arc<winit::window::Window>,
         terrain: &TerrainMesh,
         kind_specs: Vec<KindShape>,
         kind_names: Vec<String>,
         pack: Option<AssetPack>,
     ) -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(display),
+        ));
         let surface = instance
             .create_surface(window.clone())
             .context("creating the window surface")?;
@@ -36,6 +43,9 @@ impl WgpuRenderer {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
+            // wgpu 30's new field; false is the pre-v30 behavior (no limit
+            // bucketing — the device keeps the adapter's full limits).
+            apply_limit_buckets: false,
         }))
         .context("requesting a GPU adapter (software rasterizers count)")?;
         let (device, queue) =
@@ -59,6 +69,10 @@ impl WgpuRenderer {
             alpha_mode: caps.alpha_modes[0],
             view_formats: Vec::new(),
             desired_maximum_frame_latency: 2,
+            // wgpu 30's new field; Auto reproduces the historical backend
+            // choice (Srgb for sRGB formats) — the behavior every golden
+            // Xvfb frame was produced under.
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
 
@@ -101,8 +115,8 @@ impl WgpuRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("main layout"),
-            bind_group_layouts: &[&camera_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&camera_layout)],
+            immediate_size: 0,
         });
 
         // The entity skin bindings — group(1) of the entity pipeline: one
@@ -139,14 +153,14 @@ impl WgpuRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let entity_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("entity layout"),
-                bind_group_layouts: &[&camera_layout, &entity_skin_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&camera_layout), Some(&entity_skin_layout)],
+                immediate_size: 0,
             });
 
         // The pack-texture layout (filtering sampler + sampled 2D texture) bound
@@ -177,8 +191,8 @@ impl WgpuRenderer {
         let terrain_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("terrain layout"),
-                bind_group_layouts: &[&camera_layout, &texture_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&camera_layout), Some(&texture_layout)],
+                immediate_size: 0,
             });
 
         let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -192,7 +206,7 @@ impl WgpuRenderer {
                 module: &terrain_shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<GpuTerrainVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -217,7 +231,7 @@ impl WgpuRenderer {
                             shader_location: 3,
                         },
                     ],
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -226,8 +240,8 @@ impl WgpuRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -242,7 +256,7 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -276,7 +290,7 @@ impl WgpuRenderer {
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[
-                    wgpu::VertexBufferLayout {
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<CubeVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[
@@ -298,8 +312,8 @@ impl WgpuRenderer {
                                 shader_location: 7,
                             },
                         ],
-                    },
-                    wgpu::VertexBufferLayout {
+                    }),
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<EntityInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
@@ -337,7 +351,7 @@ impl WgpuRenderer {
                                 shader_location: 6,
                             },
                         ],
-                    },
+                    }),
                 ],
             },
             primitive: wgpu::PrimitiveState {
@@ -347,8 +361,8 @@ impl WgpuRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -363,7 +377,7 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -457,7 +471,7 @@ impl WgpuRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -523,8 +537,8 @@ impl WgpuRenderer {
         });
         let ui_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ui layout"),
-            bind_group_layouts: &[&screen_layout, &atlas_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&screen_layout), Some(&atlas_layout)],
+            immediate_size: 0,
         });
         let ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ui shader"),
@@ -537,7 +551,7 @@ impl WgpuRenderer {
                 module: &ui_shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<UiVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -557,7 +571,7 @@ impl WgpuRenderer {
                             shader_location: 2,
                         },
                     ],
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -567,8 +581,8 @@ impl WgpuRenderer {
             // The overlay always passes depth and never writes it: it is on top.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -583,7 +597,7 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let ui_vertex_capacity = 8192u64;
@@ -629,7 +643,7 @@ impl WgpuRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let fog_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -695,8 +709,8 @@ impl WgpuRenderer {
         });
         let fog_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fog layout"),
-            bind_group_layouts: &[&fog_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&fog_layout)],
+            immediate_size: 0,
         });
         let fog_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fog shader"),
@@ -711,7 +725,7 @@ impl WgpuRenderer {
                 compilation_options: Default::default(),
                 // The fog pass consumes the terrain mesh's own vertex layout
                 // (position + placeholder color) — same geometry, same depth.
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<TerrainVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -726,7 +740,7 @@ impl WgpuRenderer {
                             shader_location: 1,
                         },
                     ],
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -735,8 +749,8 @@ impl WgpuRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -751,7 +765,7 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -770,7 +784,7 @@ impl WgpuRenderer {
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[
-                    wgpu::VertexBufferLayout {
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: 8,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[wgpu::VertexAttribute {
@@ -778,8 +792,8 @@ impl WgpuRenderer {
                             offset: 0,
                             shader_location: 0,
                         }],
-                    },
-                    wgpu::VertexBufferLayout {
+                    }),
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<DecalInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
@@ -804,7 +818,7 @@ impl WgpuRenderer {
                                 shader_location: 4,
                             },
                         ],
-                    },
+                    }),
                 ],
             },
             primitive: wgpu::PrimitiveState {
@@ -814,8 +828,8 @@ impl WgpuRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -830,7 +844,7 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let quad = quad_vertices();
@@ -948,8 +962,8 @@ impl WgpuRenderer {
         let minimap_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("minimap layout"),
-                bind_group_layouts: &[&minimap_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&minimap_layout)],
+                immediate_size: 0,
             });
         let minimap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("minimap shader"),
@@ -962,7 +976,7 @@ impl WgpuRenderer {
                 module: &minimap_shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<MinimapVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[wgpu::VertexAttribute {
@@ -970,7 +984,7 @@ impl WgpuRenderer {
                         offset: 0,
                         shader_location: 0,
                     }],
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -979,8 +993,8 @@ impl WgpuRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -995,7 +1009,7 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let minimap_vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1194,7 +1208,7 @@ impl WgpuRenderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         Some((texture, view, sampler))

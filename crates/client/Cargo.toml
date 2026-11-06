@@ -28,7 +28,7 @@ pollster = "0.4"
 ron = "0.9"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-wgpu = "26"
+wgpu = "30"
 winit = "0.30"
-glam = "0.30"
+glam = "0.34"
 rodio = { version = "0.22.2", default-features = false, features = ["playback"] }

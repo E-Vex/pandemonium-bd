@@ -116,15 +116,19 @@ impl RtsCamera {
             )
     }
 
-    /// The right-handed view matrix (looking at the target, Y up).
+    /// The right-handed view matrix (looking at the target, Y up). glam 0.34
+    /// moved the constructor into the `camera` module — same matrix, new
+    /// home (`rh::view::look_at_mat4` is the old `Mat4::look_at_rh`).
     pub fn view(&self) -> Mat4 {
-        Mat4::look_at_rh(self.eye(), self.target, Vec3::Y)
+        glam::camera::rh::view::look_at_mat4(self.eye(), self.target, Vec3::Y)
     }
 
     /// The right-handed, zero-to-one-depth perspective projection (the wgpu
-    /// clip convention).
+    /// clip convention). glam 0.34's home for the old `perspective_rh` is
+    /// `rh::proj::directx::perspective` — Z in [0, 1], Y-up NDC, the
+    /// DirectX/WebGPU convention (numerically the same matrix).
     pub fn projection(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, self.aspect, NEAR, FAR)
+        glam::camera::rh::proj::directx::perspective(self.fov_y, self.aspect, NEAR, FAR)
     }
 
     /// The combined view-projection.
@@ -138,7 +142,7 @@ impl RtsCamera {
     /// frame delta).
     ///
     /// The screen-right axis is `forward x up` — the same right-handed
-    /// basis `Mat4::look_at_rh` builds, so a world-space pan to the right
+    /// basis the view matrix builds (`rh::view::look_at_mat4`), so a world-space pan to the right
     /// lands right on screen. (M9.1: the M3 implementation negated this
     /// axis, which mirrored D/A; the DEBT-008 human pass caught it — no
     /// sim-side test can, presentation direction is invisible to the

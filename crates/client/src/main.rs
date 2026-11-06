@@ -493,6 +493,10 @@ impl ApplicationHandler for App {
             window.inner_size().width as f32 / window.inner_size().height.max(1) as f32,
         );
         match WgpuRenderer::new(
+            // wgpu 29+: the instance takes the event loop's display handle up
+            // front (GLES presentation requires it — the Xvfb/GL evidence
+            // path included).
+            event_loop.owned_display_handle(),
             window.clone(),
             &terrain_mesh(&self.tree.maps[0], HEIGHT_SCALE),
             crate::app::kind_shapes(&self.bundle),

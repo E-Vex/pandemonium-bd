@@ -758,7 +758,7 @@ impl WgpuRenderer {
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[
-                    wgpu::VertexBufferLayout {
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<ModelVertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[
@@ -783,8 +783,8 @@ impl WgpuRenderer {
                                 shader_location: 3,
                             },
                         ],
-                    },
-                    wgpu::VertexBufferLayout {
+                    }),
+                    Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<ModelInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
@@ -804,7 +804,7 @@ impl WgpuRenderer {
                                 shader_location: 6,
                             },
                         ],
-                    },
+                    }),
                 ],
             },
             primitive: wgpu::PrimitiveState {
@@ -817,8 +817,8 @@ impl WgpuRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
@@ -833,7 +833,7 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let capacity = 1024u64;
@@ -1147,8 +1147,15 @@ impl Renderer for WgpuRenderer {
                 .write_buffer(&self.entity_instance_buf, 0, capped);
         }
 
-        let Ok(frame_texture) = self.surface.get_current_texture() else {
-            return; // Window occluded/minimized — nothing to present.
+        // wgpu 29 replaced the Result with an enum: only the two
+        // texture-carrying variants may present (Suboptimal still draws —
+        // it merely asks for a re-configure, which the resize path already
+        // owns); every other case (timeout, occluded, outdated, lost,
+        // validation) is the old `Err` half — skip the frame.
+        let frame_texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            _ => return, // Window occluded/minimized/outdated — nothing to present.
         };
         let view = frame_texture
             .texture
@@ -1196,6 +1203,7 @@ impl Renderer for WgpuRenderer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_bind_group(1, &self.texture_bind_group, &[]);
@@ -1396,7 +1404,9 @@ impl Renderer for WgpuRenderer {
             }
         }
         self.queue.submit(Some(encoder.finish()));
-        frame_texture.present();
+        // wgpu 29 moved present onto the queue — the frame hands itself over
+        // instead of presenting itself.
+        self.queue.present(frame_texture);
     }
 }
 
@@ -1696,14 +1706,18 @@ mod tests {
             );
             return;
         }
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        // wgpu 26: `request_adapter` yields an adapter directly (the
+        // wgpu 30: the descriptor has no Default impl any more — the
+        // handle-less constructor is the headless form (this probe never
+        // creates a surface).
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // wgpu 26..30: `request_adapter` yields an adapter directly (the
         // software fallback counts) or an error — either way, RETURNING is
         // the claim under test.
         let _adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .expect("enumerating an adapter on a positively-plausible GPU must not error");
         println!("probe: an adapter answered (wgpu enumeration returned)");

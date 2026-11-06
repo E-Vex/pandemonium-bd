@@ -108,7 +108,10 @@ fn haze(world: vec3<f32>) -> f32 {
     return smoothstep(HAZE_START, HAZE_END, distance(world, camera.eye)) * 0.85;
 }
 
-struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) material: f32, @location(4) uv: vec2<f32>, @location(5) skin: u32 };
+// The skin slot is an integer varying: naga 30 (WGSL spec) requires integer
+// inter-stage IO to declare its interpolation explicitly — flat is the only
+// legal choice and the one the GPU always applied.
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32>, @location(1) world: vec3<f32>, @location(2) normal: vec3<f32>, @location(3) material: f32, @location(4) uv: vec2<f32>, @location(5) @interpolate(flat) skin: u32 };
 
 @vertex fn vs_main(
     @location(0) corner: vec3<f32>,
