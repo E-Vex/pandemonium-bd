@@ -1376,6 +1376,77 @@ confirms or rejects it.
   (random at Start — the screen has no parent seed field to prefill, the
   New Match screen's `--seed` prefill law does not reach it).
 
+- **A-215 (B-027, ADR-0201 §6/§9 Phase 4).** The mid-mission save's file
+  is `mission_save.pdrp` in the per-user config directory. The ADR's
+  assessment names the folder ("the user folder" — the same per-OS
+  resolution `settings.cfg` owns, the progress file's law) and the
+  fields (mission id, seed, the fed command log, the current tick), not
+  the name or the format; the format is the ADR's own consequences line
+  ("the mid-mission save reuses the replay record itself"), so the file
+  is a replay record written by the same recorder `--record` uses, and
+  the extension is the codec's own. One slot: a Save & Quit overwrites
+  whatever the slot held, and the save persists across a resume and a
+  victory (the Continue row keeps offering the saved point; a completed
+  mission's save is just another way to replay it — no soft-locks,
+  A-214's spirit).
+
+- **A-216 (B-027, ADR-0201 §6/§9 Phase 4).** A save resolves at load
+  time against the loaded content, or it does not exist: the mission id
+  must name a mission the tree carries (membership, `tools
+  replay-verify`'s third comparison, applied at load), and the record's
+  content identity (content hash + map id) must be what that mission
+  bundles today — a save from changed content is stale and is never
+  rehosted (feeding a recorded log into a different world is undefined
+  territory the ADR never authorized). An unresolvable save surfaces one
+  startup line and the run continues without it — no row, no crash, the
+  file left alone. A crafted file that re-encodes with a valid checksum
+  is out of the declared threat model (DEBT-018's stance, replay-verify
+  shares the exposure); casual edits fail the checksum.
+
+- **A-217 (B-027, ADR-0201 §6/§9 Phase 4).** Save & Quit is mission-only:
+  the pause menu's rung exists exactly over a live mission (row 7,
+  appended after Skip Mission so rows 0-6 keep their indices in every
+  layout — the Xvfb focus arithmetic counts from them, the A-011
+  Missions-row precedent); a plain match keeps its six rows exactly.
+  Confirm-gated like every match-discarding row (A-009's law), and the
+  successor screen is the main menu (the A-012 pattern — the same
+  successor Skip Mission takes; the host drops on the way out).
+
+- **A-218 (B-027, ADR-0201 §6/§9 Phase 4).** Resume enters the match
+  unpaused with no intro cutscene (the player has seen it; the pause-skip
+  takes the same no-recutscene line, A-212's precedent). The setup is the
+  record's own seed and player setup — resume re-runs the match's
+  identity, never re-rolls it. The HUD's objective tracker seeds from the
+  sim's authoritative statuses (`MatchHost::objective_states`) because an
+  objective resolved before the save never re-fires `Event::ObjectiveState`
+  (the event is monotonic, exactly once per objective) — the rebuild reads
+  the bookkeeping instead of replaying one-shot events. The checkpoint
+  trail resumes from the save's own record (the forced final at the saved
+  tick is its last entry), so a later `--record` of the resumed match
+  covers the whole match — the ADR's "still replay-recordable".
+
+- **A-219 (B-027, ADR-0201 §6/§9 Phase 4).** The main menu's Continue row
+  is appended after Quit — the LAST row — so every existing main-menu
+  index keeps its meaning in every layout, save or no save (the A-011
+  Missions-row precedent; contrast B-026's Campaign row, which slotted
+  into the middle and forced the a010 walk update — appending avoids
+  that class entirely, which is why a local a010 run with a stale
+  mission_save.pdrp on the machine still walks today's layout). The row's
+  value is the saved mission's display name; the in-memory save is set
+  only on a successful write, so the row never offers a save that is not
+  on disk.
+
+- **A-220 (B-027, ADR-0201 §6/§9 Phase 4).** The saved tick is the
+  record's forced final checkpoint, and the save carries exactly the fed
+  command log: commands submitted but never fed at save time (paused
+  with `pending` non-empty) are inherently absent — the ADR's wording is
+  "the fed command log", and that is the ground truth the rehost replays.
+  The continuation diverges from the never-interrupted timeline (fresh
+  controllers, §6 caveat i) and no test asserts otherwise (§6 caveat
+  iii); what the tests DO pin is the resumed instant itself (tick, hash,
+  id watermark — A2's re-simulation property over the recorded prefix).
+
+
 - **A-131 (A-013, PLAN-M11 §2 "kept, not reversed").** The right-drag
   grab-scroll stays as the one camera deviation the card owns: Zero Hour's
   right-drag is a velocity "rapid scroll", while Pandemonium's is M10.2's

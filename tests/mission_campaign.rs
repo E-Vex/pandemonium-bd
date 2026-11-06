@@ -25,8 +25,11 @@
 use std::path::{Path, PathBuf};
 
 use pandemonium_content::ContentTree;
+use pandemonium_engine::MatchHost;
+use pandemonium_sim::{rehost_sim, run_command_log_with_mission};
 use pandemonium_sim_api::{
-    GatherSemantics, KindId, MissionObjectiveKind, MissionObjectiveParameters, PlayerId, ResourceId,
+    CommandKind, ControllerKind, EntityId, GatherSemantics, KindId, MatchSetup,
+    MissionObjectiveKind, MissionObjectiveParameters, PlayerId, PlayerSetup, ResourceId, Vec2Fx,
 };
 
 /// The repository's content directory (mission_phase1's helper, verbatim).
@@ -268,4 +271,88 @@ fn the_campaign_rides_outside_the_real_identity() {
     let bundle = tree.bundle("crossroads_64").expect("the map bundles");
     assert_eq!(bundle.content_hash(), 0x9bc18c521107b262);
     assert_eq!(bundle.map_id(), 0xd38136401ab02ff1);
+}
+
+// Phase 4 (B-027, ADR-0201 §6/§9): the mid-mission save's rehost seam over
+// the REAL content — the rehost is the canonical driver's own loop, so the
+// same law the replay gate verifies over a record holds over the real
+// chapter's bundle: the rehost at N ticks is the simulation the canonical
+// trail describes at N.
+
+/// The Player vs AI setup a mission match runs (the client's
+/// `MatchMode::PlayerVsAi.match_setup` shape, seed 7).
+fn player_vs_ai() -> MatchSetup {
+    MatchSetup {
+        seed: 7,
+        players: vec![
+            PlayerSetup {
+                player: PlayerId(0),
+                controller: ControllerKind::Human,
+            },
+            PlayerSetup {
+                player: PlayerId(1),
+                controller: ControllerKind::Ai,
+            },
+        ],
+    }
+}
+
+#[test]
+fn rehost_over_the_real_chapter_matches_the_canonical_driver() {
+    let tree = repo_tree();
+    let (_, def) = tree.mission_by_id("crossroads_01").expect("resolves");
+    let bundle = tree
+        .bundle_for_mission(&def.id)
+        .expect("the mission's map bundles");
+    let world = bundle.world();
+    let mission = tree
+        .mission_data(&def.id, PlayerId(0))
+        .expect("the chapter resolves through the content seam");
+    let setup = player_vs_ai();
+    let run = run_command_log_with_mission(&world, &setup, &[], 60, Some(mission.clone()));
+    let sim = rehost_sim(&world, &setup, &[], 60, Some(mission));
+    assert_eq!(sim.tick(), 60);
+    assert_eq!(sim.state_hash(), run.final_hash);
+    assert_eq!(sim.next_entity_id(), run.next_entity_id);
+    // The objective-status query rides the rehost (the resumed HUD seeds
+    // from it); nothing resolves in the first two seconds of the real
+    // chapter (destroy + the optional grow — the strong resolved case is
+    // pinned at the sim and engine seams).
+    assert_eq!(sim.objective_states(), vec![None, None]);
+}
+
+#[test]
+fn resume_with_mission_rehosts_over_the_real_chapter() {
+    // The engine seam over the real bundle: the resumed host carries the
+    // recorded log as its seed, exactly at the saved tick, with the hash
+    // the canonical trail describes there — the mechanics only, never the
+    // continuation's content (the ADR's §6 caveat iii).
+    let tree = repo_tree();
+    let (_, def) = tree.mission_by_id("crossroads_01").expect("resolves");
+    let bundle = tree
+        .bundle_for_mission(&def.id)
+        .expect("the mission's map bundles");
+    let world = bundle.world();
+    let mission = tree
+        .mission_data(&def.id, PlayerId(0))
+        .expect("the chapter resolves through the content seam");
+    let setup = player_vs_ai();
+    let commands = vec![pandemonium_sim_api::Command::new(
+        PlayerId(0),
+        0,
+        1,
+        CommandKind::Move {
+            units: vec![EntityId(1)],
+            target: Vec2Fx::from_ints(8, 8),
+        },
+    )];
+    let run = run_command_log_with_mission(&world, &setup, &commands, 60, None);
+    let host = MatchHost::resume_with_mission(&world, setup, Vec::new(), mission, &commands, 60);
+    assert_eq!(host.tick(), 60);
+    assert_eq!(host.state_hash(), run.final_hash);
+    assert_eq!(
+        host.log(),
+        commands.as_slice(),
+        "the log starts seeded with the recorded commands"
+    );
 }

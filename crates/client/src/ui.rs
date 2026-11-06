@@ -973,6 +973,11 @@ pub struct MenuInput<'a> {
     /// Skip Mission row (row 6) exists exactly then (`KeyContext.live_mission`
     /// is the machine's side of the same fact).
     pub live_mission: bool,
+    /// B-027: the loaded save's mission display name — the main menu's
+    /// Continue row (after Quit, the last row) exists exactly when this is
+    /// `Some` (`KeyContext.resumable_save` is the machine's side of the
+    /// same fact); the name is the row's value ("Continue | Crossroads").
+    pub resumable_save: Option<&'a str>,
     /// The end screen's headline/subline when the screen is the end screen.
     pub end_lines: Option<(&'a str, &'a str)>,
     /// The dimming backdrop's strength over a live match (menus without a
@@ -1040,6 +1045,20 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
                 String::new(),
             ));
             rows.push(row(3 + offset, ButtonId::Quit, "Quit", String::new()));
+            // B-027 (ADR-0201 §6/§9 Phase 4): the Continue row — after Quit,
+            // the last row, only when a resumable save exists (no save, no
+            // row); appended so every existing main-menu index keeps its
+            // meaning in every layout, save or no save (the A-011
+            // Missions-row precedent). The value is the saved mission's
+            // display name.
+            if let Some(name) = input.resumable_save {
+                rows.push(row(
+                    4 + offset,
+                    ButtonId::ContinueMission,
+                    "Continue",
+                    name.to_string(),
+                ));
+            }
             rows
         }
         Screen::NewMatch(fields) => {
@@ -1130,6 +1149,16 @@ fn screen_rows(input: &MenuInput<'_>) -> Vec<Row> {
                     6,
                     ButtonId::PauseSkipMission,
                     "Skip Mission",
+                    String::new(),
+                ));
+                // B-027 (ADR-0201 §6/§9 Phase 4): the Save & Quit rung —
+                // row 7, appended so rows 0-6 keep their indices in every
+                // layout (the machine's row 7 has the same guard on
+                // `KeyContext.live_mission`).
+                rows.push(row(
+                    7,
+                    ButtonId::PauseSaveMission,
+                    "Save & Quit",
                     String::new(),
                 ));
             }
@@ -1270,6 +1299,7 @@ pub fn build_menu(input: MenuInput<'_>) -> BuiltMenu {
         missions: _,
         has_campaign: _,
         live_mission: _,
+        resumable_save: _,
         end_lines,
         backdrop,
         info_lines,
@@ -1916,6 +1946,7 @@ mod tests {
             // pins' layout); the campaign row's own test opts in.
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -1961,6 +1992,7 @@ mod tests {
                 missions: &[],
                 has_campaign: false,
                 live_mission: false,
+                resumable_save: None,
                 end_lines: Some(("VICTORY", "You eliminated the enemy.")),
                 backdrop: [0.0, 0.0, 0.0, 0.5],
                 info_lines: &[],
@@ -1976,6 +2008,7 @@ mod tests {
                 mission_count: 1,
                 has_campaign: false,
                 live_mission: None,
+                resumable_save: None,
             };
             let expected: Vec<crate::screens::ButtonId> = (0..state.button_count(&ctx))
                 .map(|index| state.button_at(index, &ctx).expect("every index resolves"))
@@ -2003,6 +2036,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2080,6 +2114,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2094,6 +2129,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2118,6 +2154,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2132,6 +2169,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2160,6 +2198,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2174,6 +2213,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: None,
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2535,6 +2575,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: Some(("VICTORY", "Crossroads")),
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[
@@ -2552,6 +2593,7 @@ mod tests {
             missions: &[],
             has_campaign: false,
             live_mission: false,
+            resumable_save: None,
             end_lines: Some(("VICTORY", "You eliminated the enemy.")),
             backdrop: [0.0, 0.0, 0.0, 0.5],
             info_lines: &[],
@@ -2669,7 +2711,8 @@ mod tests {
     #[test]
     fn the_pause_menu_renders_the_skip_mission_row_only_over_a_mission() {
         // Row 6 after Quit to Menu; the plain match's pause menu keeps its
-        // six rows (the Xvfb focus arithmetic counts from them).
+        // six rows (the Xvfb focus arithmetic counts from them). B-027
+        // appends the Save & Quit rung as row 7 on the same guard.
         let pause = crate::screens::AppState {
             screen: crate::screens::Screen::PauseMenu,
             focus: 0,
@@ -2678,6 +2721,12 @@ mod tests {
             live_mission: true,
             ..menu_input(&pause)
         };
+        // The rows before the build (the input borrows into the built menu).
+        let rows = screen_rows(&with);
+        assert_eq!(
+            rows.last().map(|row| row.label.as_str()),
+            Some("Save & Quit")
+        );
         let built = build_menu(with);
         let ids: Vec<crate::screens::ButtonId> =
             built.buttons.iter().map(|button| button.id).collect();
@@ -2691,9 +2740,52 @@ mod tests {
                 crate::screens::ButtonId::PauseResign,
                 crate::screens::ButtonId::QuitToMenu,
                 crate::screens::ButtonId::PauseSkipMission,
+                crate::screens::ButtonId::PauseSaveMission,
             ]
         );
         let built = build_menu(menu_input(&pause));
-        assert_eq!(built.buttons.len(), 6, "no live mission, no row");
+        assert_eq!(built.buttons.len(), 6, "no live mission, no rows");
+    }
+
+    #[test]
+    fn the_main_menu_renders_the_continue_row_only_with_a_save() {
+        // B-027 (ADR-0201 §6/§9 Phase 4): after Quit, the last row — every
+        // existing main-menu index keeps its meaning in every layout, save
+        // or no save (the A-011 Missions-row precedent); the value is the
+        // saved mission's display name.
+        let menu = crate::screens::AppState::at_main_menu();
+        let with = MenuInput {
+            has_campaign: true,
+            resumable_save: Some("Crossroads"),
+            ..menu_input(&menu)
+        };
+        // The rows before the build (the input borrows into the built menu).
+        let rows = screen_rows(&with);
+        let last = rows.last().expect("the continue row");
+        assert_eq!(last.index, 5, "after Quit, the last row");
+        assert_eq!(last.id, crate::screens::ButtonId::ContinueMission);
+        assert_eq!(last.label, "Continue");
+        assert_eq!(last.value, "Crossroads");
+        let built = build_menu(with);
+        let ids: Vec<crate::screens::ButtonId> =
+            built.buttons.iter().map(|button| button.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::screens::ButtonId::NewMatch,
+                crate::screens::ButtonId::Campaign,
+                crate::screens::ButtonId::Settings,
+                crate::screens::ButtonId::Controls,
+                crate::screens::ButtonId::Quit,
+                crate::screens::ButtonId::ContinueMission,
+            ]
+        );
+        // No save, no row — the layout is exactly the campaign-present one.
+        let without = MenuInput {
+            has_campaign: true,
+            resumable_save: None,
+            ..menu_input(&menu)
+        };
+        assert_eq!(screen_rows(&without).len(), 5, "no save, no row");
     }
 }
