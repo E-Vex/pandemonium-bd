@@ -24,6 +24,7 @@ mod progress;
 
 mod render;
 mod report;
+mod save;
 mod screens;
 mod silhouette;
 mod sound;
@@ -243,6 +244,19 @@ fn main() -> anyhow::Result<()> {
     // (the victory/skip paths persist it). A missing or malformed file is
     // the empty progress, never an error.
     let progress = progress::load();
+    // B-027 (ADR-0201 §6/§9 Phase 4): the mid-mission save loads the same
+    // way — once, here, beside settings.cfg. A missing file is no save; a
+    // file that no longer resolves (content changed, mission removed, not
+    // a mission record) surfaces one line and the run continues without
+    // it — no Continue row, never an error the loop sees.
+    let save = match save::load(&tree) {
+        save::LoadOutcome::Ready(save) => Some(save),
+        save::LoadOutcome::NoSave => None,
+        save::LoadOutcome::Unresolvable(reason) => {
+            println!("pandemonium client — mission save not resumable: {reason}");
+            None
+        }
+    };
     let mut app = App::new(
         tree,
         default_bundle,
@@ -250,6 +264,7 @@ fn main() -> anyhow::Result<()> {
         record_path,
         settings,
         progress,
+        save,
         audio,
         pack,
     )?;
@@ -1540,6 +1555,7 @@ mod audio_wiring {
             None,
             config::Settings::default(),
             crate::progress::CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             // The forced null arm: what the no-device constructor yields, so
             // the oracle counter exists whatever this machine can hear.
             sound::Sound::without_device(1.0, false),
@@ -1752,6 +1768,7 @@ mod zh_selection {
             None,
             config::Settings::default(),
             crate::progress::CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2103,6 +2120,7 @@ mod zh_modes {
             None,
             config::Settings::default(),
             crate::progress::CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2390,6 +2408,7 @@ mod zh_camera {
             None,
             config::Settings::default(),
             crate::progress::CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2568,6 +2587,7 @@ mod zh_interface {
             None,
             config::Settings::default(),
             crate::progress::CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             sound::Sound::without_device(1.0, false),
             None,
         )
@@ -2680,6 +2700,7 @@ mod mission_wiring {
             None,
             config::Settings::default(),
             crate::progress::CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             sound::Sound::without_device(1.0, false),
             None, // no asset pack in unit tests — placeholder rendering
         )
@@ -2695,6 +2716,7 @@ mod mission_wiring {
             mission_count: 1,
             has_campaign: false,
             live_mission: None,
+            resumable_save: None,
         }
     }
 
@@ -2912,6 +2934,7 @@ mod mission_wiring {
             Some(mission_path.clone()),
             config::Settings::default(),
             crate::progress::CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             sound::Sound::without_device(1.0, false),
             None, // no asset pack in unit tests — placeholder rendering
         )
@@ -3013,6 +3036,7 @@ mod campaign_wiring {
             None,
             config::Settings::default(),
             CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
             sound::Sound::without_device(1.0, false),
             None, // no asset pack in unit tests — placeholder rendering
         )
@@ -3333,6 +3357,297 @@ mod campaign_wiring {
         // Tidy.
         let _ = std::fs::remove_file(&skipped_path);
         let _ = std::fs::remove_file(&replay_path);
+    }
+}
+
+#[cfg(test)]
+mod save_wiring {
+    //! B-027 (ADR-0201 §6/§9 Phase 4): the mid-mission save wiring pins —
+    //! Save & Quit writes the match-so-far as a replay record through the
+    //! exact `--record` recorder, lands at the main menu with the host
+    //! dropped, and sets the in-memory save only on a successful write; the
+    //! persistence-disabled machine writes nothing and stays without a
+    //! save. The oracle is the App itself over the repo content (which
+    //! carries B-025's pilot campaign), the A-002 null-audio-arm pattern.
+
+    use super::*;
+    use crate::progress::CampaignProgress;
+    use crate::save::LoadOutcome;
+    use crate::screens::Screen;
+    use std::time::Duration;
+
+    /// An app over the repo content with the null audio arm. The save
+    /// persistence is DISABLED by default (a test must never write the
+    /// machine's real save file — the persisting tests point the path at a
+    /// temp file first).
+    fn app() -> App {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
+        let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        let bundle = tree
+            .bundle(
+                &tree
+                    .maps
+                    .first()
+                    .map(|map| map.id.clone())
+                    .expect("the tree lists a map"),
+            )
+            .expect("the default map bundles");
+        let mut app = App::new(
+            tree,
+            bundle,
+            Some(7),
+            None,
+            config::Settings::default(),
+            CampaignProgress::default(),
+            None, // B-027: no save — the resume-path tests set one explicitly
+            sound::Sound::without_device(1.0, false),
+            None, // no asset pack in unit tests — placeholder rendering
+        )
+        .expect("the app constructs");
+        app.progress_path = None;
+        app.save_path = None;
+        app
+    }
+
+    /// Begins chapter 1 (the campaign's first entry, seed 7), ends the
+    /// intro cutscene, submits one move order for the first entity, and
+    /// advances ~1 s of match time in 16 ms frames (the catch-up cap means
+    /// one long delta does not step in bulk) — a live mission with a
+    /// non-empty fed log and a tick past zero. Returns the tick reached.
+    fn play_a_little(app: &mut App) -> u32 {
+        app.begin_mission(0, 7);
+        app.end_cutscene(); // unpause the intro
+        let mut outcome = {
+            let host = app.host.as_mut().expect("the mission is live");
+            host.submit(Command::new(
+                PlayerId(0),
+                0,
+                1,
+                CommandKind::Move {
+                    units: vec![EntityId(1)],
+                    target: Vec2Fx::from_ints(8, 8),
+                },
+            ));
+            host.advance(Duration::from_millis(16))
+        };
+        for _ in 0..69 {
+            let next = {
+                let host = app.host.as_mut().expect("still live");
+                host.advance(Duration::from_millis(16))
+            };
+            app.collect_checkpoints(&outcome);
+            outcome = next;
+        }
+        app.collect_checkpoints(&outcome);
+        app.host.as_ref().expect("still live").tick()
+    }
+
+    #[test]
+    fn save_and_quit_writes_the_record_and_lands_at_the_menu() {
+        // The full write path: a live mission with a fed log, Save & Quit
+        // through the effect, the record on disk shaped exactly like
+        // `--record`'s (the same recorder), the in-memory save set from
+        // the write, and the successor screen the main menu with the host
+        // dropped.
+        let dir = std::env::temp_dir();
+        let path = dir.join("pandemonium-b027-save-quit.pdrp");
+        let _ = std::fs::remove_file(&path);
+        let mut app = app();
+        app.save_path = Some(path.clone());
+        let tick = play_a_little(&mut app);
+        assert!(tick >= 30, "a little over a second of play: {tick}");
+        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        // The successor screen is the main menu, the host is gone.
+        assert!(matches!(app.screen.screen, Screen::MainMenu));
+        assert!(app.host.is_none());
+        // The in-memory save is set from the successful write.
+        let save = app.save.as_ref().expect("the save is set");
+        assert_eq!(save.mission_index, 0);
+        assert_eq!(save.mission_name, "Crossroads");
+        assert_eq!(save.saved_tick(), tick);
+        assert_eq!(
+            save.replay.mission_id,
+            Some(app.tree.mission_id("crossroads_01")),
+            "the record names its mission (AUD-002's law)"
+        );
+        // The fed command log: the human's move first (pending feeds the
+        // step before the controllers think), then the scripted opponent's
+        // commands — everything the steps were fed, in feed order.
+        assert!(!save.replay.commands.is_empty());
+        assert_eq!(save.replay.commands[0].tick, 0);
+        assert_eq!(save.replay.commands[0].issuer, PlayerId(0));
+        assert!(matches!(
+            save.replay.commands[0].kind,
+            CommandKind::Move { .. }
+        ));
+        // The file on disk is what the loader resolves (the write path and
+        // the load path agree).
+        assert!(path.exists());
+        match crate::save::load_from(&app.tree, &path) {
+            LoadOutcome::Ready(loaded) => {
+                assert_eq!(loaded, *save);
+                let _ = std::fs::remove_file(&path);
+            }
+            outcome => panic!("the written save loads back: {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_save_and_the_run_continues() {
+        // Best effort: a write that cannot land (the target is a live
+        // directory, not a file) surfaces and the run continues — no
+        // in-memory save, so no Continue row ever offers a save that is
+        // not on disk.
+        let dir = std::env::temp_dir();
+        let target = dir.join("pandemonium-b027-not-a-file.pdrp");
+        let _ = std::fs::remove_dir_all(&target);
+        std::fs::create_dir_all(&target).expect("the blocker exists");
+        let mut app = app();
+        app.save_path = Some(target.clone());
+        play_a_little(&mut app);
+        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        assert!(matches!(app.screen.screen, Screen::MainMenu));
+        assert!(app.host.is_none());
+        assert!(app.save.is_none(), "no successful write, no save");
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn a_disabled_persistence_writes_nothing_and_sets_no_save() {
+        // A-109's law: a machine with no config directory never persists.
+        // The run continues (the menu), the in-memory save stays unset.
+        let mut app = app();
+        app.save_path = None;
+        play_a_little(&mut app);
+        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        assert!(matches!(app.screen.screen, Screen::MainMenu));
+        assert!(app.host.is_none());
+        assert!(app.save.is_none());
+    }
+
+    #[test]
+    fn saving_overwrites_the_single_slot() {
+        // One slot: a second Save & Quit replaces the first save — the row
+        // never carries two, and the file is the latest record (a longer
+        // second session, so the latest record is visibly the later one).
+        let dir = std::env::temp_dir();
+        let path = dir.join("pandemonium-b027-overwrite.pdrp");
+        let _ = std::fs::remove_file(&path);
+        let mut app = app();
+        app.save_path = Some(path.clone());
+        play_a_little(&mut app);
+        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let first = app.save.as_ref().expect("set").saved_tick();
+        assert_eq!(first, 33);
+        // A second, longer session over the same app (the first dropped to
+        // the menu; the same slot gets the later record) — 16 ms frames, the
+        // catch-up cap's law.
+        app.begin_mission(0, 7);
+        app.end_cutscene();
+        for _ in 0..138 {
+            let outcome = {
+                let host = app.host.as_mut().expect("the mission is live");
+                host.advance(Duration::from_millis(16))
+            };
+            app.collect_checkpoints(&outcome);
+        }
+        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        assert_eq!(app.save.as_ref().expect("set").saved_tick(), 66);
+        // The slot holds the latest record; only one save exists.
+        match crate::save::load_from(&app.tree, &path) {
+            LoadOutcome::Ready(loaded) => {
+                assert_eq!(loaded, *app.save.as_ref().expect("set"));
+                let _ = std::fs::remove_file(&path);
+            }
+            outcome => panic!("the latest save loads back: {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_rehosts_at_the_saved_tick_and_hash() {
+        // B-027 (ADR-0201 §6/§9 Phase 4), the ADR's assessed resume made
+        // concrete: the Continue row exists after Save & Quit, the click
+        // rehosts the recorded log through the engine seam, and the match
+        // re-enters at the saved tick with the saved hash — unpaused, no
+        // intro cutscene (A-218), the log seeded, the trail carrying the
+        // save's own checkpoints (a later `--record` covers the whole
+        // match — still replay-recordable).
+        let dir = std::env::temp_dir();
+        let path = dir.join("pandemonium-b027-resume.pdrp");
+        let _ = std::fs::remove_file(&path);
+        let mut app = app();
+        app.save_path = Some(path.clone());
+        let tick = play_a_little(&mut app);
+        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let save = app.save.as_ref().expect("set").clone();
+        // The Continue row exists; the click resumes.
+        assert_eq!(app.menu_ctx().resumable_save, Some(0));
+        app.apply_effect_core(Effect::ResumeMission);
+        assert!(matches!(app.screen.screen, Screen::InMatch));
+        let host = app.host.as_ref().expect("the match is live");
+        assert_eq!(host.tick(), tick);
+        assert_eq!(host.state_hash(), save.replay.final_hash);
+        assert_eq!(
+            host.log(),
+            save.replay.commands.as_slice(),
+            "the log starts seeded with the recorded commands"
+        );
+        assert!(!host.is_paused(), "the resume enters unpaused (A-218)");
+        assert!(
+            app.cutscene.is_none(),
+            "no intro cutscene on resume (A-218)"
+        );
+        // The trail is the save's own (the forced final at the saved tick
+        // is its last entry).
+        let expected_trail: Vec<(u32, u64)> = save
+            .replay
+            .checkpoints
+            .iter()
+            .map(|cp| (cp.tick, cp.hash))
+            .collect();
+        assert_eq!(app.checkpoints, expected_trail);
+        // The HUD's tracker is seeded from the authoritative statuses (the
+        // law is the equality; the strong resolved case is pinned at the
+        // engine seam — nothing resolves this early on the real chapter).
+        let states = host.objective_states();
+        let hud = app.mission_hud.as_ref().expect("the mission HUD");
+        assert_eq!(hud.lines.len(), states.len());
+        assert!(states.iter().all(Option::is_none));
+        // The continuation is live: time moves from the saved tick.
+        let host = app.host.as_mut().expect("still live");
+        let outcome = host.advance(Duration::from_millis(500));
+        app.collect_checkpoints(&outcome);
+        assert!(app.host.as_ref().expect("still live").tick() > tick);
+        // `--record` from the resumed match carries the complete log: the
+        // save's commands first, everything after them (still
+        // replay-recordable).
+        let record_path = dir.join("pandemonium-b027-resume-record.pdrp");
+        let _ = std::fs::remove_file(&record_path);
+        app.record_path = Some(record_path.clone());
+        app.write_recording();
+        let bytes = std::fs::read(&record_path).expect("the record landed");
+        let replay = pandemonium_replay::ReplayFile::decode(&bytes).expect("the record decodes");
+        assert!(replay.commands.len() > save.replay.commands.len());
+        assert_eq!(
+            &replay.commands[..save.replay.commands.len()],
+            &save.replay.commands[..],
+            "the record opens with the save's own commands"
+        );
+        assert_eq!(replay.mission_id, save.replay.mission_id);
+        assert_eq!(replay.seed, save.replay.seed);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&record_path);
+    }
+
+    #[test]
+    fn a_saveless_resume_is_the_defensive_no_op() {
+        // The row only exists when a save is loaded, so the effect firing
+        // without one is unreachable in practice; the defensive handler
+        // keeps the machine total.
+        let mut app = app();
+        app.apply_effect_core(Effect::ResumeMission);
+        assert!(matches!(app.screen.screen, Screen::MainMenu));
+        assert!(app.host.is_none());
     }
 }
 

@@ -84,6 +84,19 @@ pub(crate) struct App {
     /// file (or disable it) without touching the process env — the same
     /// discipline `record_path` follows.
     pub(crate) progress_path: Option<PathBuf>,
+    /// B-027 (ADR-0201 §6/§9 Phase 4): the loaded mid-mission save, when one
+    /// resolved at startup (the mission saved, its record, the saved tick);
+    /// `None` with no file or an unresolvable one. In-memory truth: the
+    /// Save & Quit path sets it after a successful write, so the Continue
+    /// row appears without a re-read. Never content: the record rides
+    /// outside every hash and never reaches the sim.
+    pub(crate) save: Option<crate::save::MissionSave>,
+    /// B-027: where the save persists — the machine's config directory
+    /// (beside `settings.cfg`), or `None` when the machine has none (A-109:
+    /// persistence silently disabled, never a panic). A field, not a live
+    /// `save::save_path()` call, so tests can point it at a temp file (or
+    /// disable it) — `progress_path`'s discipline verbatim.
+    pub(crate) save_path: Option<PathBuf>,
     /// The loaded client-side asset pack (presentation-only, local to this
     /// client). `None` when no pack exists or it cannot be used — the
     /// renderer falls back to placeholders. Never enters the simulation.
@@ -337,10 +350,11 @@ pub(crate) struct PlacementState {
 }
 
 impl App {
-    /// Eight startup inputs (the B-026 progress joined settings, audio and
-    /// the pack as constructor-passed user state — the same scoped allow
-    /// `sim::command` carries; grouping them into a config struct would
-    /// hide which of them the tests vary independently).
+    /// Nine startup inputs (the B-026 progress and the B-027 save joined
+    /// settings, audio and the pack as constructor-passed user state — the
+    /// same scoped allow `sim::command` carries; grouping them into a
+    /// config struct would hide which of them the tests vary
+    /// independently).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         tree: ContentTree,
@@ -349,6 +363,7 @@ impl App {
         record_path: Option<PathBuf>,
         settings: config::Settings,
         progress: crate::progress::CampaignProgress,
+        save: Option<crate::save::MissionSave>,
         audio: sound::Sound,
         pack: Option<AssetPack>,
     ) -> anyhow::Result<Self> {
@@ -393,6 +408,12 @@ impl App {
             // §6). Tests overwrite this with a temp path (or None) before
             // driving the persisting paths — the record_path discipline.
             progress_path: crate::progress::progress_path(),
+            // B-027 (ADR-0201 §6/§9 Phase 4): the per-user mid-mission save,
+            // beside settings.cfg (the same per-OS resolution). Tests
+            // overwrite this with a temp path (or None) before driving the
+            // persisting paths — the record_path discipline.
+            save,
+            save_path: crate::save::save_path(),
             pack,
             bundle: default_bundle,
             host: None,
@@ -611,16 +632,81 @@ impl App {
         // objective set the simulation receives (built here, before the set
         // moves into the host) — the line indices are the `Event::ObjectiveState`
         // indices by construction.
-        let lines = ui::objective_lines(&mission, &bundle);
         let setup = MatchMode::PlayerVsAi.match_setup(seed);
+        let host = Self::build_mission_host(&bundle, setup.clone(), mission.clone());
+        // M10.1: the checkpoint trail opens at the fresh match's tick-0
+        // hash — identical to the mission-less construction by the seam's
+        // shared `Sim::build` body (pinned by the engine seam test).
+        let trail = vec![(0, host.state_hash())];
+        self.enter_mission_match(
+            mission_index,
+            def.display_name.clone(),
+            def.map.clone(),
+            setup,
+            bundle,
+            mission,
+            host,
+            trail,
+        );
+        // A-011 (ADR-0201 §5, Task 3): the mission-start cutscene — pause
+        // the host, pan the camera from the enemy's start to the player's
+        // start over the frozen live world, caption the mission's name and
+        // objective summary. Any key ends the scene and unpauses.
+        let enemy_anchor = self
+            .bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| start.player == 1)
+            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
+            .unwrap_or((
+                self.bundle.map.width as f32 / 2.0,
+                self.bundle.map.height as f32 / 2.0,
+            ));
+        let intro = self.mission_hud.as_ref().expect("just built").intro_line();
+        self.cutscene = Some(crate::cutscene::Cutscene::mission_start(
+            &def.display_name,
+            &intro,
+            enemy_anchor,
+            self.start_anchor,
+        ));
+        if let Some(host) = &mut self.host {
+            host.set_paused(true);
+        }
+    }
+
+    /// B-027 (ADR-0201 §6/§9 Phase 4): the shared per-match entry — the
+    /// exact body `begin_mission` runs after building its host, so the
+    /// resume path enters the match through the same law (the A15 drop +
+    /// reconstruct discipline): the bundle and camera bounds, the terrain,
+    /// the per-match derived state (the restart source), the mission-scoped
+    /// state (the HUD tracker and the tree index), and the opening
+    /// checkpoint trail. The differences stay at the call sites: `begin`
+    /// enters with the fresh tick-0 hash and pauses for the intro cutscene;
+    /// `resume_mission` enters with the save's own trail, unpaused (A-218).
+    #[allow(clippy::too_many_arguments)]
+    fn enter_mission_match(
+        &mut self,
+        mission_index: usize,
+        display_name: String,
+        map_id: String,
+        setup: MatchSetup,
+        bundle: ContentBundle,
+        mission: MissionData,
+        host: MatchHost,
+        checkpoints: Vec<(u32, u64)>,
+    ) {
+        let world = bundle.world();
         // M9.1: the right-click context resolver needs the content's worker
         // and node kind ids — a mission match plays the same order paths.
         // (Kind resolution only: no tuning is read here — the opponent's
-        // controller, built in build_mission_host above, carries the
-        // mission's ai_settings.)
-        let world = bundle.world();
+        // controller, built at the call site, carries the mission's
+        // ai_settings.)
         let plan = alpha_plan(&bundle, &world, HUMAN, setup.seed, None);
-        let host = Self::build_mission_host(&bundle, setup.clone(), mission);
+        // A-011: the HUD's objective lines derive from the same resolved
+        // objective set the simulation receives — the line indices are the
+        // `Event::ObjectiveState` indices by construction.
+        let lines = ui::objective_lines(&mission, &bundle);
         self.matches_started += 1;
         self.bundle = bundle;
         self.camera
@@ -634,7 +720,7 @@ impl App {
             .tree
             .maps
             .iter()
-            .position(|map| map.id == def.map)
+            .position(|map| map.id == map_id)
             .unwrap_or(0);
         self.host = Some(host);
         // The per-match derived state (restart's source of truth).
@@ -663,46 +749,137 @@ impl App {
         // the same objective states — built from the resolved objective set,
         // so the indices are the event indices by construction).
         self.mission_index = Some(mission_index);
-        self.mission_hud = Some(ui::MissionHud::new(def.display_name.clone(), lines));
+        self.mission_hud = Some(ui::MissionHud::new(display_name, lines));
         // PLAN-M10.2 §3.4: the debug overlay's default at match start, and
         // the user zoom limits re-clamp the opening view.
         self.debug_overlay = self.settings.debug_overlay;
         self.camera
             .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
-        // M10.1: the checkpoint trail opens at the fresh match's tick-0
-        // hash — identical to the mission-less construction by the seam's
-        // shared `Sim::build` body (pinned by the engine seam test).
-        self.checkpoints = vec![(0, self.host.as_ref().expect("just built").state_hash())];
+        // M10.1/B-027: the checkpoint trail — begin enters with the fresh
+        // tick-0 hash; resume enters with the save's own trail (the forced
+        // final at the saved tick is its last entry), so a later `--record`
+        // of the resumed match covers the whole match.
+        self.checkpoints = checkpoints;
         self.record_written = false;
-        // A-011 (ADR-0201 §5, Task 3): the mission-start cutscene — pause
-        // the host, pan the camera from the enemy's start to the player's
-        // start over the frozen live world, caption the mission's name and
-        // objective summary. Any key ends the scene and unpauses.
-        let enemy_anchor = self
-            .bundle
-            .map
-            .starts
-            .iter()
-            .find(|start| start.player == 1)
-            .map(|start| (start.x as f32 + 0.5, start.y as f32 + 0.5))
-            .unwrap_or((
-                self.bundle.map.width as f32 / 2.0,
-                self.bundle.map.height as f32 / 2.0,
-            ));
-        let intro = self.mission_hud.as_ref().expect("just built").intro_line();
-        self.cutscene = Some(crate::cutscene::Cutscene::mission_start(
-            &def.display_name,
-            &intro,
-            enemy_anchor,
-            self.start_anchor,
-        ));
-        if let Some(host) = &mut self.host {
-            host.set_paused(true);
-        }
         self.screen = AppState {
             screen: Screen::InMatch,
             focus: 0,
         };
+    }
+
+    /// B-027 (ADR-0201 §6/§9 Phase 4): resumes the saved mission — the
+    /// ADR's assessed design, made concrete: rehost the recorded command
+    /// log from tick 0 through the engine resume seam
+    /// (`MatchHost::resume_with_mission`) and re-enter the match at the
+    /// saved tick. The setup is the record's own (seed and player setup —
+    /// the record is the match's identity; resume re-runs it, never
+    /// re-rolls it); the controllers are fresh (the ADR's documented
+    /// divergence — nothing is serialized, §6 caveat i); the HUD's
+    /// objective tracker seeds from the authoritative statuses (an
+    /// objective resolved before the save never re-fires
+    /// `Event::ObjectiveState`); and the entry is unpaused with no intro
+    /// cutscene (the player has seen it — A-218). A failure to resolve is
+    /// surfaced and keeps the menu (the begin_match discipline — never
+    /// crash the loop).
+    pub(crate) fn resume_mission(&mut self, save: crate::save::MissionSave) {
+        let Some(def) = self.tree.missions.get(save.mission_index).cloned() else {
+            println!(
+                "pandemonium client — mission index {} is out of range \
+                 ({} mission(s) loaded)",
+                save.mission_index,
+                self.tree.missions.len()
+            );
+            return;
+        };
+        let bundle = match self.tree.bundle_for_mission(&def.id) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                println!(
+                    "pandemonium client — could not bundle map '{}' for mission '{}': {error:#}",
+                    def.map, def.id
+                );
+                return;
+            }
+        };
+        let mission = match self.tree.mission_data(&def.id, HUMAN) {
+            Ok(mission) => mission,
+            Err(error) => {
+                println!(
+                    "pandemonium client — could not resolve objectives for mission '{}': {error:#}",
+                    def.id
+                );
+                return;
+            }
+        };
+        // The record's identity: the saved seed and player setup, exactly
+        // what the match ran (the loader already gated the content).
+        let setup = MatchSetup {
+            seed: save.replay.seed,
+            players: save.replay.player_setup.clone(),
+        };
+        let world = bundle.world();
+        // The fresh opponent (the ADR's documented divergence): the same
+        // construction build_mission_host uses, over the saved setup.
+        let controllers: Vec<(PlayerId, Box<dyn Controller>)> = [AI]
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    Box::new(alpha_controller(
+                        &bundle,
+                        &world,
+                        slot,
+                        setup.seed,
+                        Some(&mission),
+                    )) as Box<dyn Controller>,
+                )
+            })
+            .collect();
+        let host = MatchHost::resume_with_mission(
+            &world,
+            setup.clone(),
+            controllers,
+            mission.clone(),
+            &save.replay.commands,
+            save.saved_tick(),
+        );
+        // The save's own trail: tick 0 through the forced final at the
+        // saved tick — the resumed `--record` covers the whole match.
+        let trail: Vec<(u32, u64)> = save
+            .replay
+            .checkpoints
+            .iter()
+            .map(|cp| (cp.tick, cp.hash))
+            .collect();
+        let saved_tick = save.saved_tick();
+        let final_hash = save.replay.final_hash;
+        self.enter_mission_match(
+            save.mission_index,
+            def.display_name.clone(),
+            def.map.clone(),
+            setup,
+            bundle,
+            mission,
+            host,
+            trail,
+        );
+        // A-218: the HUD's objective tracker seeds from the authoritative
+        // statuses — an objective resolved before the save never re-fires
+        // `Event::ObjectiveState` (monotonic, exactly once), so the
+        // presentation rebuild reads the sim's own bookkeeping.
+        let states = self.host.as_ref().expect("just built").objective_states();
+        if let Some(hud) = &mut self.mission_hud {
+            for (index, state) in states.iter().enumerate() {
+                if let Some(state) = state {
+                    hud.on_objective_state(index as u32, *state);
+                }
+            }
+        }
+        println!(
+            "pandemonium client — mission save resumed: '{}' at tick {} \
+             (hash {:#018x})",
+            def.display_name, saved_tick, final_hash
+        );
     }
 
     /// Ends the active cutscene, if any (ADR-0201 §5): the camera snaps to
@@ -1009,6 +1186,27 @@ impl App {
                     self.drop_match();
                 }
             }
+            // B-027 (ADR-0201 §6/§9 Phase 4): write the live mission's save
+            // (the match-so-far as a replay record) and leave for the main
+            // menu — the successor Quit to Menu takes (the A-012 pattern);
+            // the host drops on the way out, exactly the DropMatch
+            // discipline.
+            Effect::SaveMission { mission_index } => {
+                self.save_live_mission(mission_index);
+                if self.host.is_some() {
+                    self.drop_match();
+                }
+            }
+            // B-027: resume the saved mission — rehost through the engine
+            // resume seam and re-enter the match at the saved tick. A
+            // save-less call is the defensive no-op (the Continue row only
+            // exists when the app carries a save).
+            Effect::ResumeMission => {
+                let Some(save) = self.save.clone() else {
+                    return; // no resumable save — nothing to resume
+                };
+                self.resume_mission(save);
+            }
             Effect::RestartMatch => self.restart_match(),
             Effect::DropMatch => self.drop_match(),
             // PLAN-M11 §2 phase 5: Resign — the vocabulary's last unsent
@@ -1094,6 +1292,64 @@ impl App {
             }
         );
         self.persist_progress();
+    }
+
+    /// B-027 (ADR-0201 §6/§9 Phase 4): writes the live mission's save —
+    /// the match-so-far as a replay record, the same recorder `--record`
+    /// uses (`report::replay_record`: mission id, seed, the fed command
+    /// log, the checkpoint trail, the forced final at the saved tick) —
+    /// to `mission_save.pdrp` beside `settings.cfg`. Best effort
+    /// (`save_settings`' discipline): a failed write is surfaced as one
+    /// line and the run continues, and only a successful write updates
+    /// the in-memory save, so the Continue row never offers a save that
+    /// is not on disk. Commands submitted but never fed at save time are
+    /// inherently absent — the record carries the fed log, exactly the
+    /// stream `Sim::step` saw.
+    pub(crate) fn save_live_mission(&mut self, mission_index: usize) {
+        let Some(host) = &self.host else {
+            return; // no live match — nothing to save (the defensive no-op)
+        };
+        let Some(def) = self.tree.missions.get(mission_index) else {
+            return; // defensive — mission_index is only ever set from a valid index
+        };
+        let mission_id = Self::mission_replay_id(&self.tree, Some(mission_index));
+        let world = self.bundle.world();
+        let replay = report::replay_record(
+            &world,
+            &self.setup,
+            host.log(),
+            &self.checkpoints,
+            host.tick(),
+            host.state_hash(),
+            mission_id,
+        );
+        let tick = host.tick();
+        let name = def.display_name.clone();
+        let Some(path) = self.save_path.clone() else {
+            println!(
+                "pandemonium client — mission save: '{name}' at tick {tick} not written \
+                 (persistence disabled)"
+            );
+            return; // persistence disabled (no config dir) — A-109
+        };
+        match crate::save::save_to(&path, &replay) {
+            Ok(()) => {
+                println!(
+                    "pandemonium client — mission save: '{name}' at tick {tick} \
+                     (hash {:#018x}) saved: {}",
+                    replay.final_hash,
+                    path.display(),
+                );
+                self.save = Some(crate::save::MissionSave {
+                    mission_index,
+                    mission_name: name,
+                    replay,
+                });
+            }
+            Err(error) => {
+                println!("pandemonium client — mission save failed: {error}");
+            }
+        }
     }
 
     /// Adjusts one settings row and applies it live (PLAN-M10.2 §3.4): the
@@ -1480,6 +1736,9 @@ impl App {
             // list and the renderer's cannot disagree.
             has_campaign: self.tree.campaign.is_some(),
             live_mission: self.mission_index,
+            // B-027: the resumable save — the same app field the menu
+            // frame's Continue row reads.
+            resumable_save: self.save.as_ref().map(|save| save.mission_index),
         }
     }
 
@@ -1525,6 +1784,9 @@ impl App {
             // fields the machine's KeyContext reads.
             has_campaign: self.tree.campaign.is_some(),
             live_mission: self.mission_index.is_some(),
+            // B-027: the Continue row's fact — the same app field the
+            // machine's `KeyContext.resumable_save` reads.
+            resumable_save: self.save.as_ref().map(|save| save.mission_name.as_str()),
             end_lines: None, // no host behind a menu-only frame
             backdrop: [0.02, 0.03, 0.05, 0.94],
             info_lines,
@@ -2081,6 +2343,9 @@ impl App {
                 // fields the machine's KeyContext reads.
                 has_campaign: self.tree.campaign.is_some(),
                 live_mission: self.mission_index.is_some(),
+                // B-027: the Continue row's fact — the same app field the
+                // machine's `KeyContext.resumable_save` reads.
+                resumable_save: self.save.as_ref().map(|save| save.mission_name.as_str()),
                 end_lines: headline,
                 backdrop: [0.0, 0.0, 0.0, 0.30],
                 info_lines,

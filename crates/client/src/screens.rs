@@ -394,6 +394,17 @@ pub enum ConfirmAction {
         /// The live mission's index into the tree's mission list.
         mission_index: usize,
     },
+    /// B-027 (ADR-0201 §6/§9 Phase 4): save the live mission and quit to
+    /// the menu — the match-so-far is written as a replay record, the
+    /// match drops, and the successor screen is the main menu (the same
+    /// successor Skip Mission takes). The pause menu's Save & Quit row
+    /// opens this rung (a match-discarding action is confirm-gated like
+    /// Restart, Resign, Quit to Menu and Skip Mission); `mission_index` is
+    /// the live mission's tree index the row captured from the context.
+    SaveMission {
+        /// The live mission's index into the tree's mission list.
+        mission_index: usize,
+    },
 }
 
 /// The window focus / minimize signals the pure auto-pause decision reads
@@ -577,6 +588,25 @@ pub enum Effect {
         /// The mission's index into the tree's mission list.
         mission_index: usize,
     },
+    /// B-027 (ADR-0201 §6/§9 Phase 4): write the live mission's save — the
+    /// match-so-far as a replay record (mission id, seed, the fed command
+    /// log, the current tick) in the user config folder beside
+    /// `settings.cfg` — and leave for the main menu (the successor Quit to
+    /// Menu takes, the A-012 pattern). Emitted from the pause menu's
+    /// confirm-gated Save & Quit rung, which exists only over a mission
+    /// match; a failed write is surfaced as one line, never an error the
+    /// loop sees.
+    SaveMission {
+        /// The live mission's index into the tree's mission list.
+        mission_index: usize,
+    },
+    /// B-027 (ADR-0201 §6/§9 Phase 4): resume the saved mission — rehost
+    /// the recorded command log through the engine resume seam and re-enter
+    /// the match at the saved tick (unpaused, no cutscene, the HUD seeded
+    /// from the authoritative objective statuses). Emitted by the main
+    /// menu's Continue row, which exists only when the app carries a
+    /// resumable save (the context's `resumable_save`).
+    ResumeMission,
 }
 
 /// The machine's view of one input event (winit keys map here — the pure
@@ -633,6 +663,14 @@ pub struct KeyContext {
     /// this is `Some` — appended as row 6 so every existing pause-menu
     /// index (the Xvfb scripts' focus arithmetic) keeps its meaning.
     pub live_mission: Option<usize>,
+    /// B-027 (ADR-0201 §6/§9 Phase 4): the loaded mid-mission save's
+    /// mission, as a tree index, when one resolved at startup or was
+    /// written this run (`None` with no file or an unresolvable one). The
+    /// main menu's Continue row exists exactly when this is `Some` —
+    /// appended after Quit so every existing main-menu index (the Xvfb
+    /// scripts' focus arithmetic) keeps its meaning in every layout, save
+    /// or no save.
+    pub resumable_save: Option<usize>,
 }
 
 /// One focusable row's identity — the shared vocabulary between the
@@ -689,6 +727,19 @@ pub enum ButtonId {
     /// mission match (the context's `live_mission`), confirm-gated like
     /// every match-discarding row.
     PauseSkipMission,
+    /// Pause menu (B-027, ADR-0201 §6/§9 Phase 4): save the live mission
+    /// and quit to the menu — row 7, after Skip Mission, only over a
+    /// mission match (the context's `live_mission`), confirm-gated like
+    /// every match-discarding row. Rows 0-6 keep their indices in every
+    /// layout (the Xvfb scripts' focus arithmetic counts from them — the
+    /// A-011 Missions-row precedent, appended at the end).
+    PauseSaveMission,
+    /// Main menu (B-027): resume the saved mission — after Quit, the last
+    /// row, only when the context carries a resumable save
+    /// (`resumable_save`); every existing main-menu index keeps its
+    /// meaning in every layout, save or no save (the A-011 Missions-row
+    /// precedent).
+    ContinueMission,
     /// Settings screen: one settings row (by index).
     Setting(usize),
     /// Settings screen: save and return.
@@ -773,6 +824,14 @@ impl AppState {
             // rows below shift by one only in the campaign-present
             // layout, which the repo content always is.
             (Screen::MainMenu, 1) if ctx.has_campaign => ButtonId::Campaign,
+            // B-027: the Continue row — after Quit, the last row, only when
+            // a resumable save exists; every existing index keeps its
+            // meaning in every layout (appended, the A-011 precedent).
+            (Screen::MainMenu, index)
+                if index == 4 + usize::from(ctx.has_campaign) && ctx.resumable_save.is_some() =>
+            {
+                ButtonId::ContinueMission
+            }
             (Screen::MainMenu, index) => match (!ctx.has_campaign, index) {
                 (true, 1) | (false, 2) => ButtonId::Settings,
                 (true, 2) | (false, 3) => ButtonId::Controls,
@@ -821,6 +880,10 @@ impl AppState {
             // match (rows 0-5 keep their indices in both layouts; the
             // Xvfb scripts' focus arithmetic counts from there).
             (Screen::PauseMenu, 6) if ctx.live_mission.is_some() => ButtonId::PauseSkipMission,
+            // B-027: the Save & Quit rung — row 7, only over a mission
+            // match (rows 0-6 keep their indices in every layout; the Xvfb
+            // scripts' focus arithmetic counts from them).
+            (Screen::PauseMenu, 7) if ctx.live_mission.is_some() => ButtonId::PauseSaveMission,
             (Screen::EndScreen, 0) => ButtonId::Rematch,
             (Screen::EndScreen, 1) => ButtonId::ToMenu,
             (Screen::Controls { .. }, 0) => ButtonId::Back,
@@ -838,13 +901,15 @@ impl AppState {
     /// carries them — B-026).
     pub fn button_count(&self, ctx: &KeyContext) -> usize {
         match self.screen {
-            Screen::MainMenu => 4 + usize::from(ctx.has_campaign),
+            Screen::MainMenu => {
+                4 + usize::from(ctx.has_campaign) + usize::from(ctx.resumable_save.is_some())
+            }
             Screen::NewMatch(_) => 6, // Mode/Seed/Map/Start/Back/Missions
             Screen::MissionPicker(_) => 4, // Mission/Seed/Start/Back
             Screen::Campaign(_) => 5, // Mission/Seed/Start/Skip/Back
             Screen::Settings { .. } => 9, // 8 settings rows + Done
             Screen::InMatch => 0,
-            Screen::PauseMenu => 6 + usize::from(ctx.live_mission.is_some()),
+            Screen::PauseMenu => 6 + 2 * usize::from(ctx.live_mission.is_some()),
             Screen::EndScreen => 2,
             Screen::Controls { .. } => 1, // Back
             Screen::Confirm { .. } => 2,  // Cancel + Confirm
@@ -1009,6 +1074,15 @@ impl AppState {
             // only resolves when the context carries a campaign, so the
             // effect never fires campaign-less.
             ButtonId::Campaign => (next, Effect::OpenCampaign),
+            // B-027 (ADR-0201 §6/§9 Phase 4): the Continue row resumes the
+            // saved mission — InMatch, unpaused, at the saved tick. The row
+            // only resolves when the context carries a resumable save, so
+            // the effect never fires save-less (the defensive handler
+            // keeps the machine total).
+            ButtonId::ContinueMission => {
+                next.screen = Screen::InMatch;
+                (next, Effect::ResumeMission)
+            }
             ButtonId::Mode => {
                 if let Screen::NewMatch(fields) = &mut next.screen {
                     fields.mode = fields.mode.cycle(1);
@@ -1226,6 +1300,21 @@ impl AppState {
                 }
                 None => (next, Effect::None),
             },
+            // B-027 (ADR-0201 §6/§9 Phase 4): the Save & Quit rung — row 7,
+            // only over a mission match; the confirm rung like every
+            // match-discarding action; the row itself only exists when the
+            // context carries a live mission, so the captured index is
+            // always Some here (the defensive no-op keeps the machine
+            // total).
+            ButtonId::PauseSaveMission => match ctx.live_mission {
+                Some(mission_index) => {
+                    next.screen = Screen::Confirm {
+                        action: ConfirmAction::SaveMission { mission_index },
+                    };
+                    (next, Effect::None)
+                }
+                None => (next, Effect::None),
+            },
             ButtonId::Rematch => {
                 next.screen = Screen::InMatch;
                 (next, Effect::RestartMatch)
@@ -1273,6 +1362,16 @@ impl AppState {
                         ConfirmAction::SkipMission { mission_index } => {
                             next.screen = Screen::MainMenu;
                             (next, Effect::SkipMission { mission_index })
+                        }
+                        // B-027: saving the live mission writes the record
+                        // and leaves for the main menu — the app's
+                        // SaveMission handler drops the host on the way out
+                        // (the same successor Skip Mission takes). The save
+                        // is written, the match is gone: the player resumes
+                        // from the Continue row.
+                        ConfirmAction::SaveMission { mission_index } => {
+                            next.screen = Screen::MainMenu;
+                            (next, Effect::SaveMission { mission_index })
                         }
                     },
                     // Confirm* outside a Confirm screen is unreachable
@@ -1441,6 +1540,7 @@ mod tests {
             mission_count: 1,
             has_campaign: false,
             live_mission: None,
+            resumable_save: None,
         }
     }
 
@@ -1453,6 +1553,7 @@ mod tests {
             mission_count: 1,
             has_campaign: false,
             live_mission: None,
+            resumable_save: None,
         }
     }
 
@@ -2360,6 +2461,7 @@ mod tests {
             mission_count: 3,
             has_campaign: false,
             live_mission: None,
+            resumable_save: None,
         }
     }
 
@@ -2567,6 +2669,7 @@ mod tests {
             mission_count: 0,
             has_campaign: false,
             live_mission: None,
+            resumable_save: None,
         };
         let (next, effect) = new_match_screen(&barren).activate_index(5, &barren);
         assert_eq!(effect, Effect::None);
@@ -2608,6 +2711,7 @@ mod tests {
             mission_count: 4,
             has_campaign: true,
             live_mission: None,
+            resumable_save: None,
         }
     }
 
@@ -2849,19 +2953,25 @@ mod tests {
     fn the_pause_menu_gains_a_skip_mission_row_only_over_a_mission() {
         // Row 6, appended after Quit to Menu so rows 0-5 (the Xvfb focus
         // arithmetic) keep their meaning; a plain match's pause menu is
-        // exactly the six rows it was.
+        // exactly the six rows it was. B-027 appended the Save & Quit rung
+        // as row 7 on the same guard, so the live-mission count is eight.
         let pause = at(Screen::PauseMenu);
         let ctx_live = KeyContext {
             live_mission: Some(0),
             ..ctx_campaign()
         };
-        assert_eq!(pause.button_count(&ctx_live), 7);
+        assert_eq!(pause.button_count(&ctx_live), 8);
         assert_eq!(
             pause.button_at(6, &ctx_live),
             Some(ButtonId::PauseSkipMission)
         );
-        assert_eq!(pause.button_count(&ctx()), 6, "no live mission, no row");
+        assert_eq!(
+            pause.button_at(7, &ctx_live),
+            Some(ButtonId::PauseSaveMission)
+        );
+        assert_eq!(pause.button_count(&ctx()), 6, "no live mission, no rows");
         assert_eq!(pause.button_at(6, &ctx()), None);
+        assert_eq!(pause.button_at(7, &ctx()), None);
     }
 
     #[test]
@@ -2891,5 +3001,70 @@ mod tests {
         let (next, effect) = confirm.activate_index(1, &ctx_live);
         assert!(matches!(next.screen, Screen::MainMenu));
         assert_eq!(effect, Effect::SkipMission { mission_index: 2 });
+    }
+
+    #[test]
+    fn the_pause_save_quit_rung_confirms_to_the_menu_with_the_effect() {
+        // B-027 (ADR-0201 §6/§9 Phase 4): a match-discarding action is
+        // confirm-gated (A-009's law); the rung stores the live mission's
+        // tree index and Proceed runs it unchanged — the successor screen
+        // is the main menu and the app's handler writes the record and
+        // drops the host on the way out.
+        let ctx_live = KeyContext {
+            live_mission: Some(2),
+            ..ctx_campaign()
+        };
+        let pause = at(Screen::PauseMenu);
+        let (confirm, effect) = pause.activate_index(7, &ctx_live);
+        assert_eq!(effect, Effect::None);
+        assert_eq!(
+            confirm.screen,
+            Screen::Confirm {
+                action: ConfirmAction::SaveMission { mission_index: 2 }
+            }
+        );
+        // Esc on the rung cancels back to the pause menu (the safe edge).
+        let (back, effect) = confirm.on_key(NavKey::Escape, &ctx_live);
+        assert!(matches!(back.screen, Screen::PauseMenu));
+        assert_eq!(effect, Effect::None);
+        // Proceed leaves for the main menu carrying the save.
+        let (next, effect) = confirm.activate_index(1, &ctx_live);
+        assert!(matches!(next.screen, Screen::MainMenu));
+        assert_eq!(effect, Effect::SaveMission { mission_index: 2 });
+    }
+
+    #[test]
+    fn the_main_menu_gains_a_continue_row_only_with_a_save() {
+        // B-027: after Quit, the last row — every existing main-menu index
+        // keeps its meaning in every layout, save or no save (the A-011
+        // Missions-row precedent); a save-less main menu keeps the
+        // campaign-present five rows exactly.
+        let menu = at(Screen::MainMenu);
+        let ctx_save = KeyContext {
+            resumable_save: Some(0),
+            ..ctx_campaign()
+        };
+        assert_eq!(menu.button_count(&ctx_save), 6);
+        assert_eq!(
+            menu.button_at(5, &ctx_save),
+            Some(ButtonId::ContinueMission)
+        );
+        assert_eq!(menu.button_count(&ctx_campaign()), 5, "no save, no row");
+        assert_eq!(menu.button_at(5, &ctx_campaign()), None);
+    }
+
+    #[test]
+    fn the_continue_row_resumes_into_the_match_with_the_effect() {
+        // The row's effect: InMatch carrying ResumeMission — the app's
+        // handler rehosts through the engine seam and re-enters at the
+        // saved tick.
+        let ctx_save = KeyContext {
+            resumable_save: Some(3),
+            ..ctx_campaign()
+        };
+        let menu = at(Screen::MainMenu);
+        let (next, effect) = menu.activate_index(5, &ctx_save);
+        assert!(matches!(next.screen, Screen::InMatch));
+        assert_eq!(effect, Effect::ResumeMission);
     }
 }
