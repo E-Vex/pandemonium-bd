@@ -1326,7 +1326,7 @@ confirms or rejects it.
   long, they do not abort — a different failure shape, out of finding
   6's scope).
 
-- **A-210 (B-026, ADR-0201 §6).** The campaign progress file's *name* is
+- **A-210 (B-026, ADR-0201 §6).** ~~The campaign progress file's *name* is
   `campaign_progress.cfg` in the per-user config directory. The ADR names
   the folder ("beside `settings.cfg`", the same per-OS resolution
   `config.rs` owns) and the format ("one line per mission,
@@ -1335,9 +1335,14 @@ confirms or rejects it.
   matches the settings suffix. The resolution is shared through
   `config_dir_from` (extracted from `config_path_from`; `settings.cfg`'s
   own path is byte-for-byte unchanged, pinned by the existing config
-  tests).
+  tests).~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  The ADR names the folder and the format, never the file name;
+  `campaign_progress.cfg` is self-describing, matches the settings
+  suffix, and rides the shared `config_dir_from` seam — the reading
+  stands as the law (`progress.rs`, machine-walked by a026 c5).
 
-- **A-211 (B-026, ADR-0201 §6).** Challenge missions unlock on their
+- **A-211 (B-026, ADR-0201 §6).** ~~Challenge missions unlock on their
   chapter's **completion** only — a skip does not unlock the challenge
   beside it. The ADR's unlock sentence distinguishes the two gates
   ("mission N+1 unlocks when N is completed or skipped; challenge
@@ -1348,35 +1353,57 @@ confirms or rejects it.
   they go back and win chapter 1. The alternative reading (skip unlocks
   challenges too) would make the challenge gate identical to the chapter
   gate and leave the ADR's two-clause sentence with nothing to
-  distinguish; recorded here for the owner either way.
+  distinguish; recorded here for the owner either way.~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  The ADR's own two-clause sentence and §6's skip law (a skip
+  "unlocks the next", completed and skipped stay distinct) leave
+  nothing to distinguish under the alternative reading; the code
+  (`CampaignState::status`) and the a026 machine pass agree: skip
+  ch1 -> ch2 startable (c5b), the challenge still locked (c5c).
+  A challenge opens on its chapter's completion, nothing else.
 
-- **A-212 (B-026, ADR-0201 §6).** The pause menu's Skip Mission lands on
+- **A-212 (B-026, ADR-0201 §6).** ~~The pause menu's Skip Mission lands on
   the main menu (not the campaign screen) — the same successor Quit to
   Menu takes, with the host dropped (DropMatch's discipline); the
   campaign screen is one OpenCampaign away. Confirm-gated like every
   match-discarding row (A-009's law), and existing only over a mission
   match (`KeyContext.live_mission`; a plain match's pause menu keeps its
-  six rows so the Xvfb focus arithmetic holds).
+  six rows so the Xvfb focus arithmetic holds).~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  The successor screen is the main menu with the host dropped (the
+  Quit-to-Menu successor, the A-012 pattern), confirm-gated, and
+  mission-only — machine-walked by a026 c6/c6b/c6c (the rung, the
+  Cancel, the confirmed skip) and c7 (a plain match keeps six rows).
 
-- **A-213 (B-026, ADR-0201 §6).** Victory recording is scoped to mission
+- **A-213 (B-026, ADR-0201 §6).** ~~Victory recording is scoped to mission
   matches the *player* won (`outcome.winner == HUMAN`, the mission
   player's slot): a defeat, a mutual destruction, or a resignation (which
   the match rules resolve as a defeat) records nothing — the mission
   stays until won or explicitly skipped. Replays are idempotent (the
   record's change signal skips the disk write), and a skip upgrades to
   completed on a later victory (the ADR's "a skipped mission stays
-  replayable" — winning it counts).
+  replayable" — winning it counts).~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  `outcome.winner == HUMAN` records completed and nothing else does;
+  the record's change signal makes replays idempotent, and a skip
+  upgrades to completed on a later win (`on_mission_victory`, the
+  upsert pins in `progress.rs`).
 
-- **A-214 (B-026, ADR-0201 §6).** An entry carrying its own record is
+- **A-214 (B-026, ADR-0201 §6).** ~~An entry carrying its own record is
   always startable from the campaign screen (the record unlocks a
   replay), so a stale or hand-edited progress file degrades to
   "replayable", never to a soft-lock. Skip is correspondingly inert on
   completed entries (nothing forward to unlock) and locked ones (nothing
   to unlock at all); the campaign screen's seed field starts empty
   (random at Start — the screen has no parent seed field to prefill, the
-  New Match screen's `--seed` prefill law does not reach it).
+  New Match screen's `--seed` prefill law does not reach it).~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  A record always unlocks a replay (no soft-locks), Skip is inert
+  on completed and locked entries alike, and the seed field starts
+  empty — `startable`/`skip`'s guards and the a026 c3/c5 walks (a
+  locked entry's Start inert, a skipped entry still startable).
 
-- **A-215 (B-027, ADR-0201 §6/§9 Phase 4).** The mid-mission save's file
+- **A-215 (B-027, ADR-0201 §6/§9 Phase 4).** ~~The mid-mission save's file
   is `mission_save.pdrp` in the per-user config directory. The ADR's
   assessment names the folder ("the user folder" — the same per-OS
   resolution `settings.cfg` owns, the progress file's law) and the
@@ -1388,9 +1415,15 @@ confirms or rejects it.
   whatever the slot held, and the save persists across a resume and a
   victory (the Continue row keeps offering the saved point; a completed
   mission's save is just another way to replay it — no soft-locks,
-  A-214's spirit).
+  A-214's spirit).~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  The ADR's assessment names the fields and the folder, and its own
+  consequences line ("the mid-mission save reuses the replay record
+  itself") fixes the format; one slot, overwrite on save, persisting
+  across a resume — machine-walked by a027 c3/c4/c5 (the write, the
+  resume, the third session resuming the same point again).
 
-- **A-216 (B-027, ADR-0201 §6/§9 Phase 4).** A save resolves at load
+- **A-216 (B-027, ADR-0201 §6/§9 Phase 4).** ~~A save resolves at load
   time against the loaded content, or it does not exist: the mission id
   must name a mission the tree carries (membership, `tools
   replay-verify`'s third comparison, applied at load), and the record's
@@ -1401,18 +1434,26 @@ confirms or rejects it.
   startup line and the run continues without it — no row, no crash, the
   file left alone. A crafted file that re-encodes with a valid checksum
   is out of the declared threat model (DEBT-018's stance, replay-verify
-  shares the exposure); casual edits fail the checksum.
+  shares the exposure); casual edits fail the checksum.~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  Membership plus content identity at load, one surface line, never
+  an error the loop sees (the `save.rs` load gates and their tests;
+  `replay-verify`'s third comparison is the precedent).
 
-- **A-217 (B-027, ADR-0201 §6/§9 Phase 4).** Save & Quit is mission-only:
+- **A-217 (B-027, ADR-0201 §6/§9 Phase 4).** ~~Save & Quit is mission-only:
   the pause menu's rung exists exactly over a live mission (row 7,
   appended after Skip Mission so rows 0-6 keep their indices in every
   layout — the Xvfb focus arithmetic counts from them, the A-011
   Missions-row precedent); a plain match keeps its six rows exactly.
   Confirm-gated like every match-discarding row (A-009's law), and the
   successor screen is the main menu (the A-012 pattern — the same
-  successor Skip Mission takes; the host drops on the way out).
+  successor Skip Mission takes; the host drops on the way out).~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  Row 7, mission-only, confirm-gated, successor the main menu —
+  machine-walked by a027 c1/c2 (the rung and its Cancel) and a026
+  c7b (a plain match's Down x7 wraps to Settings, not a rung).
 
-- **A-218 (B-027, ADR-0201 §6/§9 Phase 4).** Resume enters the match
+- **A-218 (B-027, ADR-0201 §6/§9 Phase 4).** ~~Resume enters the match
   unpaused with no intro cutscene (the player has seen it; the pause-skip
   takes the same no-recutscene line, A-212's precedent). The setup is the
   record's own seed and player setup — resume re-runs the match's
@@ -1423,9 +1464,15 @@ confirms or rejects it.
   the bookkeeping instead of replaying one-shot events. The checkpoint
   trail resumes from the save's own record (the forced final at the saved
   tick is its last entry), so a later `--record` of the resumed match
-  covers the whole match — the ADR's "still replay-recordable".
+  covers the whole match — the ADR's "still replay-recordable".~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  Unpaused, no cutscene, the record's own seed and setup, the HUD
+  seeded from the authoritative statuses — machine-walked by a027
+  c4: the resumed line names the saved tick exactly, and the exit
+  tick has run past it (a cutscene hold never moves, a restart
+  never reaches it).
 
-- **A-219 (B-027, ADR-0201 §6/§9 Phase 4).** The main menu's Continue row
+- **A-219 (B-027, ADR-0201 §6/§9 Phase 4).** ~~The main menu's Continue row
   is appended after Quit — the LAST row — so every existing main-menu
   index keeps its meaning in every layout, save or no save (the A-011
   Missions-row precedent; contrast B-026's Campaign row, which slotted
@@ -1434,9 +1481,15 @@ confirms or rejects it.
   mission_save.pdrp on the machine still walks today's layout). The row's
   value is the saved mission's display name; the in-memory save is set
   only on a successful write, so the row never offers a save that is not
-  on disk.
+  on disk.~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  Appended after Quit (row 5, the last row), value the saved
+  mission's name, and the in-memory save exists only after a
+  successful write — machine-walked by a027 c4 (Down x5 resumes)
+  and c6 (a save-less menu has no row: Down x5 wraps to New
+  Match).
 
-- **A-220 (B-027, ADR-0201 §6/§9 Phase 4).** The saved tick is the
+- **A-220 (B-027, ADR-0201 §6/§9 Phase 4).** ~~The saved tick is the
   record's forced final checkpoint, and the save carries exactly the fed
   command log: commands submitted but never fed at save time (paused
   with `pending` non-empty) are inherently absent — the ADR's wording is
@@ -1444,8 +1497,27 @@ confirms or rejects it.
   The continuation diverges from the never-interrupted timeline (fresh
   controllers, §6 caveat i) and no test asserts otherwise (§6 caveat
   iii); what the tests DO pin is the resumed instant itself (tick, hash,
-  id watermark — A2's re-simulation property over the recorded prefix).
+  id watermark — A2's re-simulation property over the recorded prefix).~~
+  Ruling (B-028, the owner's brief, 2026-11-06): CONFIRMED — in force.
+  The fed log is the ground truth the rehost replays; the saved
+  tick is the record's forced final checkpoint; the continuation's
+  divergence stays unasserted (§6 caveats i/iii) while the tests
+  pin the resumed instant itself — the reading is the ADR, verbatim.
 
+- **A-221 (B-028, register process).** The task id is B-028 (the B-lane's
+  next number — the brief did not name one, and the work reviews B-027,
+  rules B-026/B-027's assumption rows, and closes the B-lane's DEBT-204/205);
+  the two evidence scripts keep the exact names their debt rows reserved —
+  `a026_campaign_screens.sh` / `a027_save_flow.sh`, named for the surfaces
+  they verify (B-026's and B-027's), not for the brief that owns them (the
+  a012 precedent reads the other way — a012 was itself the evidence task's
+  number over A-011's surfaces — but a debt row that names its file settles
+  the name). The rulings are recorded per this register's own law ("strike
+  an entry out when the human confirms or rejects it") as a strike of the
+  body plus an unstruck note naming the ruling, the authority (the owner's
+  B-028 brief, 2026-11-06), and the evidence; A-049 (struck for
+  supersession) is the format precedent, and each note's "CONFIRMED — in
+  force" keeps the settled law legible under the strike.
 
 - **A-131 (A-013, PLAN-M11 §2 "kept, not reversed").** The right-drag
   grab-scroll stays as the one camera deviation the card owns: Zero Hour's
