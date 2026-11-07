@@ -823,4 +823,3 @@ fn a_tuned_mission_replay_roundtrips() {
     std::fs::write(scratch.join("tuning_replay.pdrp"), replay.encode())
         .expect("the replay file writes");
 }
-

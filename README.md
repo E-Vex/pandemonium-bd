@@ -448,9 +448,9 @@ budgets); `audit` and `deny` workflows gate advisories and licences.
 
 | | |
 |---|---|
-| **Tests** | 1013 dev / 1008 release, green in both profiles (the five should-panic invariant tests are debug-only) |
+| **Tests** | 1024 dev / 1019 release, green in both profiles (the five should-panic invariant tests are debug-only) |
 | **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
-| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x0f80a93eee5bdb1d` · content `0xb709ec37afe03aae` — moved once, together, by B-029's authorized growth (behavior proven identical); the map growth passes (B-030 on) move none of them |
+| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x0f80a93eee5bdb1d` · content `0xb709ec37afe03aae` — moved twice, each by an authorized move: B-029's growth (behavior proven identical) and B-031's stat rebalance (behavior intentionally changed, identity proven by the unchanged command count and RNG streams); the map growth passes (B-030 on) move none of them |
 | **Soak** | many seeded AI-vs-AI matches with per-match crash isolation; a dev-profile soak observes the invariant checker (A12) |
 | **Releases** | per-OS archives, SHA-256 checksums, a licence gate (cargo-deny) and generated `THIRD_PARTY_NOTICES.md`, and smoke legs that gate on the licence and the bundled art pack |
 

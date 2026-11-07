@@ -1848,4 +1848,3 @@ fn an_ai_vs_ai_match_plays_out_and_resolves_on_iron_basin() {
     assert_eq!(hashes, hashes_again, "the checkpoint trails repeat");
     assert_eq!(final_hash, final_hash_again, "the final hash repeats");
 }
-
