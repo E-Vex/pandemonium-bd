@@ -334,7 +334,7 @@ crates/client/src/
                   assets/fonts/LICENSE.txt) into a coverage atlas; layout is
                   plain client-side math (packing, order, baseline
                   conventions, and the fallback box are unit-tested).
-  render.rs       WgpuRenderer (wgpu 26): depth buffer, terrain pipeline (the
+  render.rs       WgpuRenderer (wgpu 30, A-021): depth buffer, terrain pipeline (the
                   engine mesh), entity pipeline (36-vertex unit cube, instanced
                   position/half-extent/color, team colors, selection
                   brightening), and the UI overlay pipeline (screen-space

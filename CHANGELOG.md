@@ -7,6 +7,52 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [A-021] — the presentation-stack dependency modernization pass (wgpu 26 → 30, glam 0.30 → 0.34)
+
+DEBT-200's declared trigger fired (the next wgpu major bump), and the
+presentation layer moved to the current generation of its two math/GPU
+crates — behavior-preserving end to end: 1008 dev / 1003 release (the
+master counts exactly), both registered goldens bit-identical
+(0xb6fff6659cfb7709 demo, 0x6e9a18bd7c5f699f flagship), the content
+identity untouched, and the full a010 Xvfb+XTEST evidence pass re-run
+green on the new stack (13/13 — windowed frames, live matches, pause/
+restart/quit flows, real XTEST input, GL on llvmpipe).
+
+- **wgpu 26.0.1 → 30.0.1 (client only; the sim tree never sees it)**:
+  the instance takes the display handle up front (wgpu 29 moved it off
+  the surface; GLES presentation requires it, so `WgpuRenderer::new`
+  receives the event loop's `OwnedDisplayHandle`, and the hw-gated
+  headless probe uses `new_without_display_handle`);
+  `get_current_texture` returns the `CurrentSurfaceTexture` enum (the
+  two texture-carrying variants present, every other variant skips the
+  frame — the old `Ok`/`Err` split); `present` moved onto the queue;
+  `RenderPassDescriptor`/`RenderPipelineDescriptor` gained
+  `multiview_mask` (the pipeline field renamed from `multiview`); depth
+  state's write/compare wrapped in `Option`; pipeline layouts take
+  `Option<&BindGroupLayout>` slices with `immediate_size` replacing
+  `push_constant_ranges`; vertex buffers take
+  `Option<VertexBufferLayout>`; `mipmap_filter` takes
+  `MipmapFilterMode`; `RequestAdapterOptions` gained
+  `apply_limit_buckets` (false — the pre-v30 behavior) and
+  `SurfaceConfiguration` gained `color_space` (`Auto` — the documented
+  historical backend choice).
+- **naga 30 enforces the WGSL spec's integer-interpolate rule**: the
+  entity shader's `u32` skin varying now declares `@interpolate(flat)`
+  — the only legal choice, and the one every backend already applied
+  (the other five shaders validate unchanged).
+- **glam 0.30.10 → 0.34.2 (engine + client)**: the camera constructors
+  moved into the `camera` module — `rh::view::look_at_mat4` is the old
+  `Mat4::look_at_rh`, `rh::proj::directx::perspective` is the old
+  `Mat4::perspective_rh` (Z in [0,1], Y-up NDC; numerically identical —
+  the mapping and its proof are A-161).
+- **the audit debt's paste half repaid (DEBT-200)**: wgpu 30's Apple
+  stack is objc2-metal, so `metal 0.32 → paste 1.0.15` left the
+  lockfile entirely (verified per-target); the RUSTSEC-2024-0436
+  ignore is deleted from `.cargo/audit.toml` and `cargo audit --deny
+  warnings` runs green against the new lockfile (355 dependencies,
+  only the ttf-parser disposition still ignored — that half waits on
+  the winit/fontdue successor, as before).
+
 ## [M12] — the model pipeline (ADR-0101: A-016 spec · A-017 phases 0-2 · A-018 phases 3-4 · A-019 phase 5)
 
 The client drew every entity as an instanced box silhouette (wearing a PNG

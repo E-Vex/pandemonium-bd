@@ -1782,3 +1782,40 @@ confirms or rejects it.
   is a single mid setting rather than the box pass's metal/mason split —
   a model is one mixed-material object, and material-class heuristics do
   not generalize to authored meshes.
+- **A-161 (A-021 — glam 0.34's camera-module mapping, and why the
+  matrices are unchanged).** glam 0.33/0.34 removed the
+  `Mat4::look_at_rh`/`perspective_rh` constructors and moved their
+  successors into the `camera` module, parameterized by convention. The
+  port maps `Mat4::look_at_rh` → `camera::rh::view::look_at_mat4` and
+  `Mat4::perspective_rh` → `camera::rh::proj::directx::perspective`.
+  The reading: the old `look_at_rh` documented "+X=right, +Y=up,
+  +Z=back", which is exactly the new function's "right-handed Y-up view
+  space with X-right and -Z-forward" (same `(s, u, -f)` basis
+  construction, compared line by line between 0.30.10 and 0.34.2); the
+  old `perspective_rh` documented "Z in [0,1], useful to map the
+  standard right-handed coordinate system into what WebGPU/Metal/DX3D
+  expect", which is the new `directx::` set's "Z in [0, 1] and Y-up"
+  (the `vulkan::` set Y-flips; the `opengl::` set uses Z in [-1, 1] —
+  both wrong here). The numeric identity was verified against both
+  versions' matrix construction (`h = cos/sin`, `r = far/(near-far)`,
+  `-r*near`, `w = -1`), so the camera is byte-for-byte the same
+  transform — pinned in practice by the unchanged Xvfb evidence pass.
+- **A-162 (A-021 — the wgpu 30 constructor-field choices, each the
+  documented historical-behavior form).** Three new/changed wgpu fields
+  required a semantics call, and each has exactly one
+  behavior-preserving answer: `RequestAdapterOptions::
+  apply_limit_buckets: false` (v30's field; false is documented as the
+  pre-v30 behavior — no limit bucketing), `SurfaceConfiguration::
+  color_space: SurfaceColorSpace::Auto` (documented as "reproducing
+  wgpu's historical behavior" — Srgb for sRGB formats, which every
+  golden Xvfb frame was produced under), and the instance descriptor
+  split: the windowed renderer passes the event loop's
+  `OwnedDisplayHandle` through `new_with_display_handle` (v29 moved the
+  display up front, GLES presentation *requires* it — the Xvfb/GL
+  evidence path included; Vulkan/Metal/DX12 ignore it), while the
+  hw-gated headless probe uses `new_without_display_handle` (it never
+  creates a surface). The enum split of `get_current_texture` maps the
+  two texture-carrying variants (`Success`, `Suboptimal`) to the old
+  `Ok` half — Suboptimal still presents, matching the old behavior
+  where a suboptimal frame was an `Ok` — and every other variant to the
+  old `Err` half (skip the frame).
