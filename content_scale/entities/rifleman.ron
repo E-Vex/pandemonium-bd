@@ -1,10 +1,15 @@
-// Rifleman (plan §10.3's example record, verbatim stats; §10.4 table row).
+// Rifleman (plan §10.3's example record; B-031's rebalance: 60 -> 65 hp):
+// the line survives one Ballista volley (60 damage) with 5 hp to spare —
+// the exact-one-shot economics that let siege delete equal-ore infantry
+// for free are gone — and the third Guardian volley it now needs breaks
+// the armor anchor's stranglehold on the barracks tier (the measured
+// table and the laws: tests/balance.rs, B-031).
 (
     schema_version: 1,
     id: "rifleman",
     display_name: "Rifleman",
     capabilities: [
-        Health(( max: 60 )),
+        Health(( max: 65 )),
         Move(( speed_milli_tiles_per_s: 2400, radius_milli_tiles: 350 )),
         Attack(( damage: 8, range_milli_tiles: 5000, cooldown_ms: 1000, acquire_range_milli_tiles: 7000 )),
         Vision(( radius_milli_tiles: 8000 )),
