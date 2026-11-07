@@ -292,9 +292,9 @@ impl RateLimiter {
 /// The device arm's payload (boxed inside [`Arm`] — it is the heavy
 /// variant, and the sink stays one pointer wide either way).
 struct DeviceArm {
-    /// The stream owner (0.22's `OutputStream` successor), kept for the
-    /// App's whole lifetime — dropping it ends playback (ADR-0002's
-    /// lifetime rule).
+    /// The stream owner (`MixerDeviceSink`, the `OutputStream` successor
+    /// since 0.22), kept for the App's whole lifetime — dropping it ends
+    /// playback (ADR-0002's lifetime rule, restated by its 0.23 addendum).
     sink: MixerDeviceSink,
     /// Set by the stream's error callback the moment the device dies
     /// mid-session — polled per cue, one degrade, never a panic.
@@ -557,7 +557,11 @@ fn probe_device() -> Option<(MixerDeviceSink, Arc<AtomicBool>)> {
     }
     let degraded = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&degraded);
-    let callback = move |_: rodio::cpal::StreamError| {
+    // 0.23's one breaking change, absorbed here: the callback's parameter
+    // is the unified `CpalError` (rodio's re-export of cpal 0.18's `Error`,
+    // which absorbed the old per-operation error types) — the flag-set
+    // behavior is identical for any error variant.
+    let callback = move |_: rodio::CpalError| {
         flag.store(true, Ordering::Relaxed);
     };
     let builder = DeviceSinkBuilder::from_default_device()
