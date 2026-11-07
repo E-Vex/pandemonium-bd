@@ -1,7 +1,7 @@
 # ADR-0002: rodio as the client's audio backend
 
 - **Date:** 2026-10-08
-- **Status:** accepted
+- **Status:** accepted (amended 2026-11-07 — the rodio 0.23 addendum below)
 - **Frozen decision affected:** plan §4 dependency law (the client crate's
   external allow-list). No FD-1..FD-10 decision changes: the `AudioSink` seam
   (plan §11.5, FD-9) stays exactly as M9 built it — the sink is fed after the
@@ -99,3 +99,55 @@ Accepted 2026-10-08: rodio 0.22.2 (playback feature only) is the client's
 audio backend behind the existing `AudioSink` seam — the owner's pre-choice
 (A-100) recorded with its resolved version and the null fallback as the
 constructor's other arm.
+
+## Addendum (2026-11-07): rodio 0.22.2 → 0.23.0
+
+- **Date:** 2026-11-07
+- **Status of this addendum:** accepted — the owner's delegation of
+  2026-11-07 ("keep working on upgrading this project… the natural
+  follow-ups are the rodio 0.23 bump, which needs an ADR-0002 addendum,
+  and the A14 human playtest") is the authorizing nod the A-021 report
+  §9 proposal asked for; this addendum is that record.
+- **What changed:** 0.23.0 (released 2026-10-11) is deliberately minimal:
+  cpal 0.17 → 0.18.2, and wherever rodio exposed a cpal error type it now
+  uses the unified `cpal::Error`, re-exported as `rodio::CpalError` (with
+  `CpalErrorKind`); `rodio::DevicesError` is removed (never used here).
+  Every symbol this client touches is signature-identical in 0.23 —
+  `DeviceSinkBuilder::from_default_device` / `with_error_callback` /
+  `open_sink_or_fallback`, `MixerDeviceSink` (with `mixer()` and
+  `log_on_drop`), `SamplesBuffer::new(ChannelCount, SampleRate, _)`,
+  `Source::amplify_normalized` — verified against the published 0.23.0
+  source before the edit. The port is one line: the stream error
+  callback's parameter type, `rodio::cpal::StreamError` →
+  `rodio::CpalError` (the flag-set behavior is identical for any error
+  variant). `crates/client/src/sound.rs` remains the only file that sees
+  rodio types — the seam this ADR promised absorbed the drift exactly as
+  the Consequences section predicted.
+- **The feature trim is unchanged:** `default-features = false,
+  features = ["playback"]` — 0.23's default set would add recording
+  (rtrb), the symphonia decoders, wav output (hound), and dithering,
+  none of which a synthesized-PCM pass needs. The tree under the trim,
+  verified per-target with `cargo tree` (host, x86_64-pc-windows-msvc,
+  aarch64-apple-darwin): rodio 0.23.0 + cpal 0.18.2 replace
+  0.22.2/0.17.3 with the same alsa/dasp/num chain on Linux; cpal
+  0.18.2's Windows stack moved onto the `windows`/`windows-core` 0.62
+  pins wgpu 30 already carries, and the old `windows-sys 0.45` /
+  `windows-targets 0.42` chain left the lockfile entirely; macOS moves
+  mach2 0.5.0 → 0.6.0. No new crate on any target; eleven left the lock
+  (the audit gate scans 344 dependencies, down from 355 — green, zero
+  advisories, only the documented ttf-parser disposition still
+  ignored).
+- **Evidence (the A-022 pass):** the full green gate on the branch —
+  fmt clean; clippy `-D warnings` clean; tests **1008 dev / 1003
+  release** (the master counts exactly); all four registered goldens
+  bit-identical; the replay round-trip PASS; the client's headless and
+  windowed (Xvfb, 900 frames presented) smokes PASS with the audio null
+  arm on its documented path. The machine cannot hear: whether 0.23
+  *sounds* the same is the owner's re-test on real hardware, riding the
+  A14 playtest sessions.
+- **Decision:** the accepted backend is now **rodio 0.23.0** (playback
+  feature only) behind the unchanged `AudioSink` seam; the Proposal
+  section's resolved-version sentence (0.22.2) is historical, superseded
+  by this addendum. No frozen decision moves: the plan §4 allow-list
+  line for the client is untouched (rodio was listed at acceptance),
+  FD-9's seam is untouched, and no golden moves.

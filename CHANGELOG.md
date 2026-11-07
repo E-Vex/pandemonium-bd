@@ -7,6 +7,38 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [A-022] — the rodio 0.23 bump (ADR-0002's addendum: the audio backend's cpal refresh)
+
+A-021 §9 named this bump as the natural follow-up, gated on an ADR-0002
+addendum; the owner's 2026-11-07 delegation authorized both. rodio
+0.22.2 → 0.23.0 is a deliberately minimal release (cpal 0.17.3 → 0.18.2;
+unified cpal error types): the port is one line — the stream error
+callback's parameter is now `rodio::CpalError` — and every other symbol
+the client touches is signature-identical. The seam held exactly as
+ADR-0002 promised: `crates/client/src/sound.rs` is still the only file
+that sees rodio types.
+
+- **Behavior-preserving, proven by the gate:** 1008 dev / 1003 release
+  (the master counts exactly), all four registered goldens
+  bit-identical (0xb6fff6659cfb7709 demo, 0x6e9a18bd7c5f699f flagship,
+  content identity PASS), the replay round-trip PASS, and the client's
+  headless + windowed (Xvfb, 900 frames presented) smokes PASS with
+  the audio null arm on its documented path (`no device — null
+  fallback`, counters counting).
+- **The tree got smaller, not bigger:** the playback-only feature trim
+  is unchanged; cpal 0.18.2's Windows stack now shares wgpu 30's
+  `windows`/`windows-core` 0.62 pins and the old `windows-sys 0.45` /
+  `windows-targets 0.42` chain left the lockfile entirely (11 crates
+  gone — the audit gate scans 344 dependencies, down from 355, `cargo
+  audit --deny warnings` green with the pinned 0.22.2 auditor);
+  Linux's alsa/dasp chain is unchanged and macOS moves only mach2
+  0.5.0 → 0.6.0.
+- **The 2026-11-07 addendum** records the decision in ADR-0002: the
+  accepted backend is now 0.23.0 (playback feature only) behind the
+  unchanged `AudioSink` seam; the original's resolved-version sentence
+  is historical. Whether it *sounds* the same is the owner's re-test,
+  riding the A14 playtest sessions.
+
 ## [A-021] — the presentation-stack dependency modernization pass (wgpu 26 → 30, glam 0.30 → 0.34)
 
 DEBT-200's declared trigger fired (the next wgpu major bump), and the
