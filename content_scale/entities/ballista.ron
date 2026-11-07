@@ -1,0 +1,21 @@
+// Ballista (B-029, plan §19's expansion test — Update 1, data-only): the
+// siege answer. Outranges everything on the field — turrets included —
+// but turns and fires slowly: it breaks static defense from outside its
+// reach and dies to anything fast that closes. Its sight matches its
+// acquisition (A-058: acquire_range <= vision — the siege platform sees
+// what it bombards). Trained at the Forge.
+(
+    schema_version: 1,
+    id: "ballista",
+    display_name: "Ballista",
+    capabilities: [
+        Health(( max: 140 )),
+        Move(( speed_milli_tiles_per_s: 1200, radius_milli_tiles: 450 )),
+        Attack(( damage: 60, range_milli_tiles: 12000, cooldown_ms: 4000, acquire_range_milli_tiles: 12500 )),
+        Vision(( radius_milli_tiles: 12500 )),
+    ],
+    cost: ( ore: 275 ),
+    build_time_ms: 32000,
+    population: 3,
+    requires: [ "forge" ],
+)

@@ -36,13 +36,13 @@ use std::sync::OnceLock;
 
 use pandemonium_ai::Controller;
 use pandemonium_content::ContentBundle;
-use pandemonium_engine::{alpha_controller, AiMatchHost};
+use pandemonium_engine::{alpha_controller, alpha_plan, AiMatchHost};
 use pandemonium_fx::Vec2Fx;
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
 use pandemonium_sim::{run_command_log, Sim};
 use pandemonium_sim_api::{
-    Command, CommandKind, ControllerKind, EntityId, Event, MatchSetup, PlayerId, PlayerSetup,
-    RejectReason, Tick, TilePos,
+    Command, CommandKind, ControllerKind, EntityId, Event, KindId, MatchSetup, PlayerId,
+    PlayerSetup, RejectReason, Tick, TilePos,
 };
 use proptest::prelude::*;
 
@@ -59,12 +59,18 @@ const COMPLETION_TICKS: u32 = 2400;
 /// The kinds of the Alpha content, by entity id order (validated by the
 /// content suite; pinned here for the battery's readability).
 mod kinds {
-    pub const BARRACKS: u32 = 0;
-    pub const COMMAND_CENTER: u32 = 1;
-    pub const ORE_NODE: u32 = 3;
-    pub const RIFLEMAN: u32 = 5;
-    pub const SUPPLY_DEPOT: u32 = 6;
-    pub const WORKER: u32 = 8;
+    // Positional KindIds over the entity files in filename order — the
+    // bundle's kind assignment. Re-numbered by B-029 (the arsenal growth:
+    // ballista.ron sorts first, so every kind after it shifts; the full
+    // order is now ballista, barracks, command_center, forge, guardian,
+    // lancer, ore_node, pathfinder, raider, rifleman, supply_depot,
+    // turret, worker).
+    pub const BARRACKS: u32 = 1;
+    pub const COMMAND_CENTER: u32 = 2;
+    pub const ORE_NODE: u32 = 6;
+    pub const RIFLEMAN: u32 = 9;
+    pub const SUPPLY_DEPOT: u32 = 10;
+    pub const WORKER: u32 = 12;
 }
 
 fn repo_content() -> PathBuf {
@@ -1172,9 +1178,52 @@ fn ai_vs_ai_golden_hash_is_pinned() {
     // while the encoded bytes are unchanged (no encoding bump; see
     // docs/DEBT.md and docs/ASSUMPTIONS.md A-087).
     assert_eq!(run.checkpoints.len(), (FLAGSHIP_TICKS / 30) as usize + 1);
-    assert_eq!(run.checkpoints[0].hash, 0x71a9_24ad_5799_e4b3);
-    assert_eq!(run.final_hash, 0x6e9a_18bd_7c5f_699f);
+    // Re-pinned by B-029 (the arsenal content growth): every KindId
+    // re-labels (ballista.ron sorts first), so the content-anchored state
+    // hash moves with the labels while behavior is proven identical — the
+    // command count, per-player counters, and controller RNG streams are
+    // bit-identical (the behavior anchors, pinned in tests/mission_ai.rs;
+    // see the B-029 report §5 for the full evidence).
+    assert_eq!(run.checkpoints[0].hash, 0x3d52_6307_f2cd_b237);
+    assert_eq!(run.final_hash, 0xbfe0_ec37_6fc0_b6da);
     assert_eq!(run.final_hash, run.checkpoints.last().unwrap().hash);
+}
+
+#[test]
+fn the_alpha_plan_ignores_the_forge() {
+    // B-029's additive-safety contract, pinned on the real bundle: the
+    // arsenal's second producer (the Forge, training pathfinder/lancer/
+    // ballista) must not disturb the scripted opponent. The plan resolves
+    // "the first producer whose list carries attackers" over the
+    // production map's sorted order — barracks sorts before command_center
+    // and forge — so the army stays the Alpha three and the Forge's kinds
+    // stay out of it (the army_vec/production wiring is what the B-029
+    // flagship evidence cross-checks: 612 commands and bit-identical
+    // controller RNG streams). A future faction edit that reorders the
+    // producers changes this silently; this test is what turns that loud.
+    let bundle = bundle();
+    let world = bundle.world();
+    let plan = alpha_plan(bundle, &world, PlayerId(0), FLAGSHIP_SEED, None);
+    let name_of = |kind: KindId| -> String { bundle.entities[kind.0 as usize].id.clone() };
+    assert_eq!(name_of(plan.worker), "worker");
+    assert_eq!(name_of(plan.command_center), "command_center");
+    assert_eq!(
+        plan.barracks.map(name_of),
+        Some("barracks".to_string()),
+        "the army producer stays the barracks"
+    );
+    assert_eq!(plan.depot.map(name_of), Some("supply_depot".to_string()));
+    assert_eq!(plan.node.map(name_of), Some("ore_node".to_string()));
+    let army: Vec<String> = plan.army.iter().map(|&kind| name_of(kind)).collect();
+    assert_eq!(
+        army,
+        ["rifleman", "raider", "guardian"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        "the round-robin composition is exactly the Alpha three — the \
+         Forge's arsenal kinds must never leak into it"
+    );
 }
 
 #[test]

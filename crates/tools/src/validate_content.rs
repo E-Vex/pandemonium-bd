@@ -189,7 +189,7 @@ mod tests {
         // content-identity job pins and tests/content_pipeline.rs asserts).
         validate_content(
             &repo_content(),
-            Some(0x9bc1_8c52_1107_b262),
+            Some(0x91ee_5df1_fee5_b347),
             Some(0xd381_3640_1ab0_2ff1),
         )
         .expect("the registered identity must pin cleanly");
@@ -204,7 +204,7 @@ mod tests {
         let chain = format!("{err:#}");
         assert!(chain.contains("identity mismatch"), "got: {chain}");
         assert!(chain.contains("0xdeadbeefdeadbeef"), "got: {chain}");
-        assert!(chain.contains("0x9bc18c521107b262"), "got: {chain}");
+        assert!(chain.contains("0x91ee5df1fee5b347"), "got: {chain}");
         let err = validate_content(&repo_content(), None, Some(0x1)).unwrap_err();
         let chain = format!("{err:#}");
         assert!(chain.contains("identity mismatch"), "got: {chain}");

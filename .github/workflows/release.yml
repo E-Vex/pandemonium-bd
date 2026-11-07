@@ -578,14 +578,14 @@ jobs:
           #    hash + map id first, then the demo and flagship sim goldens
           #    re-run from the packaged binaries and packaged content.
           (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" content-validate) | tee content-validate.out
-          grep -q "content hash: 0x9bc18c521107b262, map id: 0xd38136401ab02ff1" content-validate.out \
-            || { echo "FAIL: packaged content golden mismatch (expected content 0x9bc18c521107b262, map 0xd38136401ab02ff1)"; exit 1; }
+          grep -q "content hash: 0x91ee5df1fee5b347, map id: 0xd38136401ab02ff1" content-validate.out \
+            || { echo "FAIL: packaged content golden mismatch (expected content 0x91ee5df1fee5b347, map 0xd38136401ab02ff1)"; exit 1; }
           (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" headless --seed 7 --ticks 300) | tee demo.out
           grep -q "0xb6fff6659cfb7709" demo.out \
             || { echo "FAIL: packaged demo golden mismatch (expected final hash 0xb6fff6659cfb7709)"; cat demo.out; exit 1; }
           (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" headless --seed 7 --ticks 7200 --p1 ai --p2 ai) | tee flagship.out
-          grep -q "0x6e9a18bd7c5f699f" flagship.out \
-            || { echo "FAIL: packaged flagship golden mismatch (expected final hash 0x6e9a18bd7c5f699f)"; cat flagship.out; exit 1; }
+          grep -q "0xbfe0ec376fc0b6da" flagship.out \
+            || { echo "FAIL: packaged flagship golden mismatch (expected final hash 0xbfe0ec376fc0b6da)"; cat flagship.out; exit 1; }
           # 4. the archive is what the checksum recorded
           expected=$(awk '{print $1}' "$ARCHIVE.sha256")
           actual=$(sha256sum "$ARCHIVE" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$ARCHIVE" | awk '{print $1}')

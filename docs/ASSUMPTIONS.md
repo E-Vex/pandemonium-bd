@@ -1819,3 +1819,27 @@ confirms or rejects it.
   `Ok` half — Suboptimal still presents, matching the old behavior
   where a suboptimal frame was an `Ok` — and every other variant to the
   old `Err` half (skip the frame).
+
+- **A-222 (B-029 — the arsenal's authored balance).** The four new kinds'
+  stats are authored by analysis, not by playtest: the Pathfinder is priced
+  as disposable intel (50/1, dies to everything, sees everything — its
+  12.0 sight and 6.0 speed are both field-best by design), the Lancer as
+  the anti-armor counter (50 damage per 2.5 s cycle into 80 HP — it trades
+  into Guardians and structures cost-for-cost and loses to cheap masses),
+  and the Ballista as the siege counter (range 12.0 outranges the turret's
+  7.0 and the Guardian's 8.0 by construction; 4.0 s cycles and 1.2 tiles/s
+  make anything fast its counter). The Forge's 250/30 s price sits between
+  the Barracks and the Command Center so the second tier is a real
+  decision. Every number is data in `content/entities/` and pinned by the
+  stat-table test; the *judgment* (whether the counter shapes actually
+  counter at these prices) is the A14 playtest's to make, and the expected
+  finding channel is `docs/PLAYTEST.md`'s balance probes.
+- **A-223 (B-029 — the producers-map sort is load-bearing for the scripted
+  AI).** The faction production map iterates producers in sorted order and
+  `alpha_plan` takes the first producer whose list carries attackers as its
+  "barracks". The Forge's id therefore must (and does) sort after
+  `"barracks"` — an accident of naming that B-029 turned into a contract:
+  `tests/ai.rs::the_alpha_plan_ignores_the_forge` pins the army to exactly
+  [rifleman, raider, guardian]. Any future producer id (a second faction's
+  author especially) must either sort after `"barracks"` or extend the
+  plan-resolution law deliberately — the test is the tripwire either way.

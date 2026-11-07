@@ -1,6 +1,15 @@
 // The Legion — the Alpha's one faction (plan §10.4): a bundle of entity
 // references, its production lists, and the forces it starts with relative to
 // each map start anchor (plan §9.7: 1 Command Center + 4 Workers per player).
+//
+// B-029 (plan §19's expansion test, Update 5's first half in spirit): the
+// second tier. The Forge produces the Pathfinder, Lancer, and Ballista —
+// the trainable lists stay at three per producer (the command card's
+// per-producer row, M10.2 §2.3). The producers map iterates in sorted
+// order (barracks, command_center, forge) and the scripted AI's plan
+// takes the first attacker-carrying producer — the barracks — so the
+// Alpha opponent is untouched by this growth (pinned by tests/ai.rs;
+// see the Forge's authoring note).
 (
     schema_version: 1,
     id: "legion",
@@ -10,14 +19,19 @@
         "rifleman",
         "raider",
         "guardian",
+        "pathfinder",
+        "lancer",
+        "ballista",
         "command_center",
         "barracks",
+        "forge",
         "supply_depot",
         "turret",
     ],
     production: {
         "command_center": [ "worker" ],
         "barracks": [ "rifleman", "raider", "guardian" ],
+        "forge": [ "pathfinder", "lancer", "ballista" ],
     },
     starting_forces: [
         ( entity: "command_center", offset: ( x: 0, y: 0 ) ),

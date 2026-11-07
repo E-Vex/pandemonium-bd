@@ -1,0 +1,28 @@
+// The Forge (B-029, plan §19's expansion test — Update 2, data-only): 3x3
+// tech-production structure; the Legion's second tier. Fielding the
+// Pathfinder, Lancer, and Ballista requires raising one (the production
+// list is faction data — factions/legion.ron; the trainable list is
+// capped at three by the command card's per-producer row, M10.2 §2.3).
+//
+// Authoring note: the id sorts AFTER "barracks" in the faction's
+// production map (producers iterate in sorted order), and the scripted
+// AI's plan resolution (engine ai_host: "Roster from the faction's
+// production lists") takes the FIRST producer whose list carries
+// attackers — the barracks. The Forge is invisible to the Alpha opponent
+// by construction; that property is pinned by tests/ai.rs
+// (the_alpha_plan_ignores_the_forge).
+(
+    schema_version: 1,
+    id: "forge",
+    display_name: "Forge",
+    capabilities: [
+        Health(( max: 750 )),
+        Vision(( radius_milli_tiles: 8000 )),
+        Footprint(( w: 3, h: 3 )),
+        Produce(()),
+    ],
+    cost: ( ore: 250 ),
+    build_time_ms: 30000,
+    population: 0,
+    requires: [ "barracks" ],
+)

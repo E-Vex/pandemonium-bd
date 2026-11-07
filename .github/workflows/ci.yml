@@ -187,7 +187,7 @@ jobs:
       - name: Validate the registered content identity
         run: |
           cargo run -p pandemonium-tools -- content-validate content \
-            --expect-content-hash 0x9bc18c521107b262 \
+            --expect-content-hash 0x91ee5df1fee5b347 \
             --expect-map-id 0xd38136401ab02ff1
 
   cross-os:
@@ -263,7 +263,7 @@ jobs:
       # demo value overflows int64 (GitHub rejects the whole workflow file)
       # and the flagship value would silently lose its 0x form.
       GOLDEN_DEMO: "0xb6fff6659cfb7709"
-      GOLDEN_FLAGSHIP: "0x6e9a18bd7c5f699f"
+      GOLDEN_FLAGSHIP: "0xbfe0ec376fc0b6da"
     steps:
       - name: Download every OS leg's hash evidence
         uses: actions/download-artifact@v8
