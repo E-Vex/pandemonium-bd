@@ -14,9 +14,10 @@
 //!   directory, and a match built from a bundle is as deterministic as the
 //!   fixture world (A1's properties on the real content path).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use pandemonium_content::{CapabilityDef, ContentBundle};
+use pandemonium_content::{CapabilityDef, ContentBundle, ContentTree};
 use pandemonium_sim::Sim;
 use pandemonium_sim_api::{
     Command, CommandKind, ControllerKind, EntityId, Event, MatchSetup, MoveState, PlayerId,
@@ -1580,4 +1581,263 @@ fn add_a_map_is_data_only() {
     assert_eq!(arrived.pos, Vec2Fx::from_ints(16, 16));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// B-030: the third battlefield (plan §19 Update 3 — the A4 path on the real
+// tree). Iron Basin joins Crossroads and Verdant Frontier as pure data: one
+// new file under content/maps/, zero engine/sim/loader/tool source changes
+// (the source-scan half of A4, mirroring the A3 scaffold's scan), its own
+// bundle identity pinned, and the registered identity provably unmoved — a
+// map's content hash covers its own bundle only, so battlefield growth
+// never re-baselines the flagship world. The match half below proves the
+// new map actually plays: the scripted opponents raise economies, build,
+// train, fight, and resolve on it, deterministically.
+// ---------------------------------------------------------------------------
+
+/// Iron Basin's own bundle identity (the pair `content-validate` reports for
+/// `iron_basin_72`). Pinned after the first green load; a moved value is a
+/// re-pin by the owner's documented authorization, exactly like the
+/// registered pair below it.
+const IRON_BASIN_CONTENT_HASH: u64 = 0xfaea_f105_e851_b434;
+const IRON_BASIN_MAP_ID: u64 = 0x87fb_6dfa_fc74_8a48;
+
+#[test]
+fn the_third_battlefield_is_data_only_and_identity_neutral() {
+    // 1. The tree carries three battlefields in canonical id order. The
+    //    list is loader-sorted (filename order), and `iron_basin_72` sits
+    //    between the Alpha map and the 96x96 field — after `crossroads_64`,
+    //    which is the law the registered goldens ride on: the tree's first
+    //    map is the default bundle (the menu backdrop and the headless
+    //    smoke path), so a map id that sorted before Crossroads would
+    //    silently re-target the flagship world.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repo tree loads");
+    let ids: Vec<&str> = tree.maps.iter().map(|map| map.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["crossroads_64", "iron_basin_72", "verdant_frontier_96"],
+        "the battlefields list in canonical id order"
+    );
+
+    // 2. The addition's neutrality, asserted executably: the default bundle
+    //    is still Crossroads and still carries the REGISTERED identity
+    //    (the pair CI's content-identity gate pins). A new map file must
+    //    never move it — the content hash covers one bundle's own map, not
+    //    the tree's map list.
+    let default = tree.default_map_bundle().expect("the default map bundles");
+    assert_eq!(default.map.id, "crossroads_64");
+    assert_eq!(default.content_hash(), 0x91ee_5df1_fee5_b347);
+    assert_eq!(default.map_id(), 0xd381_3640_1ab0_2ff1);
+
+    // 3. Iron Basin bundles with its authored shape: 72x72, the mirrored
+    //    corner starts, fourteen ore nodes, declared symmetry (so the
+    //    loader's 180-degree validator ran at load), and the display-only
+    //    heightmap (ADR-0001's schema v2 path, data too).
+    let basin = tree.bundle("iron_basin_72").expect("iron_basin_72 bundles");
+    assert_eq!(basin.map.display_name, "Iron Basin");
+    assert_eq!(basin.map.width, 72);
+    assert_eq!(basin.map.height, 72);
+    assert_eq!(basin.map.ore_nodes.len(), 14);
+    assert_eq!(basin.map.starts.len(), 2);
+    assert_eq!(basin.map.starts[0].x, 12);
+    assert_eq!(basin.map.starts[0].y, 12);
+    assert_eq!(basin.map.starts[1].x, 56);
+    assert_eq!(basin.map.starts[1].y, 56);
+    assert!(
+        basin.map.symmetric,
+        "the basin declares rotational symmetry"
+    );
+    let heightmap = basin
+        .map
+        .heightmap
+        .as_ref()
+        .expect("the basin carries a display-only heightmap");
+    assert_eq!(heightmap.rows.len(), 72);
+    assert!(heightmap.rows.iter().all(|row| row.len() == 72));
+
+    // 4. Its own identity is pinned (the B-030 pair `content-validate`
+    //    reports). Like every bundle identity it covers rules, entities,
+    //    factions, and the bundled map — it moves under the same authorized
+    //    procedure as the registered pair when any of those grow.
+    assert_eq!(basin.content_hash(), IRON_BASIN_CONTENT_HASH);
+    assert_eq!(basin.map_id(), IRON_BASIN_MAP_ID);
+    assert_ne!(basin.content_hash(), basin.map_id());
+
+    // 5. The world the simulation receives is the map's: the ridge ring
+    //    blocks, the cardinal ramps stay open (the 6-wide gap width the
+    //    Alpha map proved for 50-unit flows), and all fourteen ore nodes
+    //    spawn from data.
+    let world = basin.world();
+    assert_eq!(world.passability.len(), 72 * 72);
+    let tile = |x: i32, y: i32| world.passability[(y * 72 + x) as usize];
+    assert_eq!(tile(30, 27), 0, "the basin's ring wall is impassable");
+    assert_eq!(tile(36, 24), 1, "the north ramp gap is open");
+    assert_eq!(tile(24, 36), 1, "the west ramp gap is open");
+    assert_eq!(tile(12, 12), 1, "the start plateau is open");
+    let ore_kind = basin
+        .entities
+        .iter()
+        .position(|def| def.id == "ore_node")
+        .expect("ore_node in content") as u32;
+    let nodes = world
+        .initial_spawns
+        .iter()
+        .filter(|spawn| spawn.kind.0 == ore_kind)
+        .count();
+    assert_eq!(nodes, 14, "every ore node spawns from map data");
+
+    // 6. The A4 source-scan half (the A3 scaffold's law, mirrored): no
+    //    Rust source under crates/ knows the map — add-a-map is data-only.
+    let mut sources = Vec::new();
+    collect_rust_sources(
+        &repo_content().parent().unwrap().join("crates"),
+        &mut sources,
+    );
+    assert!(!sources.is_empty(), "the scan must find the crate sources");
+    for path in &sources {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            !text.contains("iron_basin"),
+            "{} mentions 'iron_basin' — add-a-map must stay data-only (A4)",
+            path.display()
+        );
+    }
+}
+
+/// One controller-driven match over the bundled map (the tools driver's
+/// shape, in-test — the same hosting loop the flagship golden rides).
+fn basin_match(bundle: &ContentBundle, seed: u64, ticks: u32) -> (Vec<Event>, Vec<u64>, u64) {
+    let world = bundle.world();
+    let setup = MatchSetup {
+        seed,
+        players: vec![
+            PlayerSetup {
+                player: PlayerId(0),
+                controller: ControllerKind::Ai,
+            },
+            PlayerSetup {
+                player: PlayerId(1),
+                controller: ControllerKind::Ai,
+            },
+        ],
+    };
+    let controllers: Vec<(PlayerId, Box<dyn pandemonium_ai::Controller>)> =
+        [PlayerId(0), PlayerId(1)]
+            .into_iter()
+            .map(|player| {
+                (
+                    player,
+                    Box::new(pandemonium_engine::alpha_controller(
+                        bundle, &world, player, seed, None,
+                    )) as Box<dyn pandemonium_ai::Controller>,
+                )
+            })
+            .collect();
+    let mut host = pandemonium_engine::AiMatchHost::new(&world, setup, controllers);
+    let mut events = Vec::new();
+    let mut hashes = vec![host.state_hash()];
+    while host.tick() < ticks {
+        host.tick();
+        let out = host.advance();
+        events.extend(out.events);
+        if let Some(hash) = out.hash {
+            hashes.push(hash);
+        }
+    }
+    hashes.push(host.state_hash());
+    let final_hash = *hashes.last().expect("the trail is never empty");
+    (events, hashes, final_hash)
+}
+
+#[test]
+fn an_ai_vs_ai_match_plays_out_and_resolves_on_iron_basin() {
+    // The map is new but the loop is not: both scripted opponents gather,
+    // build, train, and fight to a resolution on the basin — through the
+    // same command gate a player passes, on the map's own geometry (the
+    // ramps, the lanes, the ring). A map that stalled the scripts (ore the
+    // workers cannot path to, lanes the armies cannot walk) fails here,
+    // not in a soak.
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repo tree loads");
+    let basin = tree.bundle("iron_basin_72").expect("iron_basin_72 bundles");
+    let seed = 7u64;
+    // Eight minutes of game time (2x the old flagship budget): the basin
+    // resolves at tick ~11956 under seed 7 (measured, deterministic), so
+    // the budget carries a deliberate ~20% margin — a future content pass
+    // that moves the end tick fails here loudly and re-tunes this number
+    // deliberately, the same law a golden move follows.
+    const BASIN_BUDGET: u32 = 14400;
+    let (events, hashes, final_hash) = basin_match(&basin, seed, BASIN_BUDGET);
+
+    // The scripts actually played: real economies, infrastructure, armies,
+    // and combat on the new geometry.
+    let mut delivered = [0i64; 2];
+    let mut constructed = [0u32; 2];
+    let mut produced = [0u32; 2];
+    let mut hits = 0u32;
+    let mut deaths = 0u32;
+    let mut owners: BTreeMap<EntityId, PlayerId> = BTreeMap::new();
+    let mut winner = None;
+    for event in &events {
+        match event {
+            Event::Spawned { entity, owner, .. } => {
+                owners.insert(*entity, *owner);
+            }
+            Event::ConstructionStarted { builder, site } => {
+                if let Some(owner) = owners.get(builder).copied() {
+                    constructed[usize::from(owner.0 != 0)] += 1;
+                    owners.insert(*site, owner);
+                }
+            }
+            Event::ResourceDelivered { owner, amount, .. } => {
+                delivered[usize::from(owner.0 != 0)] += i64::from(*amount);
+            }
+            Event::ProductionCompleted { producer, .. } => {
+                if let Some(owner) = owners.get(producer).copied() {
+                    produced[usize::from(owner.0 != 0)] += 1;
+                }
+            }
+            Event::AttackHit { .. } => hits += 1,
+            Event::Died { .. } => deaths += 1,
+            Event::MatchEnded { winner: w } => winner = Some(*w),
+            _ => {}
+        }
+    }
+    assert!(
+        delivered.iter().all(|ore| *ore > 0),
+        "both economies gathered on the basin: {delivered:?}"
+    );
+    assert!(
+        constructed.iter().all(|count| *count > 0),
+        "both sides built structures: {constructed:?}"
+    );
+    assert!(
+        produced.iter().all(|count| *count > 0),
+        "both sides trained units: {produced:?}"
+    );
+    assert!(hits > 0, "the armies traded blows ({hits} hits)");
+    assert!(deaths > 0, "entities died ({deaths} deaths)");
+
+    // Resolution: MatchEnded fired exactly once with a real winner (the
+    // neutral sentinel would mean mutual destruction, not a fight).
+    let winner = winner.expect("the match must resolve within the budget");
+    assert!(
+        winner.0 == 0 || winner.0 == 1,
+        "a player slot won the basin (winner {})",
+        winner.0
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::MatchEnded { .. }))
+            .count(),
+        1,
+        "MatchEnded fires exactly once (M8)"
+    );
+
+    // Determinism (A1's property on the new map): the same seed replays to
+    // the identical trail and final hash.
+    let (events_again, hashes_again, final_hash_again) = basin_match(&basin, seed, BASIN_BUDGET);
+    assert_eq!(events, events_again, "the event streams repeat");
+    assert_eq!(hashes, hashes_again, "the checkpoint trails repeat");
+    assert_eq!(final_hash, final_hash_again, "the final hash repeats");
 }

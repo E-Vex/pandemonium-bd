@@ -2534,11 +2534,13 @@ mod zh_camera {
         // The PLAN-M11 §3 "known bug" regression: the camera's bounds
         // must follow the live map (begin_match's set_bounds — the audit
         // found the fix already on master; this test keeps it pinned).
-        // The tree's second map is 96x96 (the default is 64x64).
+        // The tree's largest map is 96x96 (the default is 64x64); B-030
+        // slotted the 72-wide Iron Basin between them, so the 96-wide
+        // field is map index 2 (the picker's cycle order).
         let mut app = app_with_match();
         assert_eq!(app.bundle.map.width, 64, "the default map is 64 wide");
-        app.begin_match(MatchMode::PlayerVsAi, 7, 1);
-        assert_eq!(app.bundle.map.width, 96, "map index 1 is the 96-wide map");
+        app.begin_match(MatchMode::PlayerVsAi, 7, 2);
+        assert_eq!(app.bundle.map.width, 96, "map index 2 is the 96-wide map");
         // Pan hard into the far corner: the clamp uses THIS map's extent.
         // (pan's +dz is forward = world -z at yaw 0, so -dz pushes z up.)
         app.camera.pan(500.0, -500.0);
