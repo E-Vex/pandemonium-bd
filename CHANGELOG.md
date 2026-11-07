@@ -7,6 +7,43 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-030] — the third battlefield (plan §19's expansion test, Update 3: Iron Basin)
+
+The standing 2026-11-07 delegation met the sequence's own next step (B-029
+§9): **Update 3 — a new map**, the data-only path acceptance A4 already
+proves, exercised on the shipping tree. **Iron Basin** (`iron_basin_72`,
+72×72) joins Crossroads and Verdant Frontier with zero changes under
+`crates/{fx,sim,sim_api,ai,replay,content,engine}` — one new data file.
+
+- **The map**: a sunk central basin ringed by iron-stone ridges with four
+  cardinal ramps, ridge arms that funnel the outer field into three lanes
+  (through the basin, or the long flank around the arms), and a buildable
+  basin floor — whoever holds the ramps holds the richest ore in the
+  theater. 14 ore nodes (four per start patch, the contested basin
+  quartet, a neutral-corner pair per flank), declared 180° symmetry, and
+  a display-only heightmap (ADR-0001).
+- **Golden-neutral by construction and by proof**: KindIds are positional
+  over entity files (none moved), the state hash never encodes the map
+  list, and a bundle's content hash covers its own map — the registered
+  identity is Crossroads' own bundle, and `iron_basin_72` sorts after
+  `crossroads_64` so the default bundle (the menu backdrop, the headless
+  smoke, every registered golden) is unchanged. Demo
+  `0xb6fff6659cfb7709`, flagship `0xbfe0ec376fc0b6da`, content
+  `0x91ee5df1fee5b347` / map id `0xd38136401ab02ff1` — all bit-identical
+  (the A-224 sort law is now pinned executably with the tripwire test).
+- **The map plays**: both scripted opponents gather, build, train, and
+  fight to a resolution on the basin — seed 7 resolves at tick 11956,
+  6/6 probed seeds resolve in release, and the match is bit-identical
+  run-to-run (the new test pins the event stream, checkpoint trail, and
+  final hash). The new map's own bundle identity is pinned
+  (content `0xfaeaf105e851b434`, map id `0x87fb6dfafc748a48`) and moves
+  only under the same authorized procedure as the registered pair.
+- **Riding the pass**: the client's larger-map camera regression test
+  retargets to picker index 2 (Iron Basin takes index 1 — the test's law
+  is unchanged), the release soak stays 8/8 resolved 0 crashed, and four
+  stale pre-B-029 hash rows in the README and one in AI-Handoff §4 are
+  repaired to the registered values B-029 established.
+
 ## [B-029] — the arsenal growth pass (plan §19's expansion test, Update 1+2: the Legion's second tier)
 
 The owner's 2026-11-07 delegation ("keep working on upgrading this game")

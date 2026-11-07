@@ -114,8 +114,8 @@ The three golden values, and the commands that reproduce them:
 | golden | command | value |
 |---|---|---|
 | **demo** | `headless --seed 7 --ticks 300` | `0xb6fff6659cfb7709` |
-| **flagship** | `headless --seed 7 --ticks 7200 --p1 ai --p2 ai` | `0x6e9a18bd7c5f699f` (tick 0: `0x71a924ad5799e4b3`) |
-| **content identity** | `content-validate content` | `0x9bc18c521107b262` (map id `0xd38136401ab02ff1`) |
+| **flagship** | `headless --seed 7 --ticks 7200 --p1 ai --p2 ai` | `0xbfe0ec376fc0b6da` (tick 0: `0x3d526307f2cdb237`) |
+| **content identity** | `content-validate content` | `0x91ee5df1fee5b347` (map id `0xd38136401ab02ff1`) |
 
 A fourth command shows a full AI-vs-AI match resolving naturally end to end:
 
@@ -165,7 +165,7 @@ scripts/fetch-assets.sh
 | `cargo run -p pandemonium-client` | windowed client, main menu first |
 | `cargo run -p pandemonium-client -- --frames 900` | windowed smoke test: auto-exit with an evidence summary |
 | `cargo run -p pandemonium-client -- --headless` | no display? honest fallback, no theater |
-| `cargo run -p pandemonium-client -- --version` | the build identity line: `pandemonium-client 0.1.1 (git <sha>, content 0x9bc18c521107b262)` |
+| `cargo run -p pandemonium-client -- --version` | the build identity line: `pandemonium-client 0.1.1 (git <sha>, content 0x91ee5df1fee5b347)` |
 | `cargo run -p pandemonium-client -- --content PATH` | point at a content tree explicitly |
 | `cargo run -p pandemonium-client -- --seed N` | pre-fill the New Match screen's seed field |
 | `cargo run -p pandemonium-client -- --record run.pdrp` | record a replay alongside the session |
@@ -249,6 +249,7 @@ player's edge (and the balance's open question — it rides the playtest).
 | map | size | role |
 |---|---|---|
 | **Crossroads** | 64×64 | the authored battlefield — mirrored starts, a central choke, contested ore |
+| **Iron Basin** | 72×72 | the basin — four ramps into a buildable, ore-rich center; three lanes around the ridge arms |
 | **Verdant Frontier** | 96×96 | the larger field |
 | **Proving Grounds** | 128×128 | the 10× scale stress arena ([`content_scale/`](content_scale)) |
 
@@ -447,9 +448,9 @@ budgets); `audit` and `deny` workflows gate advisories and licences.
 
 | | |
 |---|---|
-| **Tests** | 1008 dev / 1003 release, green in both profiles (the five should-panic invariant tests are debug-only) |
+| **Tests** | 1013 dev / 1008 release, green in both profiles (the five should-panic invariant tests are debug-only) |
 | **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
-| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x6e9a18bd7c5f699f` · content `0x9bc18c521107b262` — bit-identical across every change |
+| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0xbfe0ec376fc0b6da` · content `0x91ee5df1fee5b347` — moved once, together, by B-029's authorized growth (behavior proven identical); the map growth passes (B-030 on) move none of them |
 | **Soak** | many seeded AI-vs-AI matches with per-match crash isolation; a dev-profile soak observes the invariant checker (A12) |
 | **Releases** | per-OS archives, SHA-256 checksums, a licence gate (cargo-deny) and generated `THIRD_PARTY_NOTICES.md`, and smoke legs that gate on the licence and the bundled art pack |
 

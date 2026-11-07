@@ -1843,3 +1843,28 @@ confirms or rejects it.
   [rifleman, raider, guardian]. Any future producer id (a second faction's
   author especially) must either sort after `"barracks"` or extend the
   plan-resolution law deliberately — the test is the tripwire either way.
+
+- **A-224 (B-030 — the map-id sort law).** The content tree's first map
+  by id is the default bundle: the menu's backdrop, the headless smoke
+  pass, and every registered golden (the demo's content hash line, the
+  flagship world, the content-identity pin) ride on it. `iron_basin_72`
+  therefore deliberately sorts after `crossroads_64` (and before
+  `verdant_frontier_96`) — a map id sorting before `crossroads_64` would
+  silently re-target the default bundle to a different world without
+  moving a single golden pin, which is exactly the class of silent drift
+  AUD-005 was about. The tripwire is
+  `tests/content_pipeline.rs::the_third_battlefield_is_data_only_and_identity_neutral`'s
+  id-order assertion (plus its default-bundle identity pin): any future
+  map that would take the first slot fails the order assert loudly, and
+  the deliberate change re-pins it in review.
+- **A-225 (B-030 — the basin's authored geography).** Iron Basin's
+  numbers are authored by analysis, not playtest: 14 ore nodes (the
+  crossroads density scaled to the field — four per start patch, the
+  contested basin quartet, one neutral-corner pair per flank), 6-wide
+  ramp gaps (the plaza-gap width Crossroads proved for 50-unit flows), a
+  ~19-tile buildable basin floor, and three lanes (through the basin, or
+  the long flank around the ridge arms) sized so the scripted opponents
+  resolve inside the flagship's budget class (measured: tick 11956 at
+  seed 7). The judgment — whether the ramps choke fairly, whether the
+  basin's ore rewards the middle enough, whether the flanks pay — is the
+  A14 playtest's to make, through `docs/PLAYTEST.md`'s probes.
