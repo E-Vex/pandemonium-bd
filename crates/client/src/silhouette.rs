@@ -245,6 +245,70 @@ fn guardian() -> Silhouette {
     )
 }
 
+/// The Lancer (B-029): an anti-armor platform — a mid hull on dark
+/// treads, a light shoulder yoke, a long thin steel lance held forward
+/// with a heavier head, and a dark ammo rack over the rear.
+fn lancer() -> Silhouette {
+    Silhouette::from_parts(
+        true,
+        vec![
+            Part::at([0.0, 0.15, 0.0], [0.72, 0.26, 0.46], Tone::Body),
+            Part::at([0.0, 0.07, 0.26], [0.78, 0.14, 0.10], Tone::Dark),
+            Part::at([0.0, 0.07, -0.26], [0.78, 0.14, 0.10], Tone::Dark),
+            Part::at([-0.04, 0.38, 0.0], [0.34, 0.14, 0.40], Tone::Light),
+            Part::at([0.42, 0.40, 0.0], [0.66, 0.07, 0.07], Tone::Steel),
+            Part::at([0.78, 0.40, 0.0], [0.12, 0.11, 0.11], Tone::Dark),
+            Part::at([-0.38, 0.34, 0.0], [0.14, 0.22, 0.30], Tone::Dark),
+        ],
+    )
+}
+
+/// The Pathfinder (B-029): the eyes — a slim, light buggy with a tall
+/// steel sensor mast and a bright head on it; the smallest combat
+/// silhouette on the field, reading "fast and blind-weak" at a glance.
+fn pathfinder() -> Silhouette {
+    Silhouette::from_parts(
+        true,
+        vec![
+            Part::at([0.0, 0.14, 0.0], [0.52, 0.18, 0.34], Tone::Body),
+            Part::at([0.30, 0.11, 0.0], [0.12, 0.12, 0.20], Tone::Dark),
+            Part::at([-0.05, 0.28, 0.0], [0.20, 0.12, 0.20], Tone::Light),
+            Part::at([-0.14, 0.47, 0.0], [0.04, 0.34, 0.04], Tone::Steel),
+            Part::at([-0.14, 0.66, 0.0], [0.10, 0.06, 0.10], Tone::Light),
+        ],
+    )
+}
+
+/// The Ballista (B-029): the siege engine — a wide flatbed on heavy
+/// wheels, a raised light platform, two yawed steel crossbow arms, the
+/// long rail/arrow ahead of them, and a team band pennant so ownership
+/// reads at bombardment distance.
+fn ballista() -> Silhouette {
+    Silhouette::from_parts(
+        true,
+        vec![
+            Part::at([0.0, 0.14, 0.0], [0.98, 0.24, 0.66], Tone::Body),
+            Part::at([0.0, 0.09, 0.38], [1.04, 0.18, 0.10], Tone::Dark),
+            Part::at([0.0, 0.09, -0.38], [1.04, 0.18, 0.10], Tone::Dark),
+            Part::at([-0.10, 0.36, 0.0], [0.44, 0.16, 0.44], Tone::Light),
+            Part {
+                offset: [-0.10, 0.52, 0.0],
+                scale: [0.16, 0.07, 1.30],
+                yaw: 0.35,
+                tone: Tone::Steel,
+            },
+            Part {
+                offset: [-0.10, 0.52, 0.0],
+                scale: [0.16, 0.07, 1.30],
+                yaw: -0.35,
+                tone: Tone::Steel,
+            },
+            Part::at([0.34, 0.52, 0.0], [0.80, 0.06, 0.06], Tone::Steel),
+            Part::at([-0.40, 0.68, 0.10], [0.26, 0.16, 0.04], Tone::Band),
+        ],
+    )
+}
+
 /// The Command Center: a large, tall slab with a lighter mid tier and a
 /// distinct corner tower capped in the team band — plus roof vents, an
 /// antenna, and a ground-level band trim so the base reads as THE base
@@ -280,6 +344,25 @@ fn barracks() -> Silhouette {
             Part::at([0.0, 0.32, 1.38], [0.9, 0.32, 0.06], Tone::Dark),
             Part::at([1.28, 0.85, 1.28], [0.07, 1.70, 0.07], Tone::Steel),
             Part::at([1.46, 1.50, 1.28], [0.34, 0.24, 0.05], Tone::Band),
+        ],
+    )
+}
+
+/// The Forge (B-029): the tech tier — a stone hall on a team-band plinth,
+/// a lighter upper tier, a tall chimney with a band cap, a dark furnace
+/// mouth on the front face, and a steel anvil block at the rear corner.
+fn forge() -> Silhouette {
+    Silhouette::from_parts(
+        false,
+        vec![
+            Part::at([0.0, 0.30, 0.0], [2.6, 0.60, 2.6], Tone::Stone),
+            Part::at([0.0, 0.06, 0.0], [2.72, 0.12, 2.72], Tone::Band),
+            Part::at([0.0, 0.70, 0.0], [2.2, 0.28, 2.2], Tone::Light),
+            Part::at([-0.85, 1.05, -0.85], [0.5, 1.30, 0.5], Tone::Stone),
+            Part::at([-0.85, 1.78, -0.85], [0.62, 0.14, 0.62], Tone::Band),
+            Part::at([0.0, 0.34, -1.32], [0.9, 0.5, 0.14], Tone::Dark),
+            Part::at([0.80, 0.55, 0.80], [0.5, 0.30, 0.5], Tone::Steel),
+            Part::at([0.0, 0.90, 0.0], [2.3, 0.12, 0.5], Tone::Dark),
         ],
     )
 }
@@ -351,18 +434,22 @@ fn ore_node() -> Silhouette {
     )
 }
 
-/// The kind-name table (PLAN-M10.2 §2.1): the nine authored kinds resolve
-/// to their hand-tuned silhouettes; anything else falls through to
-/// [`capability_fallback`]. Keyed by `EntityDef::id` — the bundle's kind
-/// name — never by display name or kind index.
+/// The kind-name table (PLAN-M10.2 §2.1 + B-029's growth): the authored
+/// kinds resolve to their hand-tuned silhouettes; anything else falls
+/// through to [`capability_fallback`]. Keyed by `EntityDef::id` — the
+/// bundle's kind name — never by display name or kind index.
 pub fn named(name: &str) -> Option<Silhouette> {
     match name {
         "worker" => Some(worker()),
         "rifleman" => Some(rifleman()),
         "raider" => Some(raider()),
         "guardian" => Some(guardian()),
+        "pathfinder" => Some(pathfinder()),
+        "lancer" => Some(lancer()),
+        "ballista" => Some(ballista()),
         "command_center" => Some(command_center()),
         "barracks" => Some(barracks()),
+        "forge" => Some(forge()),
         "supply_depot" => Some(supply_depot()),
         "turret" => Some(turret()),
         "ore_node" => Some(ore_node()),
@@ -455,13 +542,17 @@ pub fn capability_fallback(
 mod tests {
     use super::*;
 
-    /// The nine authored kinds, in content order (the bundle loads them
-    /// sorted by file name).
-    const NINE: [&str; 9] = [
+    /// The authored kinds, in content order (the bundle loads them
+    /// sorted by file name) — thirteen since B-029's arsenal growth.
+    const AUTHORED: [&str; 13] = [
+        "ballista",
         "barracks",
         "command_center",
+        "forge",
         "guardian",
+        "lancer",
         "ore_node",
+        "pathfinder",
         "raider",
         "rifleman",
         "supply_depot",
@@ -471,7 +562,7 @@ mod tests {
 
     #[test]
     fn every_authored_kind_resolves_to_a_unique_silhouette() {
-        let resolved: Vec<Silhouette> = NINE
+        let resolved: Vec<Silhouette> = AUTHORED
             .iter()
             .map(|name| named(name).expect("every authored kind resolves"))
             .collect();
@@ -481,7 +572,7 @@ mod tests {
                     assert_ne!(
                         silhouette_a.parts, silhouette_b.parts,
                         "{:?} and {:?} must resolve to distinct silhouettes",
-                        NINE[a], NINE[b]
+                        AUTHORED[a], AUTHORED[b]
                     );
                 }
             }
@@ -494,10 +585,14 @@ mod tests {
         // face of an instanced cube), so a kind's vertex count is
         // parts * 36 — pinned here per kind.
         let expected = [
+            ("ballista", 8),
             ("barracks", 7),
             ("command_center", 9),
+            ("forge", 8),
             ("guardian", 9),
+            ("lancer", 7),
             ("ore_node", 4),
+            ("pathfinder", 5),
             ("raider", 6),
             ("rifleman", 5),
             ("supply_depot", 6),
@@ -522,7 +617,7 @@ mod tests {
 
     #[test]
     fn every_part_stays_above_ground_and_inside_the_radius() {
-        for name in NINE {
+        for name in AUTHORED {
             let silhouette = named(name).expect("authored");
             assert!(silhouette.radius > 0.0, "{name} has a ground radius");
             for part in &silhouette.parts {

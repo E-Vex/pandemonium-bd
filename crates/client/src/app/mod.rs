@@ -2768,8 +2768,9 @@ pub(crate) fn command_center_kind(bundle: &ContentBundle) -> Option<KindId> {
 }
 
 /// Derives one multi-part silhouette per kind from the loaded bundle
-/// (PLAN-M10.2 §2.1): the kind-name table resolves the nine authored kinds
-/// to their hand-tuned box compositions; anything the table does not know
+/// (PLAN-M10.2 §2.1): the kind-name table resolves the authored kinds
+/// (thirteen since B-029's arsenal growth) to their hand-tuned box
+/// compositions; anything the table does not know
 /// falls back by capability shape (Resource → amber cluster, Footprint →
 /// building box, Move → unit box) — the same capability-shaped law the
 /// engine's plan resolution follows. No presentation data touches the
