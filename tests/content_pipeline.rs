@@ -122,13 +122,13 @@ fn stat_value(entity: &pandemonium_content::EntityDef, field: &str) -> i64 {
 fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
     let bundle = ContentBundle::load_dir(&repo_content()).expect("the Alpha content loads");
 
-    // The manifest's shape (plan §10.4): 1 faction, 1 map (64x64), 1 resource,
-    // 4 buildings + ore node + 4 units = 9 entity kinds.
+    // The manifest's shape (plan §10.4 + B-029's arsenal growth): 1 faction,
+    // 1 map (64x64), 1 resource, 5 buildings + ore node + 7 units = 13 kinds.
     assert_eq!(bundle.factions.len(), 1);
     assert_eq!(bundle.map.width, 64);
     assert_eq!(bundle.map.height, 64);
     assert_eq!(bundle.rules.resources.len(), 1);
-    assert_eq!(bundle.entities.len(), 9);
+    assert_eq!(bundle.entities.len(), 13);
     assert_eq!(bundle.rules.resources[0].id, "ore");
     assert_eq!(bundle.rules.resources[0].starting, 200);
     assert_eq!(bundle.rules.base_population_cap, 0);
@@ -303,6 +303,144 @@ fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
                 field: "population",
                 value: 3,
             },
+            // B-029's arsenal (the authored stats, pinned the same way —
+            // the balance itself is an authored guess logged as A-2xx and
+            // rides the A14 playtest for judgment).
+            S {
+                entity: "pathfinder",
+                field: "hp",
+                value: 40,
+            },
+            S {
+                entity: "pathfinder",
+                field: "cost_ore",
+                value: 50,
+            },
+            S {
+                entity: "pathfinder",
+                field: "build_time_ms",
+                value: 6000,
+            },
+            S {
+                entity: "pathfinder",
+                field: "speed",
+                value: 6000,
+            },
+            S {
+                entity: "pathfinder",
+                field: "range",
+                value: 3000,
+            },
+            S {
+                entity: "pathfinder",
+                field: "damage",
+                value: 4,
+            },
+            S {
+                entity: "pathfinder",
+                field: "cooldown_ms",
+                value: 800,
+            },
+            S {
+                entity: "pathfinder",
+                field: "vision",
+                value: 12000,
+            },
+            S {
+                entity: "pathfinder",
+                field: "population",
+                value: 1,
+            },
+            S {
+                entity: "lancer",
+                field: "hp",
+                value: 80,
+            },
+            S {
+                entity: "lancer",
+                field: "cost_ore",
+                value: 160,
+            },
+            S {
+                entity: "lancer",
+                field: "build_time_ms",
+                value: 16000,
+            },
+            S {
+                entity: "lancer",
+                field: "speed",
+                value: 2200,
+            },
+            S {
+                entity: "lancer",
+                field: "range",
+                value: 6000,
+            },
+            S {
+                entity: "lancer",
+                field: "damage",
+                value: 50,
+            },
+            S {
+                entity: "lancer",
+                field: "cooldown_ms",
+                value: 2500,
+            },
+            S {
+                entity: "lancer",
+                field: "vision",
+                value: 8000,
+            },
+            S {
+                entity: "lancer",
+                field: "population",
+                value: 2,
+            },
+            S {
+                entity: "ballista",
+                field: "hp",
+                value: 140,
+            },
+            S {
+                entity: "ballista",
+                field: "cost_ore",
+                value: 275,
+            },
+            S {
+                entity: "ballista",
+                field: "build_time_ms",
+                value: 32000,
+            },
+            S {
+                entity: "ballista",
+                field: "speed",
+                value: 1200,
+            },
+            S {
+                entity: "ballista",
+                field: "range",
+                value: 12000,
+            },
+            S {
+                entity: "ballista",
+                field: "damage",
+                value: 60,
+            },
+            S {
+                entity: "ballista",
+                field: "cooldown_ms",
+                value: 4000,
+            },
+            S {
+                entity: "ballista",
+                field: "vision",
+                value: 12500,
+            },
+            S {
+                entity: "ballista",
+                field: "population",
+                value: 3,
+            },
             S {
                 entity: "command_center",
                 field: "hp",
@@ -345,6 +483,26 @@ fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
             },
             S {
                 entity: "barracks",
+                field: "vision",
+                value: 8000,
+            },
+            S {
+                entity: "forge",
+                field: "hp",
+                value: 750,
+            },
+            S {
+                entity: "forge",
+                field: "cost_ore",
+                value: 250,
+            },
+            S {
+                entity: "forge",
+                field: "build_time_ms",
+                value: 30000,
+            },
+            S {
+                entity: "forge",
                 field: "vision",
                 value: 8000,
             },
@@ -497,8 +655,10 @@ fn a_match_from_loaded_content_spawns_the_full_starting_state() {
     }
 
     // Command Center ids are deterministic: player 0's CC is the first spawn.
+    // (KindId(2) since B-029: ballista.ron sorts before barracks.ron, so the
+    // command center's positional kind id shifted from 1 to 2.)
     assert_eq!(snapshot.entities[0].owner, PlayerId(0));
-    assert_eq!(snapshot.entities[0].kind, pandemonium_sim_api::KindId(1));
+    assert_eq!(snapshot.entities[0].kind, pandemonium_sim_api::KindId(2));
 }
 
 #[test]
@@ -512,7 +672,10 @@ fn the_registered_content_identity_is_pinned() {
     // failure to investigate and re-pin only by the owner's documented
     // authorization — never a silent edit of this test.
     let bundle = ContentBundle::load_dir(&repo_content()).unwrap();
-    assert_eq!(bundle.content_hash(), 0x9bc1_8c52_1107_b262);
+    // Re-pinned by B-029 (the arsenal content growth, the owner's
+    // 2026-11-07 delegation): four kinds joined the tree, moving the
+    // bundle identity. The map id is unchanged (no map edit).
+    assert_eq!(bundle.content_hash(), 0x91ee_5df1_fee5_b347);
     assert_eq!(bundle.map_id(), 0xd381_3640_1ab0_2ff1);
 }
 
@@ -639,11 +802,12 @@ fn add_a_unit_is_data_only() {
         "authored stats flow through §10.2 conversion unchanged"
     );
 
-    // Kind ids follow the sorted entity order: barracks, command_center,
-    // guardian, ore_node, raider, rifleman, skirmisher, supply_depot, turret,
-    // worker -> skirmisher is index 6.
+    // Kind ids follow the sorted entity order: ballista, barracks,
+    // command_center, forge, guardian, lancer, ore_node, pathfinder,
+    // raider, rifleman, skirmisher, supply_depot, turret, worker
+    // -> skirmisher is index 10 (B-029's four kinds shifted it from 6).
     let world = bundle.world();
-    assert_eq!(world.kinds.len(), 10);
+    assert_eq!(world.kinds.len(), 14);
     let kind = world
         .initial_spawns
         .iter()
@@ -656,7 +820,7 @@ fn add_a_unit_is_data_only() {
         })
         .expect("player 0's skirmisher spawns at anchor (12,12)+(-2,6) -> tile (10,18) center");
     assert_eq!(kind.owner, PlayerId(0));
-    assert_eq!(kind.kind, pandemonium_sim_api::KindId(6));
+    assert_eq!(kind.kind, pandemonium_sim_api::KindId(10));
 
     // 4. The simulation runs it: the new kind spawns from data, accepts a
     //    Move order (Health + Move + Vision capabilities all flow), and moves.
@@ -665,7 +829,7 @@ fn add_a_unit_is_data_only() {
     let spawned = snapshot
         .entities
         .iter()
-        .find(|entity| entity.kind == pandemonium_sim_api::KindId(6))
+        .find(|entity| entity.kind == pandemonium_sim_api::KindId(10))
         .expect("the data-only kind is in the match");
     let id = spawned.id;
     let spawned_owner = spawned.owner;
@@ -699,7 +863,7 @@ fn add_a_unit_is_data_only() {
         .find(|entity| entity.id == id)
         .unwrap();
     assert_eq!(arrived.pos, Vec2Fx::from_ints(20, 18));
-    assert_eq!(arrived.kind, pandemonium_sim_api::KindId(6));
+    assert_eq!(arrived.kind, pandemonium_sim_api::KindId(10));
 
     // 4b. DEBT-007's M5 half: the data-defined kind TRAINS from the barracks
     //     (plan §10.6 "gets built [from a production list]"). Gather with the
@@ -808,7 +972,7 @@ fn add_a_unit_is_data_only() {
                 },
                 CommandKind::Train {
                     producer: barracks,
-                    unit: pandemonium_sim_api::KindId(6),
+                    unit: pandemonium_sim_api::KindId(10),
                 },
             ));
         }
@@ -832,7 +996,7 @@ fn add_a_unit_is_data_only() {
                 sim.snapshot()
                     .entities
                     .iter()
-                    .any(|entity| entity.kind == pandemonium_sim_api::KindId(6) && entity.id != id),
+                    .any(|entity| entity.kind == pandemonium_sim_api::KindId(10) && entity.id != id),
                 "the trained skirmisher spawned"
             );
             break;
@@ -872,7 +1036,7 @@ fn add_a_unit_is_data_only() {
         for event in &out.events {
             if let Event::AttackHit { attacker, .. } = event {
                 if snapshot.entities.iter().any(|entity| {
-                    entity.id == *attacker && entity.kind == pandemonium_sim_api::KindId(6)
+                    entity.id == *attacker && entity.kind == pandemonium_sim_api::KindId(10)
                 }) {
                     skirmisher_fired = true;
                     break;

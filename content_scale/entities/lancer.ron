@@ -1,0 +1,19 @@
+// Lancer (B-029, plan §19's expansion test — Update 1, data-only): the
+// anti-armor answer. One heavy piercer per slow cycle — trades into
+// Guardians and structures cost-for-cost, and loses to cheap masses
+// (low pool, slow fire overkill). Trained at the Forge.
+(
+    schema_version: 1,
+    id: "lancer",
+    display_name: "Lancer",
+    capabilities: [
+        Health(( max: 80 )),
+        Move(( speed_milli_tiles_per_s: 2200, radius_milli_tiles: 400 )),
+        Attack(( damage: 50, range_milli_tiles: 6000, cooldown_ms: 2500, acquire_range_milli_tiles: 7000 )),
+        Vision(( radius_milli_tiles: 8000 )),
+    ],
+    cost: ( ore: 160 ),
+    build_time_ms: 16000,
+    population: 2,
+    requires: [ "forge" ],
+)

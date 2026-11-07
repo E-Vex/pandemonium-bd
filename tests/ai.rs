@@ -59,12 +59,18 @@ const COMPLETION_TICKS: u32 = 2400;
 /// The kinds of the Alpha content, by entity id order (validated by the
 /// content suite; pinned here for the battery's readability).
 mod kinds {
-    pub const BARRACKS: u32 = 0;
-    pub const COMMAND_CENTER: u32 = 1;
-    pub const ORE_NODE: u32 = 3;
-    pub const RIFLEMAN: u32 = 5;
-    pub const SUPPLY_DEPOT: u32 = 6;
-    pub const WORKER: u32 = 8;
+    // Positional KindIds over the entity files in filename order — the
+    // bundle's kind assignment. Re-numbered by B-029 (the arsenal growth:
+    // ballista.ron sorts first, so every kind after it shifts; the full
+    // order is now ballista, barracks, command_center, forge, guardian,
+    // lancer, ore_node, pathfinder, raider, rifleman, supply_depot,
+    // turret, worker).
+    pub const BARRACKS: u32 = 1;
+    pub const COMMAND_CENTER: u32 = 2;
+    pub const ORE_NODE: u32 = 6;
+    pub const RIFLEMAN: u32 = 9;
+    pub const SUPPLY_DEPOT: u32 = 10;
+    pub const WORKER: u32 = 12;
 }
 
 fn repo_content() -> PathBuf {
@@ -1172,8 +1178,14 @@ fn ai_vs_ai_golden_hash_is_pinned() {
     // while the encoded bytes are unchanged (no encoding bump; see
     // docs/DEBT.md and docs/ASSUMPTIONS.md A-087).
     assert_eq!(run.checkpoints.len(), (FLAGSHIP_TICKS / 30) as usize + 1);
-    assert_eq!(run.checkpoints[0].hash, 0x71a9_24ad_5799_e4b3);
-    assert_eq!(run.final_hash, 0x6e9a_18bd_7c5f_699f);
+    // Re-pinned by B-029 (the arsenal content growth): every KindId
+    // re-labels (ballista.ron sorts first), so the content-anchored state
+    // hash moves with the labels while behavior is proven identical — the
+    // command count, per-player counters, and controller RNG streams are
+    // bit-identical (the behavior anchors, pinned in tests/mission_ai.rs;
+    // see the B-029 report §5 for the full evidence).
+    assert_eq!(run.checkpoints[0].hash, 0x3d52_6307_f2cd_b237);
+    assert_eq!(run.final_hash, 0xbfe0_ec37_6fc0_b6da);
     assert_eq!(run.final_hash, run.checkpoints.last().unwrap().hash);
 }
 

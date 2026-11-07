@@ -1699,13 +1699,14 @@ mod tests {
             selection: std::slice::from_ref(&worker.id),
             ore: 1000,
         });
-        // The Legion roster fields four structures: CC, barracks, depot, turret.
+        // The Legion roster fields five structures (B-029: the Forge joins
+        // CC, barracks, depot, turret) — every one gets a placement button.
         let places: Vec<&Button> = ui
             .buttons
             .iter()
             .filter(|button| matches!(button.action, ButtonAction::PlaceStructure { .. }))
             .collect();
-        assert_eq!(places.len(), 4, "every roster structure gets a button");
+        assert_eq!(places.len(), 5, "every roster structure gets a button");
         assert!(places.iter().all(|button| button.enabled));
     }
 

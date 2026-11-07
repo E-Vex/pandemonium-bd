@@ -507,7 +507,7 @@ fn crossroads_01s_mission_id_survives_b015() {
     let bundle = tree.bundle("crossroads_64").expect("crossroads_64 bundles");
     assert_eq!(
         bundle.content_hash(),
-        0x9bc1_8c52_1107_b262,
+        0x91ee_5df1_fee5_b347,
         "the registered content hash never moves"
     );
     assert_eq!(
@@ -1242,7 +1242,7 @@ fn a_survive_mission_replay_roundtrips() {
     // category appends nothing to their encoders).
     assert_eq!(
         bundle.content_hash(),
-        0x9bc1_8c52_1107_b262,
+        0x91ee_5df1_fee5_b347,
         "the content hash never moves"
     );
     assert_eq!(
@@ -1882,7 +1882,7 @@ fn a_reach_and_gather_mission_replay_roundtrips() {
     // exactly — a mission file moves nothing.
     assert_eq!(
         bundle.content_hash(),
-        0x9bc1_8c52_1107_b262,
+        0x91ee_5df1_fee5_b347,
         "the content hash never moves"
     );
     assert_eq!(
@@ -2102,7 +2102,7 @@ fn a_restricted_missions_world_carries_the_effective_faction() {
     // The canonical identities stay the tree's (the overrides are mission
     // data — their identity rides the mission id), and the tree itself is
     // never mutated: the plain world is the Legion's, byte for byte.
-    assert_eq!(bundle.content_hash(), 0x9bc1_8c52_1107_b262);
+    assert_eq!(bundle.content_hash(), 0x91ee_5df1_fee5_b347);
     assert_eq!(bundle.map_id(), 0xd381_3640_1ab0_2ff1);
     assert_eq!(
         plain_world.roster,
@@ -2111,15 +2111,19 @@ fn a_restricted_missions_world_carries_the_effective_faction() {
             "rifleman",
             "raider",
             "guardian",
+            "pathfinder",
+            "lancer",
+            "ballista",
             "command_center",
             "barracks",
+            "forge",
             "supply_depot",
             "turret",
         ]
         .map(|name| kind_of(&tree, name))
         .to_vec()
     );
-    assert_eq!(plain_world.production.len(), 2);
+    assert_eq!(plain_world.production.len(), 3);
 }
 
 #[test]
