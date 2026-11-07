@@ -1629,6 +1629,59 @@ mod tests {
     }
 
     #[test]
+    fn a_forge_selection_offers_the_arsenal_training() {
+        // B-029: the tech tier's card — selecting a Forge offers exactly the
+        // three arsenal kinds, in the production list's order (the per-producer
+        // row caps at three; the forge authors exactly three).
+        let bundle = bundle();
+        let atlas = crate::text::TextAtlas::new();
+        let layout = bar_layout((1280.0, 800.0));
+        let forge_kind = kind_of(&bundle, "forge").expect("forge");
+        let forge = view_entity(30, forge_kind, 20, 12);
+        let production = vec![QueueView {
+            producer: forge.id,
+            items: Vec::new(),
+            rally: None,
+        }];
+        let selection = vec![forge.id];
+        let ui = build_bottom_bar(CardInput {
+            atlas: &atlas,
+            layout,
+            view_entities: std::slice::from_ref(&forge),
+            production: &production,
+            bundle: &bundle,
+            selection: &selection,
+            ore: 1000,
+        });
+        let trains: Vec<&Button> = ui
+            .buttons
+            .iter()
+            .filter(|button| matches!(button.action, ButtonAction::Train { .. }))
+            .collect();
+        assert_eq!(
+            trains.len(),
+            3,
+            "the forge trains exactly the arsenal three"
+        );
+        assert!(trains.iter().all(|button| button.enabled));
+        let trained_names: Vec<String> = trains
+            .iter()
+            .filter_map(|button| match button.action {
+                ButtonAction::Train { unit, .. } => bundle
+                    .entities
+                    .get(unit.0 as usize)
+                    .map(|def| def.display_name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            trained_names,
+            ["Pathfinder", "Lancer", "Ballista"],
+            "the card lists the production order"
+        );
+    }
+
+    #[test]
     fn a_command_center_selection_offers_worker_training() {
         let bundle = bundle();
         let atlas = crate::text::TextAtlas::new();

@@ -1087,6 +1087,311 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
+fn the_arsenal_trains_from_the_forge_over_real_content() {
+    // ---------------------------------------------------------------------
+    // B-029's acceptance, the plan §19 expansion test run on the REAL tree
+    // (Update 1+2: a new unit, a new building — the shipping-content half
+    // of what A3 proves on a temp copy). The Legion's second tier works
+    // end to end — the requirement gate refuses the Forge before a
+    // barracks stands, the economy raises both structures, and every
+    // arsenal kind trains from the Forge — with zero changes under
+    // crates/{fx,sim,sim_api,ai,replay}.
+    // ---------------------------------------------------------------------
+    let bundle = ContentBundle::load_dir(&repo_content()).unwrap();
+
+    // The authored wiring: the forge produces exactly the three arsenal
+    // kinds; each of them requires the forge; the forge itself requires
+    // the barracks (the tech tier).
+    let legion = bundle.faction();
+    let forge_list = legion
+        .production
+        .iter()
+        .find(|(producer, _)| producer == "forge")
+        .expect("the forge produces");
+    assert_eq!(forge_list.1, vec!["pathfinder", "lancer", "ballista"]);
+    for id in ["pathfinder", "lancer", "ballista"] {
+        assert_eq!(
+            bundle.entity(id).expect("arsenal kind").requires,
+            vec!["forge"],
+            "{id} requires the forge"
+        );
+    }
+    assert_eq!(
+        bundle.entity("forge").unwrap().requires,
+        vec!["barracks"],
+        "the forge is the second tier"
+    );
+
+    // The gate: Build of the forge is refused before any barracks exists
+    // (RequirementsUnmet), before economy and placement are even consulted.
+    let mut sim = Sim::new(&bundle.world(), two_player_setup(7));
+    let worker_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "worker")
+        .expect("the worker kind exists") as u32;
+    let forge_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "forge")
+        .expect("the forge kind exists") as u32;
+    let barracks_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "barracks")
+        .expect("the barracks kind exists") as u32;
+    let worker = sim
+        .snapshot()
+        .entities
+        .iter()
+        .find(|entity| entity.owner == PlayerId(0) && entity.kind.0 == worker_kind)
+        .expect("player 0 starts with workers")
+        .id;
+    let out = sim.step(&[Command::new(
+        PlayerId(0),
+        0,
+        1,
+        CommandKind::Build {
+            worker,
+            structure: pandemonium_sim_api::KindId(forge_kind),
+            at: TilePos { x: 17, y: 15 },
+        },
+    )]);
+    assert!(
+        out.events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected {
+                reject: pandemonium_sim_api::Reject {
+                    reason: pandemonium_sim_api::RejectReason::RequirementsUnmet,
+                    ..
+                },
+                ..
+            }
+        )),
+        "the forge is refused without a barracks (got {:?})",
+        out.events
+    );
+
+    // The loop: gather with the four workers, raise the barracks, then the
+    // forge, then train every arsenal kind from it (the skirmisher loop's
+    // shape — retries ride out transient placement and queue states).
+    let node_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "ore_node")
+        .expect("the ore node kind exists") as u32;
+    let workers: Vec<EntityId> = sim
+        .snapshot()
+        .entities
+        .iter()
+        .filter(|entity| entity.owner == PlayerId(0) && entity.kind.0 == worker_kind)
+        .map(|entity| entity.id)
+        .collect();
+    assert_eq!(workers.len(), 4);
+    let nodes: Vec<EntityId> = sim
+        .snapshot()
+        .entities
+        .iter()
+        .filter(|entity| entity.kind.0 == node_kind)
+        .map(|entity| entity.id)
+        .collect();
+    let mut seq = 100u32;
+    let mut trained: Vec<String> = Vec::new();
+    let mut ticks = sim.tick();
+    while ticks < 6000 {
+        let mut commands = Vec::new();
+        for (index, worker) in workers.iter().enumerate() {
+            let idle = sim
+                .snapshot()
+                .entities
+                .iter()
+                .any(|entity| entity.id == *worker && entity.move_state == MoveState::Idle);
+            if idle {
+                commands.push(Command::new(
+                    PlayerId(0),
+                    sim.tick(),
+                    {
+                        seq += 1;
+                        seq
+                    },
+                    CommandKind::Gather {
+                        units: vec![*worker],
+                        node: nodes[index % nodes.len()],
+                    },
+                ));
+            }
+        }
+        let ore = sim.player_view(PlayerId(0)).resources[0].amount;
+        let barracks_exists = sim
+            .snapshot()
+            .entities
+            .iter()
+            .any(|entity| entity.owner == PlayerId(0) && entity.kind.0 == barracks_kind);
+        let forge_exists = sim
+            .snapshot()
+            .entities
+            .iter()
+            .any(|entity| entity.owner == PlayerId(0) && entity.kind.0 == forge_kind);
+        // Raise the barracks, then the forge (the tier's own gate in play).
+        if !barracks_exists && ore >= 150 && ticks.is_multiple_of(5) {
+            commands.push(Command::new(
+                PlayerId(0),
+                sim.tick(),
+                {
+                    seq += 1;
+                    seq
+                },
+                CommandKind::Build {
+                    worker: workers[0],
+                    structure: pandemonium_sim_api::KindId(barracks_kind),
+                    at: TilePos { x: 17, y: 11 },
+                },
+            ));
+        }
+        if barracks_exists && !forge_exists && ore >= 250 && ticks.is_multiple_of(5) {
+            commands.push(Command::new(
+                PlayerId(0),
+                sim.tick(),
+                {
+                    seq += 1;
+                    seq
+                },
+                CommandKind::Build {
+                    worker: workers[0],
+                    structure: pandemonium_sim_api::KindId(forge_kind),
+                    // Due east of the barracks: the approach from the
+                    // barracks' north face stays clear of footprints and
+                    // gather lines (a south spot routes the builder around
+                    // the barracks and into the crowd-stuck escalation,
+                    // which drops the order — M4's documented behavior).
+                    at: TilePos { x: 20, y: 12 },
+                },
+            ));
+        }
+        // Train the next arsenal kind still missing — ONE at a time, keyed
+        // to the forge's visible queue: a Train issued while the previous
+        // still cooks would queue a second of the same kind, and the crowd
+        // then parks the later kinds at the population gate (A-042's
+        // hold-at-front). An empty queue also self-heals the transient
+        // refusals (MissingCapability while the site is still under
+        // construction) — the retry simply re-issues.
+        if forge_exists && ticks.is_multiple_of(30) {
+            let forge = sim
+                .snapshot()
+                .entities
+                .iter()
+                .find(|entity| entity.owner == PlayerId(0) && entity.kind.0 == forge_kind)
+                .expect("the forge stands")
+                .id;
+            let queue_busy = sim
+                .player_view(PlayerId(0))
+                .production
+                .iter()
+                .any(|queue| queue.producer == forge && !queue.items.is_empty());
+            if !queue_busy {
+                let next = ["pathfinder", "lancer", "ballista"]
+                    .iter()
+                    .find(|id| !trained.iter().any(|t| t == *id));
+                if let Some(id) = next {
+                    let cost = bundle.entity(id).unwrap().cost_ore;
+                    if ore >= cost {
+                        let kind = bundle
+                            .entities
+                            .iter()
+                            .position(|entity| entity.id == *id)
+                            .expect("arsenal kind position")
+                            as u32;
+                        commands.push(Command::new(
+                            PlayerId(0),
+                            sim.tick(),
+                            {
+                                seq += 1;
+                                seq
+                            },
+                            CommandKind::Train {
+                                producer: forge,
+                                unit: pandemonium_sim_api::KindId(kind),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        let out = sim.step(&commands);
+        ticks = sim.tick();
+        if let Some(Event::ProductionCompleted { producible, .. }) = out
+            .events
+            .iter()
+            .find(|event| matches!(event, Event::ProductionCompleted { .. }))
+        {
+            // The completion names its kind; record it when it is one of
+            // the arsenal's (the forge is the only producer we drove).
+            let name = bundle.entities[producible.0 as usize].id.clone();
+            if ["pathfinder", "lancer", "ballista"].contains(&name.as_str())
+                && !trained.contains(&name)
+            {
+                trained.push(name);
+            }
+        }
+        if trained.len() == 3 {
+            break;
+        }
+    }
+    assert_eq!(
+        trained,
+        ["pathfinder", "lancer", "ballista"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        "every arsenal kind trained from the forge (got {trained:?} by tick {ticks})"
+    );
+    // One trained unit obeys a Move order (the capability flow: Health +
+    // Move + Vision + Attack all arrive from data).
+    let lancer_kind = bundle
+        .entities
+        .iter()
+        .position(|entity| entity.id == "lancer")
+        .expect("the lancer kind exists") as u32;
+    let lancer = sim
+        .snapshot()
+        .entities
+        .iter()
+        .find(|entity| entity.owner == PlayerId(0) && entity.kind.0 == lancer_kind)
+        .expect("the trained lancer stands")
+        .id;
+    sim.step(&[Command::new(
+        PlayerId(0),
+        sim.tick(),
+        {
+            seq += 1;
+            seq
+        },
+        CommandKind::Move {
+            units: vec![lancer],
+            target: Vec2Fx::from_ints(20, 20),
+        },
+    )]);
+    let mut moved = 0;
+    while sim
+        .snapshot()
+        .entities
+        .iter()
+        .any(|entity| entity.id == lancer && entity.move_state == MoveState::Moving)
+    {
+        sim.step(&[]);
+        moved += 1;
+        assert!(moved < 400, "the lancer must arrive");
+    }
+    let final_snapshot = sim.snapshot();
+    let arrived = final_snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.id == lancer)
+        .unwrap();
+    assert_eq!(arrived.pos, Vec2Fx::from_ints(20, 20));
+}
+
+#[test]
 fn add_a_map_is_data_only() {
     // ---------------------------------------------------------------------
     // The A4 scaffold (plan §13 A4 — "add-a-map is data-only, same pattern
