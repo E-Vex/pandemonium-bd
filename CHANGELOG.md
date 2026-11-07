@@ -7,6 +7,69 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-029] — the arsenal growth pass (plan §19's expansion test, Update 1+2: the Legion's second tier)
+
+The owner's 2026-11-07 delegation ("keep working on upgrading this game")
+met the plan's own next step — §19's expansion sequence, "used to audit
+the foundation": **Update 1 (a new unit) + Update 2 (a new building)**,
+delivered as one additive content pass with zero changes under
+`crates/{fx,sim,sim_api,ai,replay}`. FD-4's promise — content is data —
+exercised on the shipping tree for the first time since the Alpha froze.
+
+- **The Forge** (3×3, 250 ore, requires the Barracks): the tech tier's
+  anchor, producing exactly three — the command card's per-producer row
+  and the take-three cap meet at three by design.
+- **The Pathfinder** (50 ore): the eyes — fastest unit on the field
+  (6.0 tiles/s), longest sight (12.0), a light gun. Fog-lifting,
+  worker-harassment, Ballista spotting.
+- **The Lancer** (160 ore, 2 pop): the anti-armor answer — one heavy
+  piercer per slow cycle (50 damage / 2.5 s), 80 HP. Trades into
+  Guardians and structures; loses to cheap masses.
+- **The Ballista** (275 ore, 3 pop): the siege answer — range 12.0
+  outranges every defense (turrets cap at 7.0), at 4-second cycles and
+  1.2 tiles/s. Static-defense breaker; anything fast counters it.
+
+The pass's one authorized golden move (a single dedicated commit, the
+reason in its message): **content `0x9bc18c521107b262` →
+`0x91ee5df1fee5b347`** (map id unchanged) and **flagship
+`0x6e9a18bd7c5f699f` → `0xbfe0ec376fc0b6da`** (tick 0
+`0x71a924ad5799e4b3` → `0x3d526307f2cdb237`). The cause is pure
+re-labeling: entity files load in filename sort, `ballista.ron` sorts
+first, every KindId shifts, and the state hash encodes kind ids. Behavior
+is proven identical — the flagship's 612 commands, per-player counters,
+and all four controller RNG streams are bit-identical (the behavior
+anchors, `tests/mission_ai.rs`); the demo golden (trivial world) never
+moved. The re-pin updated every executable location (ci.yml, release.yml,
+and six test pins) in the same commit.
+
+- **The scripted opponent is provably untouched**: `alpha_plan` resolves
+  the army from the first attacker-carrying producer in the sorted
+  production map — the Barracks — and the Forge is invisible to it
+  (pinned by `tests/ai.rs::the_alpha_plan_ignores_the_forge`; the
+  flagship's identical command stream is the live proof).
+- **The expansion tests pin the growth three ways**: the data-only loop
+  over the real tree (gather → barracks → forge → all three kinds trained
+  from the forge, the requirement gate refusing the Forge before a
+  Barracks stands — `tests/content_pipeline.rs`), the alpha-plan
+  additive-safety pin (`tests/ai.rs`), and the Forge's command card
+  (`crates/client/src/ui.rs`).
+- **The presentation grew with the content** (DEBT-016's re-tune law
+  honored in the same pass): hand-tuned silhouettes for all four kinds —
+  the Lancer's lance, the Pathfinder's sensor mast, the Ballista's yawed
+  crossbow arms, the Forge's chimney and furnace mouth.
+- **The scale tree mirrors** (`content_scale/`): the four entity files
+  copied byte-identical and the Swarm faction's roster/production grown
+  to match, per its test's demand.
+- **Gate**: 1011 dev / 1006 release (1008/1003 + the three new tests),
+  fmt and clippy `-D warnings` clean, replay round-trip PASS (121
+  checkpoints, fresh seed), release soak 8/8 resolved with 0 crashes at
+  the 36000-tick tier, Xvfb windowed smoke 900 frames on the new content
+  (menu; live-match XTEST evidence unavailable without libXtst — the
+  owner's A14 sessions carry the visual judgment, as ever).
+- **The balance is authored, not playtested** (A-222) — the A14 sessions
+  are its first human read; the AI fields none of it (its adoption of the
+  second tier is §19 step 8's evaluative-AI territory).
+
 ## [A-022] — the rodio 0.23 bump (ADR-0002's addendum: the audio backend's cpal refresh)
 
 A-021 §9 named this bump as the natural follow-up, gated on an ADR-0002

@@ -223,6 +223,9 @@ code; check it yourself with
 | **Rifleman** | line infantry — holds the middle | 75 | 1 | dmg 8 · range 5.0 · 1.0 s reload |
 | **Raider** | the flanker — arrives first | 60 | 1 | 4.0 tiles/s · dmg 6 · range 1.5 · 0.6 s reload |
 | **Guardian** | the slow hammer | 200 | 3 | dmg 30 · range 8.0 · 2.0 s reload |
+| **Pathfinder** | the eyes — fastest thing on the field, longest sight | 50 | 1 | 6.0 tiles/s · sight 12.0 · dmg 4 · range 3.0 |
+| **Lancer** | the anti-armor answer — one heavy piercer per slow cycle | 160 | 2 | dmg 50 · range 6.0 · 2.5 s reload |
+| **Ballista** | the siege answer — outranges everything, turrets included | 275 | 3 | dmg 60 · range 12.0 · 4.0 s reload · 1.2 tiles/s |
 | **Turret** | static denial | 125 | 0 | dmg 10 · range 7.0 · 1.0 s reload |
 
 **The infrastructure**
@@ -230,8 +233,16 @@ code; check it yourself with
 | structure | ore | provides |
 |---|---:|---|
 | **Command Center** | 400 | the HQ — trains Workers, +10 population |
-| **Barracks** | 150 | trains the field roster: Rifleman, Raider, Guardian |
+| **Barracks** | 150 | the first tier — trains Rifleman, Raider, Guardian |
+| **Forge** | 250 | the second tier — trains the arsenal: Pathfinder, Lancer, Ballista |
 | **Supply Depot** | 100 | +10 population |
+
+The second tier is the game's first tech decision: the Forge requires a
+Barracks, and its three kinds each require the Forge — a player who techs
+gains the counter shapes (Lancer into Guardian, Ballista into static
+defense) at the price of the raw army the same ore would have fielded. The
+scripted Alpha opponent fields only the first tier; the arsenal is the
+player's edge (and the balance's open question — it rides the playtest).
 
 **The maps**
 
