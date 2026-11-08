@@ -123,13 +123,16 @@ fn stat_value(entity: &pandemonium_content::EntityDef, field: &str) -> i64 {
 fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
     let bundle = ContentBundle::load_dir(&repo_content()).expect("the Alpha content loads");
 
-    // The manifest's shape (plan §10.4 + B-029's arsenal growth): 1 faction,
-    // 1 map (64x64), 1 resource, 5 buildings + ore node + 7 units = 13 kinds.
-    assert_eq!(bundle.factions.len(), 1);
+    // The manifest's shape (plan §10.4 + B-029's arsenal growth + B-032's
+    // second faction): 2 factions (the Legion, then the Phalanx — the
+    // id-sort law: the first slot is the default bundle's played faction,
+    // so "phalanx" must sort after "legion"), 1 map (64x64), 1 resource,
+    // 5 buildings + ore node + 11 units = 17 kinds.
+    assert_eq!(bundle.factions.len(), 2);
     assert_eq!(bundle.map.width, 64);
     assert_eq!(bundle.map.height, 64);
     assert_eq!(bundle.rules.resources.len(), 1);
-    assert_eq!(bundle.entities.len(), 13);
+    assert_eq!(bundle.entities.len(), 17);
     assert_eq!(bundle.rules.resources[0].id, "ore");
     assert_eq!(bundle.rules.resources[0].starting, 200);
     assert_eq!(bundle.rules.base_population_cap, 0);
@@ -578,6 +581,190 @@ fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
                 field: "ore_amount",
                 value: 1500,
             },
+            // The Phalanx's four (B-032, plan §19 Update 5): every cell of
+            // the authored table, exactly as written in the entity files —
+            // the battery (tests/balance.rs) is the counterplay evidence
+            // behind these numbers; the authored analysis is A-230.
+            S {
+                entity: "hoplite",
+                field: "hp",
+                value: 120,
+            },
+            S {
+                entity: "hoplite",
+                field: "cost_ore",
+                value: 120,
+            },
+            S {
+                entity: "hoplite",
+                field: "build_time_ms",
+                value: 13000,
+            },
+            S {
+                entity: "hoplite",
+                field: "speed",
+                value: 1500,
+            },
+            S {
+                entity: "hoplite",
+                field: "range",
+                value: 3500,
+            },
+            S {
+                entity: "hoplite",
+                field: "damage",
+                value: 14,
+            },
+            S {
+                entity: "hoplite",
+                field: "cooldown_ms",
+                value: 1100,
+            },
+            S {
+                entity: "hoplite",
+                field: "vision",
+                value: 8000,
+            },
+            S {
+                entity: "hoplite",
+                field: "population",
+                value: 2,
+            },
+            S {
+                entity: "onager",
+                field: "hp",
+                value: 60,
+            },
+            S {
+                entity: "onager",
+                field: "cost_ore",
+                value: 110,
+            },
+            S {
+                entity: "onager",
+                field: "build_time_ms",
+                value: 11000,
+            },
+            S {
+                entity: "onager",
+                field: "speed",
+                value: 1900,
+            },
+            S {
+                entity: "onager",
+                field: "range",
+                value: 7500,
+            },
+            S {
+                entity: "onager",
+                field: "damage",
+                value: 44,
+            },
+            S {
+                entity: "onager",
+                field: "cooldown_ms",
+                value: 4000,
+            },
+            S {
+                entity: "onager",
+                field: "vision",
+                value: 8000,
+            },
+            S {
+                entity: "onager",
+                field: "population",
+                value: 1,
+            },
+            S {
+                entity: "cataphract",
+                field: "hp",
+                value: 260,
+            },
+            S {
+                entity: "cataphract",
+                field: "cost_ore",
+                value: 240,
+            },
+            S {
+                entity: "cataphract",
+                field: "build_time_ms",
+                value: 20000,
+            },
+            S {
+                entity: "cataphract",
+                field: "speed",
+                value: 2600,
+            },
+            S {
+                entity: "cataphract",
+                field: "range",
+                value: 3000,
+            },
+            S {
+                entity: "cataphract",
+                field: "damage",
+                value: 24,
+            },
+            S {
+                entity: "cataphract",
+                field: "cooldown_ms",
+                value: 1300,
+            },
+            S {
+                entity: "cataphract",
+                field: "vision",
+                value: 8000,
+            },
+            S {
+                entity: "cataphract",
+                field: "population",
+                value: 3,
+            },
+            S {
+                entity: "colossus",
+                field: "hp",
+                value: 520,
+            },
+            S {
+                entity: "colossus",
+                field: "cost_ore",
+                value: 400,
+            },
+            S {
+                entity: "colossus",
+                field: "build_time_ms",
+                value: 36000,
+            },
+            S {
+                entity: "colossus",
+                field: "speed",
+                value: 1100,
+            },
+            S {
+                entity: "colossus",
+                field: "range",
+                value: 6500,
+            },
+            S {
+                entity: "colossus",
+                field: "damage",
+                value: 80,
+            },
+            S {
+                entity: "colossus",
+                field: "cooldown_ms",
+                value: 3000,
+            },
+            S {
+                entity: "colossus",
+                field: "vision",
+                value: 9000,
+            },
+            S {
+                entity: "colossus",
+                field: "population",
+                value: 6,
+            },
         ],
     );
 
@@ -662,10 +849,10 @@ fn a_match_from_loaded_content_spawns_the_full_starting_state() {
     }
 
     // Command Center ids are deterministic: player 0's CC is the first spawn.
-    // (KindId(2) since B-029: ballista.ron sorts before barracks.ron, so the
-    // command center's positional kind id shifted from 1 to 2.)
+    // (KindId(4) since B-032: cataphract.ron and colossus.ron sort before
+    // command_center.ron, shifting it from 2 to 4.)
     assert_eq!(snapshot.entities[0].owner, PlayerId(0));
-    assert_eq!(snapshot.entities[0].kind, pandemonium_sim_api::KindId(2));
+    assert_eq!(snapshot.entities[0].kind, pandemonium_sim_api::KindId(4));
 }
 
 #[test]
@@ -682,7 +869,7 @@ fn the_registered_content_identity_is_pinned() {
     // Re-pinned by B-029 (the arsenal content growth, the owner's
     // 2026-11-07 delegation): four kinds joined the tree, moving the
     // bundle identity. The map id is unchanged (no map edit).
-    assert_eq!(bundle.content_hash(), 0xb709_ec37_afe0_3aae);
+    assert_eq!(bundle.content_hash(), 0x8edf_dfc3_a814_eb37);
     assert_eq!(bundle.map_id(), 0xd381_3640_1ab0_2ff1);
 }
 
@@ -810,11 +997,12 @@ fn add_a_unit_is_data_only() {
     );
 
     // Kind ids follow the sorted entity order: ballista, barracks,
-    // command_center, forge, guardian, lancer, ore_node, pathfinder,
-    // raider, rifleman, skirmisher, supply_depot, turret, worker
-    // -> skirmisher is index 10 (B-029's four kinds shifted it from 6).
+    // cataphract, colossus, command_center, forge, guardian, hoplite,
+    // lancer, onager, ore_node, pathfinder, raider, rifleman, skirmisher,
+    // supply_depot, turret, worker -> skirmisher is index 14 (B-029's four
+    // kinds and B-032's four shifted it from 6).
     let world = bundle.world();
-    assert_eq!(world.kinds.len(), 14);
+    assert_eq!(world.kinds.len(), 18);
     let kind = world
         .initial_spawns
         .iter()
@@ -827,7 +1015,7 @@ fn add_a_unit_is_data_only() {
         })
         .expect("player 0's skirmisher spawns at anchor (12,12)+(-2,6) -> tile (10,18) center");
     assert_eq!(kind.owner, PlayerId(0));
-    assert_eq!(kind.kind, pandemonium_sim_api::KindId(10));
+    assert_eq!(kind.kind, pandemonium_sim_api::KindId(14));
 
     // 4. The simulation runs it: the new kind spawns from data, accepts a
     //    Move order (Health + Move + Vision capabilities all flow), and moves.
@@ -836,7 +1024,7 @@ fn add_a_unit_is_data_only() {
     let spawned = snapshot
         .entities
         .iter()
-        .find(|entity| entity.kind == pandemonium_sim_api::KindId(10))
+        .find(|entity| entity.kind == pandemonium_sim_api::KindId(14))
         .expect("the data-only kind is in the match");
     let id = spawned.id;
     let spawned_owner = spawned.owner;
@@ -870,7 +1058,7 @@ fn add_a_unit_is_data_only() {
         .find(|entity| entity.id == id)
         .unwrap();
     assert_eq!(arrived.pos, Vec2Fx::from_ints(20, 18));
-    assert_eq!(arrived.kind, pandemonium_sim_api::KindId(10));
+    assert_eq!(arrived.kind, pandemonium_sim_api::KindId(14));
 
     // 4b. DEBT-007's M5 half: the data-defined kind TRAINS from the barracks
     //     (plan §10.6 "gets built [from a production list]"). Gather with the
@@ -979,7 +1167,7 @@ fn add_a_unit_is_data_only() {
                 },
                 CommandKind::Train {
                     producer: barracks,
-                    unit: pandemonium_sim_api::KindId(10),
+                    unit: pandemonium_sim_api::KindId(14),
                 },
             ));
         }
@@ -1003,7 +1191,7 @@ fn add_a_unit_is_data_only() {
                 sim.snapshot()
                     .entities
                     .iter()
-                    .any(|entity| entity.kind == pandemonium_sim_api::KindId(10) && entity.id != id),
+                    .any(|entity| entity.kind == pandemonium_sim_api::KindId(14) && entity.id != id),
                 "the trained skirmisher spawned"
             );
             break;
@@ -1043,7 +1231,7 @@ fn add_a_unit_is_data_only() {
         for event in &out.events {
             if let Event::AttackHit { attacker, .. } = event {
                 if snapshot.entities.iter().any(|entity| {
-                    entity.id == *attacker && entity.kind == pandemonium_sim_api::KindId(10)
+                    entity.id == *attacker && entity.kind == pandemonium_sim_api::KindId(14)
                 }) {
                     skirmisher_fired = true;
                     break;
@@ -1605,7 +1793,7 @@ fn add_a_map_is_data_only() {
 /// `iron_basin_72`). Pinned after the first green load; a moved value is a
 /// re-pin by the owner's documented authorization, exactly like the
 /// registered pair below it.
-const IRON_BASIN_CONTENT_HASH: u64 = 0x6ee8_0d70_2e71_e5a5;
+const IRON_BASIN_CONTENT_HASH: u64 = 0xb5c1_43a0_9f45_a402;
 const IRON_BASIN_MAP_ID: u64 = 0x87fb_6dfa_fc74_8a48;
 
 #[test]
@@ -1632,7 +1820,7 @@ fn the_third_battlefield_is_data_only_and_identity_neutral() {
     //    the tree's map list.
     let default = tree.default_map_bundle().expect("the default map bundles");
     assert_eq!(default.map.id, "crossroads_64");
-    assert_eq!(default.content_hash(), 0xb709_ec37_afe0_3aae);
+    assert_eq!(default.content_hash(), 0x8edf_dfc3_a814_eb37);
     assert_eq!(default.map_id(), 0xd381_3640_1ab0_2ff1);
 
     // 3. Iron Basin bundles with its authored shape: 72x72, the mirrored
@@ -1705,6 +1893,153 @@ fn the_third_battlefield_is_data_only_and_identity_neutral() {
         assert!(
             !text.contains("iron_basin"),
             "{} mentions 'iron_basin' — add-a-map must stay data-only (A4)",
+            path.display()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B-032 — the second faction (plan §19's expansion test, Update 5): the
+// Phalanx joins the Legion as pure data — four entity kinds and one faction
+// file, validated against every (map × faction) pair by the loader — and
+// the tree's id-sort law holds: "phalanx" sorts AFTER "legion", so the
+// default bundle (the menu backdrop, the headless smoke, every registered
+// golden) still plays the Legion, byte for byte. The identity the addition
+// DOES move — every bundle's content hash covers all factions — moved once,
+// by the authorized procedure, in the same commit as this test's pins.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_second_faction_is_data_only_and_identity_pinned() {
+    // 1. Two factions in canonical id order, and the order is the law: the
+    //    tree's first faction is the default bundle's played faction, so a
+    //    faction id sorting before "legion" would silently re-target every
+    //    default bundle to a different army without moving a single golden
+    //    pin — the A-224 map-id law's exact analog (A-231).
+    let tree = ContentTree::load_dir(&repo_content()).expect("the repo tree loads");
+    let ids: Vec<&str> = tree.factions.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["legion", "phalanx"],
+        "the factions list in canonical id order — phalanx must not take the first slot"
+    );
+
+    // 2. The addition's neutrality, asserted executably: the default bundle
+    //    still plays the Legion and still carries the REGISTERED identity
+    //    (the pair CI's content-identity gate pins). A second faction file
+    //    moves the content hash (encode_factions covers every faction) but
+    //    never the default bundle's played faction, forces, or map.
+    let default = tree.default_map_bundle().expect("the default map bundles");
+    assert_eq!(default.faction().id, "legion");
+    assert_eq!(default.content_hash(), 0x8edf_dfc3_a814_eb37);
+    assert_eq!(default.map_id(), 0xd381_3640_1ab0_2ff1);
+    let default_world = default.world();
+    assert_eq!(
+        default_world
+            .initial_spawns
+            .iter()
+            .filter(|spawn| spawn.owner != PlayerId::NEUTRAL)
+            .count(),
+        10,
+        "two starts × the Legion's five forces — unchanged by the second faction"
+    );
+
+    // 3. The Phalanx's authored shape: the roster is the identity — every
+    //    Legion soldier is absent, the shared infrastructure is present
+    //    (the Build gate's authority), and the production lists are the
+    //    A-223 contract: the barracks (first in sorted producer order)
+    //    carries the army, so the scripted AI's plan resolution lands on
+    //    the intended producer.
+    let phalanx = tree
+        .factions
+        .iter()
+        .find(|faction| faction.id == "phalanx")
+        .expect("the Phalanx loads");
+    assert_eq!(
+        phalanx.roster,
+        vec![
+            "worker",
+            "hoplite",
+            "onager",
+            "cataphract",
+            "colossus",
+            "command_center",
+            "barracks",
+            "forge",
+            "supply_depot",
+            "turret",
+        ]
+    );
+    for legion_only in [
+        "rifleman",
+        "raider",
+        "guardian",
+        "pathfinder",
+        "lancer",
+        "ballista",
+    ] {
+        assert!(
+            !phalanx.roster.iter().any(|member| member == legion_only),
+            "the Phalanx does not field the Legion's {legion_only}"
+        );
+    }
+    let list_of = |producer: &str| -> &Vec<String> {
+        &phalanx
+            .production
+            .iter()
+            .find(|(kind, _)| kind == producer)
+            .unwrap_or_else(|| panic!("the {producer} produces"))
+            .1
+    };
+    assert_eq!(
+        list_of("barracks"),
+        &vec!["hoplite".to_string(), "onager".to_string()]
+    );
+    assert_eq!(
+        list_of("forge"),
+        &vec!["cataphract".to_string(), "colossus".to_string()]
+    );
+    assert_eq!(list_of("command_center"), &vec!["worker".to_string()]);
+
+    // 4. The anvil opening: one command center, three workers, and the
+    //    two hoplites the faction is named for. The loader validated the
+    //    (map × faction) pair for every authored map — the fit that made
+    //    three battlefields load is the same check a fourth map will run.
+    assert_eq!(phalanx.starting_forces.len(), 6);
+    assert_eq!(phalanx.starting_forces[0].entity, "command_center");
+    assert_eq!(
+        phalanx
+            .starting_forces
+            .iter()
+            .filter(|force| force.entity == "worker")
+            .count(),
+        3
+    );
+    assert_eq!(
+        phalanx
+            .starting_forces
+            .iter()
+            .filter(|force| force.entity == "hoplite")
+            .count(),
+        2
+    );
+
+    // 5. The A4 source-scan half: no Rust source under crates/ knows the
+    //    faction — add-a-faction is data-only. (The playable seam — a
+    //    mission naming the faction — is content-side and generic; the
+    //    client's silhouettes name the new KINDS, presentation-only, the
+    //    same exemption the arsenal's kinds carry.)
+    let mut sources = Vec::new();
+    collect_rust_sources(
+        &repo_content().parent().unwrap().join("crates"),
+        &mut sources,
+    );
+    assert!(!sources.is_empty(), "the scan must find the crate sources");
+    for path in &sources {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            !text.contains("phalanx"),
+            "{} mentions 'phalanx' — add-a-faction must stay data-only (A4)",
             path.display()
         );
     }

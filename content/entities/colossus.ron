@@ -1,0 +1,24 @@
+// Colossus (B-032, plan §19's expansion test — Update 5, the second
+// faction): the walking fortress — the Phalanx's forge-tier anchor of
+// anchors. 520 hp out-tanks two Guardians at exact cost parity (the
+// battery's P7) while its 80-damage chunks crack turrets and depots in
+// five and four swings; it is also the web's most punished body — the
+// Lancer's piercer cycle shreds it for cost and a raider swarm drowns it
+// before its slow clock clears a quarter of the field (the battery's
+// P8/P3). The price of a body that beats everything slow is losing to
+// everything cheap and fast. Trained at the Forge (factions/phalanx.ron).
+(
+    schema_version: 1,
+    id: "colossus",
+    display_name: "Colossus",
+    capabilities: [
+        Health(( max: 520 )),
+        Move(( speed_milli_tiles_per_s: 1100, radius_milli_tiles: 600 )),
+        Attack(( damage: 80, range_milli_tiles: 6500, cooldown_ms: 3000, acquire_range_milli_tiles: 8000 )),
+        Vision(( radius_milli_tiles: 9000 )),
+    ],
+    cost: ( ore: 400 ),
+    build_time_ms: 36000,
+    population: 6,
+    requires: [ "forge" ],
+)

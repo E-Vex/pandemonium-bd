@@ -1,4 +1,4 @@
-// The pilot campaign (B-025, ADR-0201 §6/§9 Phase 3): three chapters in
+// The pilot campaign (B-025, ADR-0201 §6/§9 Phase 3): four chapters in
 // play order plus one challenge. The campaign file is play-order metadata
 // over missions that exist in the same tree — it never enters any hash
 // (ADR-0201 §7), and the client reads it to build the Campaign screen:
@@ -7,9 +7,10 @@
 //
 // The id and display_name are working names — the campaign's premise and
 // tone are the owner's open decisions (ADR-0201 §10), and a rename changes
-// nothing hashed. All missions run the unchanged Legion content on
-// crossroads_64 (the one authored battlefield); escalation comes from the
-// objective sets, not from new content.
+// nothing hashed. Chapters 1–3 run the Legion on crossroads_64 (the
+// authored battlefield); chapter 4 (B-032) debuts the second faction — the
+// Phalanx on Iron Basin — so the escalation now comes from the objective
+// sets AND from the armies that fight them.
 (
     schema_version: 1,
     id: "alpha_campaign",
@@ -22,6 +23,10 @@
         "crossroads_02",
         // Chapter 3 — the economy exam: fund a quota from the field.
         "crossroads_03",
+        // Chapter 4 (B-032) — the second faction's debut: the Phalanx on
+        // Iron Basin ("The Anvil") — unlocks on completing the exam, the
+        // campaign's reward for the economy chapter.
+        "anvil_01",
     ],
     challenges: [
         // The challenge beside chapter 1: the same battlefield, a pure

@@ -1,0 +1,47 @@
+// Campaign chapter 4 (B-032, plan §19's expansion test — Update 5): the
+// second faction's debut. The mission player runs THE PHALANX on Iron
+// Basin — the anvil army on the anvil map — against a scripted opponent
+// playing the same faction (a match plays one faction; the mission's
+// bundle bakes the Phalanx for every slot, B-032's played-faction seam).
+//
+// The objectives are chapter 1's proven shape, translated: destroy the
+// enemy command center (required — the surgical target, not the
+// elimination rule) and field the wall (optional — six hoplites exist;
+// the Phalanx starts two, so the count sits above the starting force the
+// way AUD-003's law demands: real production, never a vacuous count).
+//
+// No fog preset, no restrictions, no AI tuning: the debut carries the
+// faction itself — the scripted Alpha's plan resolves on the Phalanx's
+// own production lists (the producers-map sort law, A-223, held by
+// design: the barracks sorts first and carries the army), and the
+// balance is the A14 sessions' first Phalanx read (A-230).
+(
+    schema_version: 1,
+    id: "anvil_01",
+    display_name: "The Anvil",
+    map: "iron_basin_72",
+    faction: "phalanx",
+    rules: "alpha",
+    objectives: [
+        // Break the enemy command center through the basin's lanes — the
+        // sapper's purpose (the battery's P4: the breaker breaks the
+        // turtle) and the chapter's exam.
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: Some("command_center") )),
+            optional: false,
+        ),
+        // Field the wall — five hoplites exist. The Phalanx starts two
+        // (the anvil opening), so three more must be trained, and the
+        // count is the loader's population-fit ceiling (the base cap 10
+        // fields at most five two-pop hoplites; the sixth needs a supply
+        // depot the static gate will not presume). The starting ore funds
+        // none of them — the opening economy must gather, exactly as
+        // chapter 1's workers had to.
+        (
+            kind: "BuildTrain",
+            parameters: BuildTrain(( kind: "hoplite", count: 5 )),
+            optional: true,
+        ),
+    ],
+)

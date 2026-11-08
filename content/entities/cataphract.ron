@@ -1,0 +1,23 @@
+// Cataphract (B-032, plan §19's expansion test — Update 5, the second
+// faction): the Phalanx's shock body — the one fast thing the anvil
+// fields, priced and fed like a knight. The faction's answer to siege:
+// 260 hp eats two Ballista volleys with change, and 2.6 tiles/s closes
+// the standoff before the third lands (the battery's P6). It is NOT a
+// line answer — the rifleman wall out-grinds it at equal ore (the shock
+// pays for its hooves in cost-efficiency), and the piercer chews it like
+// any other armor. Trained at the Forge (factions/phalanx.ron).
+(
+    schema_version: 1,
+    id: "cataphract",
+    display_name: "Cataphract",
+    capabilities: [
+        Health(( max: 260 )),
+        Move(( speed_milli_tiles_per_s: 2600, radius_milli_tiles: 450 )),
+        Attack(( damage: 24, range_milli_tiles: 3000, cooldown_ms: 1300, acquire_range_milli_tiles: 4500 )),
+        Vision(( radius_milli_tiles: 8000 )),
+    ],
+    cost: ( ore: 240 ),
+    build_time_ms: 20000,
+    population: 3,
+    requires: [ "forge" ],
+)

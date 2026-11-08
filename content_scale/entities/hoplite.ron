@@ -1,0 +1,25 @@
+// Hoplite (B-032, plan §19's expansion test — Update 5, the second
+// faction): the Phalanx's anvil line. Where the Legion's rifleman is a
+// cheap body with a reach advantage, the hoplite is a wall — one hp per
+// ore, the field's best body value, on the field's slowest legs. It
+// out-eats the rifleman line and out-anchors the Guardian at equal ore
+// (the battery's P1/P2), and it is exactly the piercer's prey: the
+// Lancer's 60-damage volley lands twice with zero waste (120 hp, the
+// deliberate lattice), so the anti-armor answer cross-punishes the second
+// faction's tier-1 for free — the web's honest price for fielding armor
+// as the opening unit. Trained at the barracks (factions/phalanx.ron).
+(
+    schema_version: 1,
+    id: "hoplite",
+    display_name: "Hoplite",
+    capabilities: [
+        Health(( max: 120 )),
+        Move(( speed_milli_tiles_per_s: 1500, radius_milli_tiles: 400 )),
+        Attack(( damage: 14, range_milli_tiles: 3500, cooldown_ms: 1100, acquire_range_milli_tiles: 5000 )),
+        Vision(( radius_milli_tiles: 8000 )),
+    ],
+    cost: ( ore: 120 ),
+    build_time_ms: 13000,
+    population: 2,
+    requires: [ "barracks" ],
+)
