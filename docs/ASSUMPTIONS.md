@@ -1916,3 +1916,65 @@ confirms or rejects it.
   §11 anticipated ("the same answer governs Update 4/5 next"). If the
   owner disagrees, the revert is one plan row, one test value, and one
   golden-move commit.
+
+- **A-229 (B-032 — the played-faction seam is the one code change Update
+  5 needs).** Plan §19's expansion sequence calls Update 5 "second faction
+  (all data-only)", and the audit's honest finding is that it is ALMOST
+  data-only: a second faction file is inert data (validated, hashed,
+  unplayed) until something selects it, and the mission seam was the only
+  sanctioned selector — but `ContentBundle::faction()` read `factions[0]`
+  unconditionally, so a mission naming the tree's second faction would
+  have silently played the first (the bake lands at the mission faction's
+  own index while every `faction()` reader — the world's roster,
+  production, and starting forces, the scripted AI's plan — read slot 0).
+  The fix is the smallest deliberate seam extension: a private
+  `played: usize` index on `ContentBundle` (0 at construction, the
+  mission's faction index after `bundle_for_mission`), with
+  `faction()` reading it — per-slot faction assignment stays post-Alpha
+  (plan §17) and will generalize the index to per-player indices. The
+  alternative rejected: reordering the mission bundle's `factions` vec to
+  promote the played faction to slot 0, which silently breaks the field's
+  documented sorted-by-id invariant. Every existing mission plays the
+  Legion at index 0, so the seam change is bit-identical for all of them
+  (the mission suites prove it); the new content-crate tests pin the
+  second-faction bake on fixtures, and tests/ai.rs pins the plan
+  resolution on the real tree.
+
+- **A-230 (B-032 — the Phalanx's authored balance).** The second faction's
+  numbers are authored by measurement, not by playtest: the battery's
+  probes drove the design loop (a short-ranged "sapper" breaker was
+  measured, could not reach a lone turret through its own acquire fire at
+  2.6x ore, and was redesigned into the standoff onager — the engine's
+  turtle answer is ALWAYS range, the Ballista's lesson), and the shipped
+  twelve P-laws pin the measured web: hoplites beat the line and the
+  swarm, the anchor and the piercer beat the anvil, the colossus beats
+  the anchor, the piercer and the swarm beat the colossus, the onager
+  out-reaches the nest and out-breaks the line per-tick, and the anchor,
+  the swarm, and the piercer punish the engines. Two measured findings
+  are logged as authored asymmetries, not accidents: (1) the rifle line
+  does NOT clear an equal-ore onager standoff by itself (a pyrrhic engine
+  win at 550 vs 600 — the Legion's onager answers are the anchor, the
+  piercer, and the swarm, mirroring how the pure line does not beat
+  lancers, A-227); (2) the Phalanx has no equal-ore answer to the Lancer
+  — the piercer breaks the anvil AND the fortress AND the engines, so the
+  cross-faction match-up (plan §17 territory) will need either a Phalanx
+  piercer-answer or a lancer price re-exam. The mirror resolution (7832
+  ticks at seed 7, against the Legion's 20834) is measured and budgeted
+  in tests/ai.rs; whether any of it FEELS right is the A14 sessions'
+  call, exactly as A-222 records for the arsenal.
+
+- **A-231 (B-032 — the faction-id sort law).** The content tree's factions
+  sort by id and every plain bundle plays the FIRST (the menu's default
+  match, the headless smoke, every registered golden ride on it), so a
+  faction file whose id sorts before "legion" would silently re-target
+  the default bundle to a different army without moving a single golden
+  pin — the A-224 map-id law's exact analog. "phalanx" therefore
+  deliberately sorts after "legion" (and the campaign's fourth chapter
+  mission id is "anvil_01", not "iron_basin_01", because the A4 scan for
+  the map id "iron_basin" reads crates/ sources including the client's
+  campaign tests, and a mission id embedding the map prefix would trip
+  the map's data-only tripwire). The faction-order tripwire is
+  tests/content_pipeline.rs::the_second_faction_is_data_only_and_identity_pinned's
+  id-order assertion (plus the second-faction test's own "phalanx" scan);
+  a future faction that would take the first slot fails the order assert
+  loudly, and the deliberate change re-pins it in review.

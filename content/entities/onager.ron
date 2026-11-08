@@ -1,0 +1,27 @@
+// Onager (B-032, plan §19's expansion test — Update 5, the second
+// faction): the Phalanx's light siege engine — a poor man's Ballista, and
+// deliberately so. The B-032 design lesson (measured, tests/balance.rs's
+// probes): in a flat-damage engine with center-to-center ranges, a
+// short-ranged breaker cannot reach a turret through its own acquire
+// fire — the turtle's answer is ALWAYS standoff. The onager carries the
+// anvil's answer at one-third the Ballista's price: range 7.5 outranges
+// the turret's 7.0 (the battery's P5, the L8 law's shape), while the
+// Guardian's 8.0, the Lancer's mobility, and any raiding body at all
+// overruns it (80 hp dies to everything — P6's law: the line closes the
+// 2.5-tile gap and deletes it). Trained at the barracks
+// (factions/phalanx.ron).
+(
+    schema_version: 1,
+    id: "onager",
+    display_name: "Onager",
+    capabilities: [
+        Health(( max: 60 )),
+        Move(( speed_milli_tiles_per_s: 1900, radius_milli_tiles: 350 )),
+        Attack(( damage: 44, range_milli_tiles: 7500, cooldown_ms: 4000, acquire_range_milli_tiles: 7500 )),
+        Vision(( radius_milli_tiles: 8000 )),
+    ],
+    cost: ( ore: 110 ),
+    build_time_ms: 11000,
+    population: 1,
+    requires: [ "barracks" ],
+)

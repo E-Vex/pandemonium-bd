@@ -313,6 +313,105 @@ fn ballista() -> Silhouette {
 /// distinct corner tower capped in the team band — plus roof vents, an
 /// antenna, and a ground-level band trim so the base reads as THE base
 /// from any angle.
+fn hoplite() -> Silhouette {
+    // The Phalanx's anvil (B-032): a squat wide body behind a tower
+    // shield — the shield is the silhouette (a big flat plate ahead of
+    // the torso), the spear short and level, the crest low.
+    Silhouette::from_parts(
+        true,
+        vec![
+            Part::at([0.0, 0.15, 0.0], [0.80, 0.30, 0.72], Tone::Body),
+            Part::at([0.0, 0.07, 0.22], [0.56, 0.14, 0.12], Tone::Dark),
+            Part::at([0.0, 0.07, -0.22], [0.56, 0.14, 0.12], Tone::Dark),
+            // The tower shield: a wide plate ahead of the torso.
+            Part::at([0.44, 0.30, 0.0], [0.10, 0.56, 0.78], Tone::Steel),
+            // The spear, level over the shield's rim.
+            Part::at([0.48, 0.62, 0.16], [0.86, 0.06, 0.06], Tone::Light),
+            // The crested helm.
+            Part::at([-0.04, 0.42, 0.0], [0.30, 0.22, 0.36], Tone::Light),
+            Part::at([-0.04, 0.56, 0.0], [0.05, 0.10, 0.68], Tone::Band),
+        ],
+    )
+}
+
+fn onager() -> Silhouette {
+    // The Phalanx's engine (B-032): a low cart with two wheels and one
+    // throwing arm — the ballista's poor cousin, smaller in every
+    // dimension, the arm's bucket where the ballista carries its bow.
+    Silhouette::from_parts(
+        true,
+        vec![
+            Part::at([0.0, 0.12, 0.0], [0.88, 0.22, 0.60], Tone::Body),
+            Part::at([0.0, 0.08, 0.34], [0.64, 0.16, 0.10], Tone::Dark),
+            Part::at([0.0, 0.08, -0.34], [0.64, 0.16, 0.10], Tone::Dark),
+            // The frame the arm pivots on.
+            Part::at([-0.10, 0.30, 0.0], [0.30, 0.14, 0.52], Tone::Light),
+            // The throwing arm, angled back and up.
+            Part {
+                offset: [-0.26, 0.50, 0.0],
+                scale: [0.14, 0.06, 0.62],
+                yaw: 0.55,
+                tone: Tone::Steel,
+            },
+            // The bucket at the arm's end.
+            Part::at([-0.52, 0.62, 0.0], [0.18, 0.12, 0.18], Tone::Dark),
+            // The stone.
+            Part::at([-0.52, 0.72, 0.0], [0.12, 0.10, 0.12], Tone::Steel),
+        ],
+    )
+}
+
+fn cataphract() -> Silhouette {
+    // The Phalanx's shock (B-032): an armored horse and rider — a long
+    // body with four legs, the lance carried couched, the caparison
+    // banded across the barrel.
+    Silhouette::from_parts(
+        true,
+        vec![
+            // The barrel.
+            Part::at([0.0, 0.34, 0.0], [1.02, 0.30, 0.44], Tone::Body),
+            // Four legs, two per side.
+            Part::at([0.36, 0.12, 0.16], [0.14, 0.24, 0.10], Tone::Dark),
+            Part::at([0.36, 0.12, -0.16], [0.14, 0.24, 0.10], Tone::Dark),
+            Part::at([-0.36, 0.12, 0.16], [0.14, 0.24, 0.10], Tone::Dark),
+            Part::at([-0.36, 0.12, -0.16], [0.14, 0.24, 0.10], Tone::Dark),
+            // The armored neck and head.
+            Part::at([0.58, 0.48, 0.0], [0.34, 0.20, 0.24], Tone::Light),
+            Part::at([0.78, 0.42, 0.0], [0.20, 0.14, 0.16], Tone::Dark),
+            // The rider, seated with the couched lance.
+            Part::at([-0.08, 0.58, 0.0], [0.30, 0.26, 0.36], Tone::Light),
+            Part::at([-0.04, 0.74, 0.0], [0.16, 0.10, 0.18], Tone::Steel),
+            Part::at([0.42, 0.62, 0.14], [1.00, 0.05, 0.05], Tone::Steel),
+        ],
+    )
+}
+
+fn colossus() -> Silhouette {
+    // The Phalanx's fortress (B-032): the tallest thing on the field — a
+    // walking keep, two massive legs under a wide torso, a tower on the
+    // shoulders, arms that end in block fists.
+    Silhouette::from_parts(
+        true,
+        vec![
+            // The legs.
+            Part::at([0.06, 0.26, 0.30], [0.42, 0.52, 0.26], Tone::Dark),
+            Part::at([0.06, 0.26, -0.30], [0.42, 0.52, 0.26], Tone::Dark),
+            // The hip block.
+            Part::at([0.0, 0.56, 0.0], [0.66, 0.20, 0.86], Tone::Body),
+            // The torso.
+            Part::at([0.0, 0.86, 0.0], [0.58, 0.40, 0.94], Tone::Body),
+            // The tower on the shoulders.
+            Part::at([-0.04, 1.16, 0.0], [0.42, 0.22, 0.56], Tone::Light),
+            Part::at([-0.04, 1.34, 0.0], [0.10, 0.14, 0.10], Tone::Band),
+            // The arms, fists forward.
+            Part::at([0.10, 0.86, 0.56], [0.44, 0.20, 0.18], Tone::Light),
+            Part::at([0.10, 0.86, -0.56], [0.44, 0.20, 0.18], Tone::Light),
+            Part::at([0.40, 0.80, 0.56], [0.20, 0.28, 0.22], Tone::Steel),
+            Part::at([0.40, 0.80, -0.56], [0.20, 0.28, 0.22], Tone::Steel),
+        ],
+    )
+}
+
 fn command_center() -> Silhouette {
     Silhouette::from_parts(
         false,
@@ -444,9 +543,13 @@ pub fn named(name: &str) -> Option<Silhouette> {
         "rifleman" => Some(rifleman()),
         "raider" => Some(raider()),
         "guardian" => Some(guardian()),
+        "hoplite" => Some(hoplite()),
         "pathfinder" => Some(pathfinder()),
         "lancer" => Some(lancer()),
+        "onager" => Some(onager()),
         "ballista" => Some(ballista()),
+        "cataphract" => Some(cataphract()),
+        "colossus" => Some(colossus()),
         "command_center" => Some(command_center()),
         "barracks" => Some(barracks()),
         "forge" => Some(forge()),
@@ -543,14 +646,19 @@ mod tests {
     use super::*;
 
     /// The authored kinds, in content order (the bundle loads them
-    /// sorted by file name) — thirteen since B-029's arsenal growth.
-    const AUTHORED: [&str; 13] = [
+    /// sorted by file name) — thirteen since B-029's arsenal growth,
+    /// seventeen since B-032's second faction.
+    const AUTHORED: [&str; 17] = [
         "ballista",
         "barracks",
+        "cataphract",
+        "colossus",
         "command_center",
         "forge",
         "guardian",
+        "hoplite",
         "lancer",
+        "onager",
         "ore_node",
         "pathfinder",
         "raider",
@@ -587,10 +695,14 @@ mod tests {
         let expected = [
             ("ballista", 8),
             ("barracks", 7),
+            ("cataphract", 10),
+            ("colossus", 10),
             ("command_center", 9),
             ("forge", 8),
             ("guardian", 9),
+            ("hoplite", 7),
             ("lancer", 7),
+            ("onager", 7),
             ("ore_node", 4),
             ("pathfinder", 5),
             ("raider", 6),

@@ -60,17 +60,19 @@ const COMPLETION_TICKS: u32 = 2400;
 /// content suite; pinned here for the battery's readability).
 mod kinds {
     // Positional KindIds over the entity files in filename order — the
-    // bundle's kind assignment. Re-numbered by B-029 (the arsenal growth:
-    // ballista.ron sorts first, so every kind after it shifts; the full
-    // order is now ballista, barracks, command_center, forge, guardian,
-    // lancer, ore_node, pathfinder, raider, rifleman, supply_depot,
-    // turret, worker).
+    // bundle's kind assignment. Re-numbered by B-029 (the arsenal growth)
+    // and again by B-032 (the second faction's four kinds: cataphract and
+    // colossus sort before command_center, hoplite before lancer, onager
+    // before ore_node; the full order is now ballista, barracks,
+    // cataphract, colossus, command_center, forge, guardian, hoplite,
+    // lancer, onager, ore_node, pathfinder, raider, rifleman,
+    // supply_depot, turret, worker).
     pub const BARRACKS: u32 = 1;
-    pub const COMMAND_CENTER: u32 = 2;
-    pub const ORE_NODE: u32 = 6;
-    pub const RIFLEMAN: u32 = 9;
-    pub const SUPPLY_DEPOT: u32 = 10;
-    pub const WORKER: u32 = 12;
+    pub const COMMAND_CENTER: u32 = 4;
+    pub const ORE_NODE: u32 = 10;
+    pub const RIFLEMAN: u32 = 13;
+    pub const SUPPLY_DEPOT: u32 = 14;
+    pub const WORKER: u32 = 16;
 }
 
 fn repo_content() -> PathBuf {
@@ -1184,8 +1186,8 @@ fn ai_vs_ai_golden_hash_is_pinned() {
     // command count, per-player counters, and controller RNG streams are
     // bit-identical (the behavior anchors, pinned in tests/mission_ai.rs;
     // see the B-029 report §5 for the full evidence).
-    assert_eq!(run.checkpoints[0].hash, 0x3d52_6307_f2cd_b237);
-    assert_eq!(run.final_hash, 0x0f80_a93e_ee5b_db1d);
+    assert_eq!(run.checkpoints[0].hash, 0x090a_57e3_3cdf_4c4b);
+    assert_eq!(run.final_hash, 0x3a58_e55e_a625_0906);
     assert_eq!(run.final_hash, run.checkpoints.last().unwrap().hash);
 }
 
@@ -1282,4 +1284,159 @@ fn ai_matches_replay_from_their_log_alone() {
         .filter(|(_, event)| matches!(event, Event::AttackHit { .. }))
         .count();
     assert!(hits > 0, "four minutes of Alpha AI must trade blows");
+}
+
+// ---------------------------------------------------------------------------
+// B-032 — the second faction (plan §19 Update 5): the Alpha opponent's plan
+// resolves on the Phalanx exactly as it does on the Legion, and the plan
+// DRIVES a real match there. The A-223 producers-map law held by design:
+// the Phalanx's own production map puts the barracks first in sorted order
+// with the army on it, so the first-attacker-carrying-producer resolution
+// lands on the intended producer with no AI code change.
+// ---------------------------------------------------------------------------
+
+/// The Phalanx mission bundle (the second faction's playable path: a
+/// mission naming the faction plays it, the played-faction seam).
+fn phalanx_bundle() -> pandemonium_content::ContentBundle {
+    let tree =
+        pandemonium_content::ContentTree::load_dir(&repo_content()).expect("the repo tree loads");
+    tree.bundle_for_mission("anvil_01")
+        .expect("the Phalanx mission bundles")
+}
+
+#[test]
+fn the_phalanx_plan_resolves_on_the_second_faction() {
+    // The Alpha opponent is content-shaped (A-061): its plan derives from
+    // the bundle's played faction, so the second faction's author had to
+    // respect the producers-map sort law (A-223's second reading — the law
+    // binds every faction's production map, not just the first faction's).
+    // The Phalanx's map is {barracks: [hoplite, sapper], command_center:
+    // [worker], forge: [cataphract, colossus]}: the barracks sorts first
+    // and carries the attackers, so the plan is the Phalanx two.
+    let mission_bundle = phalanx_bundle();
+    // The played-faction seam: the mission's named faction is the one the
+    // match plays, whatever its slot in the tree's id order.
+    assert_eq!(mission_bundle.faction().id, "phalanx");
+
+    let world = mission_bundle.world();
+    let plan = alpha_plan(&mission_bundle, &world, PlayerId(0), FLAGSHIP_SEED, None);
+    let name_of = |kind: KindId| -> String { mission_bundle.entities[kind.0 as usize].id.clone() };
+    assert_eq!(name_of(plan.worker), "worker");
+    assert_eq!(name_of(plan.command_center), "command_center");
+    assert_eq!(
+        plan.barracks.map(name_of),
+        Some("barracks".to_string()),
+        "the army producer stays the barracks — the producers-map sort law \
+         held on the second faction's own production map"
+    );
+    assert_eq!(plan.depot.map(name_of), Some("supply_depot".to_string()));
+    assert_eq!(plan.node.map(name_of), Some("ore_node".to_string()));
+    let army: Vec<String> = plan.army.iter().map(|&kind| name_of(kind)).collect();
+    assert_eq!(
+        army,
+        ["hoplite", "onager"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        "the round-robin composition is exactly the Phalanx two — the \
+         Legion's kinds never leak into the second faction's army"
+    );
+}
+
+#[test]
+fn the_alpha_opponent_functions_on_the_second_faction() {
+    // The plan drives: both scripts raise economies, build infrastructure,
+    // and train the Phalanx's own units on the mission bundle — through
+    // the same command gate a player passes (the roster gate never
+    // starves them: the depot and the army producer are in the roster).
+    let mission_bundle = phalanx_bundle();
+    let run = run_ai_match(&mission_bundle, FLAGSHIP_SEED, 7200);
+    let mut delivered = [0i64; 2];
+    let mut constructed = 0u32;
+    let mut trained = 0u32;
+    let mut owners: BTreeMap<EntityId, PlayerId> = BTreeMap::new();
+    for (_, event) in &run.events {
+        match event {
+            Event::Spawned { entity, owner, .. } => {
+                owners.insert(*entity, *owner);
+            }
+            Event::ConstructionStarted { builder, site } => {
+                if owners.contains_key(builder) {
+                    constructed += 1;
+                    owners.insert(*site, owners[builder]);
+                }
+            }
+            Event::ResourceDelivered { owner, amount, .. } => {
+                delivered[usize::from(owner.0 != 0)] += i64::from(*amount);
+            }
+            Event::ProductionCompleted { producer, .. } => {
+                if let Some(owner) = owners.get(producer) {
+                    if *owner != PlayerId::NEUTRAL {
+                        trained += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        delivered.iter().all(|ore| *ore > 0),
+        "both Phalanx economies gathered: {delivered:?}"
+    );
+    assert!(
+        constructed > 0,
+        "the scripts built structures ({constructed})"
+    );
+    assert!(trained > 0, "the scripts trained units ({trained})");
+
+    // Determinism rides the same law it always has: the same seed and
+    // content reproduce the match bit for bit.
+    let again = run_ai_match(&mission_bundle, FLAGSHIP_SEED, 7200);
+    assert_eq!(run.checkpoints, again.checkpoints, "the trail repeats");
+    assert_eq!(run.final_hash, again.final_hash, "the final hash repeats");
+    assert_eq!(run.host_log, again.host_log, "the command log repeats");
+}
+
+#[test]
+fn a_phalanx_mirror_resolves_on_iron_basin() {
+    // The basin's own law, run on the second faction: the scripted mirror
+    // fights to a resolution — hoplite walls grinding sappers, cataphract
+    // charges, the colossus late — inside the nightly-tier budget. A
+    // faction whose mirror stalls (armor neither breaking nor dying)
+    // fails here, not in a soak.
+    let mission_bundle = phalanx_bundle();
+    // The measured resolution at seed 7 is tick 7832 (deterministic; the
+    // B-032 report §3) — the Phalanx mirror grinds faster than the
+    // Legion's (20834): the onager's stones crack 120-hp walls in three
+    // exact swings, so neither side's anvil holds long. The budget
+    // carries the basin test's deliberate ~35% margin.
+    const PHALANX_BUDGET: u32 = 10800;
+    let run = run_ai_match(&mission_bundle, FLAGSHIP_SEED, PHALANX_BUDGET);
+    let winner = run
+        .events
+        .iter()
+        .filter_map(|(_, event)| match event {
+            Event::MatchEnded { winner } => Some(*winner),
+            _ => None,
+        })
+        .next();
+    let winner = winner.unwrap_or_else(|| {
+        panic!(
+            "the Phalanx mirror must resolve within {PHALANX_BUDGET} ticks \
+             (final hash {})",
+            run.final_hash
+        )
+    });
+    assert!(
+        winner.0 == 0 || winner.0 == 1,
+        "a player slot won the basin mirror (winner {})",
+        winner.0
+    );
+    // And the fight was real: the armies traded blows before the end.
+    let hits = run
+        .events
+        .iter()
+        .filter(|(_, event)| matches!(event, Event::AttackHit { .. }))
+        .count();
+    assert!(hits > 0, "the Phalanx mirror traded blows ({hits} hits)");
 }

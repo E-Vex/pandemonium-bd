@@ -2287,9 +2287,10 @@ mod tests {
     fn tree_and_mission_bundle() -> (ContentTree, ContentBundle) {
         let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../content"));
         let tree = ContentTree::load_dir(path).expect("the repo content loads");
+        // The Phase 1 mission, resolved by id (the missions list sorts by
+        // id, and B-032's anvil_01 took the first slot).
         let mission = tree
-            .missions
-            .first()
+            .mission("crossroads_01")
             .expect("the Phase 1 mission loads")
             .clone();
         let bundle = tree
@@ -2301,8 +2302,7 @@ mod tests {
     /// The Phase 1 mission's resolved objective set (the content seam, as
     /// `begin_mission` resolves it).
     fn resolved_mission(tree: &ContentTree) -> MissionData {
-        let mission = tree.missions.first().expect("the Phase 1 mission loads");
-        tree.mission_data(&mission.id.clone(), pandemonium_sim_api::PlayerId(0))
+        tree.mission_data("crossroads_01", pandemonium_sim_api::PlayerId(0))
             .expect("the objectives resolve")
     }
 

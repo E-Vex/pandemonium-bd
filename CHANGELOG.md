@@ -7,6 +7,48 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-032] — the second faction (plan §19's expansion test, Update 5)
+
+The owner's standing delegation ("keep working on upgrading this game... I
+want to make a game that can beat Generals Zero Hour") met the sequence's
+own named next step (B-031 §9): **Update 5 — the second faction**.
+
+- **The Phalanx** joins the Legion as four entity files and one faction
+  file — the anvil to the Legion's combined arms: the hoplite wall
+  (one hp per ore, the field's slowest legs), the onager (a poor man's
+  ballista: range 7.5 outranges the turret by the half-tile that is the
+  whole design), the cataphract (the one fast thing the anvil fields),
+  and the colossus (520 hp of walking fortress). It builds the shared
+  infrastructure and trains none of the Legion's soldiers; it debuts in
+  the campaign's fourth chapter, **The Anvil** (`anvil_01`, Iron Basin).
+- **The audit's honest finding**: Update 5 is ALMOST data-only. The
+  played-faction seam (`ContentBundle::faction()` read `factions[0]`
+  unconditionally) would have silently played the Legion in any mission
+  naming the second faction; B-032's one deliberate code change is the
+  private `played` index the mission bake sets (A-229). Everything else
+  is data: two sort laws hold by design (the faction id sorts after
+  "legion", A-231; the producers map keeps the barracks first, A-223),
+  pinned by new tripwire tests.
+- **The battery grew the second faction's twelve P-laws** (23 total): the
+  web is a cycle, not a ladder — hoplites beat the line and the swarm,
+  the anchor and the piercer beat the anvil, the colossus beats the
+  anchor, the piercer and the swarm beat the colossus, the onager
+  out-reaches the nest (the L8 shape at one-third the ballista's price)
+  and out-breaks the line per-tick (~484 ticks to flatten a command
+  center where equal-ore riflemen need ~795).
+- **The authorized golden move** (one commit, every pin): content
+  `0x8edfdfc3a814eb37`, flagship final `0x3a58e55ea6250906` with tick 0
+  `0x090a57e33cdf4c4b`, basin `0xb5c143a09f45a402`, the mission digest
+  re-pinned on the SAME 612 commands with bit-identical controller RNG
+  streams — the B-029 shape exactly (kind-id re-labeling, behavior
+  proven identical for the Legion); demo and map ids untouched. The
+  mirror resolution on the basin is measured at 7832 ticks (the Legion's
+  is 20834 — the onager's stones crack hoplite walls fast).
+- **Gate**: 1043 dev / 1038 release (+19 over B-031), replay round-trips
+  PASS, soak 16/16 resolved 0 crashed (identical to B-031's numbers —
+  the Legion is untouched), client headless smoke PASS, silhouettes for
+  all four new kinds (the DEBT-016 re-tune law honored in-pass).
+
 ## [B-031] — the balance pass (plan §19's expansion test, Update 4: the stat rebalance)
 
 The owner's renewed delegation ("keep working on upgrading this game...

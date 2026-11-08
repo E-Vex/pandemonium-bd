@@ -929,11 +929,14 @@ impl ContentTree {
     /// no overrides, the effective faction (override roster, filtered
     /// production, replacement starting forces) where it does. Every
     /// mission-aware caller bundles through this path, so the world the
-    /// match runs (`world()` reads the faction for its roster, production
-    /// lists, and starting forces) and the plan the scripted AI derives
-    /// (`alpha_plan` reads the faction's production lists) both see the
-    /// effective faction — the restriction restricts card, gate, and AI
-    /// derivation in one move (ADR-0201 §3), with no AI code change.
+    /// match runs (`world()` reads the played faction for its roster,
+    /// production lists, and starting forces) and the plan the scripted AI
+    /// derives (`alpha_plan` reads the played faction's production lists)
+    /// both see the effective faction — the restriction restricts card,
+    /// gate, and AI derivation in one move (ADR-0201 §3), with no AI code
+    /// change. Since B-032 the mission's named faction is also the faction
+    /// every `faction()` reader sees, first or second in the tree's id
+    /// order alike: the played-faction index, not slot 0.
     ///
     /// The shared [`ContentTree`] is never mutated (FD-1's identity law:
     /// the tree is content; the overrides are mission data). The mission-aware
@@ -978,6 +981,17 @@ impl ContentTree {
                 ),
             })?;
         bundle.factions[index] = effective_faction(mission, &bundle.factions[index]);
+        // B-032: the mission's faction is the faction this match PLAYS —
+        // the played-faction index, not factions[0]. With one faction in
+        // the tree the two were the same index and the seam was invisible;
+        // a second faction made it load-bearing: without this line a
+        // mission naming the tree's second faction silently plays the
+        // first (the bake lands at the mission faction's own position,
+        // while every faction() reader — the world's roster, production,
+        // and starting forces, the scripted AI's plan — read slot 0). The
+        // per-slot faction seam (plan §17) will generalize this index to
+        // per-player indices.
+        bundle.played = index;
         // B-020: resolve the effective ruleset the same way — the base
         // ruleset with the mission's rules_overrides applied in place, tree
         // never mutated. The canonical identity (content_hash, map_id) stays
@@ -1056,6 +1070,14 @@ pub struct ContentBundle {
     pub factions: Vec<defs::FactionDef>,
     /// The map this match runs on.
     pub map: defs::MapDef,
+    /// The index into `factions` of the faction this match plays — the
+    /// played faction (B-032, plan §19 Update 5). Zero for every plain
+    /// bundle (the tree's first faction by id), the mission's named
+    /// faction for a [`ContentTree::bundle_for_mission`] bundle. A match
+    /// plays ONE faction (the Alpha law); per-slot faction assignment is
+    /// post-Alpha (plan §17) and will generalize this index to per-player
+    /// indices.
+    played: usize,
     content_hash: u64,
     map_hash: u64,
 }
@@ -1088,6 +1110,7 @@ impl ContentBundle {
             entities,
             factions,
             map,
+            played: 0,
             content_hash,
             map_hash,
         }
@@ -1118,11 +1141,17 @@ impl ContentBundle {
         self.map_hash
     }
 
-    /// The faction every player plays in this match. The Alpha has exactly one
-    /// faction (plan §10.4); per-slot faction assignment is post-Alpha
-    /// (plan §17) and will extend this seam.
+    /// The faction every player plays in this match — the played faction
+    /// (B-032, plan §19 Update 5): the tree's first faction by id for a
+    /// plain bundle, the mission's named faction (its effective form)
+    /// for a mission bundle. The id-sort law rides on this seam: a faction
+    /// file whose id sorts before the tree's first faction silently
+    /// re-targets every default bundle, so the second faction's author
+    /// orders the ids deliberately (the A-224 map-id law's exact analog).
+    /// Per-slot faction assignment is post-Alpha (plan §17) and will
+    /// extend this seam.
     pub fn faction(&self) -> &defs::FactionDef {
-        &self.factions[0]
+        &self.factions[self.played]
     }
 
     /// The plain world definition the simulation receives — the loaded-bundle
@@ -3393,6 +3422,202 @@ mod tests {
         assert!(
             err.to_string().contains("unknown mission 'missing'"),
             "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // B-032 — the second faction and the played-faction seam: a tree with
+    // two factions plays factions[0] in every plain bundle (the id-sort
+    // law, the A-224 map-id law's faction analog) and the mission's named
+    // faction in a mission bundle — the played-faction index, not slot 0.
+    // The second fixture faction "vanguard" sorts after "testers" and
+    // fields a deliberately distinct shape (one worker per start instead
+    // of two) so every assertion can tell the two factions apart.
+    // -----------------------------------------------------------------------
+
+    const SECOND_FACTION: &str = r#"
+(
+    schema_version: 1,
+    id: "vanguard",
+    display_name: "Vanguard",
+    roster: [ "base", "worker" ],
+    production: { "base": [ "worker" ] },
+    starting_forces: [
+        ( entity: "base", offset: ( x: 0, y: 0 ) ),
+        ( entity: "worker", offset: ( x: 0, y: 3 ) ),
+    ],
+)
+"#;
+
+    /// A mission on the second faction over the factory's map, with the
+    /// given faction_overrides block text (Destroy-only objectives — the
+    /// identity tests' neutral carrier).
+    fn second_faction_mission(overrides: &str) -> String {
+        format!(
+            r#"
+(
+    schema_version: 1,
+    id: "testing_02",
+    display_name: "Vanguard Proving",
+    map: "testing",
+    faction: "vanguard",
+    rules: "alpha",
+{overrides}
+    objectives: [
+        (
+            kind: "Destroy",
+            parameters: Destroy(( target_kind: None )),
+            optional: false,
+        ),
+    ],
+)
+"#
+        )
+    }
+
+    #[test]
+    fn a_second_faction_is_inert_in_plain_bundles() {
+        // The id-sort law: the tree's factions sort by id, every plain
+        // bundle plays the FIRST, and a second faction is inert data there
+        // — the default bundle's played faction, forces, and production
+        // are the first faction's, with the second faction riding along
+        // only in the content hash (encode_factions covers every faction).
+        let tree = ContentTree::load(
+            &factory()
+                .faction("vanguard.ron", SECOND_FACTION)
+                .mission("testing_02.ron", &second_faction_mission("")),
+        )
+        .expect("the two-faction tree loads");
+        assert_eq!(
+            tree.factions
+                .iter()
+                .map(|faction| faction.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["testers", "vanguard"],
+            "the factions sort by id — vanguard must not take the first slot"
+        );
+        let plain = tree.bundle("testing").expect("the plain bundle builds");
+        assert_eq!(plain.faction().id, "testers");
+        let plain_world = plain.world();
+        let plain_forces = plain_world
+            .initial_spawns
+            .iter()
+            .filter(|spawn| spawn.owner != PlayerId::NEUTRAL)
+            .count();
+        assert_eq!(
+            plain_forces, 6,
+            "two starts × the testers' three forces — the second faction changes nothing"
+        );
+        // The second faction rides the tree's identity, not the plain
+        // bundle's behavior.
+        let single = ContentTree::load(&factory()).expect("the one-faction tree loads");
+        let single_bundle = single.bundle("testing").expect("bundles");
+        assert_ne!(
+            plain.content_hash(),
+            single_bundle.content_hash(),
+            "encode_factions covers the second faction — the tree's identity moves with it"
+        );
+        assert_eq!(
+            plain.map_id(),
+            single_bundle.map_id(),
+            "the map id never sees factions"
+        );
+    }
+
+    #[test]
+    fn bundle_for_mission_plays_the_named_faction_whatever_its_slot() {
+        // The played-faction seam (B-032): a mission naming the SECOND
+        // faction plays that faction — the world's spawns, roster, and
+        // production are the vanguard's, the canonical identities stay the
+        // tree's, and the shared tree is never mutated. Without the
+        // played-faction index this mission would silently play the
+        // testers (the pre-B-032 seam read slot 0 unconditionally).
+        let tree = ContentTree::load(
+            &factory()
+                .faction("vanguard.ron", SECOND_FACTION)
+                .mission("testing_02.ron", &second_faction_mission("")),
+        )
+        .expect("the two-faction tree loads");
+        let plain = tree.bundle("testing").expect("the plain bundle builds");
+        let mission_bundle = tree
+            .bundle_for_mission("testing_02")
+            .expect("the second-faction mission bundles");
+        // The played faction is the named one, whatever its slot, and the
+        // world carries its forces: one base + ONE worker per start (the
+        // vanguard's two forces), not the testers' three.
+        assert_eq!(mission_bundle.faction().id, "vanguard");
+        let mission_world = mission_bundle.world();
+        let mission_forces = mission_world
+            .initial_spawns
+            .iter()
+            .filter(|spawn| spawn.owner != PlayerId::NEUTRAL)
+            .count();
+        assert_eq!(mission_forces, 4, "two starts × the vanguard's two forces");
+        assert_eq!(
+            mission_world.production,
+            plain.world().production,
+            "same two kinds, same production list — the spawn count is the discriminator"
+        );
+        // The plain bundle still plays the first faction (the tree is not
+        // mutated by the mission path).
+        assert_eq!(plain.faction().id, "testers");
+        assert_eq!(
+            plain
+                .world()
+                .initial_spawns
+                .iter()
+                .filter(|spawn| spawn.owner != PlayerId::NEUTRAL)
+                .count(),
+            6
+        );
+        // The canonical identities never move.
+        assert_eq!(
+            mission_bundle.content_hash(),
+            plain.content_hash(),
+            "the mission's faction choice is mission data — the content identity stays the tree's"
+        );
+        assert_eq!(mission_bundle.map_id(), plain.map_id());
+        // And re-bundling after the mission read is byte-stable.
+        let after = tree.bundle("testing").expect("the tree still bundles");
+        assert_eq!(after.world(), plain.world(), "the tree is never mutated");
+    }
+
+    #[test]
+    fn second_faction_overrides_bake_and_play() {
+        // The B-019 override mechanics compose with the B-032 seam: a
+        // roster override on the SECOND faction restricts the played
+        // faction exactly as it does on the first — the effective roster
+        // is the override's, the production dies with the producer's
+        // roster membership, and the starting forces stay the base
+        // (vanguard) faction's because the override named none.
+        let tree = ContentTree::load(&factory().faction("vanguard.ron", SECOND_FACTION).mission(
+            "testing_02.ron",
+            &second_faction_mission("    faction_overrides: ( roster: Some([\"worker\"]) ),"),
+        ))
+        .expect("the override mission loads");
+        let mission_bundle = tree
+            .bundle_for_mission("testing_02")
+            .expect("the override mission bundles");
+        assert_eq!(mission_bundle.faction().id, "vanguard");
+        assert_eq!(mission_bundle.faction().roster, vec!["worker"]);
+        assert!(
+            mission_bundle.faction().production.is_empty(),
+            "the producer died with its roster membership"
+        );
+        let world = mission_bundle.world();
+        assert_eq!(world.roster, vec![KindId(2)]);
+        assert!(
+            world.production.is_empty(),
+            "the world's production lists follow the effective faction"
+        );
+        assert_eq!(
+            world
+                .initial_spawns
+                .iter()
+                .filter(|spawn| spawn.owner != PlayerId::NEUTRAL)
+                .count(),
+            4,
+            "the base (vanguard) forces stand — the override named no replacement"
         );
     }
 

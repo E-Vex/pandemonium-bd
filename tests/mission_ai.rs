@@ -250,7 +250,7 @@ fn plain_bundle() -> ContentBundle {
 /// proven identical by the unchanged count, RNG streams, and per-player
 /// counters — see the B-029 report §5):
 ///
-/// - final hash `0x0f80a93eee5bdb1d` — the registered flagship golden (the
+/// - final hash `0x3a58e55ea6250906` — the registered flagship golden (the
 ///   run's own cross-check: the loop here is `AiMatchHost::advance`'s exact
 ///   body, so it must reproduce the CLI value);
 /// - command stream — 612 commands, digest `0x32ebb1e153a446e7` at the
@@ -267,7 +267,7 @@ fn plain_bundle() -> ContentBundle {
 ///   sanity check that these are the real generators; the `state` halves
 ///   are the consumed streams at the probe boundaries. These are the
 ///   behavior anchors: a content re-label must leave them bit-identical.
-const BASELINE_COMMAND_DIGEST: u64 = 0x5100_fa69_47c8_52dc;
+const BASELINE_COMMAND_DIGEST: u64 = 0xF1C1_0F92_B3E1_E1BE;
 const BASELINE_RNG_300_SLOT0: (u64, u64) = (5_309_441_344_704_258_470, 4_354_685_564_936_845_355);
 const BASELINE_RNG_300_SLOT1: (u64, u64) = (7_103_407_414_744_833_111, 4_354_685_564_936_845_355);
 const BASELINE_RNG_7200_SLOT0: (u64, u64) = (2_037_330_920_411_874_478, 4_354_685_564_936_845_355);
@@ -280,7 +280,7 @@ fn the_missionless_flagship_baseline_is_pinned() {
     // run's own cross-check: this loop is AiMatchHost::advance's exact
     // body, so it must match the CLI value byte for byte).
     assert_eq!(
-        run.final_hash, 0x0f80_a93e_ee5b_db1d,
+        run.final_hash, 0x3a58_e55e_a625_0906,
         "the hosted loop must reproduce the registered flagship golden"
     );
     // The command count the CLI reports for the same run.
@@ -462,7 +462,7 @@ fn an_all_none_ai_settings_block_is_the_byte_exact_default() {
     // identical, so the draws fell identically).
     let run = all_none_baseline();
     assert_eq!(
-        run.final_hash, 0x0f80_a93e_ee5b_db1d,
+        run.final_hash, 0x3a58_e55e_a625_0906,
         "the all-None mission reproduces the flagship golden"
     );
     assert_eq!(run.log.len(), 612, "the command count is unchanged");

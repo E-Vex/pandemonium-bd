@@ -54,9 +54,15 @@ fn the_pilot_campaign_loads_with_its_authored_play_order() {
     assert_eq!(campaign.display_name, "Alpha Campaign");
     // Play order is authored order — deliberately unsorted (the mission
     // collection itself sorts by id; the campaign's chapters must not).
+    // B-032's fourth chapter debuts the second faction on Iron Basin.
     assert_eq!(
         campaign.chapters,
-        vec!["crossroads_01", "crossroads_02", "crossroads_03"],
+        vec![
+            "crossroads_01",
+            "crossroads_02",
+            "crossroads_03",
+            "anvil_01"
+        ],
         "the chapters keep authored play order"
     );
     assert_eq!(campaign.challenges.len(), 1);
@@ -202,18 +208,16 @@ fn worker_rush_resolves_the_race_target() {
 
 #[test]
 fn every_campaign_count_sits_above_its_starting_force() {
-    // The AUD-003 law, pinned against the real Legion faction: any
+    // The AUD-003 law, pinned against each mission's OWN faction (B-032:
+    // the campaign's fourth chapter runs the Phalanx, so the law reads
+    // the mission's named faction, never a hardcoded first): any
     // BuildTrain target in the campaign must exceed the starting count of
-    // its kind, and any Gather amount must exceed the ruleset's starting
-    // balance. A retuning that re-vacuums an objective fails here — a
-    // visible content diff, never a silent one.
+    // its kind under the mission's faction, and any Gather amount must
+    // exceed the ruleset's starting balance. A retuning that re-vacuums
+    // an objective fails here — a visible content diff, never a silent
+    // one.
     let tree = repo_tree();
     let campaign = tree.campaign.as_ref().expect("the pilot campaign loads");
-    let legion = tree
-        .factions
-        .iter()
-        .find(|faction| faction.id == "legion")
-        .expect("the Legion faction exists");
     // The starting balance lives in the ruleset (the registry is global —
     // the Alpha's single Ore resource).
     let starting_ore = tree
@@ -229,6 +233,12 @@ fn every_campaign_count_sits_above_its_starting_force() {
         .iter()
         .chain(campaign.challenges.iter().map(|entry| &entry.mission))
     {
+        let mission = tree.mission(id).expect("the campaign mission exists");
+        let faction = tree
+            .factions
+            .iter()
+            .find(|faction| faction.id == mission.faction)
+            .unwrap_or_else(|| panic!("mission '{id}' faction '{}' exists", mission.faction));
         let objectives = tree
             .mission_data(id, PlayerId(0))
             .unwrap_or_else(|error| panic!("mission '{id}' resolves: {error}"));
@@ -236,7 +246,7 @@ fn every_campaign_count_sits_above_its_starting_force() {
             match &objective.parameters {
                 MissionObjectiveParameters::BuildTrain { kind, count } => {
                     let kind_id = tree.entities.get(kind.0 as usize).expect("kind resolves");
-                    let starting = legion
+                    let starting = faction
                         .starting_forces
                         .iter()
                         .filter(|force| force.entity == kind_id.id)
@@ -244,8 +254,9 @@ fn every_campaign_count_sits_above_its_starting_force() {
                     assert!(
                         *count > starting,
                         "mission '{id}' BuildTrain {} target {count} must exceed the \
-                         starting {starting}",
+                         starting {starting} under faction '{}'",
                         kind_id.id,
+                        faction.id,
                     );
                 }
                 MissionObjectiveParameters::Gather { amount, .. } => {
@@ -269,7 +280,7 @@ fn the_campaign_rides_outside_the_real_identity() {
     let tree = repo_tree();
     assert!(tree.campaign.is_some(), "the pilot campaign is loaded");
     let bundle = tree.bundle("crossroads_64").expect("the map bundles");
-    assert_eq!(bundle.content_hash(), 0xb709ec37afe03aae);
+    assert_eq!(bundle.content_hash(), 0x8edfdfc3a814eb37);
     assert_eq!(bundle.map_id(), 0xd38136401ab02ff1);
 }
 

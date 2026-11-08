@@ -525,3 +525,311 @@ fn the_battery_is_deterministic() {
     assert_eq!((a0.entities, a0.hp_permille), (b0.entities, b0.hp_permille));
     assert_eq!((a1.entities, a1.hp_permille), (b1.entities, b1.hp_permille));
 }
+
+// ---------------------------------------------------------------------------
+// The Phalanx's laws (B-032, plan §19 Update 5 — the second faction): the
+// anvil's counter-web, measured on the real content through the same
+// harness, cross-faction (the entity pool is shared, so the battery can
+// pit the second faction's kinds against the Legion's directly — the
+// §17 cross-faction match's preview).
+//
+//   hoplites    > riflemen    (P1 — the anvil out-eats the line)
+//   guardians   > hoplites    (P2 — the anchor holds the anvil)
+//   lancers     > hoplites    (P3 — the piercer breaks the anvil)
+//   hoplites    > raiders     (P4 — the anvil eats the swarm)
+//   raiders     > onagers     (P6 — the swarm overruns the engines)
+//   cataphracts > ballistas   (P7 — shock runs down siege)
+//   colossus    > guardians   (P8 — the fortress out-anchors the anchor)
+//   lancers     > colossus    (P9 — the piercer drowns the fortress)
+//   raiders     > colossus    (P10 — the swarm drowns the fortress, 1.8x ore)
+//   onagers     > turrets     (P5 — the engines out-reach the nest, standoff)
+//   guardians   > onagers     (P12 — the anchor out-reaches the engines)
+//   onagers     > the line    (P11 — the breaker out-breaks the line, a race)
+//
+// The web is a cycle, not a ladder: the anvil beats the Legion's line and
+// swarm, the Legion's anchor and piercer beat the anvil, the fortress
+// beats the anchor, and the piercer and the swarm beat the fortress. The
+// rifle line does NOT clear a standoff by itself (the measured P6-class
+// duel ends 2 onagers standing at 550 vs 600 — a pyrrhic engine win, so
+// no law pins it); the Legion's onager answers are the anchor, the
+// piercer, and the swarm, and the Phalanx's own wall screens its engines.
+// The authored balance is analysis, not playtest (A-230) — the A14
+// sessions make the feel calls.
+// ---------------------------------------------------------------------------
+
+/// **P1 — the anvil out-eats the line.** Equal ore of hoplites beats the
+/// rifleman wall: one hp per ore is the field's best body value, and the
+/// 14-damage spear needs five swings per rifleman while the wall closes.
+/// (600 vs 600.)
+#[test]
+fn the_anvil_out_eats_the_line() {
+    law(
+        "the anvil out-eats the line",
+        &[("hoplite", 5)],
+        &[("rifleman", 8)],
+        "p0",
+        2,
+    );
+}
+
+/// **P2 — the anchor holds the anvil.** Equal ore of guardians beats the
+/// hoplite wall: the anchor's 30-damage volley needs four swings per
+/// 120-hp hoplite and its range-8 guns fire through the whole approach.
+/// The Phalanx's answer to the anchor is the fortress (P8) or the piercer
+/// of its own — never the tier-1 wall. (600 vs 600.)
+#[test]
+fn the_anchor_holds_the_anvil() {
+    law(
+        "the anchor holds the anvil",
+        &[("guardian", 3)],
+        &[("hoplite", 5)],
+        "p0",
+        1,
+    );
+}
+
+/// **P3 — the piercer breaks the anvil.** The Lancer's 60-damage volley
+/// lands exactly twice per 120-hp hoplite — zero waste, the lattice the
+/// anvil was authored on — so the piercer cross-punishes the second
+/// faction's tier-1 for free: anti-armor is anti-phalanx. (640 vs 600 —
+/// the price lattice has no 600 of lancers; the piercer wins with the ore
+/// deficit in the other direction at 480 vs 600, measured.)
+#[test]
+fn the_piercer_breaks_the_anvil() {
+    law(
+        "the piercer breaks the anvil",
+        &[("lancer", 4)],
+        &[("hoplite", 5)],
+        "p0",
+        2,
+    );
+}
+
+/// **P4 — the anvil eats the swarm.** Equal ore of hoplites beats the
+/// raider swarm: the swarm's 6-damage bites need twenty per hoplite, and
+/// the wall's 14-damage spears waste nothing on 45-hp bodies (four exact
+/// swings). Speed does not run down THIS line — the anvil's price is paid
+/// to the anchor and the piercer instead (P2, P3). (600 vs 600.)
+#[test]
+fn the_anvil_eats_the_swarm() {
+    law(
+        "the anvil eats the swarm",
+        &[("hoplite", 5)],
+        &[("raider", 10)],
+        "p0",
+        2,
+    );
+}
+
+/// **P6 — the swarm overruns the engines.** Equal ore of raiders deletes
+/// the onager line before its slow clock clears a quarter of the swarm:
+/// the engines are screened weapons, and a screen left home is a donation.
+/// (600 vs 550.)
+#[test]
+fn the_swarm_overruns_the_engines() {
+    law(
+        "the swarm overruns the engines",
+        &[("raider", 10)],
+        &[("onager", 5)],
+        "p0",
+        3,
+    );
+}
+
+/// **P7 — shock runs down siege.** Two cataphracts (480) close on two
+/// ballistas (550) and delete them: 260 hp eats two volleys with change,
+/// and 2.6 tiles/s covers the standoff before the third lands. The
+/// Phalanx's siege answer is a body, not a bigger gun — and it is NOT a
+/// line answer: the rifle wall out-grinds the shock at equal ore (the
+/// cataphract pays for its hooves in cost-efficiency). (480 vs 550 — the
+/// shock wins at a 13% ore deficit.)
+#[test]
+fn shock_runs_down_siege() {
+    law(
+        "shock runs down siege",
+        &[("cataphract", 2)],
+        &[("ballista", 2)],
+        "p0",
+        1,
+    );
+}
+
+/// **P8 — the fortress out-anchors the anchor.** One colossus (400) beats
+/// two guardians (400) at exact parity: 520 hp out-tanks the anchors'
+/// combined fire while the 80-damage chunks crack one anchor per three
+/// volleys. The anchor's predator in the Legion is the piercer (L3); in
+/// the Phalanx it is the fortress — and the fortress's own predators are
+/// the piercer (P9) and the swarm (P10). (400 vs 400.)
+#[test]
+fn the_fortress_out_anchors_the_anchor() {
+    law(
+        "the fortress out-anchors the anchor",
+        &[("colossus", 1)],
+        &[("guardian", 2)],
+        "p0",
+        1,
+    );
+}
+
+/// **P9 — the piercer drowns the fortress.** Three lancers (480) delete
+/// one colossus (400): nine exact volleys into 520 hp while the fortress's
+/// slow clock kills one piercer every two swings. The heaviest body on
+/// the field dies to the cheapest anti-armor — the web's law, unchanged
+/// by size. (480 vs 400.)
+#[test]
+fn the_piercer_drowns_the_fortress() {
+    law(
+        "the piercer drowns the fortress",
+        &[("lancer", 3)],
+        &[("colossus", 1)],
+        "p0",
+        1,
+    );
+}
+
+/// **P10 — the swarm drowns the fortress.** Twelve raiders (720) delete
+/// one colossus (400) with the majority standing: the 80-damage chunks
+/// one-shot a raider every three seconds, and the swarm does not care.
+/// The band is deliberate and stated: the fortress is PRICED so its
+/// counter needs numbers (1.8x ore) — at equal ore (10 raiders) the duel
+/// ends one pristine raider standing, a coin the law refuses to flip on.
+/// (720 vs 400.)
+#[test]
+fn the_swarm_drowns_the_fortress() {
+    law(
+        "the swarm drowns the fortress",
+        &[("raider", 12)],
+        &[("colossus", 1)],
+        "p0",
+        3,
+    );
+}
+
+/// **P12 — the anchor out-reaches the engines.** Equal ore of guardians
+/// beats the onager line without closing: the anchor's 8.0 guns out-range
+/// the engines' 7.5, so the stone never lands in range — standoff is a
+/// knife edge, and the anchor is on the right side of it. (600 vs 550.)
+#[test]
+fn the_anchor_out_reaches_the_engines() {
+    law(
+        "the anchor out-reaches the engines",
+        &[("guardian", 3)],
+        &[("onager", 5)],
+        "p0",
+        1,
+    );
+}
+
+/// **P5 — the engines out-reach the nest.** Five onagers (550) dismantle
+/// a four-turret battery (500) from OUTSIDE its reach — the L8 law's
+/// shape, run on the Phalanx's poor-man's siege. The margin is the whole
+/// design: range 7.5 against the turret's 7.0, half a tile of standoff
+/// bought at the price of every other stat (60 hp, a stone every 4 s).
+/// Pure static defense cannot hold ground against engine investment; the
+/// answer to an onager is a mobile screen (P6, P12), never more turrets.
+#[test]
+fn the_engines_out_reach_the_nest() {
+    // The nest standoff: like the battery's standoff world, but the gap is
+    // the onager's own half-tile window — 7.4 tiles, inside the engines'
+    // 7.5 reach, outside the turrets' 7.0. Nobody is ordered to move;
+    // acquisition does the rest.
+    let p0: Force = vec![("onager", 5)];
+    let p1: Force = vec![("turret", 4)];
+    let world = matchup_world(bundle(), &p0, &p1);
+    let mut world = world;
+    for spawn in &mut world.initial_spawns {
+        if spawn.owner == PlayerId(0) {
+            spawn.pos = pos(28_100, spawn.pos.y.raw() * 1000 / 65_536);
+        } else {
+            spawn.pos = pos(35_500, spawn.pos.y.raw() * 1000 / 65_536);
+        }
+    }
+    let mut sim = Sim::new(&world, two_player_setup(7));
+    let mut tick = 0;
+    while tick < 7200 {
+        sim.step(&[]);
+        if closing(&sim, PlayerId(1)).entities == 0 {
+            break;
+        }
+        tick += 1;
+    }
+    let engines = closing(&sim, PlayerId(0));
+    let nest = closing(&sim, PlayerId(1));
+    assert_eq!(nest.entities, 0, "the battery must be dismantled");
+    assert_eq!(
+        engines.entities, 5,
+        "the engines must stand untouched (got {} @{}\u{2030})",
+        engines.entities, engines.hp_permille
+    );
+    assert_eq!(
+        engines.hp_permille, 1000,
+        "standoff means the turrets never land a shot"
+    );
+}
+
+/// **P11 — the breaker out-breaks the line.** The onager's identity is a
+/// RACE, not a duel: at equal ore the engines dismantle a command center
+/// in ~484 ticks where the rifle line needs ~795 (and pays 25 more ore
+/// for the privilege) — no approach march, no formation jam, stones
+/// landing from spawn distance. The measure is per-tick (the harness's
+/// one timing law), deterministic at the seed.
+#[test]
+fn the_breaker_out_breaks_the_line() {
+    let race = |force: &[(&'static str, usize)]| -> u32 {
+        let cc: Force = vec![("command_center", 1)];
+        let world = matchup_world(bundle(), &force.to_vec(), &cc);
+        let mut sim = Sim::new(&world, two_player_setup(7));
+        let target = sim
+            .snapshot()
+            .entities
+            .iter()
+            .find(|entity| entity.owner == PlayerId(1))
+            .expect("the CC stands")
+            .id;
+        let mine: Vec<EntityId> = sim
+            .snapshot()
+            .entities
+            .iter()
+            .filter(|entity| entity.owner == PlayerId(0))
+            .map(|entity| entity.id)
+            .collect();
+        let script: Vec<Command> = mine
+            .iter()
+            .enumerate()
+            .map(|(seq, unit)| Command {
+                tick: 0,
+                issuer: PlayerId(0),
+                seq: seq as u32,
+                queue: false,
+                kind: CommandKind::Attack {
+                    units: vec![*unit],
+                    target,
+                },
+            })
+            .collect();
+        let mut tick = 0u32;
+        let mut fed = false;
+        while tick < 5400 {
+            let feed = if fed { Vec::new() } else { script.clone() };
+            fed = true;
+            sim.step(&feed);
+            if closing(&sim, PlayerId(1)).entities == 0 {
+                break;
+            }
+            tick += 1;
+        }
+        assert_eq!(
+            closing(&sim, PlayerId(1)).entities,
+            0,
+            "the command center must fall inside the cap"
+        );
+        tick
+    };
+    let engines = race(&[("onager", 5)]);
+    let line = race(&[("rifleman", 7)]);
+    assert!(
+        engines * 4 < line * 3,
+        "the engines must out-break the line decisively: onagers {engines} \
+         ticks vs rifles {line} ticks (550 ore vs 525)"
+    );
+}

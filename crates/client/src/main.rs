@@ -2729,9 +2729,14 @@ mod mission_wiring {
     #[test]
     fn the_repo_content_carries_the_phase_one_mission() {
         // The wiring below resolves through the tree's mission list; this
-        // pins what it finds (the ADR-0201 §9 vertical slice).
+        // pins what it finds (the ADR-0201 §9 vertical slice). The tree
+        // carries five missions since B-032 (anvil_01 sorts first), so the
+        // slice resolves by id, never by list position.
         let app = app();
-        let mission = app.tree.missions.first().expect("crossroads_01 loads");
+        let (_, mission) = app
+            .tree
+            .mission_by_id("crossroads_01")
+            .expect("crossroads_01 loads");
         assert_eq!(mission.id, "crossroads_01");
         assert_eq!(mission.display_name, "Crossroads");
         assert_eq!(mission.map, "crossroads_64");
@@ -2744,10 +2749,11 @@ mod mission_wiring {
         // objectives, builds the host through the engine seam, and opens
         // the mission-start cutscene over the paused host.
         let mut app = app();
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         assert_eq!(app.matches_started, 1);
         assert!(matches!(app.screen.screen, Screen::InMatch));
-        assert_eq!(app.mission_index, Some(0));
+        assert_eq!(app.mission_index, Some(crossroads));
         let mission = app.mission_hud.as_ref().expect("the mission tracker");
         assert_eq!(mission.display_name, "Crossroads");
         assert_eq!(mission.lines.len(), 2);
@@ -2774,7 +2780,8 @@ mod mission_wiring {
         // Task 3 + Task 5: the skip input ends the scene and unpauses —
         // the wiring path the KeyboardInput guard calls for any key.
         let mut app = app();
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         let (anchor_x, anchor_z) = app.start_anchor;
         // Mid-scene the camera is somewhere over the map (the enemy start
         // edge), not yet on the player's anchor.
@@ -2806,7 +2813,8 @@ mod mission_wiring {
         // command center stands) — a deterministic event sequence over
         // the real content: no objective events at all in the opening.
         let mut app = app();
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.cutscene_input(); // unpause so the host steps
         let outcome = app
             .host
@@ -2857,6 +2865,9 @@ mod mission_wiring {
         let (typed, _) = seed_row.on_key(NavKey::Digit('7'), &ctx());
         let (next, effect) = typed.activate_index(2, &ctx()); // Start
         assert!(matches!(next.screen, Screen::InMatch));
+        // The picker's default selection is the tree's FIRST mission —
+        // anvil_01 since B-032 (the missions list sorts by id, and the
+        // Phalanx's debut took the first slot).
         assert_eq!(
             effect,
             Effect::StartMission {
@@ -2872,6 +2883,7 @@ mod mission_wiring {
             app.mission_hud.as_ref().expect("the tracker").display_name,
             app.tree.missions[0].display_name
         );
+        assert_eq!(app.tree.missions[0].id, "anvil_01");
         assert_eq!(app.setup.seed, 7);
     }
 
@@ -2881,9 +2893,10 @@ mod mission_wiring {
         // same seed. A later mission-less start and a drop both clear the
         // mission state (a normal match never shows the mission HUD).
         let mut app = app();
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.restart_match();
-        assert_eq!(app.mission_index, Some(0));
+        assert_eq!(app.mission_index, Some(crossroads));
         assert_eq!(
             app.mission_hud.as_ref().expect("the tracker").display_name,
             "Crossroads"
@@ -2898,7 +2911,8 @@ mod mission_wiring {
         assert_eq!(app.mission_index, None);
         assert!(app.mission_hud.is_none());
         // And drop_match clears it too.
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.drop_match();
         assert_eq!(app.mission_index, None);
         assert!(app.mission_hud.is_none());
@@ -2919,9 +2933,15 @@ mod mission_wiring {
         let tree = ContentTree::load_dir(tree_path).expect("the repo content loads");
         let mission_id = tree.mission_id("crossroads_01");
 
-        // The pure stamp: (tree, Some(0)) is the mission's id, a plain
-        // match's None stays None, an out-of-range index is None (defensive).
-        assert_eq!(App::mission_replay_id(&tree, Some(0)), Some(mission_id));
+        // The pure stamp: (tree, Some(index)) is that mission's id, a
+        // plain match's None stays None, an out-of-range index is None
+        // (defensive). (crossroads_01 sits at index 1 since B-032's
+        // anvil_01 took the first slot in the sorted list.)
+        let crossroads_index = tree.mission_by_id("crossroads_01").expect("resolves").0;
+        assert_eq!(
+            App::mission_replay_id(&tree, Some(crossroads_index)),
+            Some(mission_id)
+        );
         assert_eq!(App::mission_replay_id(&tree, None), None);
         assert_eq!(App::mission_replay_id(&tree, Some(9)), None);
 
@@ -2945,7 +2965,8 @@ mod mission_wiring {
             None, // no asset pack in unit tests — placeholder rendering
         )
         .expect("the app constructs");
-        app.begin_mission(0, 42);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 42);
         app.cutscene_input(); // unpause so the host steps
         let frame = std::time::Duration::from_millis(34);
         for _ in 0..90 {
@@ -3054,7 +3075,8 @@ mod campaign_wiring {
     #[test]
     fn the_repo_content_carries_the_pilot_campaign() {
         // The wiring below resolves through the tree's campaign; this pins
-        // what it finds (B-025's pilot: three chapters in play order plus
+        // what it finds (B-025's pilot grown by B-032: four chapters in
+        // play order — chapter 4 debuts the Phalanx on Iron Basin — plus
         // one challenge extending chapter 1).
         let app = app();
         let campaign = app.tree.campaign.as_ref().expect("the campaign loads");
@@ -3062,7 +3084,12 @@ mod campaign_wiring {
         assert_eq!(campaign.display_name, "Alpha Campaign");
         assert_eq!(
             campaign.chapters,
-            vec!["crossroads_01", "crossroads_02", "crossroads_03"]
+            vec![
+                "crossroads_01",
+                "crossroads_02",
+                "crossroads_03",
+                "anvil_01"
+            ]
         );
         assert_eq!(campaign.challenges.len(), 1);
         assert_eq!(campaign.challenges[0].mission, "crossroads_01_challenge");
@@ -3084,11 +3111,17 @@ mod campaign_wiring {
             panic!("the campaign screen opened");
         };
         assert_eq!(fields.campaign_name, "Alpha Campaign");
-        assert_eq!(fields.entry_count(), 4);
+        assert_eq!(fields.entry_count(), 5);
         let names: Vec<&str> = fields.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["Crossroads", "Hold the Line", "Supply Run", "Worker Rush"]
+            vec![
+                "Crossroads",
+                "Hold the Line",
+                "Supply Run",
+                "The Anvil",
+                "Worker Rush"
+            ]
         );
         // The tree indices are what mission_by_id resolves for the
         // campaign's own ids (not list positions).
@@ -3096,6 +3129,7 @@ mod campaign_wiring {
             "crossroads_01",
             "crossroads_02",
             "crossroads_03",
+            "anvil_01",
             "crossroads_01_challenge",
         ]) {
             let (index, def) = app.tree.mission_by_id(id).expect("resolves");
@@ -3103,13 +3137,14 @@ mod campaign_wiring {
         }
         // The challenge extends chapter 0 (entry 0).
         assert!(!fields.entries[0].challenge);
-        assert!(fields.entries[3].challenge);
-        assert_eq!(fields.entries[3].extends, Some(0));
+        assert!(fields.entries[4].challenge);
+        assert_eq!(fields.entries[4].extends, Some(0));
         // The fresh progress: chapter 0 available, the rest locked.
         assert_eq!(fields.status(0), CampaignStatus::Available);
         assert_eq!(fields.status(1), CampaignStatus::Locked);
         assert_eq!(fields.status(2), CampaignStatus::Locked);
         assert_eq!(fields.status(3), CampaignStatus::Locked);
+        assert_eq!(fields.status(4), CampaignStatus::Locked);
         assert_eq!(app.screen.focus, 0, "the screen opens focused on row 0");
         assert_eq!(app.screen.name(), "campaign screen");
     }
@@ -3133,12 +3168,22 @@ mod campaign_wiring {
         assert_eq!(fields.status(2), CampaignStatus::Available);
         assert_eq!(
             fields.status(3),
+            CampaignStatus::Locked,
+            "chapter 4 (The Anvil) stays gated on the unplayed chapter 3"
+        );
+        assert_eq!(
+            fields.status(4),
             CampaignStatus::Available,
             "the challenge unlocked with chapter 1's completion"
         );
-        // Everything is startable (records unlock replays).
-        for index in 0..4 {
-            assert!(fields.startable(index), "entry {index}");
+        // Everything with a record or an unlock is startable; the gated
+        // chapter 4 is not (records unlock replays, locks gate them).
+        for index in 0..5 {
+            if index == 3 {
+                assert!(!fields.startable(index), "the gated entry {index}");
+            } else {
+                assert!(fields.startable(index), "entry {index}");
+            }
         }
     }
 
@@ -3160,17 +3205,18 @@ mod campaign_wiring {
         // starts empty (random — the campaign screen has no parent seed
         // field to prefill), so Start uses the context's fresh seed.
         let (next, effect) = app.screen.activate_index(2, &ctx);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
         assert_eq!(
             effect,
             Effect::StartMission {
-                mission_index: 0,
+                mission_index: crossroads,
                 seed: ctx.random_seed,
             }
         );
         app.screen = next;
         app.apply_effect_core(effect);
         assert!(matches!(app.screen.screen, Screen::InMatch));
-        assert_eq!(app.mission_index, Some(0));
+        assert_eq!(app.mission_index, Some(crossroads));
         assert_eq!(
             app.mission_hud.as_ref().expect("the tracker").display_name,
             "Crossroads"
@@ -3196,7 +3242,13 @@ mod campaign_wiring {
         // Skip (row 3) on the selected first chapter.
         let ctx = app.menu_ctx();
         let (next, effect) = app.screen.activate_index(3, &ctx);
-        assert_eq!(effect, Effect::SkipMission { mission_index: 0 });
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        assert_eq!(
+            effect,
+            Effect::SkipMission {
+                mission_index: crossroads
+            }
+        );
         app.screen = next;
         app.apply_effect_core(effect);
         // The app recorded the skip...
@@ -3233,21 +3285,27 @@ mod campaign_wiring {
         // confirm rung -> Proceed leaves for the menu, the host drops, the
         // mission state clears, and the skip is recorded.
         let mut app = app();
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.cutscene_input(); // unpause so the match is live
         let (pause, effect) = app.screen.open_pause();
         app.screen = pause;
         app.apply_effect_core(effect);
         assert!(matches!(app.screen.screen, Screen::PauseMenu));
         let ctx = app.menu_ctx();
-        assert_eq!(ctx.live_mission, Some(0), "the row exists over the mission");
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        assert_eq!(
+            ctx.live_mission,
+            Some(crossroads),
+            "the row exists over the mission"
+        );
         // Row 6 opens the confirm rung; Proceed runs it.
         let (confirm, _) = app.screen.activate_index(6, &ctx);
         assert!(matches!(
-            confirm.screen,
+            &confirm.screen,
             Screen::Confirm {
-                action: crate::screens::ConfirmAction::SkipMission { mission_index: 0 }
-            }
+                action: crate::screens::ConfirmAction::SkipMission { mission_index }
+            } if *mission_index == crossroads
         ));
         app.screen = confirm;
         let (next, effect) = app.screen.activate_index(1, &ctx);
@@ -3292,7 +3350,8 @@ mod campaign_wiring {
         let _ = std::fs::remove_file(&path);
         let mut app = app();
         app.progress_path = Some(path.clone());
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.on_mission_victory();
         assert_eq!(
             app.progress.record_for("crossroads_01"),
@@ -3308,8 +3367,10 @@ mod campaign_wiring {
         };
         assert_eq!(fields.status(0), CampaignStatus::Completed);
         assert_eq!(fields.status(1), CampaignStatus::Available);
+        assert_eq!(fields.status(2), CampaignStatus::Locked);
+        assert_eq!(fields.status(3), CampaignStatus::Locked);
         assert_eq!(
-            fields.status(3),
+            fields.status(4),
             CampaignStatus::Available,
             "the challenge unlocked with the chapter's completion"
         );
@@ -3341,7 +3402,8 @@ mod campaign_wiring {
 
         let mut app = app();
         app.progress_path = Some(skipped_path.clone());
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.progress.record("crossroads_01", MissionRecord::Skipped);
         app.on_mission_victory();
         assert_eq!(
@@ -3421,7 +3483,8 @@ mod save_wiring {
     /// one long delta does not step in bulk) — a live mission with a
     /// non-empty fed log and a tick past zero. Returns the tick reached.
     fn play_a_little(app: &mut App) -> u32 {
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.end_cutscene(); // unpause the intro
         let mut outcome = {
             let host = app.host.as_mut().expect("the mission is live");
@@ -3462,13 +3525,17 @@ mod save_wiring {
         app.save_path = Some(path.clone());
         let tick = play_a_little(&mut app);
         assert!(tick >= 30, "a little over a second of play: {tick}");
-        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.apply_effect_core(Effect::SaveMission {
+            mission_index: crossroads,
+        });
         // The successor screen is the main menu, the host is gone.
         assert!(matches!(app.screen.screen, Screen::MainMenu));
         assert!(app.host.is_none());
         // The in-memory save is set from the successful write.
         let save = app.save.as_ref().expect("the save is set");
-        assert_eq!(save.mission_index, 0);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        assert_eq!(save.mission_index, crossroads);
         assert_eq!(save.mission_name, "Crossroads");
         assert_eq!(save.saved_tick(), tick);
         assert_eq!(
@@ -3511,7 +3578,10 @@ mod save_wiring {
         let mut app = app();
         app.save_path = Some(target.clone());
         play_a_little(&mut app);
-        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.apply_effect_core(Effect::SaveMission {
+            mission_index: crossroads,
+        });
         assert!(matches!(app.screen.screen, Screen::MainMenu));
         assert!(app.host.is_none());
         assert!(app.save.is_none(), "no successful write, no save");
@@ -3525,7 +3595,10 @@ mod save_wiring {
         let mut app = app();
         app.save_path = None;
         play_a_little(&mut app);
-        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.apply_effect_core(Effect::SaveMission {
+            mission_index: crossroads,
+        });
         assert!(matches!(app.screen.screen, Screen::MainMenu));
         assert!(app.host.is_none());
         assert!(app.save.is_none());
@@ -3542,13 +3615,17 @@ mod save_wiring {
         let mut app = app();
         app.save_path = Some(path.clone());
         play_a_little(&mut app);
-        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.apply_effect_core(Effect::SaveMission {
+            mission_index: crossroads,
+        });
         let first = app.save.as_ref().expect("set").saved_tick();
         assert_eq!(first, 33);
         // A second, longer session over the same app (the first dropped to
         // the menu; the same slot gets the later record) — 16 ms frames, the
         // catch-up cap's law.
-        app.begin_mission(0, 7);
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.begin_mission(crossroads, 7);
         app.end_cutscene();
         for _ in 0..138 {
             let outcome = {
@@ -3557,7 +3634,10 @@ mod save_wiring {
             };
             app.collect_checkpoints(&outcome);
         }
-        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.apply_effect_core(Effect::SaveMission {
+            mission_index: crossroads,
+        });
         assert_eq!(app.save.as_ref().expect("set").saved_tick(), 66);
         // The slot holds the latest record; only one save exists.
         match crate::save::load_from(&app.tree, &path) {
@@ -3584,10 +3664,14 @@ mod save_wiring {
         let mut app = app();
         app.save_path = Some(path.clone());
         let tick = play_a_little(&mut app);
-        app.apply_effect_core(Effect::SaveMission { mission_index: 0 });
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        app.apply_effect_core(Effect::SaveMission {
+            mission_index: crossroads,
+        });
         let save = app.save.as_ref().expect("set").clone();
         // The Continue row exists; the click resumes.
-        assert_eq!(app.menu_ctx().resumable_save, Some(0));
+        let crossroads = app.tree.mission_by_id("crossroads_01").expect("resolves").0;
+        assert_eq!(app.menu_ctx().resumable_save, Some(crossroads));
         app.apply_effect_core(Effect::ResumeMission);
         assert!(matches!(app.screen.screen, Screen::InMatch));
         let host = app.host.as_ref().expect("the match is live");

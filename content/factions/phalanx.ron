@@ -1,0 +1,64 @@
+// The Phalanx — the second faction (B-032, plan §19's expansion test,
+// Update 5): the anvil to the Legion's combined arms. Where the Legion
+// mixes cheap bodies and mid prices, the Phalanx fields fewer, slower,
+// costlier things that win the ground they stand on and lose the ground
+// they are not standing on: the hoplite wall instead of the rifle line,
+// the onager's standoff engines instead of the rifle duel, the cataphract's
+// charge and the colossus instead of the lancer and the ballista. It
+// builds the Legion's structures (the world's infrastructure is shared)
+// but trains none of the Legion's soldiers — the roster is the identity.
+//
+// TWO SORT LAWS HOLD HERE, and both are load-bearing:
+//
+// 1. THE FACTION-ID LAW (the map-id law's exact analog, A-224's shape):
+//    the tree's factions sort by id and every default bundle plays
+//    factions[0], so "phalanx" must (and does) sort after "legion" — a
+//    faction id sorting before "legion" would silently re-target every
+//    default bundle, the menu backdrop, the headless smoke, and every
+//    registered golden to a different army without moving a single pin.
+//    The tripwire is
+//    tests/content_pipeline.rs::the_second_faction_is_data_only_and_identity_pinned.
+//
+// 2. THE PRODUCERS-MAP LAW (A-223): the scripted AI's plan takes the
+//    FIRST producer whose list carries attackers as its "barracks", in
+//    sorted producer order. This map's producers are barracks,
+//    command_center, forge — the barracks sorts first and carries the
+//    army, so the Alpha opponent's plan resolves on the second faction
+//    exactly as it does on the first (pinned by tests/ai.rs::
+//    the_phalanx_plan_resolves_on_the_second_faction).
+(
+    schema_version: 1,
+    id: "phalanx",
+    display_name: "The Phalanx",
+    roster: [
+        "worker",
+        "hoplite",
+        "onager",
+        "cataphract",
+        "colossus",
+        "command_center",
+        "barracks",
+        "forge",
+        "supply_depot",
+        "turret",
+    ],
+    production: {
+        "command_center": [ "worker" ],
+        "barracks": [ "hoplite", "onager" ],
+        "forge": [ "cataphract", "colossus" ],
+    },
+    // The anvil opening (plan §9.7's anchor law): one command center,
+    // three workers, and the shield wall the faction is named for — two
+    // hoplites already standing where the Legion starts a fourth worker.
+    // One fewer gatherer is the honest price of starting armored; the
+    // offsets sit on the same clear ground below the start anchor the
+    // Legion uses, so every authored map's (map × faction) pair validates.
+    starting_forces: [
+        ( entity: "command_center", offset: ( x: 0, y: 0 ) ),
+        ( entity: "worker", offset: ( x: -2, y: 4 ) ),
+        ( entity: "worker", offset: ( x: 0, y: 4 ) ),
+        ( entity: "worker", offset: ( x: 2, y: 4 ) ),
+        ( entity: "hoplite", offset: ( x: 4, y: 2 ) ),
+        ( entity: "hoplite", offset: ( x: 4, y: 4 ) ),
+    ],
+)
