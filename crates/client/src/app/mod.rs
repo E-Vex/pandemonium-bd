@@ -215,6 +215,11 @@ pub(crate) struct App {
     /// goes idle, and idle units engage in-range targets without pursuing
     /// (the sim's own law — the PLAN-M11 §3 facts). That IS ZH guard here.
     pub(crate) guard_armed: bool,
+    /// ADR-0202 §8: cast targeting armed by an ability-button click — the
+    /// (caster, slot) the next left-click casts at the clicked ground point.
+    /// The A/G arm/cancel family: crosshair cursor, HUD instruction line,
+    /// left-click fires, right-click and Escape cancel.
+    pub(crate) cast_armed: Option<(EntityId, u8)>,
     /// PLAN-M11 §2 phase 3: whether the current Alt-held waypoint gesture
     /// has spent its first click (the first click replaces any in-flight
     /// order — queue: false; every later click queues). Reset when Alt is
@@ -446,6 +451,7 @@ impl App {
             command_center_kind: None,
             last_event_ground: None,
             crosshair_cursor: false,
+            cast_armed: None,
             // DEBT-014 repaid (PLAN-M10.2 §3.4): the toggle now comes from
             // the settings file (true by default) and the settings screen
             // flips it live.
@@ -1074,6 +1080,7 @@ impl App {
         self.crosshair_cursor = false;
         self.attack_move_armed = false;
         self.guard_armed = false;
+        self.cast_armed = None;
         self.waypoint_first_click_spent = false;
         self.camera_bookmarks = vec![None; CAMERA_BOOKMARK_COUNT];
         self.minimap_drag = false;
@@ -2155,7 +2162,9 @@ impl App {
         // armed (the plan's "change the cursor" half; set only on change —
         // not every frame).
         // PLAN-M11 §2 phase 3: either armed mode shows the crosshair.
-        let want_crosshair = self.attack_move_armed || self.guard_armed;
+        // ADR-0202 §8: cast targeting joins the arm/cancel family.
+        let want_crosshair =
+            self.attack_move_armed || self.guard_armed || self.cast_armed.is_some();
         if want_crosshair != self.crosshair_cursor {
             self.crosshair_cursor = want_crosshair;
             if let Some(window) = &self.window {
@@ -2182,6 +2191,8 @@ impl App {
                 Some(report::ATTACK_MOVE_LINE)
             } else if self.guard_armed {
                 Some(report::GUARD_LINE)
+            } else if self.cast_armed.is_some() {
+                Some(report::CAST_LINE)
             } else {
                 None
             },
@@ -2211,6 +2222,7 @@ impl App {
                 layout,
                 view_entities: &view.entities,
                 production: &view.production,
+                abilities: &view.abilities,
                 bundle: &self.bundle,
                 selection: &self.selection,
                 ore,

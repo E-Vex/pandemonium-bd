@@ -18,7 +18,8 @@ use std::path::Path;
 use pandemonium_fx::XxHash64;
 use pandemonium_sim::TrivialWorld;
 use pandemonium_sim::{
-    CapTemplate, KindEconomy, KindTemplate, ResourceDef as SimResourceDef, SpawnDef,
+    AbilityEffectTemplate, AbilitySpecTemplate, CapTemplate, KindEconomy, KindTemplate,
+    ResourceDef as SimResourceDef, SpawnDef,
 };
 use pandemonium_sim_api::{
     AiSettings, AreaSpec, FogPreset, GatherSemantics, KindId, MissionData, MissionObjective,
@@ -1673,6 +1674,56 @@ fn capability_template(
             cooldown_ms: *cooldown_ms,
             acquire_range_milli_tiles: *acquire_range_milli_tiles,
         }),
+        // ADR-0202 (Update 6): the ability specs map at the seam with the
+        // same parity rule as Attack — the content encoder already includes
+        // the authored fields in the bundle's hash (`encode_capability`'s
+        // tag 12), and `to_runtime` performs the ms -> ticks conversion
+        // exactly like every other duration.
+        defs::CapabilityDef::Abilities { abilities } => Some(CapTemplate::Abilities {
+            abilities: abilities
+                .iter()
+                .map(|spec| AbilitySpecTemplate {
+                    id: spec.id.clone(),
+                    display_name: spec.display_name.clone(),
+                    effect: match &spec.effect {
+                        defs::AbilityEffectDef::DamageArea {
+                            damage,
+                            radius_milli_tiles,
+                        } => AbilityEffectTemplate::DamageArea {
+                            damage: *damage,
+                            radius_milli_tiles: *radius_milli_tiles,
+                        },
+                        defs::AbilityEffectDef::HealArea {
+                            amount,
+                            radius_milli_tiles,
+                        } => AbilityEffectTemplate::HealArea {
+                            amount: *amount,
+                            radius_milli_tiles: *radius_milli_tiles,
+                        },
+                        defs::AbilityEffectDef::SpeedBurst {
+                            multiplier_milli,
+                            duration_ms,
+                            duration_ticks: _,
+                            radius_milli_tiles,
+                        } => AbilityEffectTemplate::SpeedBurst {
+                            multiplier_milli: *multiplier_milli,
+                            duration_ms: *duration_ms,
+                            radius_milli_tiles: *radius_milli_tiles,
+                        },
+                    },
+                    cast_range_milli_tiles: spec.cast_range_milli_tiles,
+                    cooldown_ms: spec.cooldown_ms,
+                    // The Alpha schema prices abilities in Ore, exactly like
+                    // kinds (the `KindEconomy` mapping above): a zero cost
+                    // needs no resource, and a second resource extends the
+                    // authored cost struct plus this mapping (data-only).
+                    cost: match (spec.cost_ore > 0, resources.get("ore")) {
+                        (true, Some(resource)) => vec![(ResourceId(*resource), spec.cost_ore)],
+                        _ => Vec::new(),
+                    },
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -1832,6 +1883,49 @@ fn encode_capability(h: &mut XxHash64, cap: &defs::CapabilityDef) {
             h.write_u8(11);
             h.write_u32(*w);
             h.write_u32(*height);
+        }
+        // ADR-0202 (Update 6): tag 12, additive — the authored fields in
+        // authored order (the tick-converted twins are load-derived, so the
+        // ms fields carry the identity, the Attack/Gather parity).
+        defs::CapabilityDef::Abilities { abilities } => {
+            h.write_u8(12);
+            h.write_u32(abilities.len() as u32);
+            for ability in abilities {
+                encode_str(h, &ability.id);
+                encode_str(h, &ability.display_name);
+                match &ability.effect {
+                    defs::AbilityEffectDef::DamageArea {
+                        damage,
+                        radius_milli_tiles,
+                    } => {
+                        h.write_u8(1);
+                        h.write_i32(*damage);
+                        h.write_i32(*radius_milli_tiles);
+                    }
+                    defs::AbilityEffectDef::HealArea {
+                        amount,
+                        radius_milli_tiles,
+                    } => {
+                        h.write_u8(2);
+                        h.write_i32(*amount);
+                        h.write_i32(*radius_milli_tiles);
+                    }
+                    defs::AbilityEffectDef::SpeedBurst {
+                        multiplier_milli,
+                        duration_ms,
+                        duration_ticks: _,
+                        radius_milli_tiles,
+                    } => {
+                        h.write_u8(3);
+                        h.write_i32(*multiplier_milli);
+                        h.write_u32(*duration_ms);
+                        h.write_i32(*radius_milli_tiles);
+                    }
+                }
+                h.write_i32(ability.cast_range_milli_tiles);
+                h.write_u32(ability.cooldown_ms);
+                h.write_i64(ability.cost_ore);
+            }
         }
     }
 }

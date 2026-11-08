@@ -7,6 +7,50 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-033] — the ability system (plan §19's expansion test, Update 6)
+
+The owner's standing delegation met the sequence's own named next step
+(B-032 §9): **Update 6 — the ability system**, the first extension that is
+not data-only, and the one plan §17 names as the foundation's designed
+audit: "Abilities — command machinery, validation gate, cooldown-ready
+pipeline." The design record is **ADR-0202** (proposed; the owner's verdict
+stays open, the ADR-0201 flow).
+
+- **The capability and the command.** One `Abilities` capability block
+  carries a kind's authored ability list (multi-slot by construction,
+  parameters only — the effect vocabulary is code, plan §10.1's law), and
+  one new verb — `CastAbility { caster, ability, target }` — goes through
+  the unchanged gate: seven checks in order (ownership, capability,
+  lifecycle, slot, cooldown, affordability, range, point visibility), three
+  new reject reasons. Every issuer casts through the identical door
+  (FD-7); the ground-point visibility law is the spotting seam — a caster
+  cannot shell what it cannot see, but a scout's eyes lift the fog for it.
+- **The cooldown-ready pipeline** runs at the head of stage 7 (combat), the
+  insertion point plan §8.3 reserved for abilities, with the attack
+  cooldown's exact semantics. The timed modifier (SpeedBurst) is an
+  injected runtime block — the Construction pattern — read by movement as
+  `effective_speed = speed × multiplier`, decremented at stage 7, removed
+  at expiry; the whole state is hashed (mask slots 12/13, additive —
+  A-232: the state encoding stays v4 and the demo and flagship goldens run
+  bit-identically, the executable proof).
+- **The shipped content**: the Pathfinder's **Overland Sprint** (1.5× for
+  4 s in 2.5 tiles, 20 s cooldown) and the Ballista's **Shatter Volley**
+  (45 damage in 1.8 tiles, cast range one tile beyond its own sight —
+  spotted by the Pathfinder, the pairing this content always promised).
+  Both carriers are forge-tier, so no scripted AI fields them and no
+  pinned run moves: the battery's twelve P-laws, the mirrors, and the
+  flagship are untouched (A-236: the numbers are authored, the feel rides
+  A14, A-230's standard).
+- **The client surface**: ability buttons on the command card's first free
+  row with a cooldown sweep (the health-bar idiom inverted) and
+  armed-click targeting — the A/G arm/cancel family's third member
+  (crosshair, HUD line, Esc/right-click cancel). The card row yields to a
+  full card (DEBT-206, A14 rules on the card's shape).
+- **The authorized golden move** (one commit, every pin): content
+  `0x8edfdfc3a814eb37` → `0xbe1a3d97ae6780e9`, basin bundle
+  `0xb5c143a09f45a402` → `0x3e3d96b500aa3ffb`; the map id, the demo
+  golden, and the flagship are bit-identical (measured, not asserted).
+
 ## [B-032] — the second faction (plan §19's expansion test, Update 5)
 
 The owner's standing delegation ("keep working on upgrading this game... I

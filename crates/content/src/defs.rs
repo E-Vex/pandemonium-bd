@@ -142,6 +142,13 @@ pub enum CapabilityDef {
         /// Footprint height in tiles.
         h: u32,
     },
+    /// Active castable abilities (ADR-0202, plan §19 Update 6): the kind's
+    /// authored ability list — parameters only; the effect vocabulary is
+    /// code (plan §10.1).
+    Abilities {
+        /// The abilities, in authored slot order.
+        abilities: Vec<AbilitySpecDef>,
+    },
 }
 
 impl CapabilityDef {
@@ -159,8 +166,64 @@ impl CapabilityDef {
             CapabilityDef::Resource { .. } => "Resource",
             CapabilityDef::Vision { .. } => "Vision",
             CapabilityDef::Footprint { .. } => "Footprint",
+            CapabilityDef::Abilities { .. } => "Abilities",
         }
     }
+}
+
+/// One validated ability spec (ADR-0202 §1): the authored parameters plus the
+/// tick-converted durations (plan §10.2 — conversion happens once, at load).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AbilitySpecDef {
+    /// Stable ability id (unique within the kind).
+    pub id: String,
+    /// Human-facing name.
+    pub display_name: String,
+    /// What the ability does (one of the code-defined effect kinds,
+    /// parameterized).
+    pub effect: AbilityEffectDef,
+    /// Cast range in milli-tiles.
+    pub cast_range_milli_tiles: i32,
+    /// Cooldown in milliseconds, as authored.
+    pub cooldown_ms: u32,
+    /// Cooldown in whole ticks (`(ms * 30 + 999) / 1000` — plan §10.2).
+    pub cooldown_ticks: u32,
+    /// Ore cost per cast.
+    pub cost_ore: i64,
+}
+
+/// One effect kind's parameters, validated and tick-converted (ADR-0202 §2 —
+/// the closed vocabulary; a new kind is a new variant plus a new stage hook).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum AbilityEffectDef {
+    /// Immediate integer damage to every enemy-player entity in radius of the
+    /// target point.
+    DamageArea {
+        /// Integer damage per hit entity.
+        damage: i32,
+        /// Effect radius in milli-tiles.
+        radius_milli_tiles: i32,
+    },
+    /// Immediate integer healing to every friendly entity with Health in
+    /// radius, clamped at max.
+    HealArea {
+        /// Integer healing per hit entity.
+        amount: i32,
+        /// Effect radius in milli-tiles.
+        radius_milli_tiles: i32,
+    },
+    /// A timed movement-speed multiplier for every friendly entity with Move
+    /// in radius (one boost per entity; a later cast overwrites).
+    SpeedBurst {
+        /// Speed multiplier in thousandths (1500 = 1.5×).
+        multiplier_milli: i32,
+        /// Boost duration in milliseconds, as authored.
+        duration_ms: u32,
+        /// Boost duration in whole ticks (`(ms * 30 + 999) / 1000`).
+        duration_ticks: u32,
+        /// Effect radius in milli-tiles.
+        radius_milli_tiles: i32,
+    },
 }
 
 /// A validated entity kind: capabilities plus economy stats (plan §10.4's table).
@@ -191,6 +254,16 @@ impl EntityDef {
     /// The first capability of a given name, if any.
     pub fn capability(&self, name: &str) -> Option<&CapabilityDef> {
         self.capabilities.iter().find(|cap| cap.name() == name)
+    }
+
+    /// The kind's authored ability list, if it carries the Abilities
+    /// capability (ADR-0202). The first block wins if a (rejected-by-the-
+    /// validator) file ever carried two.
+    pub fn abilities(&self) -> Option<&[AbilitySpecDef]> {
+        match self.capability("Abilities") {
+            Some(CapabilityDef::Abilities { abilities }) => Some(abilities),
+            _ => None,
+        }
     }
 
     /// The tile footprint, if this kind is a static occupant (structures, nodes).

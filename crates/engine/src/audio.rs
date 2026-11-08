@@ -120,7 +120,12 @@ pub fn cue_for(event: &Event) -> Option<AudioCue> {
         | Event::NodeDepleted { .. }
         | Event::CommandRejected { .. }
         | Event::MoveFailed { .. }
-        | Event::ObjectiveState { .. } => None,
+        | Event::ObjectiveState { .. }
+        // ADR-0202 (Update 6): the cast cue has no authored sound yet — the
+        // ability's damage already voices through AttackHit above, and the
+        // cast's own audio moment rides the owner's A14 feel pass (real
+        // hardware, not Xvfb's silent null fallback).
+        | Event::AbilityCast { .. } => None,
     }
 }
 

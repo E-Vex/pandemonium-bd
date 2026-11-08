@@ -50,6 +50,13 @@ pub enum CapabilityData {
     Construction(ConstructionDef),
     /// Immediate-hit attack with a per-attacker cooldown (plan §9.2, M6).
     Attack(AttackDef),
+    /// Active castable abilities with per-slot cooldowns (ADR-0202, plan
+    /// §19 Update 6).
+    Abilities(AbilitiesDef),
+    /// A live movement-speed boost (ADR-0202 §2: the timed-modifier runtime —
+    /// never authored in content, injected by a `SpeedBurst` cast, removed
+    /// at expiry; the `Construction` pattern).
+    SpeedBoost(SpeedBoostDef),
 }
 
 /// Health capability: current hp plus its parameters. Regeneration advances every
@@ -338,6 +345,94 @@ impl AttackDef {
     }
 }
 
+/// One ability's parameters in runtime units (ADR-0202 §1 — the load-
+/// converted form of content's `AbilitySpecDef`; durations arrive as ticks,
+/// distances as fixed point).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AbilitySpec {
+    /// Stable ability id (humans and tooling; commands address slots).
+    pub id: String,
+    /// What the ability does (one of the code-defined effect kinds,
+    /// parameterized — never content logic).
+    pub effect: AbilityEffect,
+    /// Cast range in fixed-point tile units (squared-distance compare at the
+    /// gate, no roots — plan §5.8).
+    pub cast_range: Fx,
+    /// Cooldown between casts, in whole ticks.
+    pub cooldown_ticks: u32,
+    /// The cast cost, resource-resolved at the content seam (empty = free;
+    /// the `KindEconomy.cost` pattern — names stop at the seam).
+    pub cost: Vec<(ResourceId, i64)>,
+}
+
+/// One effect kind's parameters in runtime units (ADR-0202 §2 — the closed
+/// vocabulary; a new kind is a new variant plus a new stage hook).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AbilityEffect {
+    /// Immediate integer damage to every enemy-player entity within `radius`
+    /// of the target point (neutral nodes are never collateral).
+    DamageArea {
+        /// Integer damage per hit entity.
+        damage: i32,
+        /// Effect radius in fixed-point tile units.
+        radius: Fx,
+    },
+    /// Immediate integer healing to every friendly entity with Health within
+    /// `radius`, clamped at max.
+    HealArea {
+        /// Integer healing per hit entity.
+        amount: i32,
+        /// Effect radius in fixed-point tile units.
+        radius: Fx,
+    },
+    /// A timed movement-speed multiplier for every friendly entity with Move
+    /// within `radius` (one boost per entity — a later cast overwrites).
+    SpeedBurst {
+        /// Speed multiplier in fixed point (1.5 = `Fx::from_milli(1500)`).
+        multiplier: Fx,
+        /// Boost duration in whole ticks.
+        duration_ticks: u32,
+        /// Effect radius in fixed-point tile units.
+        radius: Fx,
+    },
+}
+
+/// Abilities capability in runtime units (ADR-0202 §1): the kind's authored
+/// spec list plus the per-slot cooldown runtime — the exact `AttackDef`
+/// pattern (parameters plus this capability's own runtime on the block).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AbilitiesDef {
+    /// The ability specs, in authored slot order.
+    pub specs: Vec<AbilitySpec>,
+    /// Per-slot cooldown countdown, parallel to `specs` (0 = ready this
+    /// tick). Decremented every tick by the ability system; reset to the
+    /// spec's `cooldown_ticks` on a cast.
+    pub cooldowns: Vec<u32>,
+}
+
+impl AbilitiesDef {
+    /// A caster's block from its specs — every slot starts ready (the
+    /// `AttackDef::new` rule).
+    pub fn new(specs: Vec<AbilitySpec>) -> Self {
+        let cooldowns = vec![0; specs.len()];
+        Self { specs, cooldowns }
+    }
+}
+
+/// A live movement-speed boost (ADR-0202 §2): the timed modifier a
+/// `SpeedBurst` cast injects. Never authored in content; the ability system
+/// owns its whole life (inject on cast, decrement per tick, remove at
+/// expiry — the `Construction` pattern). The movement system reads it as
+/// `effective_speed = speed_per_tick * multiplier`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SpeedBoostDef {
+    /// The speed multiplier in fixed point.
+    pub multiplier: Fx,
+    /// Ticks of boost remaining (decremented at stage 7; zero-value blocks
+    /// are removed the same pass).
+    pub remaining_ticks: u32,
+}
+
 /// An order in an entity's queue (plan §6.3 stage 2: the order queue resolves into
 /// system intents). M1's order vocabulary is movement-only; M5 adds the economy
 /// intents (plan §9.3/§9.4): a worker gathers from a node or raises a site.
@@ -544,6 +639,11 @@ pub struct World {
     pub construction: Vec<(EntityId, ConstructionDef)>,
     /// Attack capability store, ascending by id (M6).
     pub attack: Vec<(EntityId, AttackDef)>,
+    /// Abilities capability store, ascending by id (ADR-0202, Update 6).
+    pub abilities: Vec<(EntityId, AbilitiesDef)>,
+    /// Live speed-boost runtime blocks, ascending by id (ADR-0202 §2 —
+    /// injected, never authored).
+    pub speed_boosts: Vec<(EntityId, SpeedBoostDef)>,
     /// Player states, ascending by slot.
     pub players: Vec<PlayerState>,
     /// How many kind templates the loaded fixture defines — the ceiling for valid
@@ -733,6 +833,56 @@ impl World {
         self.attack_of(id).is_some()
     }
 
+    /// Abilities data for an entity (ADR-0202).
+    pub fn abilities_of(&self, id: EntityId) -> Option<&AbilitiesDef> {
+        self.abilities
+            .binary_search_by_key(&id, |(eid, _)| *eid)
+            .ok()
+            .map(|i| &self.abilities[i].1)
+    }
+
+    /// Mutable abilities data for an entity (ADR-0202).
+    pub fn abilities_of_mut(&mut self, id: EntityId) -> Option<&mut AbilitiesDef> {
+        match self.abilities.binary_search_by_key(&id, |(eid, _)| *eid) {
+            Ok(i) => Some(&mut self.abilities[i].1),
+            Err(_) => None,
+        }
+    }
+
+    /// True when the entity carries the Abilities capability (ADR-0202).
+    pub fn has_abilities(&self, id: EntityId) -> bool {
+        self.abilities_of(id).is_some()
+    }
+
+    /// The live speed boost on an entity, if one runs (ADR-0202 §2).
+    pub fn speed_boost_of(&self, id: EntityId) -> Option<&SpeedBoostDef> {
+        self.speed_boosts
+            .binary_search_by_key(&id, |(eid, _)| *eid)
+            .ok()
+            .map(|i| &self.speed_boosts[i].1)
+    }
+
+    /// Inserts or overwrites the entity's speed boost (ADR-0202 §2 — one
+    /// boost per entity; a later cast overwrites, newest wins).
+    pub fn set_speed_boost(&mut self, id: EntityId, def: SpeedBoostDef) {
+        match self.speed_boosts.binary_search_by_key(&id, |(eid, _)| *eid) {
+            Ok(i) => self.speed_boosts[i].1 = def,
+            Err(i) => self.speed_boosts.insert(i, (id, def)),
+        }
+    }
+
+    /// The entity's effective movement speed: the authored per-tick speed
+    /// times the live boost's multiplier, when one runs (ADR-0202 §2). A
+    /// zero-speed mover stays zero — a multiplier cannot create speed from
+    /// nothing. `None` when the entity does not move at all.
+    pub fn effective_speed(&self, id: EntityId) -> Option<Fx> {
+        let speed = self.move_of(id)?.speed_per_tick;
+        Some(match self.speed_boost_of(id) {
+            Some(boost) => speed.mul(boost.multiplier),
+            None => speed,
+        })
+    }
+
     /// True when the entity carries the given capability.
     pub fn has_move(&self, id: EntityId) -> bool {
         self.move_of(id).is_some()
@@ -798,6 +948,8 @@ impl World {
                 CapabilityData::Footprint(def) => self.footprints.push((id, def)),
                 CapabilityData::Construction(def) => self.construction.push((id, def)),
                 CapabilityData::Attack(def) => self.attack.push((id, def)),
+                CapabilityData::Abilities(def) => self.abilities.push((id, def)),
+                CapabilityData::SpeedBoost(def) => self.speed_boosts.push((id, def)),
             }
         }
     }
@@ -854,6 +1006,12 @@ impl World {
         if let Ok(i) = self.attack.binary_search_by_key(&id, |(eid, _)| *eid) {
             self.attack.remove(i);
         }
+        if let Ok(i) = self.abilities.binary_search_by_key(&id, |(eid, _)| *eid) {
+            self.abilities.remove(i);
+        }
+        if let Ok(i) = self.speed_boosts.binary_search_by_key(&id, |(eid, _)| *eid) {
+            self.speed_boosts.remove(i);
+        }
     }
 
     /// Removes every id in `ids` from the base record and every capability
@@ -889,6 +1047,8 @@ impl World {
         retain_not_in(&mut self.footprints, ids, |(eid, _)| *eid);
         retain_not_in(&mut self.construction, ids, |(eid, _)| *eid);
         retain_not_in(&mut self.attack, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.abilities, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.speed_boosts, ids, |(eid, _)| *eid);
     }
 }
 

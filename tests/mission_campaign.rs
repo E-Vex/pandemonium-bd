@@ -280,7 +280,7 @@ fn the_campaign_rides_outside_the_real_identity() {
     let tree = repo_tree();
     assert!(tree.campaign.is_some(), "the pilot campaign is loaded");
     let bundle = tree.bundle("crossroads_64").expect("the map bundles");
-    assert_eq!(bundle.content_hash(), 0x8edfdfc3a814eb37);
+    assert_eq!(bundle.content_hash(), 0xbe1a3d97ae6780e9);
     assert_eq!(bundle.map_id(), 0xd38136401ab02ff1);
 }
 

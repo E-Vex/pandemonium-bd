@@ -142,6 +142,10 @@ pub(crate) enum RawCapability {
     Vision(RawVision),
     /// Static tile occupancy (structures and nodes).
     Footprint(RawFootprint),
+    /// Active castable abilities (ADR-0202, plan §19 Update 6): the kind's
+    /// authored ability list — parameters only; the effect vocabulary is
+    /// code (plan §10.1: data selects and parameterizes, never scripts).
+    Abilities(RawAbilities),
 }
 
 /// Health parameters.
@@ -242,6 +246,87 @@ pub(crate) struct RawFootprint {
     pub w: u32,
     /// Footprint height in tiles.
     pub h: u32,
+}
+
+/// The Abilities capability block: the kind's authored ability list
+/// (ADR-0202 §1).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawAbilities {
+    /// The abilities, in authored slot order (slot indices address these).
+    pub abilities: Vec<RawAbility>,
+}
+
+/// One authored ability: parameters in authoring units (plan §10.2 — the
+/// loader converts durations to ticks once, at load).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawAbility {
+    /// Stable ability id (unique within the kind; humans and tooling read
+    /// it — commands address slots by index).
+    pub id: String,
+    /// Human-facing name.
+    pub display_name: String,
+    /// What the ability does (one of the code-defined effect kinds,
+    /// parameterized).
+    pub effect: RawAbilityEffect,
+    /// How far from the caster the target point may sit, in milli-tiles.
+    pub cast_range_milli_tiles: i32,
+    /// Cooldown in milliseconds (converted to ticks at load — plan §10.2).
+    pub cooldown_ms: u32,
+    /// Ore cost per cast (zero is authored content's choice; the gate still
+    /// checks affordability).
+    pub cost_ore: i64,
+}
+
+/// One effect kind's parameters, as authored (ADR-0202 §2 — the closed
+/// vocabulary; a new kind is a new variant plus a new stage hook, never
+/// content logic).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum RawAbilityEffect {
+    /// Immediate integer damage to every enemy-player entity in radius of the
+    /// target point (neutral nodes are never collateral; no friendly fire
+    /// in the vocabulary).
+    DamageArea(RawDamageArea),
+    /// Immediate integer healing to every friendly entity with Health in
+    /// radius, clamped at max.
+    HealArea(RawHealArea),
+    /// A timed movement-speed multiplier applied to every friendly entity
+    /// with Move in radius (one boost per entity; a later cast overwrites).
+    SpeedBurst(RawSpeedBurst),
+}
+
+/// `DamageArea` parameters.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawDamageArea {
+    /// Integer damage per hit entity.
+    pub damage: i32,
+    /// Effect radius in milli-tiles.
+    pub radius_milli_tiles: i32,
+}
+
+/// `HealArea` parameters.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawHealArea {
+    /// Integer healing per hit entity.
+    pub amount: i32,
+    /// Effect radius in milli-tiles.
+    pub radius_milli_tiles: i32,
+}
+
+/// `SpeedBurst` parameters.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawSpeedBurst {
+    /// Speed multiplier in thousandths (1500 = 1.5×).
+    pub multiplier_milli: i32,
+    /// Boost duration in milliseconds (converted to ticks at load).
+    pub duration_ms: u32,
+    /// Effect radius in milli-tiles.
+    pub radius_milli_tiles: i32,
 }
 
 // ---------------------------------------------------------------------------

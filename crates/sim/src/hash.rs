@@ -56,7 +56,13 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
         }
         // Capability presence bitmask over the fixed order (Health, Move,
         // Vision, Gather, Build, Produce, Storage, ProvidesPopulation, Resource,
-        // Footprint, Construction), then the present blocks in that same order.
+        // Footprint, Construction, Attack, Abilities, SpeedBoost), then the
+        // present blocks in that same order. Slots 12/13 are ADR-0202's
+        // (Update 6) — additive at previously-unused mask bits, so every
+        // pre-B-033 state encodes bit-identically and STATE_ENCODING_VERSION
+        // stays 4 (the version word guards against silent value shifts, not
+        // additive slot growth; the unchanged demo and flagship goldens are
+        // the executable proof).
         let mask = capability_mask(world, entity.id);
         h.write_u16(mask);
         if let Some(CapabilityData::Health(def)) = capability_of(world, entity.id, mask, 0) {
@@ -150,6 +156,54 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
                 }
             }
         }
+        // ADR-0202 (Update 6): the ability block — slot count, each spec's
+        // runtime-relevant parameters (the effect kind + its numbers, cast
+        // range, cooldown, cost), then the per-slot remaining cooldowns. The
+        // spec ids are not hashed: they derive from the kind template, and
+        // the kind id is already part of the entity record's identity.
+        if let Some(CapabilityData::Abilities(def)) = capability_of(world, entity.id, mask, 12) {
+            h.write_u32(def.specs.len() as u32);
+            for spec in &def.specs {
+                match &spec.effect {
+                    crate::world::AbilityEffect::DamageArea { damage, radius } => {
+                        h.write_u8(1);
+                        h.write_i32(*damage);
+                        h.write_i32(radius.raw());
+                    }
+                    crate::world::AbilityEffect::HealArea { amount, radius } => {
+                        h.write_u8(2);
+                        h.write_i32(*amount);
+                        h.write_i32(radius.raw());
+                    }
+                    crate::world::AbilityEffect::SpeedBurst {
+                        multiplier,
+                        duration_ticks,
+                        radius,
+                    } => {
+                        h.write_u8(3);
+                        h.write_i32(multiplier.raw());
+                        h.write_u32(*duration_ticks);
+                        h.write_i32(radius.raw());
+                    }
+                }
+                h.write_i32(spec.cast_range.raw());
+                h.write_u32(spec.cooldown_ticks);
+                h.write_u32(spec.cost.len() as u32);
+                for (resource, amount) in &spec.cost {
+                    h.write_u32(resource.0);
+                    h.write_i64(*amount);
+                }
+            }
+            for remaining in &def.cooldowns {
+                h.write_u32(*remaining);
+            }
+        }
+        // ADR-0202 (Update 6): the live speed-boost runtime — the timed
+        // modifier IS world state (it alters movement), so it is hashed.
+        if let Some(CapabilityData::SpeedBoost(def)) = capability_of(world, entity.id, mask, 13) {
+            h.write_i32(def.multiplier.raw());
+            h.write_u32(def.remaining_ticks);
+        }
     }
 
     // Players, ascending by slot.
@@ -210,7 +264,8 @@ fn controller_tag(player: &crate::world::PlayerState) -> u8 {
 /// Presence bitmask over the fixed capability order: bit 0 Health, bit 1 Move,
 /// bit 2 Vision, bit 3 Gather, bit 4 Build, bit 5 Produce, bit 6 Storage,
 /// bit 7 ProvidesPopulation, bit 8 Resource, bit 9 Footprint, bit 10
-/// Construction, bit 11 Attack.
+/// Construction, bit 11 Attack, bit 12 Abilities, bit 13 SpeedBoost
+/// (ADR-0202).
 fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u16 {
     let mut mask = 0u16;
     if world.health_of(id).is_some() {
@@ -248,6 +303,12 @@ fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u16 {
     }
     if world.attack_of(id).is_some() {
         mask |= 1 << 11;
+    }
+    if world.abilities_of(id).is_some() {
+        mask |= 1 << 12;
+    }
+    if world.speed_boost_of(id).is_some() {
+        mask |= 1 << 13;
     }
     mask
 }
@@ -290,7 +351,13 @@ fn capability_of(
         10 => world
             .construction_of(id)
             .map(|def| CapabilityData::Construction(*def)),
-        _ => world.attack_of(id).map(|def| CapabilityData::Attack(*def)),
+        11 => world.attack_of(id).map(|def| CapabilityData::Attack(*def)),
+        12 => world
+            .abilities_of(id)
+            .map(|def| CapabilityData::Abilities(def.clone())),
+        _ => world
+            .speed_boost_of(id)
+            .map(|def| CapabilityData::SpeedBoost(*def)),
     }
 }
 

@@ -553,7 +553,38 @@ impl App {
             ButtonAction::CancelQueueItem { producer, index } => {
                 self.submit_order(CommandKind::CancelQueueItem { producer, index }, None);
             }
+            // ADR-0202 §8: the button arms cast targeting (never casts on
+            // the press itself — the ground point is the player's next
+            // click, the A/G family's rule).
+            ButtonAction::CastAbility { caster, slot } => {
+                self.attack_move_armed = false;
+                self.guard_armed = false;
+                self.placement = None;
+                self.cast_armed = Some((caster, slot));
+            }
         }
+    }
+
+    /// ADR-0202 §8: the armed cast's click half — casts at the clicked
+    /// ground point, consumes the arm, and disarms. The gate is the
+    /// authority (cooldown, range, visibility, affordability are the sim's
+    /// facts); a refusal surfaces at the click point as usual.
+    pub(crate) fn issue_cast_ability(&mut self, ndc: (f32, f32)) {
+        let Some((caster, slot)) = self.cast_armed.take() else {
+            return;
+        };
+        let Some(point) = self.camera.ground_point(glam::Vec2::new(ndc.0, ndc.1)) else {
+            return;
+        };
+        let target = MatchHost::world_to_logical(point.x, point.z);
+        self.submit_order(
+            CommandKind::CastAbility {
+                caster,
+                ability: slot,
+                target,
+            },
+            Some(target),
+        );
     }
 
     /// Places the pending structure at the ghost tile (the click half of

@@ -13,7 +13,7 @@
 //! Every rejection names its file, entity/map, coordinates, and the exact rule
 //! violated — a designer should never have to guess which line is wrong.
 
-use crate::defs::{CapabilityDef, EntityDef, FactionDef, MapDef, RulesDef};
+use crate::defs::{AbilityEffectDef, CapabilityDef, EntityDef, FactionDef, MapDef, RulesDef};
 use crate::error::ContentError;
 
 /// The largest map dimension accepted (a sanity cap for authoring mistakes; the
@@ -260,6 +260,124 @@ pub(crate) fn validate_entity(
                 }
             }
             CapabilityDef::Build | CapabilityDef::Produce => {}
+            CapabilityDef::Abilities { abilities } => {
+                // ADR-0202: the authored list must be non-empty, the ids
+                // unique (humans and tooling address them), and every
+                // parameter meaningful at its magnitude — a zero-cooldown
+                // slot is a per-tick spam door, a zero-duration boost is a
+                // no-op, and non-positive damage/heal/multiplier values are
+                // content mistakes, not designs. Radius may be zero (a
+                // point-blank single-target effect is legal); cast range may
+                // be zero (self-centered); cost may be zero (the cooldown is
+                // the price).
+                if abilities.is_empty() {
+                    return Err(stat(
+                        "Abilities.abilities",
+                        0,
+                        "the list must hold at least one ability",
+                    ));
+                }
+                for (slot, ability) in abilities.iter().enumerate() {
+                    if ability.cooldown_ms == 0 {
+                        return Err(stat(
+                            "Abilities.cooldown_ms",
+                            0,
+                            &format!("slot {slot} ('{}') must have a cooldown", ability.id),
+                        ));
+                    }
+                    if ability.cast_range_milli_tiles < 0 {
+                        return Err(stat(
+                            "Abilities.cast_range_milli_tiles",
+                            ability.cast_range_milli_tiles as i64,
+                            &format!("slot {slot} ('{}') must not be negative", ability.id),
+                        ));
+                    }
+                    if ability.cost_ore < 0 {
+                        return Err(stat(
+                            "Abilities.cost_ore",
+                            ability.cost_ore,
+                            &format!("slot {slot} ('{}') must not be negative", ability.id),
+                        ));
+                    }
+                    match &ability.effect {
+                        AbilityEffectDef::DamageArea {
+                            damage,
+                            radius_milli_tiles,
+                        } => {
+                            if *damage <= 0 {
+                                return Err(stat(
+                                    "Abilities.DamageArea.damage",
+                                    *damage as i64,
+                                    &format!("slot {slot} ('{}') must be positive", ability.id),
+                                ));
+                            }
+                            if *radius_milli_tiles < 0 {
+                                return Err(stat(
+                                    "Abilities.DamageArea.radius_milli_tiles",
+                                    *radius_milli_tiles as i64,
+                                    &format!("slot {slot} ('{}') must not be negative", ability.id),
+                                ));
+                            }
+                        }
+                        AbilityEffectDef::HealArea {
+                            amount,
+                            radius_milli_tiles,
+                        } => {
+                            if *amount <= 0 {
+                                return Err(stat(
+                                    "Abilities.HealArea.amount",
+                                    *amount as i64,
+                                    &format!("slot {slot} ('{}') must be positive", ability.id),
+                                ));
+                            }
+                            if *radius_milli_tiles < 0 {
+                                return Err(stat(
+                                    "Abilities.HealArea.radius_milli_tiles",
+                                    *radius_milli_tiles as i64,
+                                    &format!("slot {slot} ('{}') must not be negative", ability.id),
+                                ));
+                            }
+                        }
+                        AbilityEffectDef::SpeedBurst {
+                            multiplier_milli,
+                            duration_ms,
+                            duration_ticks: _,
+                            radius_milli_tiles,
+                        } => {
+                            if *multiplier_milli <= 0 {
+                                return Err(stat(
+                                    "Abilities.SpeedBurst.multiplier_milli",
+                                    *multiplier_milli as i64,
+                                    &format!("slot {slot} ('{}') must be positive", ability.id),
+                                ));
+                            }
+                            if *duration_ms == 0 {
+                                return Err(stat(
+                                    "Abilities.SpeedBurst.duration_ms",
+                                    0,
+                                    &format!("slot {slot} ('{}') must have a duration", ability.id),
+                                ));
+                            }
+                            if *radius_milli_tiles < 0 {
+                                return Err(stat(
+                                    "Abilities.SpeedBurst.radius_milli_tiles",
+                                    *radius_milli_tiles as i64,
+                                    &format!("slot {slot} ('{}') must not be negative", ability.id),
+                                ));
+                            }
+                        }
+                    }
+                }
+                let mut ids: Vec<&str> = abilities.iter().map(|a| a.id.as_str()).collect();
+                ids.sort_unstable();
+                if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+                    return Err(stat(
+                        "Abilities.abilities",
+                        0,
+                        "ability ids must be unique within the kind",
+                    ));
+                }
+            }
         }
     }
     if entity.cost_ore < 0 {

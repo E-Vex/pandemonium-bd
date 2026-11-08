@@ -1978,3 +1978,50 @@ confirms or rejects it.
   id-order assertion (plus the second-faction test's own "phalanx" scan);
   a future faction that would take the first slot fails the order assert
   loudly, and the deliberate change re-pins it in review.
+
+- **A-232 (B-033 — the state encoding stays v4).** ADR-0202's two new
+  capability blocks (`Abilities`, `SpeedBoost`) occupy the canonical hash's
+  previously-unused mask slots 12/13 and encode only when present, so every
+  pre-B-033 state encodes bit-identically and `STATE_ENCODING_VERSION`
+  stays 4. The version word exists to catch silent *value* shifts (a field
+  re-read or reordered), not additive growth at spare slots — the v2/v3/v4
+  bumps each accompanied states that actually changed shape for existing
+  worlds; B-033's is the first growth existing worlds cannot observe. The
+  proof is executable and pinned: the demo (`0xb6fff6659cfb7709`) and the
+  flagship (`0x3a58e55ea6250906`) run bit-identically on B-033's tree, and
+  the content hash is the only golden that moved (the B-029 shape again:
+  new content, unchanged behavior for every pinned run — the carriers are
+  forge-tier and no scripted plan fields them).
+
+- **A-233 (B-033 — the ADR-0202 landing status).** The owner's standing
+  delegation names Update 6 and its ADR as the next step, so ADR-0202 and
+  its implementation land together with the ADR in `proposed` — exactly
+  ADR-0201's flow (the vertical slice shipped as B-010..B-013 before the
+  owner's 2026-10-16 verdict; B-014 recorded it). The owner's verdict on
+  ADR-0202 remains open and is recorded in the ADR's Decision field when
+  it arrives.
+
+- **A-234 (B-033 — the scripted AI does not cast).** Update 6 ships the
+  ability system with zero AI usage: the scripted plan is untouched (its
+  every pin — the 612-command digest, the mirror budgets, the plan
+  resolution — must not move), and the Alpha opponent builds no Forge, so
+  no scripted match can even field a caster. An AI that casts is a new
+  plan behavior and belongs to Update 8's evaluative AI (plan §19's own
+  sequence), when there is a playtest-informed reason to choose targets.
+
+- **A-235 (B-033 — the closed Update-6 vocabulary).** Three effect kinds
+  (`DamageArea`, `HealArea`, `SpeedBurst`), all ground-point targeted, no
+  friendly fire, no per-target heal events, no buff stacking (a later
+  boost overwrites), no cast-while-moving mechanics: ADR-0202 §2/§9's
+  designed limits, each a named seam for a later brief rather than a
+  shortcut. Entity-targeted abilities grow the command payload when an
+  ability needs tracking; the order form (walk-then-cast) composes with a
+  future wind-up stage.
+
+- **A-236 (B-033 — the authored ability numbers).** The two shipped
+  abilities' numbers (Sprint 1.5x/4s/20s, Volley 45/1.8 tiles/13
+  tiles/25s, both free) are authored by design intent, not playtested —
+  A-230's own standard, inherited verbatim: whether either FEELS right is
+  the A14 playtest's call. The battery's twelve P-laws are untouched and
+  still pinned (no law test casts, and no scripted AI fields a caster, so
+  no measured outcome moved).

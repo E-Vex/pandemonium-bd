@@ -88,10 +88,11 @@ fn request_paths(world: &mut World, nav: &NavGrid, events: &mut Vec<Event>) {
             continue; // the order resolves no movement target this tick
         };
         let from = world.entity(id).expect("the id came from the store").pos;
+        // The effective speed applies any live ability boost (ADR-0202 §2):
+        // movement reads speed through the boost, never the raw parameter.
         let speed = world
-            .move_of(id)
-            .expect("the filter guaranteed a mover")
-            .speed_per_tick;
+            .effective_speed(id)
+            .expect("the filter guaranteed a mover");
         if speed <= Fx::ZERO && Vec2Fx::dist(from, target) > Fx::ZERO {
             // A mover with no speed can never make progress on a distant
             // order; fail it instead of leaving it permanently mid-order.
@@ -122,8 +123,8 @@ fn steer(world: &mut World, nav: &NavGrid) -> Vec<(EntityId, Vec2Fx)> {
         .filter(|entity| !entity.orders.is_empty())
         .filter_map(|entity| {
             world
-                .move_of(entity.id)
-                .map(|def| (entity.id, def.speed_per_tick))
+                .effective_speed(entity.id)
+                .map(|speed| (entity.id, speed))
         })
         .collect();
     let mut positions = Vec::with_capacity(movers.len());
@@ -367,10 +368,11 @@ fn detect_stuck(
             continue; // in-place economy work (or between paths) — not stuck
         }
         let moved = Vec2Fx::dist(*before, entity.pos);
-        let quarter = def
-            .speed_per_tick
-            .div(Fx::from_int(BLOCKED_FRACTION as i32));
-        if def.speed_per_tick > Fx::ZERO && moved < quarter {
+        // The stuck detector reads the effective speed too (ADR-0202 §2): a
+        // boosted mover is judged by the speed it was actually given.
+        let effective = world.effective_speed(*id).unwrap_or(Fx::ZERO);
+        let quarter = effective.div(Fx::from_int(BLOCKED_FRACTION as i32));
+        if effective > Fx::ZERO && moved < quarter {
             let stuck_ticks = def.stuck_ticks + 1;
             if stuck_ticks <= STUCK_TICKS {
                 if let Some(def) = world.move_of_mut(*id) {

@@ -724,6 +724,11 @@ impl ApplicationHandler for App {
                             // same consume-and-disarm shape as A.
                             self.guard_armed = false;
                             self.issue_guard_move(ndc);
+                        } else if self.cast_armed.is_some() {
+                            // ADR-0202 §8: the armed cast fires at the clicked
+                            // ground point — the same consume-and-disarm shape
+                            // (the arm's own take() disarms).
+                            self.issue_cast_ability(ndc);
                         } else if self.modifiers.alt_key() {
                             // PLAN-M11 §2 phase 3: Alt owns the left-clicks —
                             // the waypoint gesture (the queue flag discipline
@@ -836,6 +841,7 @@ impl ApplicationHandler for App {
                             // no-op too).
                             self.attack_move_armed = false;
                             self.guard_armed = false;
+                            self.cast_armed = None;
                             return;
                         }
                         // Capture whether attack-move was armed at the
@@ -846,8 +852,10 @@ impl ApplicationHandler for App {
                         self.right_press_armed = self.attack_move_armed;
                         self.attack_move_armed = false;
                         // PLAN-M11 §2 phase 3: the right press cancels an
-                        // armed guard too (the arm/cancel family's rule).
+                        // armed guard too (the arm/cancel family's rule);
+                        // ADR-0202 §8: and an armed cast.
                         self.guard_armed = false;
+                        self.cast_armed = None;
                         self.right_button.press(cursor);
                         // Grab the ground under the press for the
                         // potential drag (None above the horizon; the
@@ -1096,15 +1104,19 @@ impl ApplicationHandler for App {
                             // placement, then the selection, and only then
                             // the pause menu.
                             match input::escape_action(
-                                self.attack_move_armed || self.guard_armed,
+                                self.attack_move_armed
+                                    || self.guard_armed
+                                    || self.cast_armed.is_some(),
                                 self.placement.is_some(),
                                 !self.selection.is_empty(),
                             ) {
                                 input::EscapeAction::CancelArmed => {
                                     // PLAN-M11 §2 phase 3: the rung cancels
-                                    // whichever mode is armed.
+                                    // whichever mode is armed (ADR-0202 §8:
+                                    // the cast too).
                                     self.attack_move_armed = false;
                                     self.guard_armed = false;
+                                    self.cast_armed = None;
                                 }
                                 input::EscapeAction::CancelPlacement => {
                                     self.placement = None;

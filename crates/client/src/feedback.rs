@@ -372,6 +372,11 @@ pub fn rejection_text(reason: RejectReason) -> &'static str {
         RejectReason::PlacementBlocked => "no room there",
         RejectReason::RequirementsUnmet => "requirements unmet",
         RejectReason::QueueIndexInvalid => "nothing queued there",
+        // ADR-0202 (Update 6): the ability gate's reasons, in the same
+        // player-facing voice.
+        RejectReason::AbilitySlotInvalid => "no such ability",
+        RejectReason::AbilityOnCooldown => "ability recharging",
+        RejectReason::AbilityOutOfRange => "too far to cast",
     }
 }
 

@@ -221,6 +221,26 @@ pub struct PlayerView {
     /// (empty when the player is not in the match). Own queues only — fog
     /// hides enemy production exactly as it hides enemy entities.
     pub production: Vec<QueueView>,
+    /// This player's ability slots, casters in ascending id order, one entry
+    /// per (caster, slot) (ADR-0202, Update 6; empty when the player is not
+    /// in the match or fields no casters). Own slots only — fog hides enemy
+    /// cooldowns exactly as it hides enemy queues.
+    pub abilities: Vec<AbilityView>,
+}
+
+/// One caster's ability slot as the owning player sees it (ADR-0202): which
+/// slot, and how much of its cooldown remains — the command card's cooldown
+/// sweep reads this, the same integer convention as
+/// [`EntityView::hp_fraction_milli`] (thousandths).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AbilityView {
+    /// The entity that can cast.
+    pub caster: EntityId,
+    /// Which ability slot, by its authored index in the kind's list.
+    pub slot: u8,
+    /// Thousandths of the slot's authored cooldown remaining (0 = ready; the
+    /// fraction the button's darkened sweep draws).
+    pub cooldown_milli: u32,
 }
 
 /// Why the validation gate refused a command (plan §8.2). Every reason is emitted
@@ -265,6 +285,15 @@ pub enum RejectReason {
     RequirementsUnmet,
     /// A queue index is out of range (M5).
     QueueIndexInvalid,
+    /// The ability slot index is outside the caster kind's authored list
+    /// (ADR-0202, Update 6).
+    AbilitySlotInvalid,
+    /// The ability's cooldown has not elapsed — the slot is not ready yet
+    /// (ADR-0202, Update 6).
+    AbilityOnCooldown,
+    /// The target point is outside the ability's cast range from the caster
+    /// (ADR-0202, Update 6).
+    AbilityOutOfRange,
 }
 
 /// A validation rejection (plan §8.2: "invalid commands produce `Reject { reason }`
@@ -390,6 +419,19 @@ pub enum CommandKind {
         /// The rally destination in tile units.
         target: Vec2Fx,
     },
+    /// Cast one of the caster's abilities at a ground point (ADR-0202, plan
+    /// §19 Update 6). One caster per command — a multi-caster cast is N
+    /// commands, each with its own cooldown; the ground-point form covers
+    /// every Update-6 effect kind (area damage, area heal, area speed at a
+    /// point) and mirrors the client's armed-click targeting family.
+    CastAbility {
+        /// The entity that casts (it must carry the Abilities capability).
+        caster: EntityId,
+        /// Which ability, by its authored slot index in the kind's list.
+        ability: u8,
+        /// The target ground point in tile units.
+        target: Vec2Fx,
+    },
     /// Concede the match for the issuer.
     Resign {},
 }
@@ -513,6 +555,19 @@ pub enum Event {
         index: u32,
         /// How it resolved.
         state: ObjectiveState,
+    },
+    /// An ability was cast at a ground point (ADR-0202, Update 6): the cue
+    /// for presentation — where, by whom, which slot. Ability *damage* rides
+    /// the existing [`Event::AttackHit`] (the attacker is the caster), so
+    /// every existing hit consumer works unmodified; heals surface only as
+    /// rising health bars plus this cast flash (ADR-0202's recorded limit).
+    AbilityCast {
+        /// The entity that cast.
+        caster: EntityId,
+        /// Which ability slot, by its authored index in the kind's list.
+        ability: u8,
+        /// The ground point the ability resolved at.
+        at: Vec2Fx,
     },
 }
 

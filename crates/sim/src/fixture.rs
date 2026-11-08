@@ -307,6 +307,67 @@ pub enum CapTemplate {
         /// Acquisition range in milli-tiles (auto-target scan radius).
         acquire_range_milli_tiles: i32,
     },
+    /// Active castable abilities (ADR-0202, plan §19 Update 6): the kind's
+    /// authored ability list. Authored in milli-tiles + ms; the simulator
+    /// converts them to fixed-point + ticks at load (plan §10.2).
+    Abilities {
+        /// The ability specs, in authored slot order.
+        abilities: Vec<AbilitySpecTemplate>,
+    },
+}
+
+/// One ability spec in authoring units (ADR-0202 §1) — the fixture-side form
+/// of content's `AbilitySpecDef` (the content seam maps the two; hand-built
+/// fixtures author these directly). The cost arrives already resource-
+/// resolved (the `Storage`/`KindEconomy` pattern: names stop at the content
+/// seam, ids flow into the simulation).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AbilitySpecTemplate {
+    /// Stable ability id (unique within the kind; humans and tooling).
+    pub id: String,
+    /// Human-facing name.
+    pub display_name: String,
+    /// What the ability does (one of the code-defined effect kinds,
+    /// parameterized).
+    pub effect: AbilityEffectTemplate,
+    /// Cast range in milli-tiles.
+    pub cast_range_milli_tiles: i32,
+    /// Cooldown between casts, in milliseconds.
+    pub cooldown_ms: u32,
+    /// The cast cost, resource-resolved (empty = free; the Alpha's Ore
+    /// prices arrive as one pair from the content seam).
+    pub cost: Vec<(ResourceId, i64)>,
+}
+
+/// One effect kind's parameters in authoring units (ADR-0202 §2).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum AbilityEffectTemplate {
+    /// Immediate integer damage to every enemy-player entity in radius of the
+    /// target point.
+    DamageArea {
+        /// Integer damage per hit entity.
+        damage: i32,
+        /// Effect radius in milli-tiles.
+        radius_milli_tiles: i32,
+    },
+    /// Immediate integer healing to every friendly entity with Health in
+    /// radius, clamped at max.
+    HealArea {
+        /// Integer healing per hit entity.
+        amount: i32,
+        /// Effect radius in milli-tiles.
+        radius_milli_tiles: i32,
+    },
+    /// A timed movement-speed multiplier for every friendly entity with Move
+    /// in radius (one boost per entity; a later cast overwrites).
+    SpeedBurst {
+        /// Speed multiplier in thousandths (1500 = 1.5×).
+        multiplier_milli: i32,
+        /// Boost duration in milliseconds.
+        duration_ms: u32,
+        /// Effect radius in milli-tiles.
+        radius_milli_tiles: i32,
+    },
 }
 
 impl CapTemplate {
@@ -375,6 +436,53 @@ impl CapTemplate {
                 h.write_i32(*range_milli_tiles);
                 h.write_u32(*cooldown_ms);
                 h.write_i32(*acquire_range_milli_tiles);
+            }
+            // ADR-0202 (Update 6): tag 12, additive — existing fixture hashes
+            // are unchanged (no existing template carries the block).
+            CapTemplate::Abilities { abilities } => {
+                h.write_u8(12);
+                h.write_u32(abilities.len() as u32);
+                for spec in abilities {
+                    h.write_u32(spec.id.len() as u32);
+                    h.write_bytes(spec.id.as_bytes());
+                    h.write_u32(spec.display_name.len() as u32);
+                    h.write_bytes(spec.display_name.as_bytes());
+                    match &spec.effect {
+                        AbilityEffectTemplate::DamageArea {
+                            damage,
+                            radius_milli_tiles,
+                        } => {
+                            h.write_u8(1);
+                            h.write_i32(*damage);
+                            h.write_i32(*radius_milli_tiles);
+                        }
+                        AbilityEffectTemplate::HealArea {
+                            amount,
+                            radius_milli_tiles,
+                        } => {
+                            h.write_u8(2);
+                            h.write_i32(*amount);
+                            h.write_i32(*radius_milli_tiles);
+                        }
+                        AbilityEffectTemplate::SpeedBurst {
+                            multiplier_milli,
+                            duration_ms,
+                            radius_milli_tiles,
+                        } => {
+                            h.write_u8(3);
+                            h.write_i32(*multiplier_milli);
+                            h.write_u32(*duration_ms);
+                            h.write_i32(*radius_milli_tiles);
+                        }
+                    }
+                    h.write_i32(spec.cast_range_milli_tiles);
+                    h.write_u32(spec.cooldown_ms);
+                    h.write_u32(spec.cost.len() as u32);
+                    for (resource, amount) in &spec.cost {
+                        h.write_u32(resource.0);
+                        h.write_i64(*amount);
+                    }
+                }
             }
         }
     }
@@ -449,6 +557,45 @@ impl CapTemplate {
                 ms_to_ticks(*cooldown_ms, ticks_per_second),
                 Fx::from_milli((*acquire_range_milli_tiles).max(0)),
             )),
+            // ADR-0202 (Update 6): the specs convert with the same
+            // once-at-load rule; every slot starts ready.
+            CapTemplate::Abilities { abilities } => {
+                let specs = abilities
+                    .iter()
+                    .map(|spec| crate::world::AbilitySpec {
+                        id: spec.id.clone(),
+                        effect: match &spec.effect {
+                            AbilityEffectTemplate::DamageArea {
+                                damage,
+                                radius_milli_tiles,
+                            } => crate::world::AbilityEffect::DamageArea {
+                                damage: *damage,
+                                radius: Fx::from_milli((*radius_milli_tiles).max(0)),
+                            },
+                            AbilityEffectTemplate::HealArea {
+                                amount,
+                                radius_milli_tiles,
+                            } => crate::world::AbilityEffect::HealArea {
+                                amount: *amount,
+                                radius: Fx::from_milli((*radius_milli_tiles).max(0)),
+                            },
+                            AbilityEffectTemplate::SpeedBurst {
+                                multiplier_milli,
+                                duration_ms,
+                                radius_milli_tiles,
+                            } => crate::world::AbilityEffect::SpeedBurst {
+                                multiplier: Fx::from_milli((*multiplier_milli).max(0)),
+                                duration_ticks: ms_to_ticks(*duration_ms, ticks_per_second),
+                                radius: Fx::from_milli((*radius_milli_tiles).max(0)),
+                            },
+                        },
+                        cast_range: Fx::from_milli(spec.cast_range_milli_tiles.max(0)),
+                        cooldown_ticks: ms_to_ticks(spec.cooldown_ms, ticks_per_second),
+                        cost: spec.cost.clone(),
+                    })
+                    .collect();
+                crate::CapabilityData::Abilities(crate::world::AbilitiesDef::new(specs))
+            }
         }
     }
 }

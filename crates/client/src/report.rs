@@ -95,6 +95,10 @@ pub const ATTACK_MOVE_LINE: &str = "ATTACK MOVE - click the target ground (Esc c
 /// while 'G' is armed) — the same family as the attack-move line.
 pub const GUARD_LINE: &str = "GUARD - click where to stand guard (Esc cancels)";
 
+/// ADR-0202 §8: the armed-cast instruction (the HUD line shown while an
+/// ability button's targeting is armed) — the A/G family's third member.
+pub const CAST_LINE: &str = "CAST - click the target ground (Esc cancels)";
+
 /// The controls line in effect at a moment of interest: an armed mode's
 /// instruction (attack-move or guard), a showing refusal notice, or the
 /// standing controls summary. Pure — callers feed the same state the HUD
