@@ -98,8 +98,29 @@ starting_forces: [                            // placed relative to each map sta
 `starting_forces` offsets are **tiles relative to the start anchor**. Structures
 (footprint entities) must land on buildable, unoccupied ground; units (movers)
 on passable ground outside every static footprint — the loader checks each
-(map × faction) pair. Resource nodes may not be starting forces; maps place
-nodes.
+(map × faction) pair, against every authored map. Resource nodes may not be
+starting forces; maps place nodes.
+
+Two sort laws bind a faction author (B-032's lessons, both pinned by
+`tests/content_pipeline.rs::the_second_faction_is_data_only_and_identity_pinned`
+and `tests/ai.rs`):
+
+1. **The faction id must sort after `"legion"`** — the tree's factions sort by
+   id and every plain bundle plays the FIRST, so a faction id sorting before
+   `"legion"` silently re-targets the default bundle (the menu, the headless
+   smoke, every registered golden) to a different army.
+2. **The first attacker-carrying producer in sorted producer order is the
+   scripted AI's "barracks"** (A-223) — order the production map so the
+   intended army producer sorts first (the shared `barracks` does; a new
+   producer id sorting before it re-shapes the Alpha opponent).
+
+A faction is playable through the mission seam: a mission names its
+`faction`, and `bundle_for_mission` makes that faction the one the match
+plays (B-032's played-faction seam) — every player in the match plays it
+(per-slot assignment is plan §17). Name the mission for its chapter, not its
+map: mission ids embedding a map id prefix (e.g. `iron_basin_01`) trip that
+map's data-only source scan, which reads crate sources including client
+tests (`anvil_01`, not `iron_basin_01`).
 
 ## Maps (`content/maps/<id>.ron`, schema_version 2)
 

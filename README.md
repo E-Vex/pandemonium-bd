@@ -68,7 +68,7 @@ lockstep multiplayer fall out of the architecture instead of being bolted on.
 | **Content is data** | Units, maps, factions, rulesets, missions, campaigns: strict, versioned RON. Adding one touches zero lines of engine code (FD-4). |
 | **Trust is enforced, not promised** | No floats, no unordered maps, no wall-clock, no OS entropy anywhere in the simulation — enforced by lints *and* a source-scanning test (FD-5). |
 
-The project is currently at the **Alpha** stage: one faction, one authored
+The project is currently at the **Alpha** stage: two factions, one authored
 battlefield, a pilot campaign — and a simulation foundation judged by system
 properties, not content volume. Expect the architecture to be more settled
 than the content.
@@ -114,8 +114,8 @@ The three golden values, and the commands that reproduce them:
 | golden | command | value |
 |---|---|---|
 | **demo** | `headless --seed 7 --ticks 300` | `0xb6fff6659cfb7709` |
-| **flagship** | `headless --seed 7 --ticks 7200 --p1 ai --p2 ai` | `0x0f80a93eee5bdb1d` (tick 0: `0x3d526307f2cdb237`) |
-| **content identity** | `content-validate content` | `0xb709ec37afe03aae` (map id `0xd38136401ab02ff1`) |
+| **flagship** | `headless --seed 7 --ticks 7200 --p1 ai --p2 ai` | `0x3a58e55ea6250906` (tick 0: `0x090a57e33cdf4c4b`) |
+| **content identity** | `content-validate content` | `0x8edfdfc3a814eb37` (map id `0xd38136401ab02ff1`) |
 
 A fourth command shows a full AI-vs-AI match resolving naturally end to end:
 
@@ -165,7 +165,7 @@ scripts/fetch-assets.sh
 | `cargo run -p pandemonium-client` | windowed client, main menu first |
 | `cargo run -p pandemonium-client -- --frames 900` | windowed smoke test: auto-exit with an evidence summary |
 | `cargo run -p pandemonium-client -- --headless` | no display? honest fallback, no theater |
-| `cargo run -p pandemonium-client -- --version` | the build identity line: `pandemonium-client 0.1.1 (git <sha>, content 0xb709ec37afe03aae)` |
+| `cargo run -p pandemonium-client -- --version` | the build identity line: `pandemonium-client 0.1.1 (git <sha>, content 0x8edfdfc3a814eb37)` |
 | `cargo run -p pandemonium-client -- --content PATH` | point at a content tree explicitly |
 | `cargo run -p pandemonium-client -- --seed N` | pre-fill the New Match screen's seed field |
 | `cargo run -p pandemonium-client -- --record run.pdrp` | record a replay alongside the session |
@@ -209,10 +209,9 @@ setup screen, and a match in progress:
 
 ### The Legion
 
-One faction ships with the Alpha, and it is enough: **the Legion** — a
-command center, four workers, one resource (200 ore in the bank), and victory
-by elimination. Every number below is data in [`content/`](content), not
-code; check it yourself with
+**The Legion** — a command center, four workers, one resource (200 ore in
+the bank), and victory by elimination. Every number below is data in
+[`content/`](content), not code; check it yourself with
 `cargo run -p pandemonium-tools -- content-validate content`.
 
 **The field roster**
@@ -224,7 +223,7 @@ code; check it yourself with
 | **Raider** | the flanker — arrives first | 60 | 1 | 4.0 tiles/s · dmg 6 · range 1.5 · 0.6 s reload |
 | **Guardian** | the slow hammer | 200 | 3 | dmg 30 · range 8.0 · 2.0 s reload |
 | **Pathfinder** | the eyes — fastest thing on the field, longest sight | 50 | 1 | 6.0 tiles/s · sight 12.0 · dmg 4 · range 3.0 |
-| **Lancer** | the anti-armor answer — one heavy piercer per slow cycle | 160 | 2 | dmg 50 · range 6.0 · 2.5 s reload |
+| **Lancer** | the anti-armor answer — one heavy piercer per slow cycle | 160 | 2 | dmg 60 · range 6.0 · 2.5 s reload |
 | **Ballista** | the siege answer — outranges everything, turrets included | 275 | 3 | dmg 60 · range 12.0 · 4.0 s reload · 1.2 tiles/s |
 | **Turret** | static denial | 125 | 0 | dmg 10 · range 7.0 · 1.0 s reload |
 
@@ -256,6 +255,34 @@ player's edge (and the balance's open question — it rides the playtest).
 The Legion's sparring partner, **the Swarm**, is not a faction — it is an
 instrument: the same roster at 1,000 starting forces per side on the Proving
 Grounds, for the scale row of the stress tests. The stress test fights back.
+
+### The Phalanx
+
+**The Phalanx** (B-032, plan §19's Update 5) is the second faction — the
+anvil to the Legion's combined arms. It builds the same infrastructure but
+trains none of the Legion's soldiers: fewer, slower, costlier bodies that
+win the ground they stand on and lose the ground they are not standing on.
+The same command center, three workers, and the two hoplites the faction is
+named for; the shared buildings; the counter-web below is measured by
+`tests/balance.rs` (the battery's P-laws) and authored, not yet playtested.
+
+**The anvil roster**
+
+| unit | doctrine | ore | pop | the numbers that matter |
+|---|---|---:|---:|---|
+| **Hoplite** | the anvil line — one hp per ore on the field's slowest legs | 120 | 2 | hp 120 · dmg 14 · range 3.5 · 1.1 s reload |
+| **Onager** | the light engine — out-reaches the turret by half a tile | 110 | 1 | dmg 44 · range 7.5 · 4.0 s reload · hp 60 |
+| **Cataphract** | the shock — the one fast thing the anvil fields | 240 | 3 | hp 260 · 2.6 tiles/s · dmg 24 · range 3.0 |
+| **Colossus** | the walking fortress | 400 | 6 | hp 520 · dmg 80 · range 6.5 · 3.0 s reload |
+
+The web is a cycle, not a ladder: hoplites beat the Legion's line and swarm,
+the Legion's anchor and piercer beat the anvil, the colossus beats the
+anchor, and the piercer and the swarm beat the colossus. The onager dismantles
+static defense from outside its reach (the Ballista's trick at one-third the
+price) and dies to anything that closes — the battery's P11 timing law has
+it flattening a command center in ~484 ticks where equal-ore riflemen need
+~795. The Phalanx debuts in the campaign's fourth chapter, **The Anvil**
+(`anvil_01`, Iron Basin), playable through the mission picker the same way.
 
 ### Missions & campaign
 
@@ -448,9 +475,9 @@ budgets); `audit` and `deny` workflows gate advisories and licences.
 
 | | |
 |---|---|
-| **Tests** | 1024 dev / 1019 release, green in both profiles (the five should-panic invariant tests are debug-only) |
+| **Tests** | 1043 dev / 1038 release, green in both profiles (the five should-panic invariant tests are debug-only) |
 | **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
-| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x0f80a93eee5bdb1d` · content `0xb709ec37afe03aae` — moved twice, each by an authorized move: B-029's growth (behavior proven identical) and B-031's stat rebalance (behavior intentionally changed, identity proven by the unchanged command count and RNG streams); the map growth passes (B-030 on) move none of them |
+| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x3a58e55ea6250906` · content `0x8edfdfc3a814eb37` — moved three times, each by an authorized move: B-029's growth, B-031's stat rebalance, and B-032's second faction (the last behavior-identical for the Legion: the same 612 commands, the same RNG streams, only the re-labeled kind ids moved); the map growth passes (B-030 on) move none of them |
 | **Soak** | many seeded AI-vs-AI matches with per-match crash isolation; a dev-profile soak observes the invariant checker (A12) |
 | **Releases** | per-OS archives, SHA-256 checksums, a licence gate (cargo-deny) and generated `THIRD_PARTY_NOTICES.md`, and smoke legs that gate on the licence and the bundled art pack |
 
