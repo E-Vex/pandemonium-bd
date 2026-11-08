@@ -279,6 +279,68 @@ fn validate(
             }
             Ok(())
         }
+        CommandKind::Research {
+            researcher,
+            upgrade,
+        } => {
+            // ADR-0203 §4: the gate is the sole authority, shared by every
+            // issuer — the same seven checks for a human, an AI controller,
+            // and a replay, in order: existence + ownership, capability +
+            // lifecycle, slot, prior research, prerequisites, the idle
+            // research slot, affordability.
+            check_single_entity(world, cmd.issuer, *researcher)?;
+            let Some(entity) = world.entity(*researcher) else {
+                return Err(RejectReason::UnknownEntity);
+            };
+            if !matches!(entity.lifecycle, crate::world::Lifecycle::Active) {
+                return Err(RejectReason::MissingCapability);
+            }
+            let Some(def) = world.upgrades_of(*researcher) else {
+                return Err(RejectReason::MissingCapability);
+            };
+            let Some(spec) = def.specs.get(*upgrade as usize) else {
+                return Err(RejectReason::UpgradeSlotInvalid);
+            };
+            // Research is once per player, not once per building: a second
+            // Forge offers nothing new (ADR-0203 §3).
+            if world.researched_by(cmd.issuer, entity.kind, *upgrade) {
+                return Err(RejectReason::UpgradeAlreadyResearched);
+            }
+            // The tech tree's edges: every prerequisite upgrade must already
+            // sit in the player's ledger (ids resolved to (carrier, slot)
+            // pairs at the content seam).
+            for (carrier, slot) in &spec.requires {
+                if !world.researched_by(cmd.issuer, *carrier, *slot) {
+                    return Err(RejectReason::RequirementsUnmet);
+                }
+            }
+            // One project per building at a time (the Zero-Hour rule); a
+            // second building may run its own DIFFERENT project in parallel,
+            // but the same upgrade twice is a wasted purse — refused here,
+            // at the one door every issuer shares, rather than silently
+            // dropped at the second completion (ADR-0203 §4).
+            if world.research_of(*researcher).is_some() {
+                return Err(RejectReason::ResearchBusy);
+            }
+            let carrier_kind = entity.kind;
+            let duplicate_in_flight = world.research.iter().any(|(id, block)| {
+                block.slot == *upgrade
+                    && world.entity(*id).is_some_and(|probe| {
+                        probe.owner == cmd.issuer && probe.kind == carrier_kind
+                    })
+            });
+            if duplicate_in_flight {
+                return Err(RejectReason::ResearchBusy);
+            }
+            if !spec.cost.is_empty()
+                && !world
+                    .player(cmd.issuer)
+                    .is_some_and(|player| player.can_afford(&spec.cost))
+            {
+                return Err(RejectReason::CannotAfford);
+            }
+            Ok(())
+        }
         CommandKind::Resign {} => {
             // Issuer existence was checked at the gate; resigning twice is a
             // harmless, deterministic no-op.
@@ -425,6 +487,16 @@ fn apply_valid(
             // ascending entity-id order. Deaths from area damage surface
             // through stage 8 (the same tick), exactly like combat damage.
             crate::abilities::cast(world, *caster, *ability, *target, events);
+        }
+        CommandKind::Research {
+            researcher,
+            upgrade,
+        } => {
+            // ADR-0203 §5: the project begins at the tick boundary — cost
+            // spent, runtime block injected. The started cue fires on the
+            // first advancing tick (the ProductionStarted rule), and
+            // completion lands at stage 3's head.
+            crate::upgrades::begin(world, *researcher, *upgrade);
         }
         CommandKind::Resign {} => {
             if let Some(player) = world.player_mut(cmd.issuer) {

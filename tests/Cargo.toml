@@ -85,3 +85,7 @@ path = "balance.rs"
 [[test]]
 name = "abilities"
 path = "abilities.rs"
+
+[[test]]
+name = "upgrades"
+path = "upgrades.rs"

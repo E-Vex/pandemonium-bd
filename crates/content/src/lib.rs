@@ -50,7 +50,8 @@ mod version;
 pub use bundle::{ContentBundle, ContentTree};
 pub use defs::{
     AbilityEffectDef, AbilitySpecDef, CapabilityDef, EntityDef, FactionDef, Heightmap, MapDef,
-    OreNodeDef, ResourceDef, RulesDef, StartDef, StartingForce, TerrainClass, VictoryKind,
+    OreNodeDef, ResourceDef, RulesDef, StartDef, StartingForce, TerrainClass, UpgradeEffectDef,
+    UpgradeSpecDef, VictoryKind,
 };
 pub use error::ContentError;
 pub use loader::{ms_to_ticks, Source, SourceMap};

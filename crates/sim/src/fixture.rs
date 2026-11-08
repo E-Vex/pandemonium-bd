@@ -314,6 +314,13 @@ pub enum CapTemplate {
         /// The ability specs, in authored slot order.
         abilities: Vec<AbilitySpecTemplate>,
     },
+    /// Researchable upgrades (ADR-0203, plan §19 Update 7): the kind's
+    /// authored upgrade list. Authored in ms + thousandths + resolved ids;
+    /// the simulator converts durations to ticks at load (plan §10.2).
+    Upgrades {
+        /// The upgrade specs, in authored slot order.
+        upgrades: Vec<UpgradeSpecTemplate>,
+    },
 }
 
 /// One ability spec in authoring units (ADR-0202 §1) — the fixture-side form
@@ -367,6 +374,50 @@ pub enum AbilityEffectTemplate {
         duration_ms: u32,
         /// Effect radius in milli-tiles.
         radius_milli_tiles: i32,
+    },
+}
+
+/// One upgrade spec in authoring units (ADR-0203 §1) — the fixture-side form
+/// of content's `UpgradeSpecDef`. Like the ability specs, the cost arrives
+/// already resource-resolved and the prerequisite upgrade ids arrive already
+/// resolved to (carrier kind, slot) pairs: names stop at the content seam,
+/// ids flow into the simulation (the `KindEconomy.requires` pattern).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UpgradeSpecTemplate {
+    /// Stable upgrade id (unique across the whole tree; humans, tooling, and
+    /// prerequisite resolution read it).
+    pub id: String,
+    /// Human-facing name.
+    pub display_name: String,
+    /// What the upgrade does (one of the code-defined effect kinds,
+    /// parameterized).
+    pub effect: UpgradeEffectTemplate,
+    /// Research duration in milliseconds.
+    pub research_time_ms: u32,
+    /// The research cost, resource-resolved (empty = free).
+    pub cost: Vec<(ResourceId, i64)>,
+    /// Prerequisites as resolved (carrier kind, slot) pairs.
+    pub requires: Vec<(KindId, u8)>,
+}
+
+/// One upgrade effect kind's parameters in authoring units (ADR-0203 §2).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum UpgradeEffectTemplate {
+    /// A permanent attack-damage multiplier for the owner's entities of the
+    /// targeted kinds (read live by the combat system).
+    AttackDamage {
+        /// Damage multiplier in thousandths (1250 = 1.25×).
+        multiplier_milli: i32,
+        /// Which kinds benefit (resolved kind ids).
+        targets: Vec<KindId>,
+    },
+    /// A permanent movement-speed multiplier for the owner's entities of the
+    /// targeted kinds (read live by the movement system).
+    MoveSpeed {
+        /// Speed multiplier in thousandths (1150 = 1.15×).
+        multiplier_milli: i32,
+        /// Which kinds benefit (resolved kind ids).
+        targets: Vec<KindId>,
     },
 }
 
@@ -484,6 +535,54 @@ impl CapTemplate {
                     }
                 }
             }
+            // ADR-0203 (Update 7): tag 13, additive — existing fixture
+            // hashes are unchanged (no existing template carries the block;
+            // the B-033 tag-12 precedent's rule).
+            CapTemplate::Upgrades { upgrades } => {
+                h.write_u8(13);
+                h.write_u32(upgrades.len() as u32);
+                for spec in upgrades {
+                    h.write_u32(spec.id.len() as u32);
+                    h.write_bytes(spec.id.as_bytes());
+                    h.write_u32(spec.display_name.len() as u32);
+                    h.write_bytes(spec.display_name.as_bytes());
+                    match &spec.effect {
+                        UpgradeEffectTemplate::AttackDamage {
+                            multiplier_milli,
+                            targets,
+                        } => {
+                            h.write_u8(1);
+                            h.write_i32(*multiplier_milli);
+                            h.write_u32(targets.len() as u32);
+                            for target in targets {
+                                h.write_u32(target.0);
+                            }
+                        }
+                        UpgradeEffectTemplate::MoveSpeed {
+                            multiplier_milli,
+                            targets,
+                        } => {
+                            h.write_u8(2);
+                            h.write_i32(*multiplier_milli);
+                            h.write_u32(targets.len() as u32);
+                            for target in targets {
+                                h.write_u32(target.0);
+                            }
+                        }
+                    }
+                    h.write_u32(spec.research_time_ms);
+                    h.write_u32(spec.cost.len() as u32);
+                    for (resource, amount) in &spec.cost {
+                        h.write_u32(resource.0);
+                        h.write_i64(*amount);
+                    }
+                    h.write_u32(spec.requires.len() as u32);
+                    for (carrier, slot) in &spec.requires {
+                        h.write_u32(carrier.0);
+                        h.write_u8(*slot);
+                    }
+                }
+            }
         }
     }
 
@@ -595,6 +694,38 @@ impl CapTemplate {
                     })
                     .collect();
                 crate::CapabilityData::Abilities(crate::world::AbilitiesDef::new(specs))
+            }
+            // ADR-0203 (Update 7): the specs convert with the same
+            // once-at-load rule (ms to ticks, thousandths to fixed point);
+            // the runtime block is NOT here — the Research command injects
+            // it, the Construction pattern.
+            CapTemplate::Upgrades { upgrades } => {
+                let specs = upgrades
+                    .iter()
+                    .map(|spec| crate::world::UpgradeSpec {
+                        id: spec.id.clone(),
+                        effect: match &spec.effect {
+                            UpgradeEffectTemplate::AttackDamage {
+                                multiplier_milli,
+                                targets,
+                            } => crate::world::UpgradeEffect::AttackDamage {
+                                multiplier: Fx::from_milli((*multiplier_milli).max(0)),
+                                targets: targets.clone(),
+                            },
+                            UpgradeEffectTemplate::MoveSpeed {
+                                multiplier_milli,
+                                targets,
+                            } => crate::world::UpgradeEffect::MoveSpeed {
+                                multiplier: Fx::from_milli((*multiplier_milli).max(0)),
+                                targets: targets.clone(),
+                            },
+                        },
+                        research_ticks: ms_to_ticks(spec.research_time_ms, ticks_per_second),
+                        cost: spec.cost.clone(),
+                        requires: spec.requires.clone(),
+                    })
+                    .collect();
+                crate::CapabilityData::Upgrades(crate::world::UpgradesDef { specs })
             }
         }
     }

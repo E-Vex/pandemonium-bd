@@ -578,8 +578,8 @@ jobs:
           #    hash + map id first, then the demo and flagship sim goldens
           #    re-run from the packaged binaries and packaged content.
           (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" content-validate) | tee content-validate.out
-          grep -q "content hash: 0xbe1a3d97ae6780e9, map id: 0xd38136401ab02ff1" content-validate.out \
-            || { echo "FAIL: packaged content golden mismatch (expected content 0xbe1a3d97ae6780e9, map 0xd38136401ab02ff1)"; exit 1; }
+          grep -q "content hash: 0x4d362e1a17b9eefc, map id: 0xd38136401ab02ff1" content-validate.out \
+            || { echo "FAIL: packaged content golden mismatch (expected content 0x4d362e1a17b9eefc, map 0xd38136401ab02ff1)"; exit 1; }
           (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" headless --seed 7 --ticks 300) | tee demo.out
           grep -q "0xb6fff6659cfb7709" demo.out \
             || { echo "FAIL: packaged demo golden mismatch (expected final hash 0xb6fff6659cfb7709)"; cat demo.out; exit 1; }

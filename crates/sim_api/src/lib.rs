@@ -226,6 +226,16 @@ pub struct PlayerView {
     /// in the match or fields no casters). Own slots only — fog hides enemy
     /// cooldowns exactly as it hides enemy queues.
     pub abilities: Vec<AbilityView>,
+    /// This player's in-flight research, researchers in ascending id order,
+    /// one entry per researcher with a live project (ADR-0203, Update 7;
+    /// empty when the player is not in the match or researches nothing).
+    /// Own projects only — fog hides enemy research exactly as it hides
+    /// enemy queues.
+    pub research: Vec<ResearchView>,
+    /// This player's completed upgrades, ascending by (carrier kind, slot)
+    /// (ADR-0203, Update 7). The command card's "done" marks read this;
+    /// like the in-flight list, own only.
+    pub researched: Vec<ResearchedView>,
 }
 
 /// One caster's ability slot as the owning player sees it (ADR-0202): which
@@ -241,6 +251,35 @@ pub struct AbilityView {
     /// Thousandths of the slot's authored cooldown remaining (0 = ready; the
     /// fraction the button's darkened sweep draws).
     pub cooldown_milli: u32,
+}
+
+/// One researcher's in-flight project as the owning player sees it
+/// (ADR-0203, Update 7): which upgrade, and how much of its authored
+/// research time remains — the command card's progress sweep reads this,
+/// the same thousandths convention as [`AbilityView::cooldown_milli`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResearchView {
+    /// The entity researching (it carries the Upgrades capability).
+    pub researcher: EntityId,
+    /// Which upgrade, by its authored slot index in the kind's list.
+    pub slot: u8,
+    /// Thousandths of the authored research time remaining (0 = completing
+    /// this tick; the fraction the button's darkened sweep draws).
+    pub progress_milli: u32,
+}
+
+/// One completed upgrade as the owning player sees it (ADR-0203, Update 7):
+/// addressed by its carrier kind and slot — the pair every gate check and
+/// prerequisite resolves against. The kind resolves to a name through the
+/// loaded content on the client side.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct ResearchedView {
+    /// The kind that carries the researched upgrade (any standing entity of
+    /// the kind offers it — the researched set is the player's, not one
+    /// building's).
+    pub kind: KindId,
+    /// Which upgrade slot, by its authored index in the carrier kind's list.
+    pub slot: u8,
 }
 
 /// Why the validation gate refused a command (plan §8.2). Every reason is emitted
@@ -294,6 +333,15 @@ pub enum RejectReason {
     /// The target point is outside the ability's cast range from the caster
     /// (ADR-0202, Update 6).
     AbilityOutOfRange,
+    /// The upgrade slot index is outside the researcher kind's authored list
+    /// (ADR-0203, Update 7).
+    UpgradeSlotInvalid,
+    /// The player already holds this upgrade — research is once per player,
+    /// not once per building (ADR-0203, Update 7).
+    UpgradeAlreadyResearched,
+    /// The researcher already has one project in flight — one upgrade per
+    /// building at a time (ADR-0203, Update 7).
+    ResearchBusy,
 }
 
 /// A validation rejection (plan §8.2: "invalid commands produce `Reject { reason }`
@@ -432,6 +480,20 @@ pub enum CommandKind {
         /// The target ground point in tile units.
         target: Vec2Fx,
     },
+    /// Begin researching one of a structure's upgrades (ADR-0203, plan
+    /// §19 Update 7). One researcher per command; the project occupies the
+    /// building's single research slot for its authored duration, the cost
+    /// is spent at enqueue (the Train economy rule), and completion moves
+    /// the upgrade into the player's permanent researched set — it survives
+    /// the building's later death and applies to every present and future
+    /// entity of the targeted kinds.
+    Research {
+        /// The structure that researches (it must carry the Upgrades
+        /// capability and stand complete).
+        researcher: EntityId,
+        /// Which upgrade, by its authored slot index in the kind's list.
+        upgrade: u8,
+    },
     /// Concede the match for the issuer.
     Resign {},
 }
@@ -568,6 +630,26 @@ pub enum Event {
         ability: u8,
         /// The ground point the ability resolved at.
         at: Vec2Fx,
+    },
+    /// A research project began progressing (ADR-0203, Update 7): fired on
+    /// the first tick the project advances, the `ProductionStarted` rule.
+    /// The cost was already spent at enqueue; from here the project simply
+    /// counts down.
+    ResearchStarted {
+        /// The structure researching.
+        researcher: EntityId,
+        /// Which upgrade slot, by its authored index in the kind's list.
+        upgrade: u8,
+    },
+    /// A research project completed (ADR-0203, Update 7): the upgrade moved
+    /// into the player's permanent researched set — its effect applies from
+    /// this tick onward (combat damage and movement speed read the set
+    /// live; no entity is mutated at completion for the Update-7 kinds).
+    ResearchCompleted {
+        /// The structure that finished the project.
+        researcher: EntityId,
+        /// Which upgrade slot, by its authored index in the kind's list.
+        upgrade: u8,
     },
 }
 

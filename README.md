@@ -115,7 +115,7 @@ The three golden values, and the commands that reproduce them:
 |---|---|---|
 | **demo** | `headless --seed 7 --ticks 300` | `0xb6fff6659cfb7709` |
 | **flagship** | `headless --seed 7 --ticks 7200 --p1 ai --p2 ai` | `0x3a58e55ea6250906` (tick 0: `0x090a57e33cdf4c4b`) |
-| **content identity** | `content-validate content` | `0xbe1a3d97ae6780e9` (map id `0xd38136401ab02ff1`) |
+| **content identity** | `content-validate content` | `0x4d362e1a17b9eefc` (map id `0xd38136401ab02ff1`) |
 
 A fourth command shows a full AI-vs-AI match resolving naturally end to end:
 
@@ -165,7 +165,7 @@ scripts/fetch-assets.sh
 | `cargo run -p pandemonium-client` | windowed client, main menu first |
 | `cargo run -p pandemonium-client -- --frames 900` | windowed smoke test: auto-exit with an evidence summary |
 | `cargo run -p pandemonium-client -- --headless` | no display? honest fallback, no theater |
-| `cargo run -p pandemonium-client -- --version` | the build identity line: `pandemonium-client 0.1.1 (git <sha>, content 0xbe1a3d97ae6780e9)` |
+| `cargo run -p pandemonium-client -- --version` | the build identity line: `pandemonium-client 0.1.1 (git <sha>, content 0x4d362e1a17b9eefc)` |
 | `cargo run -p pandemonium-client -- --content PATH` | point at a content tree explicitly |
 | `cargo run -p pandemonium-client -- --seed N` | pre-fill the New Match screen's seed field |
 | `cargo run -p pandemonium-client -- --record run.pdrp` | record a replay alongside the session |
@@ -497,7 +497,7 @@ budgets); `audit` and `deny` workflows gate advisories and licences.
 |---|---|
 | **Tests** | 1043 dev / 1038 release, green in both profiles (the five should-panic invariant tests are debug-only) |
 | **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
-| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x3a58e55ea6250906` · content `0xbe1a3d97ae6780e9` — moved four times, each by an authorized move: B-029's growth, B-031's stat rebalance, B-032's second faction (behavior-identical for the Legion: the same 612 commands, the same RNG streams, only the re-labeled kind ids moved), and B-033's ability content (the Pathfinder's Sprint and the Ballista's Volley — again behavior-identical for every pinned run: the carriers are forge-tier, no scripted AI fields them, so the demo and flagship hashes are bit-identical and only the content digest moved); the map growth passes (B-030 on) move none of them |
+| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x3a58e55ea6250906` · content `0x4d362e1a17b9eefc` — moved four times, each by an authorized move: B-029's growth, B-031's stat rebalance, B-032's second faction (behavior-identical for the Legion: the same 612 commands, the same RNG streams, only the re-labeled kind ids moved), and B-033's ability content (the Pathfinder's Sprint and the Ballista's Volley — again behavior-identical for every pinned run: the carriers are forge-tier, no scripted AI fields them, so the demo and flagship hashes are bit-identical and only the content digest moved); the map growth passes (B-030 on) move none of them |
 | **Soak** | many seeded AI-vs-AI matches with per-match crash isolation; a dev-profile soak observes the invariant checker (A12) |
 | **Releases** | per-OS archives, SHA-256 checksums, a licence gate (cargo-deny) and generated `THIRD_PARTY_NOTICES.md`, and smoke legs that gate on the licence and the bundled art pack |
 

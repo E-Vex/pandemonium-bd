@@ -9,8 +9,8 @@
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
     AbilityView, Command, EntityId, EntityView, Event, FogPreset, MatchSetup, MissionData,
-    PlayerId, PlayerView, QueueItemView, QueueView, Snapshot, Stage, StageObserver, Tick, TileFog,
-    Vec2Fx, ViewResource,
+    PlayerId, PlayerView, QueueItemView, QueueView, ResearchView, ResearchedView, Snapshot, Stage,
+    StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
 };
 
 use crate::command::apply_commands;
@@ -407,6 +407,52 @@ impl Sim {
                 })
             })
             .collect();
+        // Own researchers only, ascending entity id (the research store's
+        // invariant), one view entry per project in flight (ADR-0203 §7:
+        // fog hides enemy research exactly as it hides enemy queues — the
+        // production and abilities rules, verbatim). The progress is
+        // thousandths ELAPSED (0 = just begun) — the queue strip's
+        // progress_milli convention, inverted from the cooldown sweep's
+        // remaining-fraction so the card's fill grows with the project.
+        let research = self
+            .world
+            .research
+            .iter()
+            .filter(|(id, _)| {
+                self.world
+                    .entity(*id)
+                    .is_some_and(|entity| entity.owner == player)
+            })
+            .filter_map(|(id, block)| {
+                let total = self
+                    .world
+                    .upgrades_of(*id)
+                    .and_then(|def| def.specs.get(block.slot as usize))
+                    .map(|spec| spec.research_ticks)?;
+                let progress_milli = if total == 0 {
+                    0
+                } else {
+                    ((block.progress_ticks.min(total) as u64 * 1000) / total as u64) as u32
+                };
+                Some(ResearchView {
+                    researcher: *id,
+                    slot: block.slot,
+                    progress_milli,
+                })
+            })
+            .collect();
+        // The player's completed upgrades, ascending (carrier kind, slot)
+        // — the ledger's own order (ADR-0203 §3). Own only, by construction.
+        let researched = self
+            .world
+            .researched
+            .iter()
+            .filter(|entry| entry.player == player)
+            .map(|entry| ResearchedView {
+                kind: entry.carrier,
+                slot: entry.slot,
+            })
+            .collect();
         PlayerView {
             tick: self.tick,
             player,
@@ -417,6 +463,8 @@ impl Sim {
             fog,
             production,
             abilities,
+            research,
+            researched,
         }
     }
 
@@ -533,12 +581,17 @@ impl Sim {
         // Stage 3 — Production & construction: advance queues and construction
         //           progress; spawn/complete (plan §9.4, M5). The fixture's
         //           scheduled spawns (the M1 stand-in) run first, then the
-        //           production queues, then the construction sites; the
-        //           population usage and cap settle at the stage's end.
+        //           research projects (ADR-0203, Update 7 — research is
+        //           production's shape; its pass runs at the stage's head,
+        //           before the queues' own work, the abilities-at-stage-7
+        //           placement rule), then the production queues, then the
+        //           construction sites; the population usage and cap settle
+        //           at the stage's end.
         if let Some(observer) = observer.as_mut() {
             observer.stage(Stage::Production);
         }
         self.run_scheduled_spawns();
+        crate::upgrades::advance_research(&mut self.world, &mut self.events);
         crate::production::advance_production(
             &mut self.world,
             &self.fixture,

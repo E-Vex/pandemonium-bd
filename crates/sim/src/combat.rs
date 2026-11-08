@@ -125,7 +125,13 @@ pub(crate) fn advance_combat(world: &mut World, events: &mut Vec<Event>) {
                     target_id,
                     target_owner,
                     target_pos,
-                    damage: attacker_def.damage,
+                    // ADR-0203 §2 (Update 7): the hit's damage flows through
+                    // the upgrade seam — the authored base times every
+                    // AttackDamage multiplier the attacker's owner holds for
+                    // the attacker's kind (identity when the ledger is empty
+                    // or the kind is untargeted, so every pre-B-034 outcome
+                    // is bit-identical).
+                    damage: world.effective_damage(attacker_id, attacker_def.damage),
                 });
                 attacker_def.consume();
             }
