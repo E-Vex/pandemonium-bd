@@ -2,6 +2,10 @@
 // Legion's eyes. Fastest thing on the field with the longest sight — and
 // almost no gun. Harasses ore lines, lifts fog, and spots for the Ballista.
 // Trained at the Forge (factions/legion.ron).
+// B-033 (plan §19 Update 6 — the ability system, ADR-0202): the scout's
+// active. Overland Sprint doubles the march's pace for four seconds in a
+// 2.5-tile radius — the dive-in and the get-out. Authored, not playtested
+// (A-230's standard): whether it FEELS right is the A14 playtest's call.
 (
     schema_version: 1,
     id: "pathfinder",
@@ -11,6 +15,11 @@
         Move(( speed_milli_tiles_per_s: 6000, radius_milli_tiles: 300 )),
         Attack(( damage: 4, range_milli_tiles: 3000, cooldown_ms: 800, acquire_range_milli_tiles: 5000 )),
         Vision(( radius_milli_tiles: 12000 )),
+        Abilities(( abilities: [
+            ( id: "overland_sprint", display_name: "Overland Sprint",
+              effect: SpeedBurst(( multiplier_milli: 1500, duration_ms: 4000, radius_milli_tiles: 2500 )),
+              cast_range_milli_tiles: 4000, cooldown_ms: 20000, cost_ore: 0 ),
+        ] )),
     ],
     cost: ( ore: 50 ),
     build_time_ms: 6000,

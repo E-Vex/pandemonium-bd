@@ -325,6 +325,7 @@ const TAG_TRAIN: u8 = 7;
 const TAG_CANCEL_QUEUE_ITEM: u8 = 8;
 const TAG_SET_RALLY: u8 = 9;
 const TAG_RESIGN: u8 = 10;
+const TAG_CAST_ABILITY: u8 = 11;
 
 fn encode_command(w: &mut Writer, cmd: &Command) {
     w.write_u8(cmd.issuer.0);
@@ -380,6 +381,18 @@ fn encode_command(w: &mut Writer, cmd: &Command) {
         CommandKind::SetRally { producer, target } => {
             w.write_u8(TAG_SET_RALLY);
             w.write_u64(producer.0);
+            encode_vec(w, *target);
+        }
+        CommandKind::CastAbility {
+            caster,
+            ability,
+            target,
+        } => {
+            // ADR-0202 (Update 6): the cast rides the command log like every
+            // other verb — a replay of a cast-bearing match re-simulates it.
+            w.write_u8(TAG_CAST_ABILITY);
+            w.write_u64(caster.0);
+            w.write_u8(*ability);
             encode_vec(w, *target);
         }
         CommandKind::Resign {} => {
@@ -443,6 +456,16 @@ fn decode_command(r: &mut Reader<'_>) -> Result<Command, ReplayError> {
             let producer = pandemonium_sim_api::EntityId(r.read_u64()?);
             let target = decode_vec(r)?;
             CommandKind::SetRally { producer, target }
+        }
+        TAG_CAST_ABILITY => {
+            let caster = pandemonium_sim_api::EntityId(r.read_u64()?);
+            let ability = r.read_u8()?;
+            let target = decode_vec(r)?;
+            CommandKind::CastAbility {
+                caster,
+                ability,
+                target,
+            }
         }
         TAG_RESIGN => CommandKind::Resign {},
         tag => {

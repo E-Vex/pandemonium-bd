@@ -229,6 +229,56 @@ fn validate(
             check_single_entity(world, cmd.issuer, *producer)?;
             check_producer(world, *producer)
         }
+        CommandKind::CastAbility {
+            caster,
+            ability,
+            target,
+        } => {
+            // ADR-0202 §4: the gate is the sole authority, shared by every
+            // issuer — the same seven checks for a human, an AI controller,
+            // and a replay, in order: existence + ownership, capability +
+            // lifecycle, slot, cooldown, affordability, range, visibility.
+            check_single_entity(world, cmd.issuer, *caster)?;
+            let Some(entity) = world.entity(*caster) else {
+                return Err(RejectReason::UnknownEntity);
+            };
+            if !matches!(entity.lifecycle, crate::world::Lifecycle::Active) {
+                return Err(RejectReason::MissingCapability);
+            }
+            let Some(def) = world.abilities_of(*caster) else {
+                return Err(RejectReason::MissingCapability);
+            };
+            let Some(slot) = def.specs.get(*ability as usize) else {
+                return Err(RejectReason::AbilitySlotInvalid);
+            };
+            if def
+                .cooldowns
+                .get(*ability as usize)
+                .is_some_and(|cd| *cd > 0)
+            {
+                return Err(RejectReason::AbilityOnCooldown);
+            }
+            if !slot.cost.is_empty()
+                && !world
+                    .player(cmd.issuer)
+                    .is_some_and(|player| player.can_afford(&slot.cost))
+            {
+                return Err(RejectReason::CannotAfford);
+            }
+            // Squared-distance range check (plan §5.8: no roots).
+            let range_raw = slot.cast_range.raw().max(0) as u64;
+            let d_sq = (entity.pos - *target).len_sq_raw();
+            if d_sq > range_raw * range_raw {
+                return Err(RejectReason::AbilityOutOfRange);
+            }
+            // The target point must be visible to the issuer (FD-8: fog
+            // filters the order, never the simulation) — the ground-point
+            // analog of `visible_to`: inside any friendly Vision radius.
+            if !point_visible_to(world, cmd.issuer, *target) {
+                return Err(RejectReason::NotVisible);
+            }
+            Ok(())
+        }
         CommandKind::Resign {} => {
             // Issuer existence was checked at the gate; resigning twice is a
             // harmless, deterministic no-op.
@@ -364,6 +414,17 @@ fn apply_valid(
             if let Some(def) = world.produce_of_mut(*producer) {
                 def.rally = Some(*target);
             }
+        }
+        CommandKind::CastAbility {
+            caster,
+            ability,
+            target,
+        } => {
+            // ADR-0202 §5: the cast resolves at the tick boundary — cost
+            // spent, cooldown consumed, cue fired, effect applied in
+            // ascending entity-id order. Deaths from area damage surface
+            // through stage 8 (the same tick), exactly like combat damage.
+            crate::abilities::cast(world, *caster, *ability, *target, events);
         }
         CommandKind::Resign {} => {
             if let Some(player) = world.player_mut(cmd.issuer) {
@@ -668,6 +729,30 @@ pub(crate) fn visible_to(world: &World, viewer: PlayerId, target: EntityId) -> b
         let radius_raw = def.radius.raw().max(0) as u64;
         let r_sq = radius_raw * radius_raw;
         let d_sq = (eye.pos - target_entity.pos).len_sq_raw();
+        if d_sq <= r_sq {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ground-point visibility (ADR-0202 §4): a point is visible to a player when
+/// it sits within the vision radius of any of that player's Vision-carrying
+/// entities — the `visible_to` law's ground analog, and the ability gate's
+/// fog rule (FD-8: fog filters the order, never the simulation). This is the
+/// spotting seam: a caster without eyes of its own may cast at any point a
+/// friendly scout lifts (the Ballista/Pathfinder pairing, ADR-0202 §9).
+pub(crate) fn point_visible_to(world: &World, viewer: PlayerId, point: Vec2Fx) -> bool {
+    for (eid, def) in &world.vision {
+        let Some(eye) = world.entity(*eid) else {
+            continue;
+        };
+        if eye.owner != viewer {
+            continue;
+        }
+        let radius_raw = def.radius.raw().max(0) as u64;
+        let r_sq = radius_raw * radius_raw;
+        let d_sq = (eye.pos - point).len_sq_raw();
         if d_sq <= r_sq {
             return true;
         }

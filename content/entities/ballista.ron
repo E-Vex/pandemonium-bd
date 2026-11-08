@@ -4,6 +4,12 @@
 // reach and dies to anything fast that closes. Its sight matches its
 // acquisition (A-058: acquire_range <= vision — the siege platform sees
 // what it bombards). Trained at the Forge.
+// B-033 (plan §19 Update 6 — the ability system, ADR-0202): the artillery's
+// active. Shatter Volley reaches a tile beyond the gun itself — but the
+// gate's fog law wants EYES on the point, so the pairing this file always
+// promised (the Pathfinder spots, the Ballista shells) is now the play.
+// 45 damage in a 1.8-tile radius, 25 s cooldown. Authored, not playtested
+// (A-230's standard): the feel rides A14.
 (
     schema_version: 1,
     id: "ballista",
@@ -13,6 +19,11 @@
         Move(( speed_milli_tiles_per_s: 1200, radius_milli_tiles: 450 )),
         Attack(( damage: 60, range_milli_tiles: 12000, cooldown_ms: 4000, acquire_range_milli_tiles: 12500 )),
         Vision(( radius_milli_tiles: 12500 )),
+        Abilities(( abilities: [
+            ( id: "shatter_volley", display_name: "Shatter Volley",
+              effect: DamageArea(( damage: 45, radius_milli_tiles: 1800 )),
+              cast_range_milli_tiles: 13000, cooldown_ms: 25000, cost_ore: 0 ),
+        ] )),
     ],
     cost: ( ore: 275 ),
     build_time_ms: 32000,

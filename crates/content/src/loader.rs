@@ -332,6 +332,48 @@ fn convert_capability(raw: &RawCapability) -> defs::CapabilityDef {
             radius_milli_tiles: cap.radius_milli_tiles,
         },
         RawCapability::Footprint(cap) => defs::CapabilityDef::Footprint { w: cap.w, h: cap.h },
+        RawCapability::Abilities(cap) => defs::CapabilityDef::Abilities {
+            abilities: cap
+                .abilities
+                .iter()
+                .map(|ability| defs::AbilitySpecDef {
+                    id: ability.id.clone(),
+                    display_name: ability.display_name.clone(),
+                    effect: match &ability.effect {
+                        schema::RawAbilityEffect::DamageArea(effect) => {
+                            defs::AbilityEffectDef::DamageArea {
+                                damage: effect.damage,
+                                radius_milli_tiles: effect.radius_milli_tiles,
+                            }
+                        }
+                        schema::RawAbilityEffect::HealArea(effect) => {
+                            defs::AbilityEffectDef::HealArea {
+                                amount: effect.amount,
+                                radius_milli_tiles: effect.radius_milli_tiles,
+                            }
+                        }
+                        schema::RawAbilityEffect::SpeedBurst(effect) => {
+                            defs::AbilityEffectDef::SpeedBurst {
+                                multiplier_milli: effect.multiplier_milli,
+                                duration_ms: effect.duration_ms,
+                                duration_ticks: ms_to_ticks(
+                                    effect.duration_ms,
+                                    pandemonium_sim::TICKS_PER_SECOND,
+                                ),
+                                radius_milli_tiles: effect.radius_milli_tiles,
+                            }
+                        }
+                    },
+                    cast_range_milli_tiles: ability.cast_range_milli_tiles,
+                    cooldown_ms: ability.cooldown_ms,
+                    cooldown_ticks: ms_to_ticks(
+                        ability.cooldown_ms,
+                        pandemonium_sim::TICKS_PER_SECOND,
+                    ),
+                    cost_ore: ability.cost_ore,
+                })
+                .collect(),
+        },
     }
 }
 

@@ -8,8 +8,9 @@
 
 use pandemonium_fx::{Fx, Rng};
 use pandemonium_sim_api::{
-    Command, EntityId, EntityView, Event, FogPreset, MatchSetup, MissionData, PlayerId, PlayerView,
-    QueueItemView, QueueView, Snapshot, Stage, StageObserver, Tick, TileFog, Vec2Fx, ViewResource,
+    AbilityView, Command, EntityId, EntityView, Event, FogPreset, MatchSetup, MissionData,
+    PlayerId, PlayerView, QueueItemView, QueueView, Snapshot, Stage, StageObserver, Tick, TileFog,
+    Vec2Fx, ViewResource,
 };
 
 use crate::command::apply_commands;
@@ -375,6 +376,37 @@ impl Sim {
                 rally: def.rally,
             })
             .collect();
+        // Own casters only, ascending entity id (the abilities store's
+        // invariant), one view entry per (caster, slot) — the production
+        // queues' exact rule (ADR-0202 §7: fog hides enemy cooldowns exactly
+        // as it hides enemy queues).
+        let abilities = self
+            .world
+            .abilities
+            .iter()
+            .filter(|(id, _)| {
+                self.world
+                    .entity(*id)
+                    .is_some_and(|entity| entity.owner == player)
+            })
+            .flat_map(|(id, def)| {
+                def.specs.iter().enumerate().map(move |(slot, spec)| {
+                    let cooldown = def.cooldowns.get(slot).copied().unwrap_or(0);
+                    let remaining_milli = if spec.cooldown_ticks == 0 {
+                        0
+                    } else {
+                        // Thousandths of the authored cooldown still elapsing
+                        // (0 = ready) — the hp_fraction_milli convention.
+                        ((cooldown as u64 * 1000) / spec.cooldown_ticks as u64) as u32
+                    };
+                    AbilityView {
+                        caster: *id,
+                        slot: slot as u8,
+                        cooldown_milli: remaining_milli,
+                    }
+                })
+            })
+            .collect();
         PlayerView {
             tick: self.tick,
             player,
@@ -384,6 +416,7 @@ impl Sim {
             entities,
             fog,
             production,
+            abilities,
         }
     }
 
@@ -543,9 +576,14 @@ impl Sim {
         // Stage 7 — Combat: resolve attacks, apply damage, fire AttackHit (M6,
         //           plan §9.2). Damage subtracts from Health.hp; stage 8
         //           detects the resulting deaths and removes the entities.
+        //           ADR-0202 (Update 6): the ability system's per-tick pass —
+        //           cooldowns tick down and speed boosts expire — runs at the
+        //           stage's head, before combat's own work, the insertion
+        //           point plan §8.3 reserved for abilities.
         if let Some(observer) = observer.as_mut() {
             observer.stage(Stage::Combat);
         }
+        crate::abilities::advance_abilities(&mut self.world);
         crate::combat::advance_combat(&mut self.world, &mut self.events);
 
         // Stage 8 — Death & cleanup: advance health, fire lifecycle events,

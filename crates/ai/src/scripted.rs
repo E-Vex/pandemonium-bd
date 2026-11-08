@@ -885,6 +885,7 @@ mod tests {
             entities,
             fog: Vec::new(),
             production: Vec::new(),
+            abilities: Vec::new(),
         }
     }
 
@@ -1492,6 +1493,7 @@ mod tests {
             ],
             fog: Vec::new(),
             production: Vec::new(),
+            abilities: Vec::new(),
         };
         let commands = think(&mut controller, &view);
         assert!(!commands.is_empty());

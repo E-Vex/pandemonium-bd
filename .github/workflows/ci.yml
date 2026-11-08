@@ -187,7 +187,7 @@ jobs:
       - name: Validate the registered content identity
         run: |
           cargo run -p pandemonium-tools -- content-validate content \
-            --expect-content-hash 0x8edfdfc3a814eb37 \
+            --expect-content-hash 0xbe1a3d97ae6780e9 \
             --expect-map-id 0xd38136401ab02ff1
 
   cross-os:

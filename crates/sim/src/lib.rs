@@ -24,6 +24,7 @@
 )]
 #![warn(missing_docs)]
 
+mod abilities;
 mod combat;
 mod command;
 mod economy;
@@ -42,15 +43,16 @@ mod world;
 use pandemonium_sim_api::Tick;
 
 pub use fixture::{
-    CapTemplate, KindEconomy, KindTemplate, ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
+    AbilityEffectTemplate, AbilitySpecTemplate, CapTemplate, KindEconomy, KindTemplate,
+    ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
 };
 pub use match_rules::MatchOutcome;
 pub use runner::{rehost_sim, run_command_log, run_command_log_with_mission, CommandLogRun};
 pub use sim::{Sim, StepOutput};
 pub use world::{
-    AttackDef, BuildDef, CapabilityData, ConstructionDef, FootprintDef, GatherDef, HealthDef,
-    Lifecycle, MoveDef, Order, PopulationDef, ProduceDef, QueueItem, ResourceBodyDef, StorageDef,
-    VisionDef, World,
+    AbilitiesDef, AbilityEffect, AbilitySpec, AttackDef, BuildDef, CapabilityData, ConstructionDef,
+    FootprintDef, GatherDef, HealthDef, Lifecycle, MoveDef, Order, PopulationDef, ProduceDef,
+    QueueItem, ResourceBodyDef, SpeedBoostDef, StorageDef, VisionDef, World,
 };
 
 /// Simulation frequency in ticks per second (FD-1: fixed-tick, render-decoupled).

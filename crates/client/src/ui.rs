@@ -13,7 +13,7 @@
 use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
 use pandemonium_sim_api::{
-    EntityId, EntityView, GatherSemantics, KindId, MissionData, MissionObjectiveKind,
+    AbilityView, EntityId, EntityView, GatherSemantics, KindId, MissionData, MissionObjectiveKind,
     MissionObjectiveParameters, ObjectiveState, QueueView, TilePos,
 };
 
@@ -41,6 +41,14 @@ pub enum ButtonAction {
         producer: EntityId,
         /// The queue index to cancel.
         index: u16,
+    },
+    /// Arm cast targeting: the next left-click casts this ability at the
+    /// clicked ground point (ADR-0202 §8 — the A/G arm/cancel family).
+    CastAbility {
+        /// The entity that will cast.
+        caster: EntityId,
+        /// Which ability slot, by its authored index in the kind's list.
+        slot: u8,
     },
 }
 
@@ -156,6 +164,9 @@ pub struct CardInput<'a> {
     pub view_entities: &'a [EntityView],
     /// The player's own production queues (producers ascending by id).
     pub production: &'a [QueueView],
+    /// The player's own ability slots (casters ascending by id, one entry per
+    /// (caster, slot) — ADR-0202 §7).
+    pub abilities: &'a [AbilityView],
     /// The loaded content bundle (defs, faction production lists).
     pub bundle: &'a ContentBundle,
     /// The current selection (own entity ids).
@@ -187,6 +198,7 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
         layout,
         view_entities,
         production,
+        abilities,
         bundle,
         selection,
         ore,
@@ -462,6 +474,110 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
                 action: ButtonAction::PlaceStructure {
                     worker,
                     structure: *structure,
+                },
+                enabled,
+            });
+        }
+    }
+
+    // ── Ability row (ADR-0202 §8): the first selected caster's slots, in the
+    // card's first free cell row — after the train row (a selected producer)
+    // and the build row(s) (a selected worker wraps every 3 structures, the
+    // existing rule). The common case — a caster selected alone or with
+    // other units — has both card rows free; a mixed selection that fills
+    // both rows omits the row (the recorded presentation limit — the gate
+    // stays the authority, and A14 rules on the card's eventual shape).
+    // Enabled = ready and affordable; the cooldown is a darkened sweep over
+    // the cell plus the seconds left.
+    let selected_caster = selected
+        .iter()
+        .find(|entity| def_of(bundle, entity.kind).is_some_and(|def| def.abilities().is_some()));
+    let build_row_count: f32 = if selected_worker.is_some() {
+        let structures = bundle
+            .faction()
+            .roster
+            .iter()
+            .filter_map(|id| kind_of(bundle, id))
+            .filter(|kind| def_of(bundle, *kind).is_some_and(|def| def.is_structure()))
+            .count();
+        (structures.max(1) as f32 / 3.0).ceil()
+    } else {
+        0.0
+    };
+    let ability_row: Option<f32> = {
+        let start = if selected_producer.is_some() {
+            1.0
+        } else {
+            0.0
+        } + build_row_count;
+        (start < 2.0).then_some(start)
+    };
+    if let (Some(caster), Some(row)) = (selected_caster, ability_row) {
+        let Some(specs) = def_of(bundle, caster.kind).and_then(|def| def.abilities()) else {
+            unreachable!("the caster filter guaranteed the capability");
+        };
+        for (column, (slot, spec)) in specs.iter().enumerate().take(3).enumerate() {
+            let x = card[0] + PAD + column as f32 * CELL_W;
+            let y = card[1] + PAD + row * CELL_H;
+            // The runtime cooldown state for this (caster, slot) — the
+            // view's exact-entry lookup; a missing entry reads as ready (a
+            // fresh spawn is).
+            let cooldown_milli = abilities
+                .iter()
+                .find(|view| view.caster == caster.id && view.slot == slot as u8)
+                .map_or(0, |view| view.cooldown_milli);
+            let affordable = ore >= spec.cost_ore;
+            let enabled = cooldown_milli == 0 && affordable;
+            let label = if cooldown_milli > 0 {
+                // Seconds remaining, one decimal — the same precision the
+                // queue strip's progress shows.
+                let seconds = (cooldown_milli as f32 / 1000.0) * (spec.cooldown_ms as f32 / 1000.0);
+                format!("{} {:.1}s", spec.display_name, seconds)
+            } else {
+                spec.display_name.clone()
+            };
+            ui.quads.push(atlas.solid_rect(
+                x,
+                y,
+                CELL_W - 8.0,
+                CELL_H - 10.0,
+                if enabled {
+                    [0.28, 0.16, 0.34, 0.9]
+                } else {
+                    [0.08, 0.08, 0.09, 0.9]
+                },
+            ));
+            // The cooldown sweep: a dark overlay covering the remaining
+            // fraction of the cell, from the top — the health-bar fill idiom
+            // inverted (the dark part shrinks as the slot recharges).
+            if cooldown_milli > 0 {
+                let fraction = cooldown_milli as f32 / 1000.0;
+                ui.quads.push(atlas.solid_rect(
+                    x,
+                    y,
+                    CELL_W - 8.0,
+                    (CELL_H - 10.0) * fraction,
+                    [0.0, 0.0, 0.0, 0.55],
+                ));
+            }
+            ui.quads.extend(atlas.layout(
+                &label,
+                x + 6.0,
+                y + (CELL_H - 10.0) * 0.5 + atlas.ascent * 0.5,
+                if enabled {
+                    [0.92, 0.86, 1.0, 0.95]
+                } else {
+                    [0.5, 0.5, 0.55, 0.85]
+                },
+            ));
+            ui.buttons.push(Button {
+                x,
+                y,
+                w: CELL_W - 8.0,
+                h: CELL_H - 10.0,
+                action: ButtonAction::CastAbility {
+                    caster: caster.id,
+                    slot: slot as u8,
                 },
                 enabled,
             });
@@ -1649,6 +1765,7 @@ mod tests {
             layout,
             view_entities: std::slice::from_ref(&forge),
             production: &production,
+            abilities: &[],
             bundle: &bundle,
             selection: &selection,
             ore: 1000,
@@ -1699,6 +1816,7 @@ mod tests {
             layout,
             view_entities: std::slice::from_ref(&cc),
             production: &production,
+            abilities: &[],
             bundle: &bundle,
             selection: &selection,
             ore: 1000,
@@ -1726,6 +1844,7 @@ mod tests {
             layout,
             view_entities: std::slice::from_ref(&cc),
             production: &production,
+            abilities: &[],
             bundle: &bundle,
             selection: vec![cc.id].as_slice(),
             ore: 10,
@@ -1748,6 +1867,7 @@ mod tests {
             layout,
             view_entities: std::slice::from_ref(&worker),
             production: &[],
+            abilities: &[],
             bundle: &bundle,
             selection: std::slice::from_ref(&worker.id),
             ore: 1000,
@@ -1789,6 +1909,7 @@ mod tests {
             layout,
             view_entities: std::slice::from_ref(&cc),
             production: &production,
+            abilities: &[],
             bundle: &bundle,
             selection: std::slice::from_ref(&cc.id),
             ore: 0,
@@ -1910,6 +2031,7 @@ mod tests {
                 layout: bar_layout((1280.0, 800.0)),
                 view_entities: std::slice::from_ref(&cc),
                 production: prod,
+                abilities: &[],
                 bundle: &bundle,
                 selection: std::slice::from_ref(&cc.id),
                 ore: 0,
@@ -1926,6 +2048,7 @@ mod tests {
             layout: bar_layout((1280.0, 800.0)),
             view_entities: std::slice::from_ref(&cc),
             production: &[],
+            abilities: &[],
             bundle: &bundle,
             selection: std::slice::from_ref(&cc.id),
             ore: 0,
