@@ -250,19 +250,24 @@ fn plain_bundle() -> ContentBundle {
 /// proven identical by the unchanged count, RNG streams, and per-player
 /// counters — see the B-029 report §5):
 ///
-/// - final hash `0xbfe0ec376fc0b6da` — the registered flagship golden (the
+/// - final hash `0x0f80a93eee5bdb1d` — the registered flagship golden (the
 ///   run's own cross-check: the loop here is `AiMatchHost::advance`'s exact
 ///   body, so it must reproduce the CLI value);
 /// - command stream — 612 commands, digest `0x32ebb1e153a446e7` at the
 ///   B-020 base; the B-029 re-label moves the wire bytes (Train payloads
 ///   carry KindIds) and the digest with them — the pinned value below is
-///   the re-labeled stream of the *same* 612 commands;
+///   the re-labeled stream of the *same* 612 commands; B-031's stat
+///   rebalance moves it once more (the *same* 612 commands at the *same*
+///   ticks — the count, the RNG streams, and the decision cadence below
+///   are bit-identical — but the chase orders carry different target
+///   entity ids, because units now die at different ticks under the new
+///   combat stats), so the digest pins the rebalanced stream;
 /// - controller RNG `(state, inc)` — the `inc` half is the PCG32 default
 ///   stream constant (`Rng::DEFAULT_STREAM` shifted odd) on every slot, the
 ///   sanity check that these are the real generators; the `state` halves
 ///   are the consumed streams at the probe boundaries. These are the
 ///   behavior anchors: a content re-label must leave them bit-identical.
-const BASELINE_COMMAND_DIGEST: u64 = 0x9b21_7693_4879_c162;
+const BASELINE_COMMAND_DIGEST: u64 = 0x5100_fa69_47c8_52dc;
 const BASELINE_RNG_300_SLOT0: (u64, u64) = (5_309_441_344_704_258_470, 4_354_685_564_936_845_355);
 const BASELINE_RNG_300_SLOT1: (u64, u64) = (7_103_407_414_744_833_111, 4_354_685_564_936_845_355);
 const BASELINE_RNG_7200_SLOT0: (u64, u64) = (2_037_330_920_411_874_478, 4_354_685_564_936_845_355);
@@ -275,7 +280,7 @@ fn the_missionless_flagship_baseline_is_pinned() {
     // run's own cross-check: this loop is AiMatchHost::advance's exact
     // body, so it must match the CLI value byte for byte).
     assert_eq!(
-        run.final_hash, 0xbfe0_ec37_6fc0_b6da,
+        run.final_hash, 0x0f80_a93e_ee5b_db1d,
         "the hosted loop must reproduce the registered flagship golden"
     );
     // The command count the CLI reports for the same run.
@@ -457,7 +462,7 @@ fn an_all_none_ai_settings_block_is_the_byte_exact_default() {
     // identical, so the draws fell identically).
     let run = all_none_baseline();
     assert_eq!(
-        run.final_hash, 0xbfe0_ec37_6fc0_b6da,
+        run.final_hash, 0x0f80_a93e_ee5b_db1d,
         "the all-None mission reproduces the flagship golden"
     );
     assert_eq!(run.log.len(), 612, "the command count is unchanged");

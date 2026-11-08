@@ -1868,3 +1868,51 @@ confirms or rejects it.
   seed 7). The judgment — whether the ramps choke fairly, whether the
   basin's ore rewards the middle enough, whether the flanks pay — is the
   A14 playtest's to make, through `docs/PLAYTEST.md`'s probes.
+
+- **A-226 (B-031 — the balance battery's harness semantics).** The
+  counterplay laws in `tests/balance.rs` are measured through an authored
+  harness, and its choices ARE the laws' meaning: armies spawn as 8-row
+  columns (1.6-tile pitch) with vanguards 7 tiles apart — inside every
+  authored kind's vision, because the `Attack` gate refuses fog-hidden
+  targets (FD-8) — on a test-local fully-open 64x64 field (passability
+  overridden: the laws measure the roster, never the map), and every unit
+  carries a round-robin-paired `Attack` chase order, the duel semantic:
+  pursuit closes range and fights to the last entity. Chasing columns
+  FUNNEL — only the front rank stands in weapon range (measured: five
+  riflemen pressing one turret land barely one rifleman's worth of
+  damage) — so the battery's margins embody the engine's real a-move
+  physics, not Lanchester arithmetic. Whether spread formations (a
+  client-side presentation concern, outside the battery's scope) would
+  soften the funnel is the A14 sessions' judgment, through
+  `docs/PLAYTEST.md`'s probes.
+
+- **A-227 (B-031 — the rebalance's authored intent).** The three stat
+  changes are authored by measurement, not playtest. Rifleman 60 -> 65 hp:
+  ends the Ballista's exact-one-shot economy (a 60-damage volley on a
+  60-hp body is zero-waste deletion of a 75-ore unit) and stretches the
+  Guardian's kill cycle from two volleys to three. Lancer 80 -> 100 hp
+  and 50 -> 60 damage: the billed anti-armor unit could not touch its own
+  target — the measured equal-ore duel ended four-guardians-standing with
+  zero guardian deaths. The intended web, every edge pinned by a law:
+  guardians beat riflemen, riflemen beat raiders, raiders beat ballistas
+  and turrets, lancers beat guardians, mixed arms beat the pure lancer
+  force (at a 3% ore deficit), ballistas beat turrets from standoff,
+  turrets hold the line's small press. The pure rifleman line does NOT
+  beat equal-ore lancers — measured, and deliberate: in a flat-damage
+  world the piercer's volley-overkill economics make it the anti-mono
+  weapon, and composition is its answer; giving the line that edge needs
+  damage classes, which is §19 Update 6's designed extension, not this
+  pass's data-only scope. Whether the web feels right in human hands is
+  the A14 playtest's to say.
+
+- **A-228 (B-031 — the plan table follows the authorized rebalance).**
+  Plan §10.4's Rifleman row moved (hp 60 -> 65) with an in-table note, and
+  the §10.4 pin test moved with it, on the reading that §19 Update 4 —
+  "stat rebalance (all data-only)" — supersedes the Alpha-era starter
+  numbers for exactly the rows the pass touches (the Lancer, a post-§10.4
+  kind, never had a plan row; its pin lives in the test alone). The
+  owner's renewed delegation ("keep working on upgrading this game", the
+  same words B-029 and B-030 cite) is the authority, exactly as B-030
+  §11 anticipated ("the same answer governs Update 4/5 next"). If the
+  owner disagrees, the revert is one plan row, one test value, and one
+  golden-move commit.

@@ -377,6 +377,6 @@ mod tests {
         );
         // Re-pinned M10.1: canonical hasher FNV-1a -> xxHash64 (DEBT-001
         // repaid); encoding unchanged, algorithm moved. See docs/DEBT.md.
-        assert_eq!(match_result.replay.final_hash, 0xbfe0_ec37_6fc0_b6da);
+        assert_eq!(match_result.replay.final_hash, 0x0f80_a93e_ee5b_db1d);
     }
 }

@@ -1185,7 +1185,7 @@ fn ai_vs_ai_golden_hash_is_pinned() {
     // bit-identical (the behavior anchors, pinned in tests/mission_ai.rs;
     // see the B-029 report §5 for the full evidence).
     assert_eq!(run.checkpoints[0].hash, 0x3d52_6307_f2cd_b237);
-    assert_eq!(run.final_hash, 0xbfe0_ec37_6fc0_b6da);
+    assert_eq!(run.final_hash, 0x0f80_a93e_ee5b_db1d);
     assert_eq!(run.final_hash, run.checkpoints.last().unwrap().hash);
 }
 

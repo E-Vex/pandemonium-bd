@@ -171,8 +171,11 @@ fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
             },
             S {
                 entity: "rifleman",
+                // B-031 (plan §19 Update 4, the stat rebalance): 60 -> 65 —
+                // the line survives the Ballista's exact-one-shot volley.
+                // The plan §10.4 table row moved with it, in the same pass.
                 field: "hp",
-                value: 60,
+                value: 65,
             },
             S {
                 entity: "rifleman",
@@ -354,8 +357,11 @@ fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
             },
             S {
                 entity: "lancer",
+                // B-031: 80 -> 100 (with damage 50 -> 60 below) — the
+                // piercer must be able to touch its own target; the
+                // battery in tests/balance.rs pins the counterplay web.
                 field: "hp",
-                value: 80,
+                value: 100,
             },
             S {
                 entity: "lancer",
@@ -380,7 +386,7 @@ fn alpha_manifest_loads_and_pins_the_plan_10_4_stat_table() {
             S {
                 entity: "lancer",
                 field: "damage",
-                value: 50,
+                value: 60,
             },
             S {
                 entity: "lancer",
@@ -676,7 +682,7 @@ fn the_registered_content_identity_is_pinned() {
     // Re-pinned by B-029 (the arsenal content growth, the owner's
     // 2026-11-07 delegation): four kinds joined the tree, moving the
     // bundle identity. The map id is unchanged (no map edit).
-    assert_eq!(bundle.content_hash(), 0x91ee_5df1_fee5_b347);
+    assert_eq!(bundle.content_hash(), 0xb709_ec37_afe0_3aae);
     assert_eq!(bundle.map_id(), 0xd381_3640_1ab0_2ff1);
 }
 
@@ -1599,7 +1605,7 @@ fn add_a_map_is_data_only() {
 /// `iron_basin_72`). Pinned after the first green load; a moved value is a
 /// re-pin by the owner's documented authorization, exactly like the
 /// registered pair below it.
-const IRON_BASIN_CONTENT_HASH: u64 = 0xfaea_f105_e851_b434;
+const IRON_BASIN_CONTENT_HASH: u64 = 0x6ee8_0d70_2e71_e5a5;
 const IRON_BASIN_MAP_ID: u64 = 0x87fb_6dfa_fc74_8a48;
 
 #[test]
@@ -1626,7 +1632,7 @@ fn the_third_battlefield_is_data_only_and_identity_neutral() {
     //    the tree's map list.
     let default = tree.default_map_bundle().expect("the default map bundles");
     assert_eq!(default.map.id, "crossroads_64");
-    assert_eq!(default.content_hash(), 0x91ee_5df1_fee5_b347);
+    assert_eq!(default.content_hash(), 0xb709_ec37_afe0_3aae);
     assert_eq!(default.map_id(), 0xd381_3640_1ab0_2ff1);
 
     // 3. Iron Basin bundles with its authored shape: 72x72, the mirrored
@@ -1760,12 +1766,13 @@ fn an_ai_vs_ai_match_plays_out_and_resolves_on_iron_basin() {
     let tree = ContentTree::load_dir(&repo_content()).expect("the repo tree loads");
     let basin = tree.bundle("iron_basin_72").expect("iron_basin_72 bundles");
     let seed = 7u64;
-    // Eight minutes of game time (2x the old flagship budget): the basin
-    // resolves at tick ~11956 under seed 7 (measured, deterministic), so
-    // the budget carries a deliberate ~20% margin — a future content pass
-    // that moves the end tick fails here loudly and re-tunes this number
-    // deliberately, the same law a golden move follows.
-    const BASIN_BUDGET: u32 = 14400;
+    // Fourteen minutes of game time: the basin resolves at tick ~20834
+    // under seed 7 (measured, deterministic; 11956 before B-031 — the
+    // balance pass's tougher line slows the scripted armies' attrition),
+    // so the budget carries a deliberate ~20% margin — a future content
+    // pass that moves the end tick fails here loudly and re-tunes this
+    // number deliberately, the same law a golden move follows.
+    const BASIN_BUDGET: u32 = 25200;
     let (events, hashes, final_hash) = basin_match(&basin, seed, BASIN_BUDGET);
 
     // The scripts actually played: real economies, infrastructure, armies,

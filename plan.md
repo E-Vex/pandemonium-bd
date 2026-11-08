@@ -413,7 +413,7 @@ Do not turn content into a scripting language. If a rule needs logic, add a capa
 | Entity | HP | Cost (Ore) | Build ms | Speed (mt/s) | Range (mt) | Dmg | Cooldown ms | Vision (mt) | Pop |
 |--------|----|-----------|----------|--------------|------------|-----|-------------|--------------|-----|
 | Worker | 40 | 50 | 12000 | 2600 | — | — | — | 7000 | 1 |
-| Rifleman | 60 | 75 | 10000 | 2400 | 5000 | 8 | 1000 | 8000 | 1 |
+| Rifleman | 65 | 75 | 10000 | 2400 | 5000 | 8 | 1000 | 8000 | 1 |
 | Raider | 45 | 60 | 8000 | 4000 | 1500 | 6 | 600 | 8000 | 1 |
 | Guardian | 220 | 200 | 25000 | 1600 | 8000 | 30 | 2000 | 9000 | 3 |
 | Command Center (4×4) | 1000 | 400 | 40000 | — | — | — | — | 10000 | +10 cap |
@@ -421,6 +421,10 @@ Do not turn content into a scripting language. If a rule needs logic, add a capa
 | Supply Depot (2×2) | 300 | 100 | 15000 | — | — | — | — | 6000 | +10 cap |
 | Turret (2×2) | 350 | 125 | 20000 | — | 7000 | 10 | 1000 | 9000 | — |
 | Ore Node (2×2) | — | — | — | — | — | — | — | — | 1500 Ore |
+
+*(B-031, §19 Update 4 — the stat rebalance: the Rifleman's hp 60 → 65; the
+Lancer, a post-§10.4 kind, grew in the same pass — 80 → 100 hp, 50 → 60
+damage. The Alpha table's other rows are unchanged.)*
 
 Gathering: workers carry 10 Ore per trip, 2000 ms per gather. Start: 1 Command Center, 4 Workers, 200 Ore per player. Population cap starts at 0 + provided by structures.
 

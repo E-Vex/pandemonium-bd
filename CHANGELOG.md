@@ -7,6 +7,41 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-031] — the balance pass (plan §19's expansion test, Update 4: the stat rebalance)
+
+The owner's renewed delegation ("keep working on upgrading this game...
+I want to make a game that can beat Generals Zero Hour") met the §19
+sequence's own next step (B-030 §9): **Update 4 — the stat rebalance**,
+data-only, two entity files, three numbers, zero code.
+
+- **The instrument came first**: `tests/balance.rs` runs the roster's
+  counterplay laws through the REAL content and the REAL eleven-stage
+  pipeline — equal-ore meeting engagements, round-robin chase pairing,
+  seed-swept. It measured two pathologies: the **closed guardian corner**
+  (at B-029's numbers, equal-ore guardians beat riflemen, raiders, AND
+  the billed anti-armor lancer, killing nothing but losing nothing), and
+  the **exact-one-shot siege economy** (the Ballista's 60-damage volley
+  deleted 60-hp riflemen with zero overkill).
+- **The rebalance**: rifleman 60 -> 65 hp; lancer 80 -> 100 hp and
+  50 -> 60 damage. The guardian, ballista, raider, pathfinder, worker,
+  and every structure are untouched. The web closes: guardians beat the
+  line, the line beats speed, speed beats siege and turrets, the piercer
+  breaks armor, MIXED ARMS beat the pure piercer (at a 3% ore deficit),
+  siege breaks the turtle from standoff. Eleven laws, each one test.
+- **The authorized golden move** (one dedicated commit, every pinned
+  location at once): content `0xb709ec37afe03aae` (map id unchanged),
+  flagship `0x0f80a93eee5bdb1d` — tick 0 UNCHANGED (the state hash
+  encodes ids and hp, never stats; the starting forces are CC + workers)
+  — the mission command-stream digest re-pinned with the SAME 612
+  commands and bit-identical controller RNG streams (only the chase
+  orders' target ids moved), and the Iron Basin bundle identity
+  `0x6ee80d702e71e5a5`. The basin's resolution moved 11956 -> 20834 at
+  seed 7 (the tougher line slows attrition), so its 20%-margin test
+  budget re-tunes 14400 -> 25200. The demo golden never moved.
+- **Pacing holds**: the release soak is 16/16 resolved, 0 crashed, avg
+  13869 / max 21036 end ticks — the nightly's 36000-tick budget keeps a
+  42% margin. 1024 dev tests (was 1013; +11 for the battery).
+
 ## [B-030] — the third battlefield (plan §19's expansion test, Update 3: Iron Basin)
 
 The standing 2026-11-07 delegation met the sequence's own next step (B-029

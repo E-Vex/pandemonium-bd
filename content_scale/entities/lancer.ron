@@ -1,15 +1,20 @@
-// Lancer (B-029, plan §19's expansion test — Update 1, data-only): the
-// anti-armor answer. One heavy piercer per slow cycle — trades into
-// Guardians and structures cost-for-cost, and loses to cheap masses
-// (low pool, slow fire overkill). Trained at the Forge.
+// Lancer (B-029, plan §19's expansion test — Update 1; B-031's rebalance:
+// 80 -> 100 hp, 50 -> 60 damage, 160 -> 200 ore): the anti-armor answer.
+// One heavy piercer per slow cycle — TRADED into guardians at exact cost
+// parity (four volleys per guardian; at B-029's numbers the measured duel
+// lost five-lancers-to-zero-guardians — the piercer could not touch its
+// own target), and loses to the rifleman line's volume (overkill waste:
+// a 60-damage volley leaves 5 hp on a rifleman). The forge tier's price
+// of admission: it cancels armor, it does not beat the field. Trained at
+// the Forge.
 (
     schema_version: 1,
     id: "lancer",
     display_name: "Lancer",
     capabilities: [
-        Health(( max: 80 )),
+        Health(( max: 100 )),
         Move(( speed_milli_tiles_per_s: 2200, radius_milli_tiles: 400 )),
-        Attack(( damage: 50, range_milli_tiles: 6000, cooldown_ms: 2500, acquire_range_milli_tiles: 7000 )),
+        Attack(( damage: 60, range_milli_tiles: 6000, cooldown_ms: 2500, acquire_range_milli_tiles: 7000 )),
         Vision(( radius_milli_tiles: 8000 )),
     ],
     cost: ( ore: 160 ),
