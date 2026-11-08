@@ -304,6 +304,30 @@ Escape/right-click cancel, and the cooldown sweep follow the attack-move
 family's rules. The numbers are authored, not playtested — the feel rides
 the A14 sessions with the rest of the balance.
 
+### Upgrades
+
+The upgrade system ([ADR-0203](docs/adr/0203-upgrade-system.md)) is plan
+§19's Update 7 — the permanent axis of progression: one capability block
+per structure, one verb through the shared command gate, and a closed
+code-defined effect vocabulary that data only parameterizes (the ADR-0202
+rule, verbatim).
+
+| carrier | upgrade | effect | research | cost |
+|---|---|---|---|---|
+| **Forge** | Weapon Systems | +25% attack damage for Rifleman and Raider | 20 s | 250 |
+| **Forge** | Field Engines | +15% move speed for Worker and Pathfinder | 15 s | 200 |
+
+Field Engines chains on Weapon Systems — the tree's first edge. Research
+is paid at enqueue and occupies the Forge's single project slot; different
+buildings research in parallel, the same upgrade twice is refused (the
+wasted-purse law). Completion is **permanent and player-wide**: the upgrade
+survives the building's death, applies to every present and future entity
+of the targeted kinds, and its effect is read live where damage and speed
+are built — nothing is mutated or migrated when it lands. Select a Forge,
+click the upgrade: the button's sweep shrinks as the project completes, and
+a researched cell reads `[done]`. The numbers are authored, not playtested
+— the feel rides the A14 sessions with the rest of the balance.
+
 ### Missions & campaign
 
 The mission and campaign model ([ADR-0201](docs/adr/0201-missions-campaigns-cutscenes.md))
@@ -495,9 +519,9 @@ budgets); `audit` and `deny` workflows gate advisories and licences.
 
 | | |
 |---|---|
-| **Tests** | 1043 dev / 1038 release, green in both profiles (the five should-panic invariant tests are debug-only) |
+| **Tests** | 1076 dev / 1071 release, green in both profiles (the five should-panic invariant tests are debug-only) |
 | **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
-| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x3a58e55ea6250906` · content `0x4d362e1a17b9eefc` — moved four times, each by an authorized move: B-029's growth, B-031's stat rebalance, B-032's second faction (behavior-identical for the Legion: the same 612 commands, the same RNG streams, only the re-labeled kind ids moved), and B-033's ability content (the Pathfinder's Sprint and the Ballista's Volley — again behavior-identical for every pinned run: the carriers are forge-tier, no scripted AI fields them, so the demo and flagship hashes are bit-identical and only the content digest moved); the map growth passes (B-030 on) move none of them |
+| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x3a58e55ea6250906` · content `0x4d362e1a17b9eefc` — moved five times, each by an authorized move: B-029's growth, B-031's stat rebalance, B-032's second faction (behavior-identical for the Legion: the same 612 commands, the same RNG streams, only the re-labeled kind ids moved), B-033's ability content (the Pathfinder's Sprint and the Ballista's Volley — again behavior-identical for every pinned run: the carriers are forge-tier, no scripted AI fields them, so the demo and flagship hashes are bit-identical and only the content digest moved), and B-034's upgrade content (the Forge's two upgrades — the same forge-tier argument, measured: the demo and flagship bit-identical, only the digest moved); the map growth passes (B-030 on) move none of them |
 | **Soak** | many seeded AI-vs-AI matches with per-match crash isolation; a dev-profile soak observes the invariant checker (A12) |
 | **Releases** | per-OS archives, SHA-256 checksums, a licence gate (cargo-deny) and generated `THIRD_PARTY_NOTICES.md`, and smoke legs that gate on the licence and the bundled art pack |
 
@@ -531,7 +555,7 @@ cargo run -p pandemonium-tools -- replay-verify <file>
 
 | | |
 |---|---|
-| **Stage** | Alpha development — the mission/campaign/save chapter ([ADR-0201](docs/adr/0201-missions-campaigns-cutscenes.md)) and the M12 model pipeline ([ADR-0101](docs/adr/0101-model-pipeline.md)) are complete; the ability system ([ADR-0202](docs/adr/0202-ability-system.md), proposed) has landed as plan §19's Update 6 |
+| **Stage** | Alpha development — the mission/campaign/save chapter ([ADR-0201](docs/adr/0201-missions-campaigns-cutscenes.md)) and the M12 model pipeline ([ADR-0101](docs/adr/0101-model-pipeline.md)) are complete; the ability system ([ADR-0202](docs/adr/0202-ability-system.md), proposed) has landed as plan §19's Update 6, and the upgrade system ([ADR-0203](docs/adr/0203-upgrade-system.md), proposed) as Update 7 |
 | **Open gate** | **A14, the human playtest** — five first-time tester slots, the protocol in [`docs/PLAYTEST.md`](docs/PLAYTEST.md) — is the last open gate of the Alpha declaration |
 | **Latest release** | [v0.1.1](https://github.com/E-Vex/pandemonium-bd/releases) (pre-release, the Alpha playtest build); `master` is ahead — build from source for missions, campaign, save & resume, and glTF models |
 | **Next** | A14 → the Alpha declaration ([`docs/ALPHA_DECLARATION.md`](docs/ALPHA_DECLARATION.md)) → post-Alpha content growth |
