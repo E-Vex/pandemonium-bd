@@ -19,7 +19,7 @@ use pandemonium_fx::XxHash64;
 use pandemonium_sim::TrivialWorld;
 use pandemonium_sim::{
     AbilityEffectTemplate, AbilitySpecTemplate, CapTemplate, KindEconomy, KindTemplate,
-    ResourceDef as SimResourceDef, SpawnDef,
+    ResourceDef as SimResourceDef, SpawnDef, UpgradeEffectTemplate, UpgradeSpecTemplate,
 };
 use pandemonium_sim_api::{
     AiSettings, AreaSpec, FogPreset, GatherSemantics, KindId, MissionData, MissionObjective,
@@ -111,6 +111,7 @@ impl ContentTree {
         }
         sort_and_check_dups(&mut entities, "entities")?;
         validate::validate_entity_references(&entities)?;
+        validate::validate_upgrade_tree(&entities)?;
 
         // Factions: any count, then sorted by id with duplicate detection.
         let mut factions = Vec::with_capacity(sources.factions.len());
@@ -1188,6 +1189,26 @@ impl ContentBundle {
             .collect();
         let kind_of = |id: &str| kind_index.get(id).copied();
 
+        // ADR-0203 (Update 7): the tree's upgrade index — every upgrade id
+        // in the tree resolves to its (carrier kind, slot) pair, built once
+        // here so the capability seam can resolve prerequisites. The
+        // validator guarantees global id uniqueness (validate_upgrade_tree),
+        // so a lookup lands on exactly one entry.
+        let upgrade_index: BTreeMap<&str, (u32, u8)> =
+            self.entities
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entity)| {
+                    let upgrades = entity.upgrades()?;
+                    Some(
+                        upgrades.iter().enumerate().map(move |(slot, spec)| {
+                            (spec.id.as_str(), (index as u32, slot as u8))
+                        }),
+                    )
+                })
+                .flatten()
+                .collect();
+
         // The resource registry defines ResourceIds (rules are sorted by id;
         // the ledger order is that order).
         let resource_index: BTreeMap<&str, u32> = self
@@ -1226,7 +1247,9 @@ impl ContentBundle {
                     caps: entity
                         .capabilities
                         .iter()
-                        .filter_map(|cap| capability_template(cap, &resource_index))
+                        .filter_map(|cap| {
+                            capability_template(cap, &resource_index, &kind_index, &upgrade_index)
+                        })
                         .collect(),
                     economy,
                 }
@@ -1607,10 +1630,15 @@ fn validate_reach_area(
 /// Maps a validated capability into the simulation's capability template, when
 /// the simulation has a system for it (the M5 economy mapping — see
 /// [`ContentBundle::world`]; Attack remains for M6). `resources` resolves
-/// resource-id strings into the registry's [`ResourceId`] order.
+/// resource-id strings into the registry's [`ResourceId`] order; `kinds`
+/// resolves entity ids into the bundle's kind order; `upgrades` resolves
+/// upgrade ids into (carrier kind, slot) pairs — the ADR-0203 resolution
+/// context, built once in `world()` where the whole tree is known.
 fn capability_template(
     cap: &defs::CapabilityDef,
     resources: &BTreeMap<&str, u32>,
+    kinds: &BTreeMap<&str, u32>,
+    upgrades: &BTreeMap<&str, (u32, u8)>,
 ) -> Option<CapTemplate> {
     match cap {
         defs::CapabilityDef::Health {
@@ -1724,6 +1752,65 @@ fn capability_template(
                 })
                 .collect(),
         }),
+        // ADR-0203 (Update 7): the upgrade specs map at the seam with the
+        // same parity rule — the content encoder already includes the
+        // authored fields in the bundle's hash (`encode_capability`'s
+        // tag 13), `to_runtime` performs the ms -> ticks conversion, and
+        // the two name lists resolve HERE (targets to kind ids,
+        // prerequisites to (carrier kind, slot) pairs) — the seam where
+        // every kind is known. Validators guarantee resolution; unreachable
+        // skips degrade to an empty list, never a wrong id (the entity
+        // `requires` rule).
+        defs::CapabilityDef::Upgrades { upgrades: list } => {
+            Some(CapTemplate::Upgrades {
+                upgrades: list
+                    .iter()
+                    .map(|spec| UpgradeSpecTemplate {
+                        id: spec.id.clone(),
+                        display_name: spec.display_name.clone(),
+                        effect: match &spec.effect {
+                            defs::UpgradeEffectDef::AttackDamage {
+                                multiplier_milli,
+                                targets,
+                            } => UpgradeEffectTemplate::AttackDamage {
+                                multiplier_milli: *multiplier_milli,
+                                targets: targets
+                                    .iter()
+                                    .filter_map(|id| kinds.get(id.as_str()).copied())
+                                    .map(pandemonium_sim_api::KindId)
+                                    .collect(),
+                            },
+                            defs::UpgradeEffectDef::MoveSpeed {
+                                multiplier_milli,
+                                targets,
+                            } => UpgradeEffectTemplate::MoveSpeed {
+                                multiplier_milli: *multiplier_milli,
+                                targets: targets
+                                    .iter()
+                                    .filter_map(|id| kinds.get(id.as_str()).copied())
+                                    .map(pandemonium_sim_api::KindId)
+                                    .collect(),
+                            },
+                        },
+                        research_time_ms: spec.research_time_ms,
+                        // The Alpha schema prices upgrades in Ore, exactly
+                        // like abilities and kinds (the same mapping).
+                        cost: match (spec.cost_ore > 0, resources.get("ore")) {
+                            (true, Some(resource)) => {
+                                vec![(ResourceId(*resource), spec.cost_ore)]
+                            }
+                            _ => Vec::new(),
+                        },
+                        requires: spec
+                            .requires
+                            .iter()
+                            .filter_map(|id| upgrades.get(id.as_str()).copied())
+                            .map(|(carrier, slot)| (pandemonium_sim_api::KindId(carrier), slot))
+                            .collect(),
+                    })
+                    .collect(),
+            })
+        }
     }
 }
 
@@ -1925,6 +2012,50 @@ fn encode_capability(h: &mut XxHash64, cap: &defs::CapabilityDef) {
                 h.write_i32(ability.cast_range_milli_tiles);
                 h.write_u32(ability.cooldown_ms);
                 h.write_i64(ability.cost_ore);
+            }
+        }
+        // ADR-0203 (Update 7): tag 13, additive — the authored fields in
+        // authored order (the tick-converted twin is load-derived, so the
+        // ms field carries the identity; targets and prerequisites hash as
+        // the authored STRINGS — resolution happens at the world() seam and
+        // must never leak into the content identity, the entity `requires`
+        // parity).
+        defs::CapabilityDef::Upgrades { upgrades } => {
+            h.write_u8(13);
+            h.write_u32(upgrades.len() as u32);
+            for upgrade in upgrades {
+                encode_str(h, &upgrade.id);
+                encode_str(h, &upgrade.display_name);
+                match &upgrade.effect {
+                    defs::UpgradeEffectDef::AttackDamage {
+                        multiplier_milli,
+                        targets,
+                    } => {
+                        h.write_u8(1);
+                        h.write_i32(*multiplier_milli);
+                        h.write_u32(targets.len() as u32);
+                        for target in targets {
+                            encode_str(h, target);
+                        }
+                    }
+                    defs::UpgradeEffectDef::MoveSpeed {
+                        multiplier_milli,
+                        targets,
+                    } => {
+                        h.write_u8(2);
+                        h.write_i32(*multiplier_milli);
+                        h.write_u32(targets.len() as u32);
+                        for target in targets {
+                            encode_str(h, target);
+                        }
+                    }
+                }
+                h.write_u32(upgrade.research_time_ms);
+                h.write_i64(upgrade.cost_ore);
+                h.write_u32(upgrade.requires.len() as u32);
+                for requirement in &upgrade.requires {
+                    encode_str(h, requirement);
+                }
             }
         }
     }

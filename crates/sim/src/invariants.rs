@@ -47,6 +47,8 @@ pub(crate) fn check(world: &World, content: &TrivialWorld, nav: &NavGrid, next_e
         ("attack", store_ids(&world.attack)),
         ("abilities", store_ids(&world.abilities)),
         ("speed_boosts", store_ids(&world.speed_boosts)),
+        ("upgrades", store_ids(&world.upgrades)),
+        ("research", store_ids(&world.research)),
     ] {
         let (_, ids) = store;
         debug_assert!(

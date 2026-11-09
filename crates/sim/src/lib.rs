@@ -37,6 +37,7 @@ mod nav;
 mod production;
 mod runner;
 mod sim;
+mod upgrades;
 mod vision;
 mod world;
 
@@ -44,7 +45,8 @@ use pandemonium_sim_api::Tick;
 
 pub use fixture::{
     AbilityEffectTemplate, AbilitySpecTemplate, CapTemplate, KindEconomy, KindTemplate,
-    ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld,
+    ResourceDef, ScheduledSpawnDef, SpawnDef, TrivialWorld, UpgradeEffectTemplate,
+    UpgradeSpecTemplate,
 };
 pub use match_rules::MatchOutcome;
 pub use runner::{rehost_sim, run_command_log, run_command_log_with_mission, CommandLogRun};
@@ -52,7 +54,8 @@ pub use sim::{Sim, StepOutput};
 pub use world::{
     AbilitiesDef, AbilityEffect, AbilitySpec, AttackDef, BuildDef, CapabilityData, ConstructionDef,
     FootprintDef, GatherDef, HealthDef, Lifecycle, MoveDef, Order, PopulationDef, ProduceDef,
-    QueueItem, ResourceBodyDef, SpeedBoostDef, StorageDef, VisionDef, World,
+    QueueItem, ResearchDef, ResearchedUpgrade, ResourceBodyDef, SpeedBoostDef, StorageDef,
+    UpgradeEffect, UpgradeSpec, UpgradesDef, VisionDef, World,
 };
 
 /// Simulation frequency in ticks per second (FD-1: fixed-tick, render-decoupled).

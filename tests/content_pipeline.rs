@@ -869,7 +869,7 @@ fn the_registered_content_identity_is_pinned() {
     // Re-pinned by B-029 (the arsenal content growth, the owner's
     // 2026-11-07 delegation): four kinds joined the tree, moving the
     // bundle identity. The map id is unchanged (no map edit).
-    assert_eq!(bundle.content_hash(), 0xbe1a_3d97_ae67_80e9);
+    assert_eq!(bundle.content_hash(), 0x4d36_2e1a_17b9_eefc);
     assert_eq!(bundle.map_id(), 0xd381_3640_1ab0_2ff1);
 }
 
@@ -1793,7 +1793,7 @@ fn add_a_map_is_data_only() {
 /// `iron_basin_72`). Pinned after the first green load; a moved value is a
 /// re-pin by the owner's documented authorization, exactly like the
 /// registered pair below it.
-const IRON_BASIN_CONTENT_HASH: u64 = 0x3e3d_96b5_00aa_3ffb;
+const IRON_BASIN_CONTENT_HASH: u64 = 0x1f14_961c_ff5a_4b0f;
 const IRON_BASIN_MAP_ID: u64 = 0x87fb_6dfa_fc74_8a48;
 
 #[test]
@@ -1820,7 +1820,7 @@ fn the_third_battlefield_is_data_only_and_identity_neutral() {
     //    the tree's map list.
     let default = tree.default_map_bundle().expect("the default map bundles");
     assert_eq!(default.map.id, "crossroads_64");
-    assert_eq!(default.content_hash(), 0xbe1a_3d97_ae67_80e9);
+    assert_eq!(default.content_hash(), 0x4d36_2e1a_17b9_eefc);
     assert_eq!(default.map_id(), 0xd381_3640_1ab0_2ff1);
 
     // 3. Iron Basin bundles with its authored shape: 72x72, the mirrored
@@ -1931,7 +1931,7 @@ fn the_second_faction_is_data_only_and_identity_pinned() {
     //    never the default bundle's played faction, forces, or map.
     let default = tree.default_map_bundle().expect("the default map bundles");
     assert_eq!(default.faction().id, "legion");
-    assert_eq!(default.content_hash(), 0xbe1a_3d97_ae67_80e9);
+    assert_eq!(default.content_hash(), 0x4d36_2e1a_17b9_eefc);
     assert_eq!(default.map_id(), 0xd381_3640_1ab0_2ff1);
     let default_world = default.world();
     assert_eq!(

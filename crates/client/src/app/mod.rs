@@ -2223,6 +2223,8 @@ impl App {
                 view_entities: &view.entities,
                 production: &view.production,
                 abilities: &view.abilities,
+                research: &view.research,
+                researched: &view.researched,
                 bundle: &self.bundle,
                 selection: &self.selection,
                 ore,

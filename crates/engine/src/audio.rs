@@ -125,7 +125,12 @@ pub fn cue_for(event: &Event) -> Option<AudioCue> {
         // ability's damage already voices through AttackHit above, and the
         // cast's own audio moment rides the owner's A14 feel pass (real
         // hardware, not Xvfb's silent null fallback).
-        | Event::AbilityCast { .. } => None,
+        | Event::AbilityCast { .. }
+        // ADR-0203 (Update 7): the research cues ride the same ruling — no
+        // authored sound yet, and the A14 feel pass decides whether a
+        // project's start and completion get voices at all.
+        | Event::ResearchStarted { .. }
+        | Event::ResearchCompleted { .. } => None,
     }
 }
 

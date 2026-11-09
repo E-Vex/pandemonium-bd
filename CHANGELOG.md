@@ -7,6 +7,69 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-034] — the upgrade system (plan §19's expansion test, Update 7)
+
+The owner's standing delegation met the sequence's own named next step
+(B-033's handoff pointer): **Update 7 — the tech tree / upgrades**, the
+permanent axis of progression. The design record is **ADR-0203** (proposed;
+the owner's verdict stays open, the ADR-0201 flow — A-238).
+
+- **The capability and the command.** One `Upgrades` capability block
+  carries a structure's authored upgrade list (parameters only — the
+  effect vocabulary is code, plan §10.1's law), and one new verb —
+  `Research { researcher, upgrade }` — goes through the unchanged gate:
+  seven checks in order (ownership, capability, lifecycle, slot, prior
+  research, prerequisites, the idle project slot, affordability), three
+  new reject reasons. Research is once per PLAYER, not per building; the
+  same upgrade in flight at a second building is refused (the
+  wasted-purse law).
+- **The pipeline is production's shape.** `advance_research` runs at the
+  head of stage 3 with the queue head's exact semantics: cost spent at
+  enqueue (the Train rule), `ResearchStarted` on the first advancing
+  tick, `ResearchCompleted` when the elapsed count reaches the authored
+  ticks. The in-flight block is an injected runtime — the Construction
+  pattern — that dies with the researcher.
+- **The researched ledger is the design's center.** One sorted,
+  per-player store of completed upgrades with their effect snapshots:
+  permanent, player-wide, and self-contained — a dead researcher loses
+  its in-flight project, never a completed upgrade. Effects are READ,
+  never applied: combat builds hit damage through `effective_damage` and
+  movement reads `effective_speed` with the upgrade multiplier composed
+  before the transient boost — no entity is mutated at completion, no
+  spawn hook exists, and future entities benefit automatically. All of
+  it is hashed (mask slots 14/15, additive; the ledger as a trailing
+  section written only when non-empty — A-237's additive-empty rule: the
+  demo and flagship goldens measured bit-identical, the executable
+  proof; the encoding stays v4).
+- **The shipped content**: the Forge's **Weapon Systems** (+25% attack
+  damage for Rifleman and Raider, 20 s, 250 ore) and **Field Engines**
+  (+15% move speed for Worker and Pathfinder, 15 s, 200 ore, chained on
+  Weapon Systems — the tree's first edge). The carrier is forge-tier, so
+  no scripted AI fields it and no pinned run moves (A-239, the A-234
+  rule); the battery's twelve P-laws are untouched (A-241: the numbers
+  are authored, the feel rides A14, A-230's standard).
+- **The client surface**: upgrade buttons on the command card's first
+  free row after the ability row — click submits directly (the Train
+  rule; research has no ground point), the in-flight sweep shrinks as
+  the project completes, a researched cell reads `[done]`, and the
+  client's enablement approximates the gate's prerequisite and busy
+  checks (the gate stays the authority; the three new reasons get
+  rejection lines). The card row yields to a full card (DEBT-208, the
+  DEBT-206 rule); there is no cancel verb (DEBT-209).
+- **The authorized golden move** (one commit, every pin): content
+  `0xbe1a3d97ae6780e9` → `0x4d362e1a17b9eefc`, basin bundle
+  `0x3e3d96b500aa3ffb` → `0x1f14961cff5a4b0f` — the Forge's upgrade
+  block is the content edit that causes it. The map id, the demo golden,
+  and the flagship golden do NOT move (measured live).
+- **The evidence**: the thirteen-law acceptance suite
+  `tests/upgrades.rs` (the gate matrix, the prerequisite edge, the exact
+  spend and timing ticks, both effects through the real pipelines,
+  parallel research and the wasted-purse refusal, the death semantics,
+  determinism and hashing, the replay round-trip, the view's fog rules,
+  the shipped parameters, and the end-to-end real-bundle path), four
+  unit tests in `crates/sim/src/upgrades.rs`, and the full gate re-run
+  green in both profiles: 1076 dev / 1071 release (+17 over B-033).
+
 ## [B-033] — the ability system (plan §19's expansion test, Update 6)
 
 The owner's standing delegation met the sequence's own named next step

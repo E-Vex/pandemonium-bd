@@ -326,6 +326,7 @@ const TAG_CANCEL_QUEUE_ITEM: u8 = 8;
 const TAG_SET_RALLY: u8 = 9;
 const TAG_RESIGN: u8 = 10;
 const TAG_CAST_ABILITY: u8 = 11;
+const TAG_RESEARCH: u8 = 12;
 
 fn encode_command(w: &mut Writer, cmd: &Command) {
     w.write_u8(cmd.issuer.0);
@@ -394,6 +395,17 @@ fn encode_command(w: &mut Writer, cmd: &Command) {
             w.write_u64(caster.0);
             w.write_u8(*ability);
             encode_vec(w, *target);
+        }
+        CommandKind::Research {
+            researcher,
+            upgrade,
+        } => {
+            // ADR-0203 (Update 7): the research rides the command log like
+            // every other verb — a replay of a research-bearing match
+            // re-simulates it (cost, project, completion, effects).
+            w.write_u8(TAG_RESEARCH);
+            w.write_u64(researcher.0);
+            w.write_u8(*upgrade);
         }
         CommandKind::Resign {} => {
             w.write_u8(TAG_RESIGN);
@@ -465,6 +477,14 @@ fn decode_command(r: &mut Reader<'_>) -> Result<Command, ReplayError> {
                 caster,
                 ability,
                 target,
+            }
+        }
+        TAG_RESEARCH => {
+            let researcher = pandemonium_sim_api::EntityId(r.read_u64()?);
+            let upgrade = r.read_u8()?;
+            CommandKind::Research {
+                researcher,
+                upgrade,
             }
         }
         TAG_RESIGN => CommandKind::Resign {},

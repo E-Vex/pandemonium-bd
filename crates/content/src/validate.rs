@@ -13,7 +13,9 @@
 //! Every rejection names its file, entity/map, coordinates, and the exact rule
 //! violated — a designer should never have to guess which line is wrong.
 
-use crate::defs::{AbilityEffectDef, CapabilityDef, EntityDef, FactionDef, MapDef, RulesDef};
+use crate::defs::{
+    AbilityEffectDef, CapabilityDef, EntityDef, FactionDef, MapDef, RulesDef, UpgradeEffectDef,
+};
 use crate::error::ContentError;
 
 /// The largest map dimension accepted (a sanity cap for authoring mistakes; the
@@ -260,6 +262,101 @@ pub(crate) fn validate_entity(
                 }
             }
             CapabilityDef::Build | CapabilityDef::Produce => {}
+            CapabilityDef::Upgrades { upgrades } => {
+                // ADR-0203: the authored list must be non-empty, every
+                // parameter meaningful at its magnitude, and the carrier a
+                // structure (research happens at buildings — a Footprint is
+                // the structure marker, plan §9.1). Id uniqueness WITHIN the
+                // kind is here; global uniqueness is the tree pass below.
+                // Cost may be zero (the research time is the price floor);
+                // research_time must be positive (a zero-time project
+                // completes the tick after enqueue — a degenerate instant
+                // the pipeline does not promise).
+                if upgrades.is_empty() {
+                    return Err(stat(
+                        "Upgrades.upgrades",
+                        0,
+                        "the list must hold at least one upgrade",
+                    ));
+                }
+                if entity
+                    .capabilities
+                    .iter()
+                    .all(|cap| !matches!(cap, CapabilityDef::Footprint { .. }))
+                {
+                    return Err(ContentError::InvalidStat {
+                        file: file.to_string(),
+                        entity: id.clone(),
+                        field: "Upgrades".to_string(),
+                        value: 0,
+                        why: "the carrier must be a structure (a Footprint-carrying kind) \
+                              — research happens at buildings (ADR-0203 §1)"
+                            .to_string(),
+                    });
+                }
+                for (slot, upgrade) in upgrades.iter().enumerate() {
+                    if upgrade.research_time_ms == 0 {
+                        return Err(stat(
+                            "Upgrades.research_time_ms",
+                            0,
+                            &format!("slot {slot} ('{}') must have a research time", upgrade.id),
+                        ));
+                    }
+                    if upgrade.cost_ore < 0 {
+                        return Err(stat(
+                            "Upgrades.cost_ore",
+                            upgrade.cost_ore,
+                            &format!("slot {slot} ('{}') must not be negative", upgrade.id),
+                        ));
+                    }
+                    if upgrade.requires.iter().any(|req| req == &upgrade.id) {
+                        return Err(stat(
+                            "Upgrades.requires",
+                            0,
+                            &format!("slot {slot} ('{}') must not require itself", upgrade.id),
+                        ));
+                    }
+                    match &upgrade.effect {
+                        UpgradeEffectDef::AttackDamage {
+                            multiplier_milli,
+                            targets,
+                        }
+                        | UpgradeEffectDef::MoveSpeed {
+                            multiplier_milli,
+                            targets,
+                        } => {
+                            if *multiplier_milli <= 0 {
+                                return Err(stat(
+                                    "Upgrades.multiplier_milli",
+                                    *multiplier_milli as i64,
+                                    &format!("slot {slot} ('{}') must be positive", upgrade.id),
+                                ));
+                            }
+                            if targets.is_empty() {
+                                return Err(stat(
+                                    "Upgrades.targets",
+                                    0,
+                                    &format!(
+                                        "slot {slot} ('{}') must target at least one kind",
+                                        upgrade.id
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+                let mut ids: Vec<&str> = upgrades.iter().map(|u| u.id.as_str()).collect();
+                ids.sort_unstable();
+                if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+                    return Err(ContentError::InvalidStat {
+                        file: file.to_string(),
+                        entity: id.clone(),
+                        field: "Upgrades.upgrades".to_string(),
+                        value: 0,
+                        why: "upgrade ids must be unique within the kind".to_string(),
+                    });
+                }
+            }
             CapabilityDef::Abilities { abilities } => {
                 // ADR-0202: the authored list must be non-empty, the ids
                 // unique (humans and tooling address them), and every
@@ -419,6 +516,127 @@ pub(crate) fn validate_entity_references(entities: &[EntityDef]) -> Result<(), C
                     what: format!("entity '{}' requires", entity.id),
                     reference: requirement.clone(),
                 });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validates the upgrade tree as a whole (ADR-0203 §1, runs once all entities
+/// are known): upgrade ids are globally unique (the tree's identity
+/// vocabulary — a prerequisite resolves to exactly one (kind, slot)), every
+/// prerequisite id names a known upgrade, every effect target names a loaded
+/// entity, and the `requires` graph is acyclic (a cycle is unreachable
+/// content, never a design).
+pub(crate) fn validate_upgrade_tree(entities: &[EntityDef]) -> Result<(), ContentError> {
+    // (id -> (file, entity id)) for global uniqueness; (id -> requires) for
+    // the graph walk.
+    let mut seen: Vec<(&str, &str, &str)> = Vec::new();
+    let mut edges: Vec<(&str, Vec<&str>)> = Vec::new();
+    for entity in entities {
+        if let Some(upgrades) = entity.upgrades() {
+            for upgrade in upgrades {
+                seen.push((
+                    upgrade.id.as_str(),
+                    entity.file.as_str(),
+                    entity.id.as_str(),
+                ));
+                edges.push((
+                    upgrade.id.as_str(),
+                    upgrade.requires.iter().map(String::as_str).collect(),
+                ));
+            }
+        }
+    }
+    // Global uniqueness (sorted adjacent-duplicate scan).
+    let mut ids: Vec<&str> = seen.iter().map(|(id, _, _)| *id).collect();
+    ids.sort_unstable();
+    if let Some(pair) = ids.windows(2).find(|pair| pair[0] == pair[1]) {
+        let duplicate = pair[0];
+        let (_, file, entity) = seen
+            .iter()
+            .find(|(id, _, _)| *id == duplicate)
+            .copied()
+            .unwrap_or(("", "", ""));
+        return Err(ContentError::InvalidStat {
+            file: file.to_string(),
+            entity: entity.to_string(),
+            field: "Upgrades.upgrades".to_string(),
+            value: 0,
+            why: format!(
+                "upgrade id '{duplicate}' is not unique across the tree (ids are the \
+                 tech tree's global vocabulary)"
+            ),
+        });
+    }
+    // Every prerequisite names a known upgrade; every target names a loaded
+    // entity.
+    for entity in entities {
+        let Some(upgrades) = entity.upgrades() else {
+            continue;
+        };
+        for upgrade in upgrades {
+            for requirement in &upgrade.requires {
+                if !ids.binary_search(&requirement.as_str()).is_ok() {
+                    return Err(ContentError::UnknownEntityRef {
+                        file: entity.file.clone(),
+                        what: format!("upgrade '{}' requires", upgrade.id),
+                        reference: requirement.clone(),
+                    });
+                }
+            }
+            match &upgrade.effect {
+                UpgradeEffectDef::AttackDamage { targets, .. }
+                | UpgradeEffectDef::MoveSpeed { targets, .. } => {
+                    for target in targets {
+                        if !entities.iter().any(|other| &other.id == target) {
+                            return Err(ContentError::UnknownEntityRef {
+                                file: entity.file.clone(),
+                                what: format!("upgrade '{}' ('{}') targets", entity.id, upgrade.id),
+                                reference: target.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Acyclic: walk each node's requires-chain with a visited set; a repeat
+    // visit inside one walk is a cycle.
+    for (start, _) in &edges {
+        let mut stack = vec![(*start, false)];
+        let mut path: Vec<&str> = Vec::new();
+        while let Some((node, processed)) = stack.pop() {
+            if processed {
+                path.retain(|entry| *entry != node);
+                continue;
+            }
+            if path.contains(&node) {
+                return Err(ContentError::InvalidStat {
+                    file: entities
+                        .iter()
+                        .find(|entity| {
+                            entity.upgrades().is_some_and(|upgrades| {
+                                upgrades.iter().any(|upgrade| upgrade.id == node)
+                            })
+                        })
+                        .map(|entity| entity.file.clone())
+                        .unwrap_or_default(),
+                    entity: String::new(),
+                    field: "Upgrades.requires".to_string(),
+                    value: 0,
+                    why: format!(
+                        "the upgrade 'requires' graph is cyclic at '{node}' (a cycle is \
+                         unreachable content)"
+                    ),
+                });
+            }
+            path.push(node);
+            stack.push((node, true));
+            if let Some((_, requires)) = edges.iter().find(|(id, _)| *id == node) {
+                for requirement in requires.iter().rev() {
+                    stack.push((*requirement, false));
+                }
             }
         }
     }

@@ -204,6 +204,57 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
             h.write_i32(def.multiplier.raw());
             h.write_u32(def.remaining_ticks);
         }
+        // ADR-0203 (Update 7): the authored upgrade specs — the kind's static
+        // list, hashed without the id strings (they derive from the kind
+        // template, and the kind id is already part of the entity record's
+        // identity — the Abilities rule verbatim).
+        if let Some(CapabilityData::Upgrades(def)) = capability_of(world, entity.id, mask, 14) {
+            h.write_u32(def.specs.len() as u32);
+            for spec in &def.specs {
+                match &spec.effect {
+                    crate::world::UpgradeEffect::AttackDamage {
+                        multiplier,
+                        targets,
+                    } => {
+                        h.write_u8(1);
+                        h.write_i32(multiplier.raw());
+                        h.write_u32(targets.len() as u32);
+                        for target in targets {
+                            h.write_u32(target.0);
+                        }
+                    }
+                    crate::world::UpgradeEffect::MoveSpeed {
+                        multiplier,
+                        targets,
+                    } => {
+                        h.write_u8(2);
+                        h.write_i32(multiplier.raw());
+                        h.write_u32(targets.len() as u32);
+                        for target in targets {
+                            h.write_u32(target.0);
+                        }
+                    }
+                }
+                h.write_u32(spec.research_ticks);
+                h.write_u32(spec.cost.len() as u32);
+                for (resource, amount) in &spec.cost {
+                    h.write_u32(resource.0);
+                    h.write_i64(*amount);
+                }
+                h.write_u32(spec.requires.len() as u32);
+                for (carrier, slot) in &spec.requires {
+                    h.write_u32(carrier.0);
+                    h.write_u8(*slot);
+                }
+            }
+        }
+        // ADR-0203 (Update 7): the in-flight research runtime — the project
+        // IS world state (its progress alters the tick it lands), so it is
+        // hashed: the slot and the elapsed ticks.
+        if let Some(CapabilityData::Research(def)) = capability_of(world, entity.id, mask, 15) {
+            h.write_u8(def.slot);
+            h.write_u32(def.progress_ticks);
+        }
     }
 
     // Players, ascending by slot.
@@ -219,6 +270,47 @@ pub(crate) fn hash_state(world: &World, tick: Tick, rng: &Rng, next_entity_id: u
         }
         h.write_u32(player.population);
         h.write_u32(player.population_cap);
+    }
+
+    // ADR-0203 (Update 7): the players' researched-upgrade ledger — a
+    // TRAILING section, written only when the store is non-empty. The
+    // additive-empty rule: a pre-B-034 state (no researched upgrade
+    // anywhere) appends ZERO bytes to the v4 stream, so the demo and
+    // flagship goldens stay bit-identical and STATE_ENCODING_VERSION
+    // stays 4 — the mask-slot discipline's section-level twin, with the
+    // same executable proof (the pinned goldens). "Empty" and "absent"
+    // encode identically because they MEAN identically.
+    if !world.researched.is_empty() {
+        h.write_u32(world.researched.len() as u32);
+        for entry in &world.researched {
+            h.write_u8(entry.player.0);
+            h.write_u32(entry.carrier.0);
+            h.write_u8(entry.slot);
+            match &entry.effect {
+                crate::world::UpgradeEffect::AttackDamage {
+                    multiplier,
+                    targets,
+                } => {
+                    h.write_u8(1);
+                    h.write_i32(multiplier.raw());
+                    h.write_u32(targets.len() as u32);
+                    for target in targets {
+                        h.write_u32(target.0);
+                    }
+                }
+                crate::world::UpgradeEffect::MoveSpeed {
+                    multiplier,
+                    targets,
+                } => {
+                    h.write_u8(2);
+                    h.write_i32(multiplier.raw());
+                    h.write_u32(targets.len() as u32);
+                    for target in targets {
+                        h.write_u32(target.0);
+                    }
+                }
+            }
+        }
     }
 
     h.finish()
@@ -265,7 +357,9 @@ fn controller_tag(player: &crate::world::PlayerState) -> u8 {
 /// bit 2 Vision, bit 3 Gather, bit 4 Build, bit 5 Produce, bit 6 Storage,
 /// bit 7 ProvidesPopulation, bit 8 Resource, bit 9 Footprint, bit 10
 /// Construction, bit 11 Attack, bit 12 Abilities, bit 13 SpeedBoost
-/// (ADR-0202).
+/// (ADR-0202), bit 14 Upgrades, bit 15 Research (ADR-0203) — the mask's
+/// last two spare slots; further capability growth needs a wider mask word,
+/// which WOULD be a value shift and a version bump.
 fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u16 {
     let mut mask = 0u16;
     if world.health_of(id).is_some() {
@@ -309,6 +403,12 @@ fn capability_mask(world: &World, id: pandemonium_sim_api::EntityId) -> u16 {
     }
     if world.speed_boost_of(id).is_some() {
         mask |= 1 << 13;
+    }
+    if world.upgrades_of(id).is_some() {
+        mask |= 1 << 14;
+    }
+    if world.research_of(id).is_some() {
+        mask |= 1 << 15;
     }
     mask
 }
@@ -355,9 +455,15 @@ fn capability_of(
         12 => world
             .abilities_of(id)
             .map(|def| CapabilityData::Abilities(def.clone())),
-        _ => world
+        13 => world
             .speed_boost_of(id)
             .map(|def| CapabilityData::SpeedBoost(*def)),
+        14 => world
+            .upgrades_of(id)
+            .map(|def| CapabilityData::Upgrades(def.clone())),
+        _ => world
+            .research_of(id)
+            .map(|def| CapabilityData::Research(*def)),
     }
 }
 

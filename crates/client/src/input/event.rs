@@ -562,6 +562,18 @@ impl App {
                 self.placement = None;
                 self.cast_armed = Some((caster, slot));
             }
+            // ADR-0203 §8: the research button submits directly — the Train
+            // rule (no ground point, no arming). The gate is the authority;
+            // a refusal surfaces through the usual rejection feedback.
+            ButtonAction::Research { researcher, slot } => {
+                self.submit_order(
+                    CommandKind::Research {
+                        researcher,
+                        upgrade: slot,
+                    },
+                    None,
+                );
+            }
         }
     }
 

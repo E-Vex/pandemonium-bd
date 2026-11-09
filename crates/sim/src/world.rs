@@ -57,6 +57,14 @@ pub enum CapabilityData {
     /// never authored in content, injected by a `SpeedBurst` cast, removed
     /// at expiry; the `Construction` pattern).
     SpeedBoost(SpeedBoostDef),
+    /// Researchable upgrades the structure offers (ADR-0203, plan §19
+    /// Update 7): the kind's authored spec list — static parameters, the
+    /// `Abilities` pattern.
+    Upgrades(UpgradesDef),
+    /// A research project in flight (ADR-0203 §2: the runtime — never
+    /// authored in content, injected by the `Research` command, removed at
+    /// completion; the `Construction` pattern).
+    Research(ResearchDef),
 }
 
 /// Health capability: current hp plus its parameters. Regeneration advances every
@@ -433,6 +441,90 @@ pub struct SpeedBoostDef {
     pub remaining_ticks: u32,
 }
 
+/// One upgrade's parameters in runtime units (ADR-0203 §1 — the
+/// load-converted form of content's `UpgradeSpecDef`; durations arrive as
+/// ticks, multipliers as fixed point).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UpgradeSpec {
+    /// Stable upgrade id (humans and tooling; commands address slots, and
+    /// the id resolves prerequisites at the content seam).
+    pub id: String,
+    /// What the upgrade does (one of the code-defined effect kinds,
+    /// parameterized — never content logic).
+    pub effect: UpgradeEffect,
+    /// Research duration in whole ticks.
+    pub research_ticks: u32,
+    /// The research cost, resource-resolved at the content seam (empty =
+    /// free; the `KindEconomy.cost` pattern — names stop at the seam).
+    pub cost: Vec<(ResourceId, i64)>,
+    /// Prerequisites as (carrier kind, slot) pairs — upgrade ids resolved
+    /// at the content seam, where every kind's list is known.
+    pub requires: Vec<(KindId, u8)>,
+}
+
+/// One effect kind's parameters in runtime units (ADR-0203 §2 — the closed
+/// vocabulary; a new kind is a new variant plus a new consumer read).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum UpgradeEffect {
+    /// A permanent attack-damage multiplier for the owner's entities of the
+    /// targeted kinds, read live by the combat system (`effective_damage`).
+    AttackDamage {
+        /// Damage multiplier in fixed point (1.25 = `Fx::from_milli(1250)`;
+        /// applied with `Fx::mul`'s round-toward-zero, so small base damages
+        /// floor — the documented integer law).
+        multiplier: Fx,
+        /// Which kinds benefit, resolved at load.
+        targets: Vec<KindId>,
+    },
+    /// A permanent movement-speed multiplier for the owner's entities of the
+    /// targeted kinds, read live by the movement system (`effective_speed`).
+    MoveSpeed {
+        /// Speed multiplier in fixed point.
+        multiplier: Fx,
+        /// Which kinds benefit, resolved at load.
+        targets: Vec<KindId>,
+    },
+}
+
+/// Upgrades capability in runtime units (ADR-0203 §1): the kind's authored
+/// spec list — parameters only, no runtime on the block (the in-flight
+/// runtime is the injected [`ResearchDef`], the `Construction` pattern).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UpgradesDef {
+    /// The upgrade specs, in authored slot order.
+    pub specs: Vec<UpgradeSpec>,
+}
+
+/// A research project in flight (ADR-0203 §2): one per researcher, injected
+/// by the `Research` command at enqueue (after the gate spent the cost),
+/// advanced one tick per tick by the upgrade system, removed at completion —
+/// or with the entity, if the researcher falls.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResearchDef {
+    /// Which upgrade, by its authored slot index in the kind's list.
+    pub slot: u8,
+    /// Ticks of research elapsed (the project completes when this reaches
+    /// the spec's `research_ticks`).
+    pub progress_ticks: u32,
+}
+
+/// One entry in a player's permanent researched set (ADR-0203 §3): the
+/// (carrier kind, slot) identity plus the effect snapshot — the effect is
+/// copied at completion so the ledger is self-contained (the researcher may
+/// die later; the upgrade never does). The store is sorted by (player,
+/// carrier, slot) ascending.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ResearchedUpgrade {
+    /// The player who holds the upgrade.
+    pub player: PlayerId,
+    /// The kind whose list carried the upgrade.
+    pub carrier: KindId,
+    /// Which upgrade slot, by its authored index in the carrier's list.
+    pub slot: u8,
+    /// The effect snapshot, applied from completion onward.
+    pub effect: UpgradeEffect,
+}
+
 /// An order in an entity's queue (plan §6.3 stage 2: the order queue resolves into
 /// system intents). M1's order vocabulary is movement-only; M5 adds the economy
 /// intents (plan §9.3/§9.4): a worker gathers from a node or raises a site.
@@ -644,6 +736,15 @@ pub struct World {
     /// Live speed-boost runtime blocks, ascending by id (ADR-0202 §2 —
     /// injected, never authored).
     pub speed_boosts: Vec<(EntityId, SpeedBoostDef)>,
+    /// Upgrades capability store, ascending by id (ADR-0203, Update 7).
+    pub upgrades: Vec<(EntityId, UpgradesDef)>,
+    /// In-flight research runtime blocks, ascending by id (ADR-0203 §2 —
+    /// injected, never authored).
+    pub research: Vec<(EntityId, ResearchDef)>,
+    /// The players' permanent researched upgrades, sorted by (player,
+    /// carrier, slot) ascending (ADR-0203 §3 — hashed world state; the
+    /// combat and movement systems read it live).
+    pub researched: Vec<ResearchedUpgrade>,
     /// Player states, ascending by slot.
     pub players: Vec<PlayerState>,
     /// How many kind templates the loaded fixture defines — the ceiling for valid
@@ -872,15 +973,137 @@ impl World {
     }
 
     /// The entity's effective movement speed: the authored per-tick speed
-    /// times the live boost's multiplier, when one runs (ADR-0202 §2). A
-    /// zero-speed mover stays zero — a multiplier cannot create speed from
-    /// nothing. `None` when the entity does not move at all.
+    /// times the owner's researched MoveSpeed multipliers for this kind,
+    /// times the live boost's multiplier when one runs (ADR-0203 §2, then
+    /// ADR-0202 §2 — permanent modifiers first, transient last: one fixed
+    /// order, one fixed rounding). A zero-speed mover stays zero — a
+    /// multiplier cannot create speed from nothing. `None` when the entity
+    /// does not move at all.
     pub fn effective_speed(&self, id: EntityId) -> Option<Fx> {
         let speed = self.move_of(id)?.speed_per_tick;
+        let Some(entity) = self.entity(id) else {
+            return Some(speed);
+        };
+        let upgraded = self.upgraded_speed(entity.owner, entity.kind, speed);
         Some(match self.speed_boost_of(id) {
-            Some(boost) => speed.mul(boost.multiplier),
-            None => speed,
+            Some(boost) => upgraded.mul(boost.multiplier),
+            None => upgraded,
         })
+    }
+
+    /// Upgrades data for an entity (ADR-0203).
+    pub fn upgrades_of(&self, id: EntityId) -> Option<&UpgradesDef> {
+        self.upgrades
+            .binary_search_by_key(&id, |(eid, _)| *eid)
+            .ok()
+            .map(|i| &self.upgrades[i].1)
+    }
+
+    /// Mutable upgrades data for an entity (ADR-0203).
+    pub fn upgrades_of_mut(&mut self, id: EntityId) -> Option<&mut UpgradesDef> {
+        match self.upgrades.binary_search_by_key(&id, |(eid, _)| *eid) {
+            Ok(i) => Some(&mut self.upgrades[i].1),
+            Err(_) => None,
+        }
+    }
+
+    /// True when the entity carries the Upgrades capability (ADR-0203).
+    pub fn has_upgrades(&self, id: EntityId) -> bool {
+        self.upgrades_of(id).is_some()
+    }
+
+    /// The in-flight research block on an entity, if one runs (ADR-0203 §2).
+    pub fn research_of(&self, id: EntityId) -> Option<&ResearchDef> {
+        self.research
+            .binary_search_by_key(&id, |(eid, _)| *eid)
+            .ok()
+            .map(|i| &self.research[i].1)
+    }
+
+    /// Mutable in-flight research block for an entity (ADR-0203 §2).
+    pub fn research_of_mut(&mut self, id: EntityId) -> Option<&mut ResearchDef> {
+        match self.research.binary_search_by_key(&id, |(eid, _)| *eid) {
+            Ok(i) => Some(&mut self.research[i].1),
+            Err(_) => None,
+        }
+    }
+
+    /// Inserts the entity's research block (ADR-0203 §2 — one project per
+    /// researcher; the gate guarantees the slot is free).
+    pub fn set_research(&mut self, id: EntityId, def: ResearchDef) {
+        match self.research.binary_search_by_key(&id, |(eid, _)| *eid) {
+            Ok(i) => self.research[i].1 = def,
+            Err(i) => self.research.insert(i, (id, def)),
+        }
+    }
+
+    /// Removes the entity's research block, if one runs (ADR-0203 §2 —
+    /// completion, or the researcher's death).
+    pub fn clear_research(&mut self, id: EntityId) {
+        if let Ok(i) = self.research.binary_search_by_key(&id, |(eid, _)| *eid) {
+            self.research.remove(i);
+        }
+    }
+
+    /// True when the player holds the (carrier kind, slot) upgrade
+    /// (ADR-0203 §3) — the gate's `UpgradeAlreadyResearched` and every
+    /// prerequisite check read this.
+    pub fn researched_by(&self, player: PlayerId, carrier: KindId, slot: u8) -> bool {
+        self.researched
+            .binary_search_by(|entry| {
+                (entry.player, entry.carrier, entry.slot).cmp(&(player, carrier, slot))
+            })
+            .is_ok()
+    }
+
+    /// The entity's effective attack damage: the authored base times every
+    /// AttackDamage multiplier the attacker's owner holds for the
+    /// attacker's kind, in researched-store order (ADR-0203 §2 — the walk
+    /// is over a sorted store, so application order is deterministic).
+    /// Flat `Fx::mul` semantics round toward zero; the result saturates in
+    /// `i32` (a stack of multipliers cannot overflow the pipeline).
+    pub fn effective_damage(&self, id: EntityId, base: i32) -> i32 {
+        let Some(entity) = self.entity(id) else {
+            return base;
+        };
+        let mut damage = Fx::from_int(base.max(0));
+        for entry in &self.researched {
+            if entry.player != entity.owner {
+                continue;
+            }
+            if let UpgradeEffect::AttackDamage {
+                multiplier,
+                targets,
+            } = &entry.effect
+            {
+                if targets.contains(&entity.kind) {
+                    damage = damage.mul(*multiplier);
+                }
+            }
+        }
+        damage.trunc_int()
+    }
+
+    /// One mover's speed under the owner's researched MoveSpeed upgrades
+    /// (ADR-0203 §2 — the `effective_damage` walk's movement twin; the
+    /// researched-store order is the application order).
+    fn upgraded_speed(&self, player: PlayerId, kind: KindId, speed: Fx) -> Fx {
+        let mut result = speed;
+        for entry in &self.researched {
+            if entry.player != player {
+                continue;
+            }
+            if let UpgradeEffect::MoveSpeed {
+                multiplier,
+                targets,
+            } = &entry.effect
+            {
+                if targets.contains(&kind) {
+                    result = result.mul(*multiplier);
+                }
+            }
+        }
+        result
     }
 
     /// True when the entity carries the given capability.
@@ -950,6 +1173,8 @@ impl World {
                 CapabilityData::Attack(def) => self.attack.push((id, def)),
                 CapabilityData::Abilities(def) => self.abilities.push((id, def)),
                 CapabilityData::SpeedBoost(def) => self.speed_boosts.push((id, def)),
+                CapabilityData::Upgrades(def) => self.upgrades.push((id, def)),
+                CapabilityData::Research(def) => self.research.push((id, def)),
             }
         }
     }
@@ -1012,6 +1237,15 @@ impl World {
         if let Ok(i) = self.speed_boosts.binary_search_by_key(&id, |(eid, _)| *eid) {
             self.speed_boosts.remove(i);
         }
+        if let Ok(i) = self.upgrades.binary_search_by_key(&id, |(eid, _)| *eid) {
+            self.upgrades.remove(i);
+        }
+        // ADR-0203 §2: a dying researcher loses its in-flight project (the
+        // block dies with the entity) — but never a completed upgrade: the
+        // researched ledger is the player's, not the building's.
+        if let Ok(i) = self.research.binary_search_by_key(&id, |(eid, _)| *eid) {
+            self.research.remove(i);
+        }
     }
 
     /// Removes every id in `ids` from the base record and every capability
@@ -1049,6 +1283,10 @@ impl World {
         retain_not_in(&mut self.attack, ids, |(eid, _)| *eid);
         retain_not_in(&mut self.abilities, ids, |(eid, _)| *eid);
         retain_not_in(&mut self.speed_boosts, ids, |(eid, _)| *eid);
+        retain_not_in(&mut self.upgrades, ids, |(eid, _)| *eid);
+        // ADR-0203 §2: in-flight research dies with the researcher;
+        // completed upgrades never do (the researched ledger is player state).
+        retain_not_in(&mut self.research, ids, |(eid, _)| *eid);
     }
 }
 

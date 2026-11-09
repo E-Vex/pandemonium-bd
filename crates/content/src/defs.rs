@@ -149,6 +149,13 @@ pub enum CapabilityDef {
         /// The abilities, in authored slot order.
         abilities: Vec<AbilitySpecDef>,
     },
+    /// Researchable upgrades (ADR-0203, plan §19 Update 7): the kind's
+    /// authored upgrade list — parameters only; the effect vocabulary is
+    /// code (plan §10.1, the Abilities rule).
+    Upgrades {
+        /// The upgrades, in authored slot order.
+        upgrades: Vec<UpgradeSpecDef>,
+    },
 }
 
 impl CapabilityDef {
@@ -167,6 +174,7 @@ impl CapabilityDef {
             CapabilityDef::Vision { .. } => "Vision",
             CapabilityDef::Footprint { .. } => "Footprint",
             CapabilityDef::Abilities { .. } => "Abilities",
+            CapabilityDef::Upgrades { .. } => "Upgrades",
         }
     }
 }
@@ -226,6 +234,53 @@ pub enum AbilityEffectDef {
     },
 }
 
+/// One validated upgrade spec (ADR-0203 §1): the authored parameters plus the
+/// tick-converted duration (plan §10.2 — conversion happens once, at load).
+/// Targets and prerequisites stay as authored names — resolution to kind ids
+/// and (carrier, slot) pairs happens at the `world()` seam, where the whole
+/// tree is known.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct UpgradeSpecDef {
+    /// Stable upgrade id (unique across the whole tree).
+    pub id: String,
+    /// Human-facing name.
+    pub display_name: String,
+    /// What the upgrade does (one of the code-defined effect kinds,
+    /// parameterized).
+    pub effect: UpgradeEffectDef,
+    /// Research duration in milliseconds, as authored.
+    pub research_time_ms: u32,
+    /// Research duration in whole ticks (`(ms * 30 + 999) / 1000` — plan
+    /// §10.2).
+    pub research_ticks: u32,
+    /// Ore cost.
+    pub cost_ore: i64,
+    /// Prerequisite upgrade ids, as authored.
+    pub requires: Vec<String>,
+}
+
+/// One upgrade effect kind's parameters, validated (ADR-0203 §2 — the closed
+/// vocabulary; a new kind is a new variant plus a new consumer read).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum UpgradeEffectDef {
+    /// A permanent attack-damage multiplier for the owner's entities of the
+    /// targeted kinds.
+    AttackDamage {
+        /// Damage multiplier in thousandths (1250 = 1.25×).
+        multiplier_milli: i32,
+        /// Which entity kinds benefit (authored names).
+        targets: Vec<String>,
+    },
+    /// A permanent movement-speed multiplier for the owner's entities of the
+    /// targeted kinds.
+    MoveSpeed {
+        /// Speed multiplier in thousandths (1150 = 1.15×).
+        multiplier_milli: i32,
+        /// Which entity kinds benefit (authored names).
+        targets: Vec<String>,
+    },
+}
+
 /// A validated entity kind: capabilities plus economy stats (plan §10.4's table).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EntityDef {
@@ -262,6 +317,16 @@ impl EntityDef {
     pub fn abilities(&self) -> Option<&[AbilitySpecDef]> {
         match self.capability("Abilities") {
             Some(CapabilityDef::Abilities { abilities }) => Some(abilities),
+            _ => None,
+        }
+    }
+
+    /// The kind's authored upgrade list, if it carries the Upgrades
+    /// capability (ADR-0203). The first block wins if a (rejected-by-the-
+    /// validator) file ever carried two — the abilities() rule.
+    pub fn upgrades(&self) -> Option<&[UpgradeSpecDef]> {
+        match self.capability("Upgrades") {
+            Some(CapabilityDef::Upgrades { upgrades }) => Some(upgrades),
             _ => None,
         }
     }

@@ -2025,3 +2025,46 @@ confirms or rejects it.
   the A14 playtest's call. The battery's twelve P-laws are untouched and
   still pinned (no law test casts, and no scripted AI fields a caster, so
   no measured outcome moved).
+
+- **A-237 (B-034 — the state encoding stays v4, the additive-empty rule).**
+  The upgrade system's hashed state lands additively: capability-mask
+  slots 14 (`Upgrades`, static) and 15 (`Research`, the in-flight block)
+  are previously-unused mask bits — encoded only when present, so every
+  pre-B-034 entity record encodes bit-identically — and the players'
+  researched ledger is a TRAILING hash section written only when the
+  store is non-empty, so a pre-B-034 state appends zero bytes ("empty"
+  and "absent" encode identically because they mean identically — the
+  mask-slot discipline's section-level twin). STATE_ENCODING_VERSION
+  stays 4, and the unchanged demo and flagship goldens are the executable
+  proof (measured live at the branch tip: `0xb6fff6659cfb7709` and
+  `0x3a58e55ea6250906`). Consequence recorded for the future: the mask's
+  16 bits are now exhausted — the next capability (slot 16) needs a
+  wider mask word, which IS a value shift and a version bump.
+- **A-238 (B-034 — ADR-0203's landing status).** The ADR lands in
+  `proposed` under the owner's standing delegation (the ADR-0201 flow,
+  exactly as ADR-0202 did): the implementation and the design record
+  arrive together, and the Decision field stays open for the owner's
+  verdict.
+- **A-239 (B-034 — the scripted AI does not research).** Update 7 leaves
+  the scripted opponent untouched: no plan step builds a Forge, fields a
+  carrier, or issues a Research command, so every AI pin (the 612-command
+  count, the wire digest, the controller RNG streams) holds without
+  re-pinning — the A-234 rule, inherited verbatim. The AI's adoption of
+  the tech tree is §19 Update 8's evaluative-AI territory, or a
+  script-extension brief.
+- **A-240 (B-034 — the closed vocabulary's designed limits).** The
+  upgrade effect vocabulary is closed at two kinds (AttackDamage,
+  MoveSpeed), both parameterized multipliers read live at the consumer
+  seams. The designed-but-unimplemented third kind (MaxHp: a completion-
+  time mutation of existing entities' pools plus a spawn hook — two new
+  seams) is recorded in ADR-0203 §Consequences for the brief that wants
+  it; no shipped content carries it, so it stays unimplemented rather
+  than growing the spawn path ahead of need (the Spirit row's own rule).
+- **A-241 (B-034 — the authored upgrade numbers).** The two shipped
+  upgrades' numbers (Weapon Systems +25% damage on the rifle line, 20 s,
+  250 ore; Field Engines +15% speed on the logistics line, 15 s, 200 ore,
+  chained on the first) are authored by design intent, not playtested —
+  A-230's standard, inherited from B-033's A-236: whether either FEELS
+  right is the A14 playtest's call. The integer law (Fx::mul's
+  round-toward-zero — 8 x 1.25 is 10 exactly, 8 x 1.2 floors at 9) is
+  pinned by test and rides with them.

@@ -374,6 +374,41 @@ fn convert_capability(raw: &RawCapability) -> defs::CapabilityDef {
                 })
                 .collect(),
         },
+        // ADR-0203 (Update 7): the validated form keeps the authored names
+        // for targets and prerequisites — resolution happens at the world()
+        // seam, where every kind is known. The duration converts once, at
+        // load, like every other authored time.
+        RawCapability::Upgrades(cap) => defs::CapabilityDef::Upgrades {
+            upgrades: cap
+                .upgrades
+                .iter()
+                .map(|upgrade| defs::UpgradeSpecDef {
+                    id: upgrade.id.clone(),
+                    display_name: upgrade.display_name.clone(),
+                    effect: match &upgrade.effect {
+                        schema::RawUpgradeEffect::AttackDamage(effect) => {
+                            defs::UpgradeEffectDef::AttackDamage {
+                                multiplier_milli: effect.multiplier_milli,
+                                targets: effect.targets.clone(),
+                            }
+                        }
+                        schema::RawUpgradeEffect::MoveSpeed(effect) => {
+                            defs::UpgradeEffectDef::MoveSpeed {
+                                multiplier_milli: effect.multiplier_milli,
+                                targets: effect.targets.clone(),
+                            }
+                        }
+                    },
+                    research_time_ms: upgrade.research_time_ms,
+                    research_ticks: ms_to_ticks(
+                        upgrade.research_time_ms,
+                        pandemonium_sim::TICKS_PER_SECOND,
+                    ),
+                    cost_ore: upgrade.cost_ore,
+                    requires: upgrade.requires.clone(),
+                })
+                .collect(),
+        },
     }
 }
 

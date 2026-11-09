@@ -146,6 +146,10 @@ pub(crate) enum RawCapability {
     /// authored ability list — parameters only; the effect vocabulary is
     /// code (plan §10.1: data selects and parameterizes, never scripts).
     Abilities(RawAbilities),
+    /// Researchable upgrades (ADR-0203, plan §19 Update 7): the kind's
+    /// authored upgrade list — parameters only; the effect vocabulary is
+    /// code (plan §10.1, the Abilities rule).
+    Upgrades(RawUpgrades),
 }
 
 /// Health parameters.
@@ -327,6 +331,75 @@ pub(crate) struct RawSpeedBurst {
     pub duration_ms: u32,
     /// Effect radius in milli-tiles.
     pub radius_milli_tiles: i32,
+}
+
+/// The Upgrades capability block: the kind's authored upgrade list
+/// (ADR-0203 §1).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawUpgrades {
+    /// The upgrades, in authored slot order (slot indices address these).
+    pub upgrades: Vec<RawUpgrade>,
+}
+
+/// One authored upgrade: parameters in authoring units (plan §10.2 — the
+/// loader converts durations to ticks once, at load; targets and
+/// prerequisites resolve once, at load, where the whole tree is known).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawUpgrade {
+    /// Stable upgrade id (unique across the whole tree; prerequisites and
+    /// tooling read it — commands address slots by index).
+    pub id: String,
+    /// Human-facing name.
+    pub display_name: String,
+    /// What the upgrade does (one of the code-defined effect kinds,
+    /// parameterized).
+    pub effect: RawUpgradeEffect,
+    /// Research duration in milliseconds (converted to ticks at load —
+    /// plan §10.2).
+    pub research_time_ms: u32,
+    /// Ore cost (zero is authored content's choice; the gate still checks
+    /// affordability).
+    pub cost_ore: i64,
+    /// Prerequisite upgrade ids (resolved to (carrier kind, slot) pairs at
+    /// load — the tech tree's edges).
+    #[serde(default)]
+    pub requires: Vec<String>,
+}
+
+/// One upgrade effect kind's parameters, as authored (ADR-0203 §2 — the
+/// closed vocabulary; a new kind is a new variant plus a new consumer
+/// read, never content logic).
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum RawUpgradeEffect {
+    /// A permanent attack-damage multiplier for the owner's entities of the
+    /// targeted kinds (read live by the combat system).
+    AttackDamage(RawAttackDamage),
+    /// A permanent movement-speed multiplier for the owner's entities of the
+    /// targeted kinds (read live by the movement system).
+    MoveSpeed(RawMoveSpeed),
+}
+
+/// `AttackDamage` parameters.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawAttackDamage {
+    /// Damage multiplier in thousandths (1250 = 1.25×).
+    pub multiplier_milli: i32,
+    /// Which entity kinds benefit (resolved to kind ids at load).
+    pub targets: Vec<String>,
+}
+
+/// `MoveSpeed` parameters.
+#[derive(serde::Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawMoveSpeed {
+    /// Speed multiplier in thousandths (1150 = 1.15×).
+    pub multiplier_milli: i32,
+    /// Which entity kinds benefit (resolved to kind ids at load).
+    pub targets: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

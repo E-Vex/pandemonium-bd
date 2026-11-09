@@ -14,7 +14,7 @@ use crate::text::{TextAtlas, UiQuad};
 use pandemonium_content::ContentBundle;
 use pandemonium_sim_api::{
     AbilityView, EntityId, EntityView, GatherSemantics, KindId, MissionData, MissionObjectiveKind,
-    MissionObjectiveParameters, ObjectiveState, QueueView, TilePos,
+    MissionObjectiveParameters, ObjectiveState, QueueView, ResearchView, ResearchedView, TilePos,
 };
 
 /// What pressing a button asks the client to do (FD-2: it becomes a
@@ -48,6 +48,15 @@ pub enum ButtonAction {
         /// The entity that will cast.
         caster: EntityId,
         /// Which ability slot, by its authored index in the kind's list.
+        slot: u8,
+    },
+    /// Begin researching an upgrade at the selected structure (ADR-0203 §8 —
+    /// the Train click rule: the button submits the command directly, no
+    /// armed targeting, because research has no ground point).
+    Research {
+        /// The structure that will research.
+        researcher: EntityId,
+        /// Which upgrade slot, by its authored index in the kind's list.
         slot: u8,
     },
 }
@@ -167,6 +176,12 @@ pub struct CardInput<'a> {
     /// The player's own ability slots (casters ascending by id, one entry per
     /// (caster, slot) — ADR-0202 §7).
     pub abilities: &'a [AbilityView],
+    /// The player's own in-flight research (researchers ascending by id,
+    /// ADR-0203 §7).
+    pub research: &'a [ResearchView],
+    /// The player's completed upgrades, ascending (carrier kind, slot)
+    /// (ADR-0203 §7).
+    pub researched: &'a [ResearchedView],
     /// The loaded content bundle (defs, faction production lists).
     pub bundle: &'a ContentBundle,
     /// The current selection (own entity ids).
@@ -199,6 +214,8 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
         view_entities,
         production,
         abilities,
+        research,
+        researched,
         bundle,
         selection,
         ore,
@@ -577,6 +594,134 @@ pub fn build_bottom_bar(input: CardInput<'_>) -> BuiltUi {
                 h: CELL_H - 10.0,
                 action: ButtonAction::CastAbility {
                     caster: caster.id,
+                    slot: slot as u8,
+                },
+                enabled,
+            });
+        }
+    }
+
+    // ── Research row (ADR-0203 §8): the first selected researcher's upgrade
+    // list, in the card's first free cell row after the ability row (a
+    // researcher is typically also a producer — the Forge trains AND
+    // researches, so its card shows the train row then this one). Click
+    // submits the Research command directly — the Train rule, no armed
+    // targeting (research has no ground point). Three states per cell:
+    // researched (dim, "done" — permanently), in flight (a darkened sweep
+    // that shrinks as the project completes, plus the seconds left), and
+    // actionable (enabled = affordable and prerequisites met; the client's
+    // approximation — the gate is the authority). A mixed selection that
+    // fills the card omits the row (DEBT-208, the DEBT-206 rule).
+    let selected_researcher = selected
+        .iter()
+        .find(|entity| def_of(bundle, entity.kind).is_some_and(|def| def.upgrades().is_some()));
+    let research_row: Option<f32> = {
+        let start = if selected_producer.is_some() {
+            1.0
+        } else {
+            0.0
+        } + build_row_count
+            + if selected_caster.is_some() { 1.0 } else { 0.0 };
+        (start < 2.0).then_some(start)
+    };
+    if let (Some(researcher), Some(row)) = (selected_researcher, research_row) {
+        let Some(specs) = def_of(bundle, researcher.kind).and_then(|def| def.upgrades()) else {
+            unreachable!("the researcher filter guaranteed the capability");
+        };
+        for (column, (slot, spec)) in specs.iter().enumerate().take(3).enumerate() {
+            let x = card[0] + PAD + column as f32 * CELL_W;
+            let y = card[1] + PAD + row * CELL_H;
+            // The three states, from the view's exact-entry lookups.
+            let is_researched = researched
+                .iter()
+                .any(|entry| entry.kind == researcher.kind && entry.slot == slot as u8);
+            // In flight at ANY researcher of this kind (the same upgrade
+            // twice is a wasted purse — the card says so before the gate
+            // has to).
+            let in_flight = research
+                .iter()
+                .find(|view| view.slot == slot as u8)
+                .map(|view| view.progress_milli)
+                .filter(|_| !is_researched);
+            // Prerequisites, the client's approximation: every required
+            // upgrade id resolves to its (carrier kind, slot) pair through
+            // the bundle — the same resolution the server seam performs.
+            let requirements_met = spec.requires.iter().all(|requirement| {
+                let resolved = bundle
+                    .entities
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, entity)| {
+                        entity.upgrades().and_then(|upgrades| {
+                            upgrades
+                                .iter()
+                                .position(|upgrade| &upgrade.id == requirement)
+                                .map(|slot| (KindId(index as u32), slot as u8))
+                        })
+                    });
+                resolved.is_some_and(|(kind, slot)| {
+                    researched
+                        .iter()
+                        .any(|entry| entry.kind == kind && entry.slot == slot)
+                })
+            });
+            let affordable = ore >= spec.cost_ore;
+            let enabled = !is_researched && in_flight.is_none() && affordable && requirements_met;
+            let label = if is_researched {
+                format!("{} [done]", spec.display_name)
+            } else if let Some(progress_milli) = in_flight {
+                // Seconds remaining, one decimal — the ability row's
+                // precision.
+                let remaining_milli = 1000 - progress_milli.min(1000);
+                let seconds =
+                    (remaining_milli as f32 / 1000.0) * (spec.research_time_ms as f32 / 1000.0);
+                format!("{} {:.1}s", spec.display_name, seconds)
+            } else {
+                spec.display_name.clone()
+            };
+            ui.quads.push(atlas.solid_rect(
+                x,
+                y,
+                CELL_W - 8.0,
+                CELL_H - 10.0,
+                if is_researched {
+                    [0.10, 0.26, 0.15, 0.9]
+                } else if enabled {
+                    [0.34, 0.24, 0.12, 0.9]
+                } else {
+                    [0.08, 0.08, 0.09, 0.9]
+                },
+            ));
+            // The progress sweep: a dark overlay covering the REMAINING
+            // fraction of the cell, from the top — the cooldown sweep's
+            // idiom (the dark part shrinks as the project completes).
+            if let Some(progress_milli) = in_flight {
+                let remaining = 1.0 - (progress_milli.min(1000) as f32 / 1000.0);
+                ui.quads.push(atlas.solid_rect(
+                    x,
+                    y,
+                    CELL_W - 8.0,
+                    (CELL_H - 10.0) * remaining,
+                    [0.0, 0.0, 0.0, 0.55],
+                ));
+            }
+            ui.quads.extend(atlas.layout(
+                &label,
+                x + 6.0,
+                y + (CELL_H - 10.0) * 0.5 + atlas.ascent * 0.5,
+                if enabled {
+                    [0.95, 0.90, 0.80, 0.95]
+                } else {
+                    [0.5, 0.5, 0.55, 0.85]
+                },
+            ));
+            ui.buttons.push(Button {
+                x,
+                y,
+                w: CELL_W - 8.0,
+                h: CELL_H - 10.0,
+                action: ButtonAction::Research {
+                    researcher: researcher.id,
                     slot: slot as u8,
                 },
                 enabled,
@@ -1766,6 +1911,8 @@ mod tests {
             view_entities: std::slice::from_ref(&forge),
             production: &production,
             abilities: &[],
+            research: &[],
+            researched: &[],
             bundle: &bundle,
             selection: &selection,
             ore: 1000,
@@ -1817,6 +1964,8 @@ mod tests {
             view_entities: std::slice::from_ref(&cc),
             production: &production,
             abilities: &[],
+            research: &[],
+            researched: &[],
             bundle: &bundle,
             selection: &selection,
             ore: 1000,
@@ -1845,6 +1994,8 @@ mod tests {
             view_entities: std::slice::from_ref(&cc),
             production: &production,
             abilities: &[],
+            research: &[],
+            researched: &[],
             bundle: &bundle,
             selection: vec![cc.id].as_slice(),
             ore: 10,
@@ -1868,6 +2019,8 @@ mod tests {
             view_entities: std::slice::from_ref(&worker),
             production: &[],
             abilities: &[],
+            research: &[],
+            researched: &[],
             bundle: &bundle,
             selection: std::slice::from_ref(&worker.id),
             ore: 1000,
@@ -1910,6 +2063,8 @@ mod tests {
             view_entities: std::slice::from_ref(&cc),
             production: &production,
             abilities: &[],
+            research: &[],
+            researched: &[],
             bundle: &bundle,
             selection: std::slice::from_ref(&cc.id),
             ore: 0,
@@ -2032,6 +2187,8 @@ mod tests {
                 view_entities: std::slice::from_ref(&cc),
                 production: prod,
                 abilities: &[],
+                research: &[],
+                researched: &[],
                 bundle: &bundle,
                 selection: std::slice::from_ref(&cc.id),
                 ore: 0,
@@ -2049,6 +2206,8 @@ mod tests {
             view_entities: std::slice::from_ref(&cc),
             production: &[],
             abilities: &[],
+            research: &[],
+            researched: &[],
             bundle: &bundle,
             selection: std::slice::from_ref(&cc.id),
             ore: 0,

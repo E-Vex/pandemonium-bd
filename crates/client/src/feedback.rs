@@ -377,6 +377,11 @@ pub fn rejection_text(reason: RejectReason) -> &'static str {
         RejectReason::AbilitySlotInvalid => "no such ability",
         RejectReason::AbilityOnCooldown => "ability recharging",
         RejectReason::AbilityOutOfRange => "too far to cast",
+        // ADR-0203 (Update 7): the research gate's reasons, in the same
+        // player-facing voice.
+        RejectReason::UpgradeSlotInvalid => "no such upgrade",
+        RejectReason::UpgradeAlreadyResearched => "already researched",
+        RejectReason::ResearchBusy => "already researching",
     }
 }
 
