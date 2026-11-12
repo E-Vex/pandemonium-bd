@@ -22,7 +22,10 @@
 //! the entity definitions, start positions from the map, and candidate build
 //! ground from a deterministic ring scan around the player's start.
 
-use pandemonium_ai::{AiPlan, Controller, ScriptedController};
+use pandemonium_ai::{
+    AbilityDirective, AiPlan, AimKind, Controller, EvalPlan, ResearchDirective, ResearchSlot,
+    ScriptedController, TacticalController,
+};
 use pandemonium_content::ContentBundle;
 use pandemonium_content::{CapabilityDef, EntityDef, StartDef};
 use pandemonium_sim::CapTemplate;
@@ -40,6 +43,12 @@ const SPOT_SCAN_RINGS: i32 = 12;
 
 /// Where the scan starts: clear of the command center's own ground.
 const SPOT_SCAN_INNER: i32 = 3;
+
+/// The carrier's candidate placements (ADR-0204): wider than SPOT_LIMIT —
+/// the research carrier is a 3x3 footprint competing with the scripted
+/// half's depot/barracks rings, and its sight-verify retry needs ground
+/// past what they consume.
+const CARRIER_SPOT_LIMIT: usize = 24;
 
 /// One running match with controllers: the simulation (owned privately, as in
 /// [`crate::MatchHost`]), the controllers, and the growing command log.
@@ -404,6 +413,194 @@ pub fn alpha_plan(
          — the army can never mass a full wave"
     );
     plan
+}
+
+/// Builds the evaluative opponent for one player from the loaded content
+/// (ADR-0204, plan §19 Update 8): the scripted Alpha's own plan as the
+/// base, plus the two directives the content's second tier offers — the
+/// research directive (the first buildable `Upgrades` carrier and its
+/// authored tree) and the ability directives (one per (caster kind, slot)
+/// the faction's roster fields). Same signature and mission pass-through
+/// as [`alpha_controller`]; the controller is the scripted opponent with
+/// the evaluative layer above it, so the base behavior is byte-identical.
+pub fn eval_controller(
+    bundle: &ContentBundle,
+    world: &TrivialWorld,
+    player: PlayerId,
+    seed: u64,
+    mission: Option<&MissionData>,
+) -> TacticalController {
+    TacticalController::new(eval_plan(bundle, world, player, seed, mission))
+}
+
+/// The evaluative opponent's plan (ADR-0204 §2), derived beside
+/// [`alpha_plan`] by the same capability-shaped law: the base plan is the
+/// scripted opponent's own, and the two directives resolve over the whole
+/// bundle the way the command card shows them to a player — prices and
+/// build times from the entity definitions, prerequisite edges through
+/// the bundle's own upgrade index, candidate build ground from the same
+/// ring scan, never a name match.
+pub fn eval_plan(
+    bundle: &ContentBundle,
+    world: &TrivialWorld,
+    player: PlayerId,
+    seed: u64,
+    mission: Option<&MissionData>,
+) -> EvalPlan {
+    let entities = &bundle.entities;
+    let kind_of = |id: &str| {
+        entities
+            .iter()
+            .position(|entity| entity.id == id)
+            .map(|index| KindId(index as u32))
+    };
+    let def_of = |kind: KindId| entities.get(kind.0 as usize);
+
+    let base = alpha_plan(bundle, world, player, seed, mission);
+
+    // The resource seam (the Alpha prices everything in Ore — the same
+    // mapping alpha_plan applies to its costs).
+    let ore_resource = bundle
+        .rules
+        .resources
+        .iter()
+        .position(|resource| resource.id == "ore")
+        .map(|index| ResourceId(index as u32));
+    let cost_of = |entity: &EntityDef| -> Vec<(ResourceId, i64)> {
+        match (entity.cost_ore > 0, ore_resource) {
+            (true, Some(resource)) => vec![(resource, entity.cost_ore)],
+            _ => Vec::new(),
+        }
+    };
+
+    // The research directive: the FIRST buildable `Upgrades` carrier in
+    // the faction's roster order (the roster's own order is the authored
+    // preference; the scan takes the first, the alpha_plan producer rule's
+    // shape). Its authored slots ride verbatim; prerequisites resolve
+    // through the bundle's own upgrade index (global id uniqueness is the
+    // validator's guarantee, so a lookup lands on exactly one carrier).
+    let upgrade_index: std::collections::BTreeMap<&str, (KindId, u8)> =
+        entities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entity)| {
+                let upgrades = entity.upgrades()?;
+                Some(upgrades.iter().enumerate().map(move |(slot, spec)| {
+                    (spec.id.as_str(), (KindId(index as u32), slot as u8))
+                }))
+            })
+            .flatten()
+            .collect();
+
+    let roster_kinds: Vec<KindId> = bundle
+        .faction()
+        .roster
+        .iter()
+        .filter_map(|id| kind_of(id))
+        .collect();
+    let carrier = roster_kinds
+        .into_iter()
+        .find(|kind| def_of(*kind).is_some_and(|def| def.upgrades().is_some()));
+
+    let research = carrier.map(|carrier| {
+        let def = def_of(carrier).expect("the carrier resolves");
+        let slots: Vec<ResearchSlot> = def
+            .upgrades()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .map(|(slot, spec)| ResearchSlot {
+                slot: slot as u8,
+                cost: match (spec.cost_ore > 0, ore_resource) {
+                    (true, Some(resource)) => vec![(resource, spec.cost_ore)],
+                    _ => Vec::new(),
+                },
+                research_ticks: spec.research_ticks,
+                requires: spec
+                    .requires
+                    .iter()
+                    .filter_map(|id| upgrade_index.get(id.as_str()).copied())
+                    .collect(),
+            })
+            .collect();
+        let anchor = bundle
+            .map
+            .starts
+            .iter()
+            .find(|start| PlayerId(start.player) == player)
+            .map(|start| TilePos {
+                x: start.x,
+                y: start.y,
+            });
+        // The carrier's candidate ground: a wider scan than the scripted
+        // half's depot/barracks lists (the 3x3 footprint competes for the
+        // same rings, and the depot/barracks builds land first — the
+        // carrier needs candidates past the ones they consume; the
+        // sight-verify discipline advances through failures either way).
+        let carrier_spots = anchor
+            .and_then(|anchor| {
+                def.footprint()
+                    .map(|fp| build_spots(world, anchor, fp, CARRIER_SPOT_LIMIT))
+            })
+            .unwrap_or_default();
+        ResearchDirective {
+            carrier,
+            carrier_cost: cost_of(def),
+            carrier_build_ticks: def.build_time_ticks,
+            carrier_requires: def.requires.iter().filter_map(|id| kind_of(id)).collect(),
+            slots,
+            carrier_spots,
+        }
+    });
+
+    // The ability directives: every (caster kind, slot) the faction's
+    // roster fields, with the effect kind's own aim rule. The aim is read
+    // from the authored effect — data selecting code (plan §10.1): the
+    // closed vocabulary maps each effect kind to its decision rule, and a
+    // future effect kind grows this match (the compiler forces it there).
+    let abilities: Vec<AbilityDirective> = bundle
+        .faction()
+        .roster
+        .iter()
+        .filter_map(|id| kind_of(id))
+        .filter_map(|caster| {
+            let def = def_of(caster)?;
+            let specs = def.abilities()?;
+            Some(
+                specs
+                    .iter()
+                    .enumerate()
+                    .map(move |(slot, spec)| AbilityDirective {
+                        caster,
+                        slot: slot as u8,
+                        cast_range_milli: spec.cast_range_milli_tiles,
+                        aim: match &spec.effect {
+                            // ADR-0204 §3: one decision rule per shipped
+                            // effect kind. DamageArea aims at the densest
+                            // sighted enemy cluster; the two friendly-area
+                            // kinds aim at own clusters (heal: the weakest;
+                            // speed: the push-nearest).
+                            pandemonium_content::AbilityEffectDef::DamageArea { .. } => {
+                                AimKind::EnemyCluster
+                            }
+                            pandemonium_content::AbilityEffectDef::HealArea { .. } => {
+                                AimKind::WeakestFriendlies
+                            }
+                            pandemonium_content::AbilityEffectDef::SpeedBurst { .. } => {
+                                AimKind::FriendliesNearestPush
+                            }
+                        },
+                    }),
+            )
+        })
+        .flatten()
+        .collect();
+
+    EvalPlan {
+        base,
+        research,
+        abilities,
+    }
 }
 
 /// The controller's RNG seed: the match seed mixed with the slot, so two

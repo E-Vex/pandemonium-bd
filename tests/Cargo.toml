@@ -89,3 +89,7 @@ path = "abilities.rs"
 [[test]]
 name = "upgrades"
 path = "upgrades.rs"
+
+[[test]]
+name = "ai_evaluative"
+path = "ai_evaluative.rs"

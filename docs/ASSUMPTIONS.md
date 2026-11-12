@@ -2068,3 +2068,30 @@ confirms or rejects it.
   right is the A14 playtest's call. The integer law (Fx::mul's
   round-toward-zero — 8 x 1.25 is 10 exactly, 8 x 1.2 floors at 9) is
   pinned by test and rides with them.
+- **A-242 (B-035 — the composition law).** The tactical controller
+  (ADR-0204) OWNS a ScriptedController and forwards every think to it,
+  then runs its two systems after. The scripted half's commands, bookkeeping
+  and RNG draws are byte-identical to a standalone scripted controller fed
+  the same views — the evaluative layer adds zero RNG draws (the wave
+  jitter's stream is untouched by the layer above it), and the sequence
+  numbering continues the base's (the base restarts at 0 each think; the
+  layer counts the base's commands first).
+- **A-243 (B-035 — the evaluative layer is heuristic, not search).**
+  "Evaluative" names the controller's seat (above the command interface,
+  reading the view's own evaluation surfaces: research, researched,
+  abilities, entities — outward data by FD-9's construction), not a utility
+  solver. The two rules are authored heuristics (first-legal-slot research,
+  cluster-aim casting), deterministic and pinned; a solver would need a
+  fast state clone the sim does not expose.
+- **A-244 (B-035 — the cast point's fog law is by construction).** The
+  aim clusters are built from entities the view CARRIES (every
+  PlayerView entity is sighted — fog filters at the boundary), and the
+  range clamp only moves the point toward the caster; the gate stays the
+  authority for residual cases (NotVisible refuses; the cast retries on
+  the pacing cadence).
+- **A-245 (B-035 — the carrier's bank rule).** The carrier (Forge) builds
+  only from a purse covering its cost plus the army's most expensive unit:
+  the scripted half's queue spends first in the same tick (its commands
+  emit before the layer's), so a carrier that costs the army's food is a
+  rejected Build, not a strategy. The margin is authored by that measured
+  race, not tuned by playtest.
