@@ -27,7 +27,9 @@ pub mod interpolate;
 pub mod mesh;
 pub mod renderer;
 
-pub use ai_host::{alpha_controller, alpha_plan, build_spots, AiMatchHost};
+pub use ai_host::{
+    alpha_controller, alpha_plan, build_spots, eval_controller, eval_plan, AiMatchHost,
+};
 pub use audio::{cue_for, AudioCue, AudioSink, NullAudioSink};
 pub use camera::RtsCamera;
 pub use clock::{FixedTimestep, MAX_CATCH_UP_STEPS};

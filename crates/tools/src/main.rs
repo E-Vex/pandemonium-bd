@@ -159,6 +159,7 @@ fn main() -> anyhow::Result<()> {
                     let bundle = load_content(&content)?;
                     let slot_name = |slot: Slot| match slot {
                         Slot::Ai => "ai",
+                        Slot::Tactical => "tactical",
                         Slot::Idle => "idle",
                         Slot::Demo => "demo",
                     };

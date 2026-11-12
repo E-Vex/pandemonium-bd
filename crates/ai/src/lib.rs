@@ -35,8 +35,12 @@
 )]
 #![warn(missing_docs)]
 
+pub mod evaluative;
 pub mod scripted;
 
+pub use evaluative::{
+    AbilityDirective, AimKind, EvalPlan, ResearchDirective, ResearchSlot, TacticalController,
+};
 pub use scripted::{AiPlan, ScriptedController};
 
 use pandemonium_sim_api::{Command, PlayerView, Tick};

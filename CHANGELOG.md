@@ -7,6 +7,42 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-035] — the evaluative AI (plan §19's expansion test, Update 8)
+
+The owner's standing delegation met the sequence's own named next step
+(ADR-0203's handoff pointer): **Update 8 — the evaluative AI above the
+command interface**, the second brain that uses the verbs Updates 6 and 7
+added. The design record is **ADR-0204** (proposed; the owner's verdict
+stays open, the ADR-0201 flow — A-238's rule).
+
+- **The composition law.** `TacticalController` owns a `ScriptedController`
+  and forwards every think to it: the economy, infrastructure, defense and
+  wave machine are the scripted opponent's own, byte for byte; the
+  evaluative layer sits ABOVE them (plan §19's own wording) and adds zero
+  RNG draws (A-242). The registered flagship golden is untouched — pinned
+  by the new suite through the same harness.
+- **Research.** The controller raises the first buildable `Upgrades`
+  carrier (the Forge, requirements read ahead through the view, the bank
+  rule of A-245), then researches the first legal slot on cooldown,
+  verifying by sight through the view's own `research`/`researched` lists —
+  the acting-blind discipline, on the tree's real edges.
+- **Casting.** Per (caster, slot) the faction's roster fields: when the
+  slot's readout is ready, cast at the aim cluster's centroid — the
+  densest sighted enemy bucket for DamageArea, the weakest own bucket for
+  HealArea, the push-nearest own bucket for SpeedBurst — clamped to the
+  authored range (integer math only; the exact `isqrt` scale).
+- **The seams.** `eval_plan`/`eval_controller` beside the alpha twins
+  (capability-shaped, never name-matched); the tools' `--p1 tactical` /
+  `--p2 tactical`; the recorded `ControllerKind` stays `Ai` (A-060: labels
+  are metadata; the command log is the identity, and it differs — the
+  point).
+- **The evidence.** Six-test acceptance suite (`tests/ai_evaluative.rs`):
+  the plan derivation, the real research through the real pipeline, A5's
+  ledger identity with research spends, determinism + distinctness, the
+  scripted golden's stability, and the A2 replay round-trip — plus the
+  eleven unit tests in the controller module. Zero content edits; zero
+  sim/replay/client changes; no registered golden moves.
+
 ## [B-034] — the upgrade system (plan §19's expansion test, Update 7)
 
 The owner's standing delegation met the sequence's own named next step

@@ -15,7 +15,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use pandemonium_content::ContentBundle;
-use pandemonium_engine::{alpha_controller, AiMatchHost};
+use pandemonium_engine::{alpha_controller, eval_controller, AiMatchHost};
 use pandemonium_replay::{Checkpoint, ReplayFile, FORMAT_VERSION};
 use pandemonium_sim::TrivialWorld;
 use pandemonium_sim_api::{ControllerKind, EntityId, Event, MatchSetup, PlayerId, PlayerSetup};
@@ -28,6 +28,9 @@ pub enum Slot {
     Demo,
     /// The scripted Alpha opponent over the loaded content.
     Ai,
+    /// The evaluative opponent (ADR-0204, plan §19 Update 8): the scripted
+    /// Alpha plus research and casting through the same command door.
+    Tactical,
     /// Nothing: the slot issues no commands (watch the other side play).
     Idle,
 }
@@ -99,8 +102,13 @@ pub fn run_ai_match(
             .map(|(player, slot)| PlayerSetup {
                 player: *player,
                 controller: match slot {
-                    Slot::Ai => ControllerKind::Ai,
-                    _ => ControllerKind::Ai, // labels are metadata (A-060)
+                    // A-060: controller kinds are labels — metadata about
+                    // which side of the parity law drives the slot, not
+                    // which brain. The tactical controller is an Ai slot
+                    // exactly like the scripted one; the command log (the
+                    // match's identity, FD-1) is what differs.
+                    Slot::Ai | Slot::Tactical => ControllerKind::Ai,
+                    _ => ControllerKind::Ai,
                 },
             })
             .collect(),
@@ -115,6 +123,11 @@ pub fn run_ai_match(
             Slot::Ai => Some((
                 *player,
                 Box::new(alpha_controller(bundle, &world, *player, seed, None))
+                    as Box<dyn pandemonium_ai::Controller>,
+            )),
+            Slot::Tactical => Some((
+                *player,
+                Box::new(eval_controller(bundle, &world, *player, seed, None))
                     as Box<dyn pandemonium_ai::Controller>,
             )),
             Slot::Demo | Slot::Idle => None,
