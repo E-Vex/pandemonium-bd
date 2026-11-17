@@ -318,10 +318,17 @@ impl TacticalController {
             if !self.seen.contains(&entity.id) {
                 self.seen.push(entity.id);
             }
-            if entity.kind == directive.carrier && self.carrier.is_none() {
-                self.carrier = Some(entity.id);
-            }
         }
+        // Re-derive the carrier from the live view every think (the
+        // scripted half's cc/barracks rule): a destroyed carrier clears
+        // the slot — otherwise the controller would re-issue Research to
+        // a dead id every cooldown forever and never rebuild it — and a
+        // rebuilt carrier is re-sighted here.
+        self.carrier = view
+            .entities
+            .iter()
+            .find(|e| e.owner == self.player && e.kind == directive.carrier)
+            .map(|e| e.id);
 
         // Retire pending research orders that completed (sighted in the
         // ledger) or expired (never completed: refused, or the researcher
@@ -538,12 +545,19 @@ impl TacticalController {
 /// encodes is the ADR's own: the controller never targets a point it
 /// cannot see, because the view is all it has.
 fn point_sighted(view: &PlayerView, point: Vec2Fx) -> bool {
-    // Every entity position in the view is sighted by construction; the
-    // aim point is either a sighted cluster's centroid or a point on the
-    // segment between the caster and that centroid. True by construction;
-    // the gate is the authority for the residual cases.
-    let _ = (view, point);
-    true
+    // A conservative pre-filter, not a proof: the aim point counts as
+    // sighted when it lies within one cluster cell (CLUSTER_CELL_TILES)
+    // of a position the view carries — own or enemy, every entity in the
+    // view is sighted by construction. The old stub returned `true`
+    // unconditionally, so a range-clamped aim beyond the caster's vision
+    // was submitted and deterministically refused by the gate, wasting
+    // the cast cadence. The gate stays the authority (ADR-0204 §3);
+    // this only refuses early what the gate would refuse anyway.
+    let cell = 4_i64 * 65_536; // one cluster cell (CLUSTER_CELL_TILES), raw
+    let cell_sq = (cell * cell) as u64;
+    view.entities
+        .iter()
+        .any(|entity| (entity.pos - point).len_sq_raw() <= cell_sq)
 }
 
 /// The aim point for one directive (ADR-0204 §3): the cluster rule by

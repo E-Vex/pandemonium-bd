@@ -136,6 +136,7 @@ pub(crate) fn validate_entity(
                 damage,
                 range_milli_tiles,
                 acquire_range_milli_tiles,
+                cooldown_ms,
                 ..
             } => {
                 if *damage <= 0 {
@@ -154,6 +155,14 @@ pub(crate) fn validate_entity(
                         *acquire_range_milli_tiles as i64,
                         "must be at least range_milli_tiles (a targetable range \
                          shorter than the attack range can never acquire)",
+                    ));
+                }
+                if *cooldown_ms == 0 {
+                    return Err(stat(
+                        "Attack.cooldown_ms",
+                        0,
+                        "must be positive (a zero cooldown is a per-tick spam door — \
+                         the same zero-duration law Gather/Abilities/Upgrades follow)",
                     ));
                 }
             }
@@ -1213,6 +1222,19 @@ fn reachability_from(
                 }
                 if !free[ny as usize][nx as usize] || reached[ny as usize][nx as usize] {
                     continue;
+                }
+                // The pathfinder's corner rule (nav.rs's A* neighbor loop):
+                // a diagonal step is legal only when both orthogonal
+                // companions are free. Without this the validator could
+                // certify ore "reachable" through a corner-cut the sim's
+                // pathfinder refuses — an economy soft-lock from content
+                // that passed validation.
+                if dx != 0 && dy != 0 {
+                    let x_free = free[y as usize][nx as usize];
+                    let y_free = free[ny as usize][x as usize];
+                    if !x_free || !y_free {
+                        continue;
+                    }
                 }
                 reached[ny as usize][nx as usize] = true;
                 queue.push_back((nx, ny));

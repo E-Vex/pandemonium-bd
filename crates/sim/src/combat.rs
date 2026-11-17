@@ -59,6 +59,18 @@ pub(crate) fn advance_combat(world: &mut World, events: &mut Vec<Event>) {
     let attackers: Vec<(EntityId, AttackDef)> =
         world.attack.iter().map(|(id, def)| (*id, *def)).collect();
     for (attacker_id, mut attacker_def) in attackers {
+        // Only Active entities attack. A build site carries its kind's full
+        // capability set from spawn (a turret site has a ready Attack block
+        // for the whole build), and every other system already gates on
+        // Lifecycle::Active (production, research, storage, population) —
+        // combat must too: no firing turrets while under construction.
+        // Sites stay attackable AS TARGETS; killing them is normal RTS play.
+        if !world
+            .entity(attacker_id)
+            .is_some_and(|e| matches!(e.lifecycle, crate::world::Lifecycle::Active))
+        {
+            continue;
+        }
         // A chase order dies with its target: if the queue's head is an
         // `AttackUnit` whose target is no longer in the world (it died and
         // was removed by stage 8, or was removed by its own system), pop the
@@ -213,6 +225,14 @@ fn acquire_target(
         }
         if candidate.owner == attacker_owner {
             continue; // friendlies are never targets
+        }
+        // Neutral entities (ore nodes) are never auto-acquire targets
+        // either: nodes carry a Footprint, so without this check they land
+        // in the structure category — an indestructible "target" that
+        // locks the slot and fires zero-effect AttackHit events forever.
+        // The DamageArea ability law is the same (abilities.rs).
+        if candidate.owner == PlayerId::NEUTRAL {
+            continue;
         }
         let dist_sq = (attacker_pos - candidate.pos).len_sq_raw();
         if dist_sq > acquire_sq {

@@ -193,14 +193,34 @@ impl App {
             orders::ContextOrder::Gather { node, at, units } => {
                 self.submit_order(CommandKind::Gather { units, node }, Some(at));
             }
-            orders::ContextOrder::Move { target } => self.submit_order(
-                CommandKind::Move {
-                    units: self.selection.clone(),
-                    target,
-                },
-                Some(target),
-            ),
+            orders::ContextOrder::Move { target } => {
+                let units = self.live_selected_units();
+                if !units.is_empty() {
+                    self.submit_order(CommandKind::Move { units, target }, Some(target));
+                }
+            }
         }
+    }
+
+    /// The selection filtered to what can actually take a move-class
+    /// order: live own units (scatter's rule, from the fog-filtered
+    /// snapshot). Dead ids and structures poison the whole batch — the
+    /// sim's all-or-nothing check_units rejects the entire command when
+    /// ANY listed unit is unknown or immobile, so a box select that
+    /// grazed the command center would leave the units unmovable until
+    /// a manual re-select.
+    pub(crate) fn live_selected_units(&self) -> Vec<EntityId> {
+        let entities = self.view_snapshot().entities;
+        let units = &self.unit_kinds;
+        self.selection
+            .iter()
+            .copied()
+            .filter(|id| {
+                entities
+                    .iter()
+                    .any(|entity| entity.id == *id && units.contains(&entity.kind))
+            })
+            .collect()
     }
 
     /// M8 (plan §11.3): Stop hotkey — clears the selection's order queues and
@@ -209,12 +229,11 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
-        self.submit_order(
-            CommandKind::Stop {
-                units: self.selection.clone(),
-            },
-            None,
-        );
+        let units = self.live_selected_units();
+        if units.is_empty() {
+            return;
+        }
+        self.submit_order(CommandKind::Stop { units }, None);
     }
 
     /// M8 (plan §11.3): AttackMove — the selection moves to the picked
@@ -229,13 +248,11 @@ impl App {
             return;
         };
         let target = MatchHost::world_to_logical(point.x, point.z);
-        self.submit_order(
-            CommandKind::AttackMove {
-                units: self.selection.clone(),
-                target,
-            },
-            Some(target),
-        );
+        let units = self.live_selected_units();
+        if units.is_empty() {
+            return;
+        }
+        self.submit_order(CommandKind::AttackMove { units, target }, Some(target));
     }
 
     /// PLAN-M11 §2 phase 3: G's armed click — a plain Move to the clicked
@@ -253,13 +270,11 @@ impl App {
             return;
         };
         let target = MatchHost::world_to_logical(point.x, point.z);
-        self.submit_order(
-            CommandKind::Move {
-                units: self.selection.clone(),
-                target,
-            },
-            Some(target),
-        );
+        let units = self.live_selected_units();
+        if units.is_empty() {
+            return;
+        }
+        self.submit_order(CommandKind::Move { units, target }, Some(target));
     }
 
     /// PLAN-M11 §2 phase 3: X — scatter. One Move per selected own *unit*
@@ -306,7 +321,6 @@ impl App {
     /// on the presented-frame clock) — the chained markers of the path.
     pub(crate) fn issue_waypoint(&mut self, ndc: (f32, f32)) {
         let queue = self.waypoint_first_click_spent;
-        self.waypoint_first_click_spent = true;
         if self.selection.is_empty() {
             return;
         }
@@ -318,6 +332,11 @@ impl App {
                 return;
             };
             let target = MatchHost::world_to_logical(point.x, point.z);
+            // The gesture's click counts only when an order actually left:
+            // an Alt+click that ordered nothing (cursor above the horizon)
+            // must not spend the first click, or the next one would append
+            // to in-flight orders instead of replacing them.
+            self.waypoint_first_click_spent = true;
             self.submit_order_flagged(
                 CommandKind::SetRally {
                     producer: selected,
@@ -341,25 +360,32 @@ impl App {
             return; // cursor above the horizon — nothing to order
         };
         match order {
-            orders::ContextOrder::Attack { target, at } => self.submit_order_flagged(
-                CommandKind::Attack {
-                    units: self.selection.clone(),
-                    target,
-                },
-                Some(at),
-                queue,
-            ),
+            orders::ContextOrder::Attack { target, at } => {
+                self.waypoint_first_click_spent = true;
+                self.submit_order_flagged(
+                    CommandKind::Attack {
+                        units: self.selection.clone(),
+                        target,
+                    },
+                    Some(at),
+                    queue,
+                );
+            }
             orders::ContextOrder::Gather { node, at, units } => {
+                self.waypoint_first_click_spent = true;
                 self.submit_order_flagged(CommandKind::Gather { units, node }, Some(at), queue);
             }
-            orders::ContextOrder::Move { target } => self.submit_order_flagged(
-                CommandKind::Move {
-                    units: self.selection.clone(),
-                    target,
-                },
-                Some(target),
-                queue,
-            ),
+            orders::ContextOrder::Move { target } => {
+                let units = self.live_selected_units();
+                if !units.is_empty() {
+                    self.waypoint_first_click_spent = true;
+                    self.submit_order_flagged(
+                        CommandKind::Move { units, target },
+                        Some(target),
+                        queue,
+                    );
+                }
+            }
         }
     }
 

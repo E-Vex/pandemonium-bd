@@ -45,7 +45,12 @@ impl Rng {
     pub fn next_u32(&mut self) -> u32 {
         let old = self.state;
         self.state = old.wrapping_mul(MULTIPLIER).wrapping_add(self.inc);
-        let xorshifted = (((old >> 18) ^ (old >> 27)) >> 32) as u32;
+        // XSH-RR, verbatim from pcg_basic.c's pcg32_random_r:
+        //   xorshifted = ((oldstate >> 18u) ^ oldstate) >> 27u
+        // (A previous transcription XORed with `old >> 27` and shifted by
+        // 32 — 18 of 32 output bits were structurally zero and the output
+        // depended only on the top 14 state bits.)
+        let xorshifted = (((old >> 18) ^ old) >> 27) as u32;
         let rot = (old >> 59) as u32;
         xorshifted.rotate_right(rot)
     }
@@ -157,6 +162,28 @@ mod tests {
             seen |= 1u32 << r.bounded(8);
         }
         assert_eq!(seen, 0xFF);
+    }
+
+    #[test]
+    fn golden_vectors_match_the_pcg_basic_reference() {
+        // A-009: golden vectors generated independently from O'Neill's
+        // pcg_basic.c (pcg32_srandom / pcg32_random). The 42/54 sequence is
+        // the reference implementation's own demo output.
+        let mut r = Rng::new(42, 54);
+        assert_eq!(
+            (0..4).map(|_| r.next_u32()).collect::<Vec<_>>(),
+            vec![0xa15c_02b7, 0x7b47_f409, 0xba1d_3330, 0x83d2_f293]
+        );
+        let mut r = Rng::seeded(7);
+        assert_eq!(
+            (0..4).map(|_| r.next_u32()).collect::<Vec<_>>(),
+            vec![0x5464_bb08, 0xfa77_aaf0, 0x6719_85a6, 0x5262_483f]
+        );
+        let mut r = Rng::new(2026, 54);
+        assert_eq!(
+            (0..4).map(|_| r.next_u32()).collect::<Vec<_>>(),
+            vec![0x08bb_5bda, 0xc137_1368, 0x64b8_189d, 0x8b04_58fd]
+        );
     }
 
     #[test]

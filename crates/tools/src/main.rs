@@ -51,8 +51,15 @@ enum Command {
         /// The match seed (plan §6.5: a match is seed + content + command log).
         #[arg(long, default_value_t = 7)]
         seed: u64,
-        /// How many ticks to simulate.
-        #[arg(long, default_value_t = 300)]
+        /// How many ticks to simulate. Range 1..=36000 (B-022's law for
+        /// bench/diff-check, applied here too: an unbounded count is a
+        /// weeks-long run and a multi-GB checkpoint vector, not a smoke
+        /// check).
+        #[arg(
+            long,
+            default_value_t = 300,
+            value_parser = clap::value_parser!(u32).range(1..=36_000)
+        )]
         ticks: u32,
         /// Also write a replay file for `replay-verify`.
         #[arg(long)]

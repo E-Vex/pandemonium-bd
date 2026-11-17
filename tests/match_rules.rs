@@ -266,7 +266,7 @@ fn stage_10_does_not_change_the_m7_golden_checkpoint_trail() {
     }
     // Re-pinned M10.1: canonical hasher FNV-1a -> xxHash64 (DEBT-001 repaid);
     // encoding unchanged, algorithm moved. See docs/DEBT.md.
-    assert_eq!(host.state_hash(), 0x3a58_e55e_a625_0906);
+    assert_eq!(host.state_hash(), 0xeec2_f8d5_03d1_ebf5);
 }
 
 // ---------------------------------------------------------------------------

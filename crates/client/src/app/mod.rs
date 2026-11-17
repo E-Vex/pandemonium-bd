@@ -902,6 +902,11 @@ impl App {
         scene.skip();
         let (x, z, distance) = scene.resting_focus();
         self.camera.focus(x, z, distance);
+        // The same clamp discipline every other zoom mutation follows
+        // (bookmarks, reset, wheel): the resting distance is the opening
+        // default, which can sit outside the player's configured limits.
+        self.camera
+            .clamp_distance_to(self.settings.zoom_min, self.settings.zoom_max);
         if let Some(host) = &mut self.host {
             host.set_paused(false);
         }
@@ -1930,6 +1935,11 @@ impl App {
                     }
                 }
                 Event::Died { entity } => {
+                    // Prune the dead id from the selection immediately: the
+                    // sim's all-or-nothing check_units would otherwise
+                    // reject every subsequent order for the whole selection
+                    // until the player manually re-selects.
+                    self.selection.retain(|id| id != entity);
                     if let Some(&(pos, kind, owner)) = self.last_seen.get(entity) {
                         // M10.2 (PLAN §1.3) + PLAN-M11 §2: the most recent
                         // death is a radar event for the Space jump (own

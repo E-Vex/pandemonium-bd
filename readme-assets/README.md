@@ -32,7 +32,7 @@ The seal is static, as a stamp should be.
 
 - Every label is fact-grounded in the repository or it does not ship: FD
   numbers cite `plan.md` §2, tick and catch-up figures cite §11.1, the golden
-  hashes (`0xb6fff6659cfb7709`, `0x9bc18c521107b262`) are the pinned goldens
+  hashes (`0xed052e463d55678d`, `0x9bc18c521107b262`) are the pinned goldens
   from `AI-Handoff.md`, and the fx crate's hashers are listed as built
   (`Q16.16 · PCG32 · XXH64`, with FNV-1a surviving only as the replay file
   checksum — see `crates/fx/src/hash.rs`).
