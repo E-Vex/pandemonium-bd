@@ -145,7 +145,14 @@ fn validate(
             // Cannot attack your own entity (the gate's NotVisible check would
             // already pass for own entities, since friendlies are always
             // visible — so an explicit ownership check is the right gate here).
-            if world.entity(*target).is_some_and(|t| t.owner == cmd.issuer) {
+            let target_owner = world.entity(*target).map(|t| t.owner);
+            // Own entities are refused here explicitly (friendlies are
+            // always visible, so the NotVisible check would pass for
+            // them). Neutral entities (ore nodes — no Health, never
+            // destructible by combat) are refused too: a commanded attack
+            // on a node would otherwise create an order that can never
+            // resolve.
+            if target_owner == Some(cmd.issuer) || target_owner == Some(PlayerId::NEUTRAL) {
                 return Err(RejectReason::InvalidTarget);
             }
             Ok(())

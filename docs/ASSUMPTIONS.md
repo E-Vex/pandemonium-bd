@@ -41,9 +41,13 @@ confirms or rejects it.
   from the direction law (test-only code never ships); the forbidden-crate list
   still applies to them.
 - **A-009 (§5).** PCG32 constants and algorithm are transcribed from O'Neill's
-  `pcg_basic.c` (64/32, XSH-RR output). No golden-vector test against the C
-  reference exists yet — structural determinism tests only. Adding reference
-  vectors later is cheap and reversible.
+  `pcg_basic.c` (64/32, XSH-RR output). ~~No golden-vector test against the C
+  reference exists yet — structural determinism tests only.~~ Resolved
+  (B-036, 2026-11-17): the review found the transcription itself was wrong
+  (the output XOR used `old >> 27` and shifted by 32 — 18 of 32 output bits
+  structurally zero); the corrected step is pinned by golden vectors
+  generated independently from the C reference (`fx`'s
+  `golden_vectors_match_the_pcg_basic_reference`).
 - **A-010 (§14 M0 exit).** "CI green on 3 OSes" cannot be verified in this
   environment (no GitHub runner). The workflow is authored and committed
   (`.github/workflows/ci.yml`); the local equivalents of every gate (fmt, clippy

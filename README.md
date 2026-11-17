@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="readme-assets/hero-dark.svg">
-  <img src="readme-assets/hero-light.svg" alt="The Pandemonium verification console: a top bar reads SIMULATION FEED — LIVE and REPLAY VERIFY — PASS. The left panel, CONTACTS — UNSORTED, holds scattered strokes around a red hostile diamond in an amber reticle. The center panel, COMMAND LOG → STATE HASH, shows a tick ruler from T+0 to T+300 with eleven checkpoint nodes that light up in sequence, ending at the golden state hash 0xb6fff6659cfb7709. The right panel, CONTACTS — SORTED, shows the same contacts as a neat grid under the line CHECKPOINTS MATCH — 11/11. The bottom bar reads seed 7, 30 ticks per second, the content hash 0x9bc18c521107b262, and Q16.16 fixed-point, no floats." width="100%">
+  <img src="readme-assets/hero-light.svg" alt="The Pandemonium verification console: a top bar reads SIMULATION FEED — LIVE and REPLAY VERIFY — PASS. The left panel, CONTACTS — UNSORTED, holds scattered strokes around a red hostile diamond in an amber reticle. The center panel, COMMAND LOG → STATE HASH, shows a tick ruler from T+0 to T+300 with eleven checkpoint nodes that light up in sequence, ending at the golden state hash 0xed052e463d55678d. The right panel, CONTACTS — SORTED, shows the same contacts as a neat grid under the line CHECKPOINTS MATCH — 11/11. The bottom bar reads seed 7, 30 ticks per second, the content hash 0x9bc18c521107b262, and Q16.16 fixed-point, no floats." width="100%">
 </picture>
 
 # Pandemonium: Build & Destroy
@@ -97,7 +97,7 @@ git clone https://github.com/E-Vex/pandemonium-bd && cd pandemonium-bd
 
 # simulate 300 ticks at seed 7, every checkpoint printed
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300
-#   final state hash: 0xb6fff6659cfb7709        <- the demo golden
+#   final state hash: 0xed052e463d55678d        <- the demo golden
 
 # record the match, then re-simulate it and compare every checkpoint
 cargo run -p pandemonium-tools -- headless --seed 7 --ticks 300 --record demo.pdrp
@@ -113,8 +113,8 @@ The three golden values, and the commands that reproduce them:
 
 | golden | command | value |
 |---|---|---|
-| **demo** | `headless --seed 7 --ticks 300` | `0xb6fff6659cfb7709` |
-| **flagship** | `headless --seed 7 --ticks 7200 --p1 ai --p2 ai` | `0x3a58e55ea6250906` (tick 0: `0x090a57e33cdf4c4b`) |
+| **demo** | `headless --seed 7 --ticks 300` | `0xed052e463d55678d` |
+| **flagship** | `headless --seed 7 --ticks 7200 --p1 ai --p2 ai` | `0xeec2f8d503d1ebf5` (tick 0: `0x090a57e33cdf4c4b`) |
 | **content identity** | `content-validate content` | `0x4d362e1a17b9eefc` (map id `0xd38136401ab02ff1`) |
 
 A fourth command shows a full AI-vs-AI match resolving naturally end to end:
@@ -521,7 +521,7 @@ budgets); `audit` and `deny` workflows gate advisories and licences.
 |---|---|
 | **Tests** | 1076 dev / 1071 release, green in both profiles (the five should-panic invariant tests are debug-only) |
 | **Platforms** | Linux · Windows · macOS — the full gate on every push, both profiles |
-| **Goldens** | demo `0xb6fff6659cfb7709` · flagship `0x3a58e55ea6250906` · content `0x4d362e1a17b9eefc` — moved five times, each by an authorized move: B-029's growth, B-031's stat rebalance, B-032's second faction (behavior-identical for the Legion: the same 612 commands, the same RNG streams, only the re-labeled kind ids moved), B-033's ability content (the Pathfinder's Sprint and the Ballista's Volley — again behavior-identical for every pinned run: the carriers are forge-tier, no scripted AI fields them, so the demo and flagship hashes are bit-identical and only the content digest moved), and B-034's upgrade content (the Forge's two upgrades — the same forge-tier argument, measured: the demo and flagship bit-identical, only the digest moved); the map growth passes (B-030 on) move none of them |
+| **Goldens** | demo `0xed052e463d55678d` · flagship `0xeec2f8d503d1ebf5` · content `0x4d362e1a17b9eefc` — moved six times, each by an authorized move: B-029's growth, B-031's stat rebalance, B-032's second faction (behavior-identical for the Legion: the same 612 commands, the same RNG streams, only the re-labeled kind ids moved), B-033's ability content (the Pathfinder's Sprint and the Ballista's Volley — again behavior-identical for every pinned run: the carriers are forge-tier, no scripted AI fields them, so the demo and flagship hashes are bit-identical and only the content digest moved), B-034's upgrade content (the Forge's two upgrades — the same forge-tier argument, measured: the demo and flagship bit-identical, only the digest moved), and B-036's correctness pass (the PCG32 output fix and the combat neutral/lifecycle gates — behavior changes by design; tick 0 untouched); the map growth passes (B-030 on) move none of them |
 | **Soak** | many seeded AI-vs-AI matches with per-match crash isolation; a dev-profile soak observes the invariant checker (A12) |
 | **Releases** | per-OS archives, SHA-256 checksums, a licence gate (cargo-deny) and generated `THIRD_PARTY_NOTICES.md`, and smoke legs that gate on the licence and the bundled art pack |
 

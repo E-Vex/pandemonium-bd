@@ -158,7 +158,10 @@ impl ReplayFile {
         let seed = r.read_u64().map_err(|_| ReplayError::Truncated)?;
 
         let player_count = r.read_u32().map_err(|_| ReplayError::Truncated)? as usize;
-        let mut player_setup = Vec::with_capacity(player_count);
+        // Untrusted counts drive only a bounded pre-allocation: a crafted
+        // file declaring billions of entries must fail as Truncated on the
+        // first short read, not abort the process on a multi-GB allocation.
+        let mut player_setup = Vec::with_capacity(player_count.min(64));
         for _ in 0..player_count {
             let player = PlayerId(r.read_u8().map_err(|_| ReplayError::Truncated)?);
             let controller = controller_from_tag(r.read_u8().map_err(|_| ReplayError::Truncated)?)?;
@@ -166,13 +169,13 @@ impl ReplayFile {
         }
 
         let command_count = r.read_u32().map_err(|_| ReplayError::Truncated)? as usize;
-        let mut commands = Vec::with_capacity(command_count);
+        let mut commands = Vec::with_capacity(command_count.min(1 << 16));
         for _ in 0..command_count {
             commands.push(decode_command(&mut r)?);
         }
 
         let checkpoint_count = r.read_u32().map_err(|_| ReplayError::Truncated)? as usize;
-        let mut checkpoints = Vec::with_capacity(checkpoint_count);
+        let mut checkpoints = Vec::with_capacity(checkpoint_count.min(1 << 16));
         for _ in 0..checkpoint_count {
             let tick = r.read_u32().map_err(|_| ReplayError::Truncated)?;
             let hash = r.read_u64().map_err(|_| ReplayError::Truncated)?;
@@ -512,7 +515,7 @@ fn encode_units(w: &mut Writer, units: &[pandemonium_sim_api::EntityId]) {
 
 fn decode_units(r: &mut Reader<'_>) -> Result<Vec<pandemonium_sim_api::EntityId>, ReplayError> {
     let count = r.read_u32()? as usize;
-    let mut units = Vec::with_capacity(count);
+    let mut units = Vec::with_capacity(count.min(1 << 16));
     for _ in 0..count {
         units.push(pandemonium_sim_api::EntityId(r.read_u64()?));
     }

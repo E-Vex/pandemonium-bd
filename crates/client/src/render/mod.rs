@@ -1155,7 +1155,14 @@ impl Renderer for WgpuRenderer {
         let frame_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            _ => return, // Window occluded/minimized/outdated — nothing to present.
+            _ => {
+                // No frame will present: drain the queued UI quads anyway,
+                // so an occluded window (redraws requested, texture never
+                // available) does not accumulate them unboundedly and draw
+                // the whole stale pile on the next presented frame.
+                let _ = self.drain_ui_vertices();
+                return; // Window occluded/minimized/outdated — nothing to present.
+            }
         };
         let view = frame_texture
             .texture

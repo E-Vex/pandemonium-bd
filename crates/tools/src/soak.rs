@@ -52,7 +52,11 @@ use crate::ai_match::{run_ai_match, AiMatch, MatchSummary, Slot};
 pub struct SoakCli {
     /// How many seeded AI-vs-AI matches to run. Plan §13 A7 calls for 1000;
     /// smaller values are fine for smoke checks.
-    #[arg(long, default_value_t = 8)]
+    #[arg(
+        long,
+        default_value_t = 8,
+        value_parser = clap::value_parser!(u32).range(1..=1000)
+    )]
     pub matches: u32,
     /// The seed for the first match; subsequent matches use seed_base + i.
     /// Picking a non-zero base lets a re-run avoid re-treading the seeds a
@@ -64,7 +68,11 @@ pub struct SoakCli {
     /// defaults there, not lower: the M9 sweep measured legitimate matches
     /// resolving as late as tick ~23300, which an 18000 budget would have
     /// miscounted as stuck.
-    #[arg(long, default_value_t = 36_000)]
+    #[arg(
+        long,
+        default_value_t = 36_000,
+        value_parser = clap::value_parser!(u32).range(1..=36_000)
+    )]
     pub ticks: u32,
     /// The content directory to load.
     #[arg(long, default_value = "content")]

@@ -581,11 +581,11 @@ jobs:
           grep -q "content hash: 0x4d362e1a17b9eefc, map id: 0xd38136401ab02ff1" content-validate.out \
             || { echo "FAIL: packaged content golden mismatch (expected content 0x4d362e1a17b9eefc, map 0xd38136401ab02ff1)"; exit 1; }
           (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" headless --seed 7 --ticks 300) | tee demo.out
-          grep -q "0xb6fff6659cfb7709" demo.out \
-            || { echo "FAIL: packaged demo golden mismatch (expected final hash 0xb6fff6659cfb7709)"; cat demo.out; exit 1; }
+          grep -q "0xed052e463d55678d" demo.out \
+            || { echo "FAIL: packaged demo golden mismatch (expected final hash 0xed052e463d55678d)"; cat demo.out; exit 1; }
           (cd "$PKG_DIR" && "./pandemonium-tools${BIN_EXT}" headless --seed 7 --ticks 7200 --p1 ai --p2 ai) | tee flagship.out
-          grep -q "0x3a58e55ea6250906" flagship.out \
-            || { echo "FAIL: packaged flagship golden mismatch (expected final hash 0x3a58e55ea6250906)"; cat flagship.out; exit 1; }
+          grep -q "0xeec2f8d503d1ebf5" flagship.out \
+            || { echo "FAIL: packaged flagship golden mismatch (expected final hash 0xeec2f8d503d1ebf5)"; cat flagship.out; exit 1; }
           # 4. the archive is what the checksum recorded
           expected=$(awk '{print $1}' "$ARCHIVE.sha256")
           actual=$(sha256sum "$ARCHIVE" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$ARCHIVE" | awk '{print $1}')

@@ -761,6 +761,13 @@ impl ScriptedController {
             SpotKind::Depot => (&self.plan.depot_spots, &mut self.depot_spot),
             SpotKind::Barracks => (&self.plan.barracks_spots, &mut self.barracks_spot),
         };
+        // No legal placement anywhere (unbuildable terrain around the
+        // start — possible on community maps): refuse instead of the
+        // `% 0` panic. The caller already handles a `None` spot, and the
+        // evaluative half's next_carrier_spot carries the same guard.
+        if spots.is_empty() {
+            return None;
+        }
         let index = *cursor % spots.len();
         *cursor = cursor.wrapping_add(1);
         spots.get(index).copied()

@@ -252,7 +252,7 @@ fn the_scripted_flagship_golden_still_holds() {
     // with both slots scripted (the tactical controller changes no pinned
     // path — tests/ai.rs pins the same value through its own harness).
     let run = hosted_run(bundle(), SEED, TICKS, [false, false]);
-    assert_eq!(run.final_hash, 0x3a58_e55e_a625_0906);
+    assert_eq!(run.final_hash, 0xeec2_f8d5_03d1_ebf5);
 }
 
 #[test]

@@ -141,7 +141,7 @@ pub(crate) fn cast(
             // bars rise and the cast flash is the cue.
             for patient in patients {
                 if let Some(def) = world.health_of_mut(patient) {
-                    def.hp = (def.hp + amount.max(0)).min(def.max_hp.max(0));
+                    def.hp = def.hp.saturating_add(amount.max(0)).min(def.max_hp.max(0));
                 }
             }
         }

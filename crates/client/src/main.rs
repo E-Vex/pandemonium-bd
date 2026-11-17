@@ -523,8 +523,14 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
-                    self.camera
-                        .set_aspect(size.width as f32 / size.height.max(1) as f32);
+                    // Skip the aspect update on the minimize signal ((0,0)):
+                    // a zero aspect puts an infinity into the projection
+                    // until the restore resize arrives; the renderer already
+                    // no-ops on the degenerate size.
+                    if size.width > 0 && size.height > 0 {
+                        self.camera
+                            .set_aspect(size.width as f32 / size.height as f32);
+                    }
                 }
                 // A-009 task 3: minimize is signaled on the pinned winit
                 // (0.30.13) by `WindowEvent::Resized(PhysicalSize::ZERO)`.
@@ -671,6 +677,15 @@ impl ApplicationHandler for App {
                     // — a stale flag would refocus on the next move after
                     // the menu closes.
                     self.minimap_drag = false;
+                    // A gesture interrupted by the menu (Esc mid-right-drag,
+                    // the focus-loss auto-pause) must not leak: the button
+                    // release is never delivered while a menu owns input,
+                    // and stale grab/rotate anchors would pan or rotate the
+                    // camera on the next CursorMoved with no button held.
+                    self.right_button = input::RightButton::Idle;
+                    self.right_anchor = None;
+                    self.middle_last = None;
+                    self.drag_start = None;
                     return;
                 }
                 let Some(window) = &self.window else { return };
@@ -1254,6 +1269,17 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
+                if !focused {
+                    // The OS eats key and button releases while the window
+                    // is unfocused — drop the held-key set and any
+                    // mid-gesture state so nothing drifts, sticks, or fires
+                    // a bogus box select on resume.
+                    self.keys.clear();
+                    self.right_button = input::RightButton::Idle;
+                    self.right_anchor = None;
+                    self.middle_last = None;
+                    self.drag_start = None;
+                }
                 // A-009 task 3: auto-pause on focus loss during a live
                 // human-driven match (the classic-RTS contract). The pure
                 // decision is in `screens::auto_pause_on_focus`; the wiring
@@ -1327,6 +1353,15 @@ impl ApplicationHandler for App {
         // pan twice as fast as 60 Hz); the value itself is configurable now
         // (PLAN-M10.2 §3.4 `pan_speed`, default config::DEFAULT_PAN_SPEED).
         let pan = self.settings.pan_speed * dt;
+        // Camera keys live only in a focused, in-match context — the same
+        // gates the edge band follows. Held keys leaking past a menu open
+        // or focus loss would drift the camera behind the pause screen.
+        if !self.focused || !self.screen.takes_world_input() {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            return;
+        }
         let mut dx = 0.0;
         let mut dz = 0.0;
         // PLAN-M11 §4 phase 1: the arrows are the keyboard scroll (ZH) —

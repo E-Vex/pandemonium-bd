@@ -7,6 +7,82 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-036] — the correctness pass (the full-workspace review: 19 fixes across 7 crates)
+
+A four-way parallel review of every crate (sim, client, content/replay/fx,
+ai/engine/tools) against the codebase's own laws. Every finding below was
+verified against source before fixing; the determinism posture (no floats,
+no hash-order dependence, total-order sorts) was audited and held.
+
+**Simulation**
+- **PCG32 output mis-transcription** (`fx/rng.rs`): the XSH-RR step XORed
+  with `old >> 27` and shifted by 32 instead of XORing with `old` and
+  shifting by 27 — 18 of 32 output bits were structurally zero and the
+  output depended only on the top 14 state bits, biasing every `bounded()`
+  draw. Corrected to the `pcg_basic.c` reference and pinned with golden
+  vectors generated independently from it (A-009's own TODO, closed).
+- **Neutral auto-acquire** (`sim/combat.rs`): ore nodes carry a Footprint,
+  so they landed in the structure category and units locked onto
+  indestructible targets forever, firing zero-effect `AttackHit` events.
+  Neutrals are now skipped (the `DamageArea` ability's own law); the
+  `Attack` gate refuses neutral targets too.
+- **Lifecycle gate** (`sim/combat.rs`): build sites carry their kind's full
+  capability set from spawn, so turret sites fired during their whole
+  600-tick build. Combat now gates on `Lifecycle::Active` like every other
+  system; sites stay attackable as targets.
+- **Regen and the dying** (`sim/sim.rs`): positive `regen_per_tick` revived
+  hp-0 entities every tick, making damage kills impossible; regen now skips
+  the dying (same-tick decay deaths preserved).
+- **HealArea overflow** (`sim/abilities.rs`): unchecked `hp + amount` —
+  saturating now (the DamageArea arm's own discipline).
+
+**AI**
+- **Empty spot panic** (`ai/scripted.rs`): `next_spot`'s `% 0` on maps with
+  no buildable ring — guarded (the evaluative half's own pattern).
+- **Dead carrier** (`ai/evaluative.rs`): the research carrier id was cached
+  forever; after its death the controller re-issued `Research` to a dead
+  entity every cooldown. Re-derived from the live view per think.
+- **`point_sighted` stub** (`ai/evaluative.rs`): always-`true` let
+  range-clamped aims beyond vision submit and be refused, wasting the cast
+  cadence — now a real proximity check (the gate stays the authority).
+
+**Client**
+- **Selection poisoning**: dead ids and structures never left the
+  selection, and the sim's all-or-nothing `check_units` then rejected
+  every subsequent order for the whole selection. All order builders now
+  filter to live units (`live_selected_units`); `Event::Died` prunes the
+  selection.
+- **Gesture/key leaks**: menu-open and focus-loss now reset grab-scroll,
+  rotation anchors, drag state, and the held-key set (no stuck pan, no
+  bogus box select after resume); camera keys are gated on focus + match.
+- **Behind-camera picking** (`engine/camera.rs`): `w <= 0` is the
+  behind-camera sentinel — the old `|w| < eps` test let mirrored finite
+  NDC points pass as selectable.
+- The waypoint first-click flag is spent only on actual submission; the
+  UI quad pile is drained on skipped frames; the cutscene camera respects
+  the user's zoom limits; the (0,0) minimize resize no longer zeroes the
+  aspect.
+
+**Content / replay / tools**
+- Crafted replay count fields no longer drive unbounded `with_capacity`
+  (allocation-abort → clean `Truncated`).
+- The ore-reachability BFS now applies the pathfinder's corner rule (a
+  diagonal step needs both orthogonal companions free) — content can no
+  longer pass validation yet soft-lock the economy in play.
+- `Attack.cooldown_ms` joins the zero-duration gate; `headless --ticks`
+  and `soak --matches/--ticks` get clap range validators (B-022's law).
+
+**Goldens.** The PCG32 fix and the combat gates move every post-combat
+checkpoint (tick 0 is untouched — no orders, no RNG state in the tick-0
+digest): demo `0xed052e463d55678d`, flagship `0xeec2f8d503d1ebf5` — the
+sixth authorized move, re-pinned in tests, CI, the release workflow, the
+README, ALPHA_DECLARATION, and the hero art.
+
+**Deferred (documented, needs design decisions):** mission
+`rules_overrides`/`starting_forces` validation gaps, the two divergent
+visibility laws at the command gate vs fog tiles, spawn jitter on
+footprints, silent Train rejections, soak `total_ticks` undercount.
+
 ## [B-035] — the evaluative AI (plan §19's expansion test, Update 8)
 
 The owner's standing delegation met the sequence's own named next step

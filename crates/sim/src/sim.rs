@@ -801,6 +801,15 @@ impl Sim {
     /// the entity's position and footprint (still in the world at that point).
     fn advance_health_and_cleanup(&mut self) {
         for (_, def) in &mut self.world.health {
+            // Regen is for the living only: an entity floored at 0 by this
+            // tick's damage must die, not revive. (With regen applied to
+            // the dying too, any positive regen_per_tick content made
+            // damage kills impossible — hp 0 revived every tick.) Entities
+            // decaying through negative regen still hit 0 here and are
+            // collected as dead below on this same tick.
+            if def.hp <= 0 {
+                continue;
+            }
             let max = def.max_hp.max(0);
             def.hp = def.hp.saturating_add(def.regen_per_tick).clamp(0, max);
         }

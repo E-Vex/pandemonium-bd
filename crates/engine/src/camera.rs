@@ -239,7 +239,12 @@ impl RtsCamera {
     /// caller treats that as unselectable.
     pub fn project(&self, world: Vec3) -> Vec2 {
         let clip = self.view_projection() * Vec4::new(world.x, world.y, world.z, 1.0);
-        if clip.w.abs() < f32::EPSILON {
+        // `w <= 0` is behind the camera (the doc contract): dividing
+        // through would yield a *mirrored, finite* NDC point — a point
+        // directly behind the eye projects to the screen center — which
+        // every `is_finite` picking guard would happily accept. Only
+        // points in front of the camera project.
+        if clip.w <= f32::EPSILON {
             return Vec2::new(f32::INFINITY, f32::INFINITY);
         }
         Vec2::new(clip.x / clip.w, clip.y / clip.w)

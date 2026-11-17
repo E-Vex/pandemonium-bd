@@ -250,7 +250,7 @@ fn plain_bundle() -> ContentBundle {
 /// proven identical by the unchanged count, RNG streams, and per-player
 /// counters — see the B-029 report §5):
 ///
-/// - final hash `0x3a58e55ea6250906` — the registered flagship golden (the
+/// - final hash `0xeec2f8d503d1ebf5` — the registered flagship golden (the
 ///   run's own cross-check: the loop here is `AiMatchHost::advance`'s exact
 ///   body, so it must reproduce the CLI value);
 /// - command stream — 612 commands, digest `0x32ebb1e153a446e7` at the
@@ -280,7 +280,7 @@ fn the_missionless_flagship_baseline_is_pinned() {
     // run's own cross-check: this loop is AiMatchHost::advance's exact
     // body, so it must match the CLI value byte for byte).
     assert_eq!(
-        run.final_hash, 0x3a58_e55e_a625_0906,
+        run.final_hash, 0xeec2_f8d5_03d1_ebf5,
         "the hosted loop must reproduce the registered flagship golden"
     );
     // The command count the CLI reports for the same run.
@@ -462,7 +462,7 @@ fn an_all_none_ai_settings_block_is_the_byte_exact_default() {
     // identical, so the draws fell identically).
     let run = all_none_baseline();
     assert_eq!(
-        run.final_hash, 0x3a58_e55e_a625_0906,
+        run.final_hash, 0xeec2_f8d5_03d1_ebf5,
         "the all-None mission reproduces the flagship golden"
     );
     assert_eq!(run.log.len(), 612, "the command count is unchanged");
