@@ -7,6 +7,49 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-037] — the red-master triage (two legs repaid, one diagnosed)
+
+Master's CI went red on three independent legs; this pass repays the two
+that are safely fixable and hands the third over with its root cause
+diagnosed and bounded.
+
+**The test leg** — `add_a_unit_is_data_only` (the DEBT-007 fight half)
+failed deterministically on the B-036 head. Root cause: the test's premise
+was satisfied through the very bug B-036 fixed — the skirmisher's arrival
+tile (20,18) sits two tiles from an ore node, nodes were wrongly
+auto-acquire targets before the correctness pass, and the kind-14
+`AttackHit` the test observed was the node lock firing, never a fight.
+The honest replacement: after the train half, march the starting skirmisher
+with an `AttackMove` to player 1's anchor — the march crosses the map, the
+combat pipeline auto-acquires player 1's starting force within
+acquire_range, and the data-defined kind fires a real `AttackHit` with
+zero changes under `crates/sim` (the source-scan half still proves
+data-only). Verified green in isolation.
+
+**The audit leg** — RUSTSEC-2026-0486 (rustix 1.1.5, unsound: the six
+xattr functions mark unwritten bytes initialized on a zero-length buffer;
+published 2026-10-27) started failing `cargo audit --deny warnings` when
+the advisory DB refreshed. A fixed release exists (1.1.6), so the
+disposition is the minimal repayment — `cargo update -p rustix@1.1.5
+--precise 1.1.6` — not an audit.toml ignore (the config's comment records
+the ruling). `cargo audit --deny warnings` exits 0 locally against the
+bumped lockfile. rustix rides only in the winit/calloop/gethostname tree;
+no sim-path dependency, no golden can move.
+
+**The soak leg (diagnosed, not fixed)** — the nightly has reported 4-10
+unresolved (stuck) matches every night since 2026-11-08 (the B-031 head,
+the stat rebalance; nightly green through 2026-11-07). Local reproduction
+on the 2026-11-24 shard-3 seeds (20781300..20781399): 2/100 unresolved;
+the same seeds on the pre-rebalance head (B-030, `f675268`) resolve
+100/100. Dissection of the two stuck seeds shows one shared endgame
+shape: the map's ore runs out before the rebalanced (slower) combat
+produces a winner; the survivors hoard sub-wave armies (below MIN_WAVE),
+the scripted AI has no starvation endgame, and the match runs its 36000
+tick budget unresolved. The fix is a designed AI-endgame change (a
+last-ditch all-in rule, or a starvation defeat condition) that needs its
+own brief, a golden ruling for any sim-side variant, and a full 1000-seed
+nightly-equivalent sweep — deliberately not rushed into this triage pass.
+
 ## [B-036] — the correctness pass (the full-workspace review: 19 fixes across 7 crates)
 
 A four-way parallel review of every crate (sim, client, content/replay/fx,
