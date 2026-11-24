@@ -1,4 +1,4 @@
-# cargo-audit configuration (B-002 Part 2 triage; A-021 revision).
+# cargo-audit configuration (B-002 Part 2 triage; A-021 revision; B-037 note).
 #
 # The audit workflow runs `cargo audit --deny warnings`, which fails on
 # advisory *warnings* (unmaintained/informational) as well as real
@@ -8,6 +8,13 @@
 # lockfile entirely with the wgpu 30 bump (the Apple stack is
 # objc2-metal now; `paste` appears in no target's tree), so there is
 # nothing left to ignore — exactly DEBT-200's declared repayment path.
+#
+# B-037 (2026-11-24): RUSTSEC-2026-0486 (rustix 1.1.5, unsound — the
+# xattr zero-length-buffer UB, published 2026-10-27) started failing the
+# audit job on master. A fixed release exists (1.1.6), so the disposition
+# is a repayment, not an ignore: `cargo update -p rustix@1.1.5 --precise
+# 1.1.6` (a minimal move, nothing else in the lockfile changed). No
+# ignore entry is added.
 #
 # The one remaining unmaintained notice (informational, not a
 # vulnerability):
