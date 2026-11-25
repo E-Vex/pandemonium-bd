@@ -1227,7 +1227,9 @@ fn add_a_unit_is_data_only() {
         .snapshot()
         .entities
         .iter()
-        .find(|entity| entity.owner == PlayerId(0) && entity.kind == pandemonium_sim_api::KindId(14))
+        .find(|entity| {
+            entity.owner == PlayerId(0) && entity.kind == pandemonium_sim_api::KindId(14)
+        })
         .expect("player 0 fields a kind-14 skirmisher")
         .id;
     sim.step(&[Command::new(

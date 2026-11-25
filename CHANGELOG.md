@@ -7,6 +7,45 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project
 does not use SemVer yet (the Alpha is undeclared), so each entry is keyed to
 its milestone tag.
 
+## [B-038] — the re-pin pass (B-036's authorized moves, the pins it missed)
+
+B-036's authorized golden move re-pinned the demo/flagship hashes in
+ci.yml, release.yml, README, AI-Handoff, and ALPHA_DECLARATION — but two
+test files carried pins moved by the same fixes, and the miss was silent
+because cargo stops the test run at the first failing binary:
+`add_a_unit_is_data_only` (content_pipeline) aborted the run before
+`determinism.rs` and `mission_ai.rs` ever started. B-037 repaid the
+content_pipeline leg; this pass repays the two legs that unmasked.
+
+**`tests/determinism.rs` — `a1_golden_hashes_are_pinned`.** The PCG32
+XSH-RR transcription fix moves the acceptance match's checkpoints too:
+the fixture's spawn jitter draws seeded RNG at construction, before the
+tick-0 checkpoint, so every pin moved — tick 0 included. Re-pinned:
+0xC944347615CBA0C1 (tick 0), 0x04EF237645F24EBA (tick 30),
+0xEF3E6256B38D6E94 (tick 60), final 0x0BD475F6730FB30B;
+`next_entity_id` stays 9. Verified identical across
+Linux/Windows/macOS in the CI logs (one actual value on all six legs).
+
+**`tests/mission_ai.rs` — the flagship baseline pins.** B-036's AI fixes
+(the dead research-carrier re-derivation, the real `point_sighted`
+proximity check, the `next_spot` empty-list guard) changed observable
+behavior in the intended direction: 4 wasted re-issued orders no longer
+happen, so the command stream is 608 commands (was 612) with a moved
+digest (0x849BC8A5801ED64A). The controller RNG states at both probe
+boundaries (300/7200) are bit-identical through the fix — re-verified —
+which anchors that the streams consumed the same draws: the change is
+order issuance, not RNG health. The flagship final hash itself is
+untouched (0xeec2f8d503d1ebf5, the registered golden). The prose in
+`tests/ai.rs` that cites the old 612 count is updated with the history.
+
+**`tests/content_pipeline.rs` — fmt.** B-037's rewritten fight half
+carried an over-long closure line that failed `cargo fmt --check`; the
+file is formatted (the only fmt violation in the branch).
+
+The nightly soak's unresolved-matches leg is unchanged (B-037's
+diagnosis stands: a designed AI-endgame change, its own brief and
+sweep — not a pin, not a test).
+
 ## [B-037] — the red-master triage (two legs repaid, one diagnosed)
 
 Master's CI went red on three independent legs; this pass repays the two
