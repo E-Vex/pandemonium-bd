@@ -501,10 +501,18 @@ fn a1_golden_hashes_are_pinned() {
     // (Prior history: regenerated for M6 — state encoding v4: the Attack
     // capability block + AttackUnit order; fixture encoding v4: Attack
     // CapTemplate — see docs/ASSUMPTIONS.md A-056.)
+    // Re-pinned B-038: B-036's PCG32 XSH-RR transcription fix (fx/rng.rs)
+    // moved these too — the spawn jitter at construction draws seeded RNG
+    // before the tick-0 checkpoint, so every pin moved, tick 0 included.
+    // B-036 re-pinned the demo/flagship goldens (ci.yml, release.yml,
+    // README, AI-Handoff, ALPHA_DECLARATION) but missed this file: the
+    // failure was masked on master because content_pipeline aborted the
+    // test run before determinism.rs ever started (cargo stops at the
+    // first failing binary). Unmasked by B-037's content_pipeline fix.
     let golden: &[(u32, u64)] = &[
-        (0, 0x5A467269B78F6B93),
-        (30, 0x2BCCEA8144F1ED96),
-        (60, 0x732E7B725B0F4E26),
+        (0, 0xC944347615CBA0C1),
+        (30, 0x04EF237645F24EBA),
+        (60, 0xEF3E6256B38D6E94),
     ];
     assert_eq!(run.checkpoints.len(), 4, "tick 0 + 30 + 60 + final 65");
     for (want_tick, want_hash) in golden {
@@ -515,7 +523,7 @@ fn a1_golden_hashes_are_pinned() {
             .unwrap_or_else(|| panic!("missing checkpoint at tick {want_tick}"));
         assert_eq!(found.hash, *want_hash, "golden hash at tick {want_tick}");
     }
-    assert_eq!(run.final_hash, 0xC5F543CFA16BA2B4); // re-pinned M10.1 (DEBT-001)
+    assert_eq!(run.final_hash, 0x0BD475F6730FB30B); // re-pinned B-038 (B-036's RNG fix)
     assert_eq!(run.next_entity_id, 9);
 }
 

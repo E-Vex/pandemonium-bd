@@ -1200,7 +1200,8 @@ fn the_alpha_plan_ignores_the_forge() {
     // production map's sorted order — barracks sorts before command_center
     // and forge — so the army stays the Alpha three and the Forge's kinds
     // stay out of it (the army_vec/production wiring is what the B-029
-    // flagship evidence cross-checks: 612 commands and bit-identical
+    // flagship evidence cross-checks: 608 commands (612 through B-035;
+    // B-036's AI fixes dropped the 4 wasted re-issues) and bit-identical
     // controller RNG streams). A future faction edit that reorders the
     // producers changes this silently; this test is what turns that loud.
     let bundle = bundle();
